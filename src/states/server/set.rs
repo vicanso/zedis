@@ -16,6 +16,7 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisSetValue, RedisValue, RedisValueStatus},
 };
+use crate::helpers::unix_ts;
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
@@ -25,6 +26,7 @@ use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::HashSet;
 use std::sync::Arc;
+use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -169,6 +171,9 @@ impl ZedisServerState {
     pub fn update_set_value(&mut self, old_value: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let old_value_clone = old_value.clone();
         let new_value_clone = new_value.clone();
+        let log_key = self.key.clone();
+        let log_old = old_value.to_string();
+        let log_new = new_value.to_string();
 
         self.exec_set_op(
             ServerTask::UpdateSetValue,
@@ -191,7 +196,17 @@ impl ZedisServerState {
                     .await?;
                 Ok(count)
             },
-            |_, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    this.record_changes(
+                        log_key,
+                        vec![
+                            ChangeEntry::element(at, log_old, Some(""), None),
+                            ChangeEntry::element(at, log_new, None, Some("")),
+                        ],
+                    );
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
@@ -206,6 +221,8 @@ impl ZedisServerState {
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_set_value(&mut self, new_value: SharedString, cx: &mut Context<Self>) {
         let val_clone = new_value.clone();
+        let log_key = self.key.clone();
+        let log_member = new_value.to_string();
 
         self.exec_set_op(
             ServerTask::AddSetValue,
@@ -220,6 +237,15 @@ impl ZedisServerState {
                 Ok(count)
             },
             move |this, count, cx| {
+                // `SADD` answering 0 means the member was already there.
+                if count > 0
+                    && let Some(log_key) = log_key
+                {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(unix_ts(), log_member, None, Some(""))],
+                    );
+                }
                 if count == 0 {
                     this.emit_warning_notification(i18n_set_editor(cx, "add_value_exists_tips"), cx);
                 } else if let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
@@ -361,6 +387,8 @@ impl ZedisServerState {
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
         let val_clone = remove_value.clone();
+        let log_key = self.key.clone();
+        let log_member = remove_value.to_string();
 
         self.exec_set_op(
             ServerTask::RemoveSetValue,
@@ -377,7 +405,15 @@ impl ZedisServerState {
                     .await?;
                 Ok(count)
             },
-            |_, _, cx| {
+            move |this, removed, cx| {
+                if removed > 0
+                    && let Some(log_key) = log_key
+                {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(unix_ts(), log_member, Some(""), None)],
+                    );
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
@@ -391,6 +427,8 @@ impl ZedisServerState {
         if remove_values.is_empty() {
             return;
         }
+        let log_key = self.key.clone();
+        let log_members: Vec<String> = remove_values.iter().map(|m| m.to_string()).collect();
         let gone: HashSet<SharedString> = remove_values.iter().cloned().collect();
         self.exec_set_op(
             ServerTask::RemoveSetValue,
@@ -409,7 +447,15 @@ impl ZedisServerState {
                 let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)
             },
-            |_, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_members
+                        .into_iter()
+                        .map(|member| ChangeEntry::element(at, member, Some(""), None))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );

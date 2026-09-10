@@ -339,10 +339,11 @@ impl ZedisBytesEditor {
         });
 
         // Subscribe to editor changes to track modification state — and to
-        // enforce read-only: gpui-component's `Input::disabled` renders the
-        // text at half opacity (too dim for a value *viewer*) and
-        // `InputState` has no read-only mode, so the input stays enabled and
-        // any edit made while readonly is snapped back to the original here.
+        // enforce read-only: `Input::disabled` renders the text at half
+        // opacity (too dim for a value *viewer*), so the editor uses the
+        // component's `readonly` flag instead (synced in
+        // `update_editor_data`), and any edit that still gets through is
+        // snapped back to the original here.
         subscriptions.push(cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
             if let InputEvent::Change = &event {
                 let value = editor.read(cx).value();
@@ -509,6 +510,15 @@ impl ZedisBytesEditor {
             self.data = ByteEditorData::Text(SharedString::default());
         }
 
+        // Keep the editor component's own read-only flag in step with ours.
+        // gpui-component's search panel offers Replace only when
+        // `replaceable && is_editable()`, so without this a read-only value
+        // would show a Replace that the snap-back above silently undoes.
+        // Unlike `disabled`, `readonly` does not dim the text.
+        let component_readonly = self.readonly;
+        self.editor
+            .update(cx, |state, cx| state.set_readonly(component_readonly, cx));
+
         if !matches!(self.data, ByteEditorData::Hex(_)) {
             self.hex_viewer_state = None;
         }
@@ -561,6 +571,20 @@ impl ZedisBytesEditor {
     /// Check if the current editor value differs from the original Redis value
     pub fn is_value_modified(&self) -> bool {
         self.value_modified
+    }
+
+    /// Open the search panel straight into replace mode — the key bar
+    /// menu's entry point, because the component's own shortcut is not
+    /// something anyone discovers. Does nothing on a read-only value: the
+    /// component refuses replace mode there anyway.
+    pub fn open_find_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        self.editor.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.open_search(true, cx);
+        });
     }
 
     /// Check if the editor is readonly

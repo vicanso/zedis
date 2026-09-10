@@ -26,6 +26,7 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisValue, RedisValueStatus, RedisZsetValue, SortOrder},
 };
+use crate::helpers::unix_ts;
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
@@ -36,6 +37,7 @@ use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::HashSet;
 use std::sync::Arc;
+use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -331,6 +333,21 @@ impl ZedisServerState {
         let new_value_clone = new_value.clone();
         let old_value_clone = old_value.clone();
         let is_removed = old_value.is_some();
+        // Scores before the write, from the loaded page: the edited member's
+        // (it is in the table), and the target's when it already existed.
+        let log_key = self.key.clone();
+        let (log_old_score, log_existing_score) = {
+            let loaded = self.value.as_ref().and_then(|v| v.zset_value());
+            let score_of = |member: &SharedString| {
+                loaded
+                    .as_ref()
+                    .and_then(|z| z.values.iter().find(|(m, _)| m == member).map(|(_, s)| s.to_string()))
+            };
+            (old_value.as_ref().and_then(&score_of), score_of(&new_value))
+        };
+        let log_old_member = old_value.as_ref().map(|m| m.to_string());
+        let log_new_member = new_value.to_string();
+        let log_new_score = score.to_string();
 
         self.exec_zset_op(
             ServerTask::AddZsetValue,
@@ -377,6 +394,50 @@ impl ZedisServerState {
                 Ok(count)
             },
             move |this, count, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = match log_old_member {
+                        // A score change on the same member.
+                        Some(old) if old == log_new_member => vec![ChangeEntry::element(
+                            at,
+                            log_new_member,
+                            log_old_score.as_deref(),
+                            Some(log_new_score.as_str()),
+                        )],
+                        // A rename: the old member leaves, the new one arrives.
+                        Some(old) => vec![
+                            ChangeEntry::element(at, old, log_old_score.as_deref(), None),
+                            ChangeEntry::element(
+                                at,
+                                log_new_member,
+                                log_existing_score.as_deref(),
+                                Some(log_new_score.as_str()),
+                            ),
+                        ],
+                        // A plain add that created the member.
+                        None if count == 1 => {
+                            vec![ChangeEntry::element(
+                                at,
+                                log_new_member,
+                                None,
+                                Some(log_new_score.as_str()),
+                            )]
+                        }
+                        // An overwrite, whose old score is only known when
+                        // the member was on a loaded page.
+                        None if log_existing_score.is_some() => vec![ChangeEntry::element(
+                            at,
+                            log_new_member,
+                            log_existing_score.as_deref(),
+                            Some(log_new_score.as_str()),
+                        )],
+                        None => vec![ChangeEntry::operation(
+                            at,
+                            format!("ZADD {log_new_score} {log_new_member}"),
+                        )],
+                    };
+                    this.record_changes(log_key, entries);
+                }
                 if !is_removed
                     && let Some(RedisValueData::Zset(zset_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
@@ -653,6 +714,14 @@ impl ZedisServerState {
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_zset_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
         let remove_value_clone = remove_value.clone();
+        let log_key = self.key.clone();
+        let log_old_score = self.value.as_ref().and_then(|v| v.zset_value()).and_then(|z| {
+            z.values
+                .iter()
+                .find(|(m, _)| m == &remove_value)
+                .map(|(_, s)| s.to_string())
+        });
+        let log_member = remove_value.to_string();
         self.exec_zset_op(
             ServerTask::RemoveZsetValue,
             cx,
@@ -668,7 +737,18 @@ impl ZedisServerState {
                     .await?;
                 Ok(())
             },
-            |_, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(
+                            unix_ts(),
+                            log_member,
+                            log_old_score.as_deref(),
+                            None,
+                        )],
+                    );
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
@@ -681,6 +761,19 @@ impl ZedisServerState {
         if remove_values.is_empty() {
             return;
         }
+        let log_key = self.key.clone();
+        let log_removed: Vec<(String, Option<String>)> = {
+            let loaded = self.value.as_ref().and_then(|v| v.zset_value());
+            remove_values
+                .iter()
+                .map(|member| {
+                    let old = loaded
+                        .as_ref()
+                        .and_then(|z| z.values.iter().find(|(m, _)| m == member).map(|(_, s)| s.to_string()));
+                    (member.to_string(), old)
+                })
+                .collect()
+        };
         let gone: HashSet<SharedString> = remove_values.iter().cloned().collect();
         self.exec_zset_op(
             ServerTask::RemoveZsetValue,
@@ -699,7 +792,15 @@ impl ZedisServerState {
                 let _: () = command.query_async(&mut conn).await?;
                 Ok(())
             },
-            |_, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_removed
+                        .into_iter()
+                        .map(|(member, old)| ChangeEntry::element(at, member, old.as_deref(), None))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );

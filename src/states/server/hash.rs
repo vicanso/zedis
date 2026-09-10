@@ -25,6 +25,7 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisHashValue, RedisValue, RedisValueStatus},
 };
+use crate::helpers::unix_ts;
 use crate::{
     connection::{
         CommandStatus, FieldTtl, RedisAsyncConn, ServerCommand, get_connection_manager, rename_hash_field,
@@ -38,6 +39,7 @@ use redis::cmd;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::debug;
+use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -261,6 +263,17 @@ impl ZedisServerState {
             Some(secs) if secs > 0 => FieldTtl::Expire(secs),
             _ => FieldTtl::Persist,
         };
+        // The field's value before the write, when it is on a loaded page. An
+        // overwrite of an unloaded field is logged as an operation instead:
+        // its old value is not known here, and guessing "added" would lie.
+        let log_key = self.key.clone();
+        let loaded_old = self
+            .value
+            .as_ref()
+            .and_then(|v| v.hash_value())
+            .and_then(|h| h.values.iter().find(|(f, _)| f == &field).map(|(_, v)| v.to_string()));
+        let log_field = field.to_string();
+        let log_value = value.to_string();
         self.exec_hash_op(
             ServerTask::AddHashField,
             cx,
@@ -271,6 +284,17 @@ impl ZedisServerState {
                 Ok(usize::from(created))
             },
             move |this, count, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entry = if count == 1 {
+                        ChangeEntry::element(at, log_field, None, Some(log_value.as_str()))
+                    } else if loaded_old.is_some() {
+                        ChangeEntry::element(at, log_field, loaded_old.as_deref(), Some(log_value.as_str()))
+                    } else {
+                        ChangeEntry::operation(at, format!("HSET {log_field}"))
+                    };
+                    this.record_changes(log_key, vec![entry]);
+                }
                 if let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let hash = Arc::make_mut(hash_data);
                     hash.size += count;
@@ -322,6 +346,16 @@ impl ZedisServerState {
         let atomic = self.hsetex_available();
         let field_ttl = FieldTtl::from_editor(ttl);
 
+        let log_key = self.key.clone();
+        let log_old_value = self.value.as_ref().and_then(|v| v.hash_value()).and_then(|h| {
+            h.values
+                .iter()
+                .find(|(f, _)| f == &old_field)
+                .map(|(_, v)| v.to_string())
+        });
+        let log_old_field = old_field.to_string();
+        let log_new_field = new_field.to_string();
+        let log_new_value = new_value.to_string();
         self.exec_hash_op(
             ServerTask::UpdateHashField,
             cx,
@@ -364,7 +398,25 @@ impl ZedisServerState {
                 }
                 Ok(())
             },
-            |this, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = if log_old_field == log_new_field {
+                        vec![ChangeEntry::element(
+                            at,
+                            log_new_field,
+                            log_old_value.as_deref(),
+                            Some(log_new_value.as_str()),
+                        )]
+                    } else {
+                        // A rename is the old field leaving and the new one arriving.
+                        vec![
+                            ChangeEntry::element(at, log_old_field, log_old_value.as_deref(), None),
+                            ChangeEntry::element(at, log_new_field, None, Some(log_new_value.as_str())),
+                        ]
+                    };
+                    this.record_changes(log_key, entries);
+                }
                 this.emit_info_notification(i18n_hash_editor(cx, "update_exist_field_value_success_tips"), cx);
                 cx.emit(ServerEvent::ValueUpdated);
             },
@@ -407,6 +459,14 @@ impl ZedisServerState {
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn remove_hash_value(&mut self, remove_field: SharedString, cx: &mut Context<Self>) {
         let remove_field_clone = remove_field.clone();
+        let log_key = self.key.clone();
+        let log_old = self.value.as_ref().and_then(|v| v.hash_value()).and_then(|h| {
+            h.values
+                .iter()
+                .find(|(f, _)| f == &remove_field)
+                .map(|(_, v)| v.to_string())
+        });
+        let log_field = remove_field.to_string();
         self.exec_hash_op(
             ServerTask::RemoveHashField,
             cx,
@@ -422,7 +482,15 @@ impl ZedisServerState {
                     .await?;
                 Ok(count)
             },
-            |_, _, cx| {
+            move |this, removed, cx| {
+                if removed > 0
+                    && let Some(log_key) = log_key
+                {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(unix_ts(), log_field, log_old.as_deref(), None)],
+                    );
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
@@ -435,6 +503,19 @@ impl ZedisServerState {
         if remove_fields.is_empty() {
             return;
         }
+        let log_key = self.key.clone();
+        let log_removed: Vec<(String, Option<String>)> = {
+            let loaded = self.value.as_ref().and_then(|v| v.hash_value());
+            remove_fields
+                .iter()
+                .map(|field| {
+                    let old = loaded
+                        .as_ref()
+                        .and_then(|h| h.values.iter().find(|(f, _)| f == field).map(|(_, v)| v.to_string()));
+                    (field.to_string(), old)
+                })
+                .collect()
+        };
         let gone: HashSet<SharedString> = remove_fields.iter().cloned().collect();
         self.exec_hash_op(
             ServerTask::RemoveHashField,
@@ -453,7 +534,15 @@ impl ZedisServerState {
                 let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)
             },
-            |_, _, cx| {
+            move |this, _, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_removed
+                        .into_iter()
+                        .map(|(field, old)| ChangeEntry::element(at, field, old.as_deref(), None))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );

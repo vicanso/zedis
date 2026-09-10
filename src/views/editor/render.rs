@@ -777,6 +777,14 @@ impl Render for ZedisEditor {
                 EditorAction::EditTtlAbsolute => {
                     this.open_expire_at_dialog(window, cx);
                 }
+                EditorAction::FindReplace => {
+                    if let Some(bytes_editor) = this.bytes_editor.clone() {
+                        bytes_editor.update(cx, |editor, cx| editor.open_find_replace(window, cx));
+                    }
+                }
+                EditorAction::ChangeLog => {
+                    open_change_log_dialog(this.server_state.clone(), window, cx);
+                }
                 _ => {
                     cx.propagate();
                 }

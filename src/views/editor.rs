@@ -33,7 +33,7 @@ use crate::{
         ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
         ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
         ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, export_to_file, key_op_title_key, looks_like_bitmap,
-        looks_like_hll, open_key_op_dialog, zset_looks_geo,
+        looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
     },
 };
 use bytes::Bytes;

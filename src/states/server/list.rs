@@ -16,6 +16,7 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisListValue, RedisValue, RedisValueStatus},
 };
+use crate::helpers::unix_ts;
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager, remove_list_indexes},
     error::Error,
@@ -25,6 +26,7 @@ use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
 use uuid::Uuid;
+use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -80,6 +82,9 @@ impl ZedisServerState {
         optimistic_update: impl FnOnce(&mut RedisListValue),
         redis_op: F,
         rollback: impl FnOnce(&mut RedisListValue) + Send + 'static,
+        // Runs only when the write succeeded — where the change log records,
+        // so a failed write never appears in it.
+        on_success: impl FnOnce(&mut Self, &mut Context<Self>) + Send + 'static,
     ) where
         // Corrected: Removed 'mut' keyword from the type definition
         F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
@@ -122,6 +127,9 @@ impl ZedisServerState {
                         cx.emit(ServerEvent::ValueUpdated);
                     }
                 }
+                if result.is_ok() {
+                    on_success(this, cx);
+                }
                 cx.notify();
             },
             cx,
@@ -145,6 +153,12 @@ impl ZedisServerState {
     }
     /// Removes an item at a specific index using a unique marker to ensure atomicity.
     pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
+        let log_key = self.key.clone();
+        let log_old = self
+            .value
+            .as_ref()
+            .and_then(|v| v.list_value())
+            .and_then(|l| l.values.get(index).map(|v| v.to_string()));
         // Note: For List removal, rollback requires the original value.
         // In this simplified version, we focus on the shared structure.
         self.exec_list_op(
@@ -173,6 +187,19 @@ impl ZedisServerState {
                 Ok(())
             },
             |_list| { /* Optional: Re-fetch or re-insert if critical */ },
+            move |this, _cx| {
+                if let Some(log_key) = log_key {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(
+                            unix_ts(),
+                            format!("#{index}"),
+                            log_old.as_deref(),
+                            None,
+                        )],
+                    );
+                }
+            },
         );
     }
     /// Removes several positions in one round trip — the table's
@@ -183,6 +210,19 @@ impl ZedisServerState {
             return;
         }
         let optimistic = indexes.clone();
+        let log_key = self.key.clone();
+        let log_removed: Vec<(usize, Option<String>)> = {
+            let loaded = self.value.as_ref().and_then(|v| v.list_value());
+            indexes
+                .iter()
+                .map(|i| {
+                    (
+                        *i,
+                        loaded.as_ref().and_then(|l| l.values.get(*i).map(|v| v.to_string())),
+                    )
+                })
+                .collect()
+        };
         self.exec_list_op(
             ServerTask::RemoveListValue,
             cx,
@@ -203,6 +243,16 @@ impl ZedisServerState {
                 Ok(())
             },
             |_list| {},
+            move |this, _cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_removed
+                        .into_iter()
+                        .map(|(index, old)| ChangeEntry::element(at, format!("#{index}"), old.as_deref(), None))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
+            },
         );
     }
 
@@ -210,6 +260,8 @@ impl ZedisServerState {
     pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
         let is_lpush = mode == "1";
         let val_clone = new_value.clone();
+        let log_key = self.key.clone();
+        let log_value = new_value.to_string();
 
         self.exec_list_op(
             ServerTask::PushListValue,
@@ -239,6 +291,16 @@ impl ZedisServerState {
                     list.values.pop();
                 }
             },
+            move |this, _cx| {
+                if let Some(log_key) = log_key {
+                    // Named by command: a position would be stale by the next push.
+                    let target = if is_lpush { "LPUSH" } else { "RPUSH" };
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(unix_ts(), target, None, Some(log_value.as_str()))],
+                    );
+                }
+            },
         );
     }
     /// Update a specific item in a Redis List.
@@ -254,6 +316,9 @@ impl ZedisServerState {
     ) {
         let new_val = new.clone();
         let old_val = original.clone();
+        let log_key = self.key.clone();
+        let log_old = original.to_string();
+        let log_new = new.to_string();
 
         self.exec_list_op(
             ServerTask::UpdateListValue,
@@ -282,6 +347,19 @@ impl ZedisServerState {
             move |list| {
                 if index < list.values.len() {
                     list.values[index] = old_val;
+                }
+            },
+            move |this, _cx| {
+                if let Some(log_key) = log_key {
+                    this.record_changes(
+                        log_key,
+                        vec![ChangeEntry::element(
+                            unix_ts(),
+                            format!("#{index}"),
+                            Some(log_old.as_str()),
+                            Some(log_new.as_str()),
+                        )],
+                    );
                 }
             },
         );

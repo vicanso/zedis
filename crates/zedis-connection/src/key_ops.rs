@@ -78,6 +78,24 @@ pub enum KeyOpOutcome {
 impl KeyOp {
     /// Whether this operation destroys data, and therefore goes behind a
     /// confirmation. A counter bump does not; trimming a list does.
+    /// A command-like one-line description for a collection's change log,
+    /// or `None` for the String operations — a string's history is its
+    /// before-and-after snapshots, not a list of operations.
+    pub fn describe(&self) -> Option<String> {
+        let pop = |end: &FromEnd, head: &str, tail: &str| match end {
+            FromEnd::Head => head.to_string(),
+            FromEnd::Tail => tail.to_string(),
+        };
+        match self {
+            KeyOp::ListTrim { start, stop } => Some(format!("LTRIM {start} {stop}")),
+            KeyOp::ListPop { end, count } => Some(format!("{} {count}", pop(end, "LPOP", "RPOP"))),
+            KeyOp::ZsetIncrBy { member, delta } => Some(format!("ZINCRBY {} {member}", format_number(*delta))),
+            KeyOp::ZsetPop { end, count } => Some(format!("{} {count}", pop(end, "ZPOPMIN", "ZPOPMAX"))),
+            KeyOp::HashIncrBy { field, delta } => Some(format!("HINCRBY {field} {delta}")),
+            KeyOp::StringIncrBy { .. } | KeyOp::StringAppend { .. } | KeyOp::StringGetEx { .. } => None,
+        }
+    }
+
     pub fn is_destructive(&self) -> bool {
         matches!(
             self,
@@ -219,6 +237,34 @@ mod tests {
         );
         assert!(!KeyOp::StringAppend { text: "x".into() }.is_destructive());
         assert!(!KeyOp::StringGetEx { ttl: Some(60) }.is_destructive());
+    }
+
+    #[test]
+    fn collection_operations_describe_themselves_and_string_ones_do_not() {
+        assert_eq!(
+            KeyOp::ListTrim { start: 0, stop: 9 }.describe().as_deref(),
+            Some("LTRIM 0 9")
+        );
+        assert_eq!(
+            KeyOp::ZsetPop {
+                end: FromEnd::Tail,
+                count: 2
+            }
+            .describe()
+            .as_deref(),
+            Some("ZPOPMAX 2")
+        );
+        assert_eq!(
+            KeyOp::ZsetIncrBy {
+                member: "m".into(),
+                delta: 4.0
+            }
+            .describe()
+            .as_deref(),
+            Some("ZINCRBY 4 m"),
+            "a whole delta prints without `.0`"
+        );
+        assert_eq!(KeyOp::StringAppend { text: "x".into() }.describe(), None);
     }
 
     #[test]

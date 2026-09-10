@@ -17,6 +17,13 @@
 //! Split out of `editor.rs`.
 
 use super::*;
+
+/// The keystroke gpui-component binds to Replace in its input context, shown
+/// next to the menu entry so the shortcut can be learned from it.
+#[cfg(target_os = "macos")]
+const REPLACE_KEYSTROKE: &str = "cmd-shift-f";
+#[cfg(not(target_os = "macos"))]
+const REPLACE_KEYSTROKE: &str = "ctrl-h";
 use crate::connection::Capability;
 
 impl ZedisEditor {
@@ -366,7 +373,16 @@ impl ZedisEditor {
             vec![]
         };
         let diff_item = !diff_history.is_empty();
-        if rename_item
+        // Same condition as the diff: an editable string value on a
+        // writable connection.
+        let find_replace_item = diff_editable;
+        // A collection key with edits recorded this session. Shown on a
+        // read-only connection too: the log is what was already written.
+        let change_log_item = matches!(key_type, KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset)
+            && server_state.change_log_for(&key).is_some();
+        if change_log_item
+            || find_replace_item
+            || rename_item
             || copy_item
             || bitmap_item
             || export_item
@@ -402,6 +418,26 @@ impl ZedisEditor {
                                 CustomIconName::Upload,
                                 Box::new(EditorAction::ImportValue),
                                 move |_, cx| Label::new(i18n_editor(cx, "import_value_tooltip")),
+                            );
+                        }
+                        if find_replace_item {
+                            let label: SharedString = format!(
+                                "{} ({})",
+                                i18n_editor(cx, "find_replace"),
+                                humanize_keystroke(REPLACE_KEYSTROKE)
+                            )
+                            .into();
+                            menu = menu.menu_element_with_icon(
+                                IconName::Search,
+                                Box::new(EditorAction::FindReplace),
+                                move |_, _cx| Label::new(label.clone()),
+                            );
+                        }
+                        if change_log_item {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::ListCheck,
+                                Box::new(EditorAction::ChangeLog),
+                                move |_, cx| Label::new(i18n_editor(cx, "change_log")),
                             );
                         }
                         // Restore submenu: pull any saved version back into the

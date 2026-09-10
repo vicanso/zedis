@@ -182,6 +182,10 @@ pub enum EditorAction {
     EditTtlDuration,
     /// Open the TTL editor expecting an absolute instant (`EXPIREAT`).
     EditTtlAbsolute,
+    /// Open the value editor's search panel in replace mode.
+    FindReplace,
+    /// Open the session change log for the selected collection key.
+    ChangeLog,
 }
 
 /// The type-native key operations the editors offer beyond add / edit /

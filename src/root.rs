@@ -310,8 +310,9 @@ impl Zedis {
             }
         })
         .detach();
-        let clear_expired_cache = Some(cx.spawn(async move |_this, cx| {
-            // 30s ticks. The recycle-bin sweep piggybacks on this loop:
+        let clear_expired_cache = Some(cx.spawn(async move |this, cx| {
+            // 30s ticks. The recycle-bin sweep and the idle expiry of every
+            // tab's key histories piggyback on this loop:
             // first run on the first tick (~30s after launch, so a previous
             // session's expired entries don't linger), then hourly — this
             // keeps the 24h retention honest even for a Zedis left running
@@ -322,6 +323,13 @@ impl Zedis {
                 cx.background_executor().timer(Duration::from_secs(30)).await;
                 clear_expired_cache();
                 if tick.is_multiple_of(TRASH_SWEEP_EVERY_TICKS) {
+                    // A week-long expiry needs no finer check than hourly.
+                    let _ = this.update(cx, |root, cx| {
+                        for tab in &root.tabs {
+                            let state = tab.content.read(cx).server_state();
+                            state.update(cx, |state, cx| state.sweep_expired_histories(cx));
+                        }
+                    });
                     cx.background_spawn(async {
                         match purge_all_trash(unix_ts_millis() - TRASH_RETENTION_MS) {
                             Ok(removed) if removed > 0 => info!(removed, "purged expired trash entries"),

@@ -23,7 +23,7 @@ use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
 use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
-use crate::states::server::history::{ValueHistoryEntry, push_history};
+use crate::states::server::history::{KeyHistories, ValueHistoryEntry};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
 use crate::states::{
     HINT_FIRST_CONNECT, QueryMode, ServerView, ZedisGlobalStore, command_unavailable_message, first_connect_hint,
@@ -42,6 +42,7 @@ use std::time::Instant;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
+use zedis_core::change_log::ChangeEntry;
 
 pub mod cluster;
 pub mod event;
@@ -350,11 +351,10 @@ pub struct ZedisServerState {
     /// is actually held), which is what the per-rebuild clone used to cost.
     key_ttls: Arc<AHashMap<SharedString, i64>>,
 
-    /// In-memory write history per string key. Each entry is the bytes
-    /// that were just overwritten by a SET, newest first. Capped at
-    /// [`history::VALUE_HISTORY_CAPACITY`] per key and cleared on key
-    /// delete or server switch. Never persisted to disk.
-    value_history: AHashMap<SharedString, VecDeque<ValueHistoryEntry>>,
+    /// Per-key String versions and collection change logs for this
+    /// connection, under one memory budget with least-recently-used
+    /// eviction (`history::KeyHistories`). In memory only, never persisted.
+    histories: KeyHistories,
 
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
@@ -442,7 +442,7 @@ impl ZedisServerState {
         // History is scoped to the current server session; drop it when
         // we move to a different server to avoid restoring stale bytes
         // into the wrong target.
-        self.value_history.clear();
+        self.histories.clear();
         self.key_tree_id = SharedString::default();
         self.nodes_description = Arc::new(RedisClientDescription::default());
         self.sentinel_masters.clear();
@@ -1165,23 +1165,41 @@ impl ZedisServerState {
     /// Returns `None` rather than an empty slice so callers can easily
     /// distinguish "never written" from "written and rolled back to 0".
     pub fn value_history_for(&self, key: &SharedString) -> Option<&VecDeque<ValueHistoryEntry>> {
-        self.value_history.get(key).filter(|d| !d.is_empty())
+        self.histories.value_history_for(key)
     }
 
     /// Append the bytes about to be overwritten to the history ring buffer.
     /// Called from the SET paths in value.rs right before mutating state.
     /// Empty `bytes` are still recorded — "was empty" is itself meaningful
-    /// history to roll back to.
+    /// history to roll back to. A version over
+    /// `VALUE_HISTORY_MAX_VERSION_BYTES` is not kept.
     pub(super) fn push_value_history(&mut self, key: SharedString, bytes: Bytes) {
-        let buffer = self.value_history.entry(key).or_default();
-        push_history(buffer, ValueHistoryEntry { bytes, at: unix_ts() });
+        self.histories.push_value(key, bytes, unix_ts());
     }
 
-    /// Drop all history entries for `key`. Called when the key is deleted
-    /// so we don't pile up dangling versions of a name the server no
-    /// longer knows about.
-    pub(super) fn clear_value_history_for(&mut self, key: &SharedString) {
-        self.value_history.remove(key);
+    /// The session change log for `key` (oldest first), if anything was
+    /// recorded.
+    pub fn change_log_for(&self, key: &SharedString) -> Option<&VecDeque<ChangeEntry>> {
+        self.histories.change_log_for(key)
+    }
+
+    /// Append `entries` to `key`'s change log. Called from each collection
+    /// write's success callback — never before the server confirmed it, so
+    /// a refused write never shows up as a change.
+    pub(super) fn record_changes(&mut self, key: SharedString, entries: Vec<ChangeEntry>) {
+        self.histories.record_changes(key, entries, unix_ts());
+    }
+
+    /// Drop the history of every key not used for a week
+    /// (`HISTORY_IDLE_EXPIRY_SECS`). Driven by the root's periodic cleanup
+    /// loop, so an idle Zedis gives the memory back without any write
+    /// having to happen first.
+    pub fn sweep_expired_histories(&mut self, cx: &mut Context<Self>) {
+        // The toolbar gates its diff and change-log entries on these
+        // histories, so a sweep that dropped one has to re-render it.
+        if self.histories.sweep_expired(unix_ts()) {
+            cx.notify();
+        }
     }
 
     pub fn set_search_history(&mut self, history: Vec<SharedString>) {

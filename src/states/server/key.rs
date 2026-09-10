@@ -50,6 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
+use zedis_core::change_log::ChangeEntry;
 
 /// Per-page cursor/position state threaded through the recursive
 /// [`ZedisServerState::scan_prefix_page`] loop (grouped so the function
@@ -900,6 +901,9 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let key_arg = key.clone();
+        // Taken before `op` moves into the task. `None` for the String
+        // operations, whose history is before-and-after snapshots instead.
+        let description = op.describe();
         self.spawn_with_arg(
             ServerTask::RunKeyOperation,
             key.clone(),
@@ -912,6 +916,11 @@ impl ZedisServerState {
                     // The error already surfaced through `spawn_with_arg`.
                     return;
                 };
+                // Logged as an operation: its effect on individual elements
+                // was not read back, so it stays out of the net diff.
+                if let Some(description) = description {
+                    this.record_changes(key.clone(), vec![ChangeEntry::operation(unix_ts(), description)]);
+                }
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                 let message: SharedString = match outcome {
                     KeyOpOutcome::Number(value) => t!("key_ops.result_number", value = value, locale = locale)
@@ -1024,6 +1033,9 @@ impl ZedisServerState {
         if key.is_empty() {
             return;
         }
+        // Opening a key counts as using its history: the budget evicts the
+        // key used least recently, and one you keep returning to should stay.
+        self.histories.touch(&key, unix_ts());
         self.terminal = false;
         // only set loading status if the value exists for better performance
         // prevent editor flickering
@@ -1070,7 +1082,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.remove(&remove_key);
-                    this.clear_value_history_for(&remove_key);
+                    this.histories.forget(&remove_key);
                     // Drop from MRU so the dropdown doesn't offer a gone key.
                     let scope = recent_keys_scope(this.server_id.as_str(), this.db);
                     let mru_key = remove_key.to_string();
@@ -1121,7 +1133,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
-                    this.value_history.retain(|key, _| !key.starts_with(prefix.as_str()));
+                    this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
@@ -1165,7 +1177,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     this.keys.clear();
-                    this.value_history.clear();
+                    this.histories.clear();
                     this.key = None;
                     this.value = None;
                     // Force refresh of the key tree view
@@ -1204,7 +1216,7 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !remove_keys.contains(key));
-                    this.value_history.retain(|key, _| !remove_keys.contains(key));
+                    this.histories.retain_keys(|key| !remove_keys.contains(key));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                 }
@@ -1274,9 +1286,7 @@ impl ZedisServerState {
                         if let Some(ttl) = key_ttls.remove(&old_done) {
                             key_ttls.insert(new_done.clone(), ttl);
                         }
-                        if let Some(history) = this.value_history.remove(&old_done) {
-                            this.value_history.insert(new_done.clone(), history);
-                        }
+                        this.histories.rename(&old_done, new_done.clone());
                         this.key_tree_id = Uuid::now_v7().to_string().into();
                         // Re-select via the normal path so the key tree expands
                         // to reveal the renamed node — `KeySelected` drives the

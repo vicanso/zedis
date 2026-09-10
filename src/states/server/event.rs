@@ -379,7 +379,8 @@ impl ZedisServerState {
         use crate::connection::Capability;
         let cap = match event {
             EditorAction::Create => Capability::CreateKey,
-            EditorAction::Save => Capability::SaveValue,
+            // Replace edits the draft the Save button then writes.
+            EditorAction::Save | EditorAction::FindReplace => Capability::SaveValue,
             EditorAction::UpdateTtl | EditorAction::EditTtlDuration | EditorAction::EditTtlAbsolute => {
                 Capability::SetTtl
             }
@@ -388,7 +389,10 @@ impl ZedisServerState {
             EditorAction::Rename => Capability::RenameKey,
             EditorAction::CopyTo => Capability::CopyKeyToServer,
             EditorAction::ExportValue => Capability::ExportValue,
-            EditorAction::DiffHistory(_) | EditorAction::DiffWithServer => Capability::DiffValues,
+            // Reading what was changed is a read, like any other diff.
+            EditorAction::DiffHistory(_) | EditorAction::DiffWithServer | EditorAction::ChangeLog => {
+                Capability::DiffValues
+            }
             EditorAction::LoadHistory(_) => Capability::LoadHistory,
             EditorAction::Reload | EditorAction::ViewBitmap => Capability::ReloadValue,
             EditorAction::ReloadKeyTree => Capability::RefreshKeys,
