@@ -578,7 +578,47 @@ pub async fn preview_dump_conflicts(
     })
 }
 
-/// Result of a dry-run conflict scan against a dump file.
+/// Dry-run conflict scan for a server-to-server copy: `EXISTS` for every
+/// key on the destination, nothing written. The counterpart of
+/// [`preview_dump_conflicts`] for keys that are still on a source server
+/// rather than in a file.
+pub async fn preview_key_conflicts(
+    server_id: &str,
+    db: usize,
+    keys: &[String],
+    sample_limit: usize,
+    cancel: &AtomicBool,
+) -> Result<ConflictPreview> {
+    const BATCH: usize = 64;
+    let client = get_connection_manager().get_client(server_id, db).await?;
+    let mut conn = client.connection();
+    let mut preview = ConflictPreview {
+        total: keys.len() as u64,
+        ..Default::default()
+    };
+    for chunk in keys.chunks(BATCH) {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let batch: Vec<Vec<u8>> = chunk.iter().map(|key| key.as_bytes().to_vec()).collect();
+        let exists = keys_exist(&mut conn, &batch).await?;
+        for (key, is_there) in chunk.iter().zip(exists) {
+            if is_there {
+                preview.conflicting += 1;
+                if preview.sample_keys.len() < sample_limit {
+                    preview.sample_keys.push(key.clone());
+                }
+            } else {
+                preview.free += 1;
+            }
+        }
+    }
+    preview.cancelled = cancel.load(Ordering::Acquire);
+    Ok(preview)
+}
+
+/// Result of a dry-run conflict scan against a dump file, or of the keys
+/// of a server-to-server copy against the destination.
 #[derive(Debug, Clone, Default)]
 pub struct ConflictPreview {
     pub total: u64,

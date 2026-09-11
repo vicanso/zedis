@@ -26,22 +26,24 @@ use redis::{FromRedisValue, cmd};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Once;
+use std::sync::atomic::AtomicBool;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, BitOpKind, CommandLogKind, CommandStatus, ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl,
-    FromEnd, HeatMetric, HeatProbe, ImportFormat, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
-    PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer, ReplicationInfo,
-    ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
-    TsAlter, TsMRange, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
-    acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk,
-    entry_to_csv, entry_to_json, ft_explain, ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist,
-    get_connection_manager, get_server, get_server_heat_probe, get_servers, kill_filter_commands, kill_running,
-    open_single_connection, parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance,
-    probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op,
-    run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor,
-    sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule,
-    ts_delete_rule, ts_mrange, unassigned_slot_ranges, write_hash_field, write_readable_chunk,
+    AclDryRun, BitOpKind, CommandLogKind, CommandStatus, CompareOptions, CompareSide, ConflictMode, ExpireCondition,
+    FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd, HeatMetric, HeatProbe, ImportFormat, KeyDifference, KeyOp, KeyOpOutcome,
+    KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus,
+    RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions,
+    ServerCommand, ServerFlavor, SlotStatMetric, TsAlter, TsMRange, acl_del_user, acl_dryrun, acl_file, acl_genpass,
+    acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations,
+    cluster_migrate_slots, compare_prefix, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain,
+    ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist, get_connection_manager, get_server,
+    get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
+    parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance, preview_key_conflicts, probe_server_features,
+    read_readable_chunk, remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op, run_script,
+    save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove,
+    sentinel_set, sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
+    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -1418,6 +1420,145 @@ fn standalone_score_window_reads_both_directions() {
         assert_eq!(page, vec!["c", "d"]);
 
         let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// The prefix compare behind the compare window, across two dbs of one
+/// server: each side's missing keys, a value difference, a type
+/// difference, and a set that only differs in member order counting as
+/// the same. Then the copy dry run over the same keys.
+#[test]
+#[ignore]
+fn standalone_compare_prefix_reports_each_side() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut a = conn(&id, 0).await;
+        let mut b = conn(&id, 1).await;
+        let prefix = unique("cmp");
+        let key = |name: &str| format!("{prefix}:{name}");
+
+        for c in [&mut a, &mut b] {
+            cmd("SET").arg(key("same")).arg("v").exec_async(c).await.expect("set");
+        }
+        cmd("SADD")
+            .arg(key("set"))
+            .arg("a")
+            .arg("b")
+            .exec_async(&mut a)
+            .await
+            .expect("sadd");
+        cmd("SADD")
+            .arg(key("set"))
+            .arg("b")
+            .arg("a")
+            .exec_async(&mut b)
+            .await
+            .expect("sadd");
+        cmd("SET")
+            .arg(key("diff"))
+            .arg("1")
+            .exec_async(&mut a)
+            .await
+            .expect("set");
+        cmd("SET")
+            .arg(key("diff"))
+            .arg("2")
+            .exec_async(&mut b)
+            .await
+            .expect("set");
+        cmd("SET")
+            .arg(key("type"))
+            .arg("s")
+            .exec_async(&mut a)
+            .await
+            .expect("set");
+        cmd("HSET")
+            .arg(key("type"))
+            .arg("f")
+            .arg("v")
+            .exec_async(&mut b)
+            .await
+            .expect("hset");
+        cmd("SET")
+            .arg(key("only0"))
+            .arg("x")
+            .exec_async(&mut a)
+            .await
+            .expect("set");
+        cmd("SET")
+            .arg(key("only1"))
+            .arg("y")
+            .exec_async(&mut b)
+            .await
+            .expect("set");
+
+        let source = CompareSide {
+            server_id: id.clone(),
+            db: 0,
+        };
+        let target = CompareSide {
+            server_id: id.clone(),
+            db: 1,
+        };
+        let options = CompareOptions {
+            prefix: format!("{prefix}:"),
+            limit: 100,
+        };
+        let cancel = AtomicBool::new(false);
+        let report = compare_prefix(&source, &target, &options, &cancel, |_| {})
+            .await
+            .expect("compare");
+        assert_eq!(report.same, 2, "the string and the reordered set: {report:?}");
+        assert_eq!(report.only_source, vec![(key("only0"), "string".to_string())]);
+        assert_eq!(report.only_target, vec![(key("only1"), "string".to_string())]);
+        assert_eq!(report.differing.len(), 2, "{report:?}");
+        let diff = report
+            .differing
+            .iter()
+            .find(|entry| entry.key == key("diff"))
+            .expect("the value difference");
+        assert_eq!(diff.difference, KeyDifference::Value);
+        let typed = report
+            .differing
+            .iter()
+            .find(|entry| entry.key == key("type"))
+            .expect("the type difference");
+        assert_eq!(
+            typed.difference,
+            KeyDifference::Type {
+                source: "string".to_string(),
+                target: "hash".to_string()
+            }
+        );
+        assert!(!report.source_capped && !report.target_capped && !report.cancelled);
+
+        // A limit below the key count marks the side partial.
+        let capped = compare_prefix(
+            &source,
+            &target,
+            &CompareOptions {
+                prefix: format!("{prefix}:"),
+                limit: 2,
+            },
+            &cancel,
+            |_| {},
+        )
+        .await
+        .expect("compare");
+        assert!(capped.source_capped, "{capped:?}");
+
+        // The copy dry run: what the target already has of the source's keys.
+        let preview = preview_key_conflicts(&id, 1, &[key("same"), key("only0")], 10, &cancel)
+            .await
+            .expect("preview");
+        assert_eq!((preview.total, preview.conflicting, preview.free), (2, 1, 1));
+        assert_eq!(preview.sample_keys, vec![key("same")]);
+
+        for name in ["same", "set", "diff", "type", "only0", "only1"] {
+            for c in [&mut a, &mut b] {
+                cmd("DEL").arg(key(name)).exec_async(c).await.expect("del");
+            }
+        }
     });
 }
 

@@ -30,6 +30,7 @@ pub mod time;
 mod acl;
 mod async_connection;
 mod command;
+mod compare;
 mod config;
 mod danger;
 mod diagnostics;
@@ -65,6 +66,10 @@ pub use async_connection::{
     open_seed_connection, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
 pub use clients::{KillFilter, PauseMode, kill_filter_commands, kill_filter_summary, pause_args};
+pub use compare::{
+    CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, DifferingKey, KeyDifference,
+    compare_prefix, prefix_pattern, values_equal,
+};
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
     TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, servers_toml_redacted, tag_color_index,
@@ -79,7 +84,7 @@ pub use diagnostics::{
 };
 pub use dump_restore::{
     ConflictMode, ConflictPreview, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key,
-    dump_keys_chunk, preview_dump_conflicts, restore_keys_chunk,
+    dump_keys_chunk, preview_dump_conflicts, preview_key_conflicts, restore_keys_chunk,
 };
 pub use functions::{
     FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, LibraryValidateError, LibraryValidation,

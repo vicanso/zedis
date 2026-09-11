@@ -17,10 +17,12 @@
 //! Import supports conflict strategy selection (Skip / Overwrite / Abort)
 //! and an optional dry-run preview (`EXISTS` on destination) before restore.
 
-use crate::connection::{ConflictMode, ConflictPreview, preview_import_conflicts};
+use crate::connection::{
+    ConflictMode, ConflictPreview, get_server, get_servers, preview_import_conflicts, preview_key_conflicts,
+};
 use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
 use crate::states::{
-    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore,
+    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_copy,
     i18n_migration,
 };
 use chrono::Utc;
@@ -61,6 +63,23 @@ pub enum ExportSource {
     Loaded,
 }
 
+/// A copy target the window opens on, when the caller already knows it —
+/// the compare window hands over what the target lacks.
+#[derive(Clone)]
+pub struct CopyPreset {
+    pub target_id: SharedString,
+    pub target_db: usize,
+    pub conflict: ConflictMode,
+}
+
+/// Where an export goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Destination {
+    File,
+    /// Another server / db, straight through DUMP / RESTORE.
+    Server,
+}
+
 /// What kind of job the window was opened for.
 #[derive(Clone)]
 pub enum MigrationWindowMode {
@@ -70,6 +89,7 @@ pub enum MigrationWindowMode {
         db: usize,
         keys: Vec<SharedString>,
         source: ExportSource,
+        preset: Option<CopyPreset>,
     },
     Import {
         server_id: SharedString,
@@ -91,6 +111,12 @@ pub struct ZedisMigrationWindow {
     /// Export only: optional key-prefix filter narrowing the handed-in key
     /// list before the job starts. Empty = export everything.
     prefix_input_state: Entity<InputState>,
+    /// Export only: a file, or another server / db.
+    destination: Destination,
+    /// Export to a server: `(id, name)` of every configured server.
+    servers: Vec<(SharedString, SharedString)>,
+    target_server_id: Option<SharedString>,
+    target_db_input: Entity<InputState>,
     /// Import only: last dry-run result (if any).
     preview: Option<ConflictPreview>,
     preview_running: bool,
@@ -109,10 +135,45 @@ impl ZedisMigrationWindow {
                 .clean_on_escape()
                 .placeholder(i18n_migration(cx, "prefix_filter_placeholder"))
         });
+        // The copy target: every configured server, the first one that is
+        // not the source picked (the common intent), the db the source's.
+        let servers: Vec<(SharedString, SharedString)> = get_servers()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| (s.id.into(), s.name.into()))
+            .collect();
+        let (source_id, source_db, preset) = match &mode {
+            MigrationWindowMode::Export {
+                server_id, db, preset, ..
+            } => (server_id.clone(), *db, preset.clone()),
+            MigrationWindowMode::Import { server_id, db, .. } => (server_id.clone(), *db, None),
+        };
+        let target_server_id = preset.as_ref().map(|preset| preset.target_id.clone()).or_else(|| {
+            servers
+                .iter()
+                .find(|(id, _)| *id != source_id)
+                .or_else(|| servers.first())
+                .map(|(id, _)| id.clone())
+        });
+        let target_db = preset.as_ref().map(|preset| preset.target_db).unwrap_or(source_db);
+        let target_db_input = cx.new(|cx| InputState::new(window, cx).default_value(target_db.to_string()));
+        let destination = if preset.is_some() {
+            Destination::Server
+        } else {
+            Destination::File
+        };
+        let conflict_mode = preset.as_ref().map(|preset| preset.conflict).unwrap_or_default();
         let mut subs = Vec::new();
         subs.push(cx.subscribe(&state, |_view, _state, _event: &MigrationEvent, cx| {
             cx.notify();
         }));
+        subs.push(
+            cx.subscribe_in(&target_db_input, window, |_view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }),
+        );
         // Re-render on typing so the matched-count chip stays live.
         subs.push(
             cx.subscribe_in(&prefix_input_state, window, |_view, _state, event, _window, cx| {
@@ -126,9 +187,13 @@ impl ZedisMigrationWindow {
             mode,
             state,
             chosen_path: None,
-            conflict_mode: ConflictMode::Skip,
+            conflict_mode,
             export_format: ExportFormat::Binary,
             prefix_input_state,
+            destination,
+            servers,
+            target_server_id,
+            target_db_input,
             preview: None,
             preview_running: false,
             preview_error: None,
@@ -139,9 +204,138 @@ impl ZedisMigrationWindow {
 
     fn title_label(&self, cx: &App) -> SharedString {
         match self.mode {
+            MigrationWindowMode::Export { .. } if self.destination == Destination::Server => {
+                i18n_migration(cx, "copy_title")
+            }
             MigrationWindowMode::Export { .. } => i18n_migration(cx, "export_title"),
             MigrationWindowMode::Import { .. } => i18n_migration(cx, "import_title"),
         }
+    }
+
+    fn is_copy(&self) -> bool {
+        matches!(self.mode, MigrationWindowMode::Export { .. }) && self.destination == Destination::Server
+    }
+
+    fn target_db(&self, cx: &App) -> usize {
+        self.target_db_input.read(cx).value().trim().parse().unwrap_or(0)
+    }
+
+    /// The picked target is the source itself — a copy would be a no-op
+    /// at best and a self-overwrite at worst.
+    fn target_is_source(&self, cx: &App) -> bool {
+        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+            return false;
+        };
+        self.target_server_id.as_ref() == Some(server_id) && self.target_db(cx) == *db
+    }
+
+    /// "Destination: server / db" for a copy, once a target is picked.
+    fn destination_summary(&self, cx: &App) -> Option<SharedString> {
+        if !self.is_copy() {
+            return None;
+        }
+        let target_id = self.target_server_id.as_ref()?;
+        let name = get_server(target_id)
+            .map(|s| s.name)
+            .unwrap_or_else(|_| target_id.to_string());
+        Some(
+            i18n_migration(cx, "destination_summary")
+                .replace("{server}", &name)
+                .replace("{db}", &self.target_db(cx).to_string())
+                .into(),
+        )
+    }
+
+    /// Start the server-to-server copy of the filtered keys.
+    fn start_copy(&mut self, cx: &mut Context<Self>) {
+        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+            return;
+        };
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        if self.target_is_source(cx) {
+            return;
+        }
+        let keys = self.filtered_export_keys(cx);
+        if keys.is_empty() {
+            return;
+        }
+        // Cancel any in-flight preview so it doesn't fight the worker.
+        self.preview_cancel.store(true, Ordering::Release);
+        self.preview_running = false;
+        let job = MigrationJob::Copy {
+            source_id: server_id.clone(),
+            source_db: *db,
+            target_id,
+            target_db: self.target_db(cx),
+            keys,
+            conflict: self.conflict_mode,
+        };
+        self.state.update(cx, |s, cx| s.start(job, cx));
+    }
+
+    /// Dry run of a copy: `EXISTS` for the filtered keys on the target.
+    fn preview_copy(&mut self, cx: &mut Context<Self>) {
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        if self.preview_running || self.target_is_source(cx) {
+            return;
+        }
+        let keys: Vec<String> = self
+            .filtered_export_keys(cx)
+            .iter()
+            .map(|key| key.to_string())
+            .collect();
+        let target_id = target_id.to_string();
+        let target_db = self.target_db(cx);
+        self.preview_cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.preview_cancel.clone();
+        self.preview_running = true;
+        self.preview_error = None;
+        self.preview = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    preview_key_conflicts(&target_id, target_db, &keys, PREVIEW_SAMPLE_LIMIT, &cancel).await
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.preview_running = false;
+                match result {
+                    Ok(preview) => {
+                        view.preview = Some(preview);
+                        view.preview_error = None;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "copy conflict preview failed");
+                        view.preview = None;
+                        view.preview_error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_destination(&mut self, destination: Destination, cx: &mut Context<Self>) {
+        if self.destination == destination {
+            return;
+        }
+        self.destination = destination;
+        self.preview = None;
+        self.preview_error = None;
+        cx.notify();
+    }
+
+    fn select_target(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.target_server_id = Some(id);
+        self.preview = None;
+        self.preview_error = None;
+        cx.notify();
     }
 
     fn source_summary(&self, cx: &App) -> SharedString {
@@ -212,6 +406,9 @@ impl ZedisMigrationWindow {
 
     fn handle_pick_and_start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         match &self.mode {
+            MigrationWindowMode::Export { .. } if self.destination == Destination::Server => {
+                self.start_copy(cx);
+            }
             MigrationWindowMode::Export { .. } => {
                 let suggested = self.suggested_filename();
                 let directory = dirs_default_directory();
@@ -283,6 +480,10 @@ impl ZedisMigrationWindow {
     }
 
     fn handle_preview(&mut self, cx: &mut Context<Self>) {
+        if self.is_copy() {
+            self.preview_copy(cx);
+            return;
+        }
         let MigrationWindowMode::Import { server_id, db, .. } = &self.mode else {
             return;
         };
@@ -412,7 +613,10 @@ impl Render for ZedisMigrationWindow {
                 div()
                     .pt_1()
                     .child(Label::new(self.source_summary(cx)).text_sm().text_color(muted)),
-            );
+            )
+            .when_some(self.destination_summary(cx), |this, text| {
+                this.child(div().pt_1().child(Label::new(text).text_sm().text_color(muted)))
+            });
 
         let status_section = div()
             .px_6()
@@ -440,33 +644,60 @@ impl Render for ZedisMigrationWindow {
             MigrationWindowMode::Export { keys, .. } => keys.len(),
             MigrationWindowMode::Import { .. } => 0,
         };
+        let is_copy = self.is_copy();
+        let target_is_source = self.target_is_source(cx);
         let format_section = (!is_import).then(|| {
-            let labels = vec![
+            let format_labels = vec![
                 i18n_migration(cx, "format_binary").to_string(),
                 "JSON".to_string(),
                 "CSV".to_string(),
             ];
+            let destination_labels = vec![
+                i18n_migration(cx, "destination_file").to_string(),
+                i18n_migration(cx, "destination_server").to_string(),
+            ];
+            let destination_index = match self.destination {
+                Destination::File => 0,
+                Destination::Server => 1,
+            };
             v_flex()
                 .px_6()
                 .pt_3()
                 .gap_2()
-                .child(Label::new(i18n_migration(cx, "format_label")).text_sm())
+                .child(Label::new(i18n_migration(cx, "destination_label")).text_sm())
                 .child(
-                    Label::new(i18n_migration(cx, "format_hint"))
-                        .text_xs()
-                        .text_color(muted),
-                )
-                .child(
-                    RadioGroup::horizontal("migration-export-format")
-                        .mt(px(4.))
-                        .children(labels)
-                        .selected_index(Some(self.export_format.index()))
+                    RadioGroup::horizontal("migration-destination")
+                        .children(destination_labels)
+                        .selected_index(Some(destination_index))
                         .disabled(is_running)
                         .on_click(cx.listener(|this, index, _window, cx| {
-                            this.export_format = ExportFormat::from_index(*index);
-                            cx.notify();
+                            let destination = if *index == 1 {
+                                Destination::Server
+                            } else {
+                                Destination::File
+                            };
+                            this.set_destination(destination, cx);
                         })),
                 )
+                .when(!is_copy, |this| {
+                    this.child(Label::new(i18n_migration(cx, "format_label")).text_sm().mt_1())
+                        .child(
+                            Label::new(i18n_migration(cx, "format_hint"))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                        .child(
+                            RadioGroup::horizontal("migration-export-format")
+                                .mt(px(4.))
+                                .children(format_labels)
+                                .selected_index(Some(self.export_format.index()))
+                                .disabled(is_running)
+                                .on_click(cx.listener(|this, index, _window, cx| {
+                                    this.export_format = ExportFormat::from_index(*index);
+                                    cx.notify();
+                                })),
+                        )
+                })
                 // Optional prefix filter over the handed-in key list, with a
                 // live matched/total count so the effect is visible before
                 // the job starts.
@@ -486,6 +717,123 @@ impl Render for ZedisMigrationWindow {
                                 .text_xs()
                                 .text_color(muted),
                         ),
+                )
+        });
+        // Copy to a server: the target, the conflict policy and the dry run
+        // — the import section's shape, with the keys coming from the
+        // source instead of a file.
+        let copy_section = is_copy.then(|| {
+            let selected = self.target_server_id.clone();
+            let mut server_row = h_flex().gap_2().flex_wrap();
+            for (id, name) in &self.servers {
+                let is_selected = selected.as_ref() == Some(id);
+                let id_click = id.clone();
+                let button = Button::new(SharedString::from(format!("migration-target-{id}")))
+                    .small()
+                    .label(name.clone())
+                    .disabled(is_running);
+                let button = if is_selected {
+                    button.primary()
+                } else {
+                    button.outline()
+                };
+                server_row = server_row.child(
+                    button.on_click(cx.listener(move |this, _, _window, cx| this.select_target(id_click.clone(), cx))),
+                );
+            }
+            let conflict_labels = vec![
+                i18n_migration(cx, "conflict_skip").to_string(),
+                i18n_migration(cx, "conflict_overwrite").to_string(),
+                i18n_migration(cx, "conflict_abort").to_string(),
+            ];
+            let preview_summary: SharedString = if self.preview_running {
+                i18n_migration(cx, "preview_copy_running")
+            } else if let Some(err) = &self.preview_error {
+                format!("{}: {err}", i18n_migration(cx, "preview_failed")).into()
+            } else if let Some(p) = &self.preview {
+                if p.cancelled {
+                    i18n_migration(cx, "preview_cancelled")
+                } else {
+                    i18n_migration(cx, "preview_copy_summary")
+                        .replace("{total}", &p.total.to_string())
+                        .replace("{conflicts}", &p.conflicting.to_string())
+                        .replace("{free}", &p.free.to_string())
+                        .into()
+                }
+            } else {
+                i18n_migration(cx, "preview_copy_idle")
+            };
+            let sample_lines: Vec<SharedString> = self
+                .preview
+                .as_ref()
+                .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
+                .unwrap_or_default();
+            v_flex()
+                .px_6()
+                .pt_3()
+                .gap_2()
+                .child(Label::new(i18n_copy(cx, "target_server")).text_sm())
+                .child(server_row)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_copy(cx, "target_db")).text_sm())
+                        .child(
+                            Input::new(&self.target_db_input)
+                                .small()
+                                .w(px(100.))
+                                .disabled(is_running),
+                        )
+                        .when(target_is_source, |this| {
+                            this.child(
+                                Label::new(i18n_migration(cx, "same_target_note"))
+                                    .text_xs()
+                                    .text_color(theme.yellow),
+                            )
+                        }),
+                )
+                .child(Label::new(i18n_migration(cx, "conflict_label")).text_sm().mt_1())
+                .child(
+                    RadioGroup::horizontal("migration-copy-conflict")
+                        .children(conflict_labels)
+                        .selected_index(Some(self.conflict_mode.index()))
+                        .disabled(is_running)
+                        .on_click(cx.listener(|this, index, _window, cx| {
+                            this.set_conflict_mode(ConflictMode::from_index(*index), cx);
+                        })),
+                )
+                .child(Label::new(preview_summary).text_xs().text_color(muted))
+                .when(!sample_lines.is_empty(), |this| {
+                    this.child(
+                        Label::new(i18n_migration(cx, "preview_sample_label"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child({
+                        let long = sample_lines.len() > 5;
+                        let block = v_flex()
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded(px(4.))
+                            .px_2()
+                            .py_1()
+                            .children(
+                                sample_lines
+                                    .into_iter()
+                                    .map(|k| Label::new(k).text_xs().text_color(theme.danger_foreground)),
+                            );
+                        if long {
+                            block.h(px(100.)).overflow_y_scrollbar().into_any_element()
+                        } else {
+                            block.into_any_element()
+                        }
+                    })
+                })
+                .child(
+                    Label::new(i18n_copy(cx, "version_note"))
+                        .text_xs()
+                        .text_color(theme.yellow),
                 )
         });
         let conflict_section = is_import.then(|| {
@@ -625,7 +973,10 @@ impl Render for ZedisMigrationWindow {
                     .label(i18n_migration(cx, "close"))
                     .on_click(cx.listener(|this, _, window, cx| this.handle_close(window, cx))),
             );
-            if is_finished && let Some(_path) = &saved_path {
+            if is_finished
+                && !is_copy
+                && let Some(_path) = &saved_path
+            {
                 row = row.child(
                     Button::new("migration-reveal")
                         .outline()
@@ -674,6 +1025,28 @@ impl Render for ZedisMigrationWindow {
                             .label(i18n_migration(cx, "start_import"))
                             .on_click(cx.listener(|this, _, _, cx| this.handle_start_import(cx))),
                     );
+            } else if is_copy {
+                let can_copy = self.target_server_id.is_some() && !target_is_source && filtered_count > 0;
+                let label_key = if matches!(phase, MigrationPhase::Idle) {
+                    "start_copy"
+                } else {
+                    "start_copy_again"
+                };
+                row = row
+                    .child(
+                        Button::new("migration-preview")
+                            .outline()
+                            .disabled(!can_copy)
+                            .label(i18n_migration(cx, "preview_conflicts"))
+                            .on_click(cx.listener(|this, _, _, cx| this.handle_preview(cx))),
+                    )
+                    .child(
+                        Button::new("migration-start")
+                            .primary()
+                            .disabled(!can_copy)
+                            .label(i18n_migration(cx, label_key))
+                            .on_click(cx.listener(|this, _, _, cx| this.start_copy(cx))),
+                    );
             } else {
                 let (idle_key, again_key, disabled) = match &self.mode {
                     MigrationWindowMode::Export { .. } => {
@@ -711,6 +1084,7 @@ impl Render for ZedisMigrationWindow {
                     .child(header)
                     .child(status_section)
                     .children(format_section)
+                    .children(copy_section)
                     .children(conflict_section)
                     .child(log_section)
                     .child(footer),
@@ -754,6 +1128,33 @@ pub fn open_migration_export_window(
             db,
             keys,
             source,
+            preset: None,
+        },
+        title,
+        cx,
+    );
+}
+
+/// Opens the export window already set to copy `keys` to `preset`'s
+/// server / db — for a caller that knows the target, like the compare
+/// window handing over what the target lacks.
+pub fn open_migration_copy_window(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    keys: Vec<SharedString>,
+    preset: CopyPreset,
+    cx: &mut App,
+) {
+    let title = i18n_migration(cx, "copy_title");
+    open_migration_window(
+        MigrationWindowMode::Export {
+            server_id,
+            server_name,
+            db,
+            keys,
+            source: ExportSource::Selection,
+            preset: Some(preset),
         },
         title,
         cx,

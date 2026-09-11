@@ -20,6 +20,7 @@ mod change_log_dialog;
 mod client_dialogs;
 mod clients_manager;
 mod command_palette;
+mod compare_window;
 mod config_doc;
 mod config_editor;
 mod connection_diagnostics;
@@ -129,11 +130,14 @@ pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives
 // without each one re-implementing axis / tick rendering.
+pub use compare_window::open_compare_window;
 pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
 pub(crate) use migration_window::dirs_default_directory;
-pub use migration_window::{ExportSource, open_migration_export_window, open_migration_import_window};
+pub use migration_window::{
+    CopyPreset, ExportSource, open_migration_copy_window, open_migration_export_window, open_migration_import_window,
+};
 pub use monitor::ZedisMonitor;
 pub use multi_search::ZedisMultiSearch;
 pub use persistence::ZedisPersistence;

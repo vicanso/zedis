@@ -33,8 +33,8 @@ use crate::states::{
 };
 use crate::views::{
     ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
-    ZedisSidebar, ZedisTitleBar, confirm_dangerous_command, open_features_dialog, open_migration_export_window,
-    open_migration_import_window, open_settings_window, open_trash_dialog,
+    ZedisSidebar, ZedisTitleBar, confirm_dangerous_command, open_compare_window, open_features_dialog,
+    open_migration_export_window, open_migration_import_window, open_settings_window, open_trash_dialog,
 };
 use crate::window_setup::*;
 use gpui::{Action, Bounds, Entity, MouseButton, Pixels, Point, SharedString, Task, Window, div, prelude::*};
@@ -1318,6 +1318,19 @@ impl Render for Zedis {
                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                             store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
                         });
+                        return;
+                    }
+                    // Compare a prefix of the active server / db with another
+                    // server / db, in its own window.
+                    ServerToolsAction::CompareKeys => {
+                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                        else {
+                            return;
+                        };
+                        let server_name: gpui::SharedString = get_server(&server_id)
+                            .map(|s| s.name.into())
+                            .unwrap_or_else(|_| server_id.clone().into());
+                        open_compare_window(server_id.into(), server_name, db, cx);
                         return;
                     }
                     // Export every key loaded in the active tab's tree (a

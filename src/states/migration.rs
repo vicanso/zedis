@@ -139,6 +139,16 @@ pub enum MigrationJob {
         input_path: PathBuf,
         conflict: ConflictMode,
     },
+    /// Straight from one server / db to another: `DUMP` on the source,
+    /// `RESTORE` on the target, no file in between.
+    Copy {
+        source_id: SharedString,
+        source_db: usize,
+        target_id: SharedString,
+        target_db: usize,
+        keys: Vec<SharedString>,
+        conflict: ConflictMode,
+    },
 }
 
 #[derive(Default)]
@@ -210,6 +220,24 @@ impl MigrationState {
                 conflict,
             } => {
                 run_import(handle, cx, server_id, db, input_path, conflict, cancel).await;
+            }
+            MigrationJob::Copy {
+                source_id,
+                source_db,
+                target_id,
+                target_db,
+                keys,
+                conflict,
+            } => {
+                let spec = CopySpec {
+                    source_id,
+                    source_db,
+                    target_id,
+                    target_db,
+                    keys,
+                    conflict,
+                };
+                run_copy(handle, cx, spec, cancel).await;
             }
         });
         self.worker = Some(worker);
@@ -722,6 +750,107 @@ async fn import_readable_worker(
             })
             .map_err(|e| Error::Invalid { message: e.to_string() })?;
     }
+    Ok(())
+}
+
+/// Copy parameters, grouped like [`ExportSpec`].
+struct CopySpec {
+    source_id: SharedString,
+    source_db: usize,
+    target_id: SharedString,
+    target_db: usize,
+    keys: Vec<SharedString>,
+    conflict: ConflictMode,
+}
+
+async fn run_copy(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    spec: CopySpec,
+    cancel: Arc<AtomicBool>,
+) {
+    match copy_worker(handle.clone(), cx, spec, cancel.clone()).await {
+        Ok(()) => {
+            let phase = if cancel.load(Ordering::Acquire) {
+                MigrationPhase::Cancelled
+            } else {
+                MigrationPhase::Finished
+            };
+            let _ = handle.update(cx, |s, cx| s.set_phase(phase, cx));
+        }
+        Err(e) => {
+            error!(error = %e, "copy job failed");
+            let _ = handle.update(cx, |s, cx| {
+                s.set_phase(MigrationPhase::Failed(e.to_string().into()), cx)
+            });
+        }
+    }
+}
+
+/// Server-to-server copy: `DUMP` a chunk on the source and `RESTORE` it on
+/// the target, straight through. Both ends are Zedis's own connections, so
+/// a tunnel, TLS or a password on either side is no different from any
+/// other command — nothing asks the source to reach the target itself the
+/// way `MIGRATE` would. TTLs travel with the dump.
+async fn copy_worker(
+    handle: gpui::WeakEntity<MigrationState>,
+    cx: &mut gpui::AsyncApp,
+    spec: CopySpec,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let CopySpec {
+        source_id,
+        source_db,
+        target_id,
+        target_db,
+        keys,
+        conflict,
+    } = spec;
+    let total = keys.len() as u64;
+    let _ = handle.update(cx, |s, cx| {
+        s.progress.keys_total = total;
+        cx.notify();
+    });
+    let source = get_connection_manager()
+        .get_client(source_id.as_str(), source_db)
+        .await?;
+    let target = get_connection_manager()
+        .get_client(target_id.as_str(), target_db)
+        .await?;
+    let mut src = source.connection();
+    let mut dst = target.connection();
+
+    for chunk in keys.chunks(DUMP_BATCH_SIZE) {
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+        let mut entries = dump_keys_chunk(&mut src, &chunk).await?;
+        // Keys gone from the source since they were listed.
+        let dumped: ahash::AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
+        let missing: Vec<LogLine> = chunk
+            .iter()
+            .filter(|key| !dumped.contains(key.as_bytes()))
+            .map(|key| LogLine {
+                key: key.clone().into(),
+                bytes: 0,
+                status: LogStatus::Skipped,
+                message: Some("missing".into()),
+            })
+            .collect();
+        flush_restore_batch(&handle, cx, &mut dst, &mut entries, conflict).await?;
+        if !missing.is_empty() {
+            let count = missing.len() as u64;
+            handle
+                .update(cx, |s, cx| {
+                    s.progress.keys_skipped += count;
+                    cx.emit(MigrationEvent::Progress);
+                    s.extend_log(missing, cx);
+                })
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+        }
+    }
+    info!(source = %source_id, source_db, target = %target_id, target_db, total, "copy finished");
     Ok(())
 }
 

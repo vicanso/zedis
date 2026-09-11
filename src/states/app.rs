@@ -306,6 +306,9 @@ pub enum ServerToolsAction {
     /// Opens the export window for every key currently loaded in the
     /// active connection's tree — the selection-free Tools-menu entry.
     ExportKeys,
+    /// Compare the keys under a prefix with another server / db, in a
+    /// dedicated window.
+    CompareKeys,
     /// Switches the editor area into Pub/Sub (channel) mode — same as the
     /// key tree's "Pubsub Mode" menu item, surfaced in the Tools menu.
     PubsubMode,

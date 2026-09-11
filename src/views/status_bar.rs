@@ -905,6 +905,13 @@ impl ZedisStatusBar {
             Box::new(ServerToolsAction::ExportKeys),
             move |_window, cx| Label::new(i18n_status_bar(cx, "export_keys_menu")),
         );
+        // Compare the keys under a prefix with another server / db — reads
+        // both sides, writes nothing.
+        menu = menu.menu_element_with_icon(
+            Icon::new(CustomIconName::GitCompareArrows),
+            Box::new(ServerToolsAction::CompareKeys),
+            move |_window, cx| Label::new(i18n_status_bar(cx, "compare_keys_menu")),
+        );
         // ACL (Redis 6.0+). Version-gated; suffix points at the required
         // Redis version when unavailable.
         let (acl_label, acl_off) = gated(

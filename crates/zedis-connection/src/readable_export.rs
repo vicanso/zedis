@@ -54,7 +54,7 @@ impl Default for ReadLimits {
 }
 
 /// A fully-fetched value in display form.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReadableValue {
     Text(String),
     List(Vec<String>),
@@ -69,7 +69,7 @@ pub enum ReadableValue {
 
 /// One exported key. `value` is `None` for types this exporter cannot
 /// render (module types) — the entry still records key/type/TTL.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReadableEntry {
     pub key: String,
     pub key_type: String,
