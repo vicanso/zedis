@@ -915,7 +915,7 @@ impl ZedisPersistence {
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
         ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body.to_string()))
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_persistence(cx, "bgsave_button")))
             .on_ok(move |_, window, cx| {
                 server_state.update(cx, |state, cx| state.bgsave(cx));
                 window.close_dialog(cx);
@@ -930,7 +930,7 @@ impl ZedisPersistence {
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
         ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body.to_string()))
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_persistence(cx, "bgrewriteaof_button")))
             .on_ok(move |_, window, cx| {
                 server_state.update(cx, |state, cx| state.bgrewriteaof(cx));
                 window.close_dialog(cx);
