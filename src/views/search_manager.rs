@@ -30,8 +30,9 @@ use crate::{
     assets::CustomIconName,
     connection::{
         AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
-        ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex,
-        ft_explain, ft_info, ft_list, ft_profile, ft_search, get_connection_manager,
+        ReducerFn, ReducerSpec, SearchOptions, SearchResult, SpellingSuggestion, escape_tag_value, ft_aggregate,
+        ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search, ft_spellcheck,
+        ft_tagvals, get_connection_manager,
     },
     error::Error,
     helpers::get_mono_font_family,
@@ -43,15 +44,17 @@ use crate::{
 };
 use gpui::{Action, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     scroll::ScrollableElement,
     spinner::Spinner,
+    tooltip::Tooltip,
     v_flex,
 };
+use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -75,6 +78,42 @@ enum SearchMode {
 enum LastResult {
     Search(SearchResult),
     Aggregate(AggregateResult),
+}
+
+/// The values of one TAG field, opened from its schema row.
+struct TagValues {
+    field: String,
+    values: Vec<String>,
+    loading: bool,
+}
+
+/// `suggestion` in place of every whole-word `term` in `query`, matched
+/// without case; everything else stays as typed.
+fn replace_term(query: &str, term: &str, suggestion: &str) -> String {
+    let needle = term.to_lowercase();
+    let mut out = String::with_capacity(query.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        if word.to_lowercase() == needle {
+            out.push_str(suggestion);
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in query.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
 /// Content of the inline plan panel above the results — FT.EXPLAIN's
@@ -152,6 +191,10 @@ pub struct ZedisSearchManager {
     /// Schema + stats for the currently selected index. `None` while loading
     /// or when no index is selected.
     index_info: Option<IndexInfo>,
+    /// FT.TAGVALS of one field, shown under the schema rows.
+    tag_values: Option<TagValues>,
+    /// FT.SPELLCHECK's answer for the last query that matched nothing.
+    spelling: Vec<SpellingSuggestion>,
     /// `true` if `FT._LIST` came back with the "unknown command" sentinel —
     /// the server doesn't have the RediSearch module loaded.
     module_unsupported: bool,
@@ -209,6 +252,8 @@ pub struct ZedisSearchManager {
     _create_task: Option<Task<()>>,
     _alter_task: Option<Task<()>>,
     _drop_task: Option<Task<()>>,
+    _tagvals_task: Option<Task<()>>,
+    _spell_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -259,6 +304,8 @@ impl ZedisSearchManager {
             indexes: Vec::new(),
             selected_index: None,
             index_info: None,
+            tag_values: None,
+            spelling: Vec::new(),
             module_unsupported: false,
             mode: SearchMode::Search,
             query_input,
@@ -295,6 +342,8 @@ impl ZedisSearchManager {
             _create_task: None,
             _alter_task: None,
             _drop_task: None,
+            _tagvals_task: None,
+            _spell_task: None,
             _subscriptions: subscriptions,
         };
         this.refresh_indexes(cx);
@@ -350,6 +399,8 @@ impl ZedisSearchManager {
         self.index_info = None;
         self.last_result = None;
         self.plan = None;
+        self.tag_values = None;
+        self.spelling.clear();
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         if server_id.is_empty() {
@@ -765,6 +816,7 @@ impl ZedisSearchManager {
 
         self.running_query = true;
         self.error = None;
+        self.spelling.clear();
 
         match mode {
             SearchMode::Search => {
@@ -799,6 +851,7 @@ impl ZedisSearchManager {
                     params,
                 };
                 let index_for_task = index.clone();
+                let query_for_check = query.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
                     let task = cx.background_spawn(async move {
                         let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
@@ -809,8 +862,14 @@ impl ZedisSearchManager {
                         this.running_query = false;
                         match result {
                             Ok(r) => {
+                                // Nothing matched a real query: ask the
+                                // index what the user may have meant.
+                                let nothing = r.total == 0 && query_for_check != "*";
                                 this.last_result = Some(LastResult::Search(r));
                                 this.error = None;
+                                if nothing {
+                                    this.spellcheck(index.clone(), query_for_check.clone(), dialect, cx);
+                                }
                             }
                             Err(e) => {
                                 this.error = Some(e.to_string().into());
@@ -935,6 +994,111 @@ impl ZedisSearchManager {
 
     fn close_plan(&mut self, cx: &mut gpui::Context<Self>) {
         self.plan = None;
+        cx.notify();
+    }
+
+    /// FT.SPELLCHECK for a query that matched nothing: the closest indexed
+    /// terms for each term the index does not know. Best effort — a
+    /// failure (an older module, a dialect it refuses) leaves the empty
+    /// state as it is.
+    fn spellcheck(&mut self, index: SharedString, query: String, dialect: Option<u32>, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        self._spell_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                ft_spellcheck(&mut conn, index.as_ref(), &query, dialect).await
+            });
+            let result: Result<Vec<SpellingSuggestion>> = task.await.map_err(Into::into);
+            let _ = handle.update(cx, |this, cx| {
+                match result {
+                    Ok(suggestions) => this.spelling = suggestions,
+                    Err(e) => info!(error = %e, "FT.SPELLCHECK skipped"),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Put `suggestion` where `term` is in the query and run again.
+    fn apply_spelling(&mut self, term: &str, suggestion: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let current = self.query_input.read(cx).value().to_string();
+        let next = replace_term(&current, term, suggestion);
+        self.query_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(next), window, cx);
+        });
+        self.run(window, cx);
+    }
+
+    /// FT.TAGVALS for `field`, shown under the schema rows; the same
+    /// field's button a second time closes it.
+    fn toggle_tag_values(&mut self, field: String, cx: &mut gpui::Context<Self>) {
+        if self.tag_values.as_ref().is_some_and(|open| open.field == field) {
+            self.tag_values = None;
+            self._tagvals_task = None;
+            cx.notify();
+            return;
+        }
+        let Some(index) = self.selected_index.clone() else {
+            return;
+        };
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        self.tag_values = Some(TagValues {
+            field: field.clone(),
+            values: Vec::new(),
+            loading: true,
+        });
+        self._tagvals_task = Some(cx.spawn(async move |handle, cx| {
+            let field_for_task = field.clone();
+            let task = cx.background_spawn(async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                ft_tagvals(&mut conn, index.as_ref(), &field_for_task).await
+            });
+            let result: Result<Vec<String>> = task.await.map_err(Into::into);
+            let _ = handle.update(cx, |this, cx| {
+                // The user may have closed it or opened another field.
+                if !this.tag_values.as_ref().is_some_and(|open| open.field == field) {
+                    return;
+                }
+                match result {
+                    Ok(mut values) => {
+                        values.sort();
+                        this.tag_values = Some(TagValues {
+                            field: field.clone(),
+                            values,
+                            loading: false,
+                        });
+                    }
+                    Err(e) => {
+                        this.tag_values = None;
+                        this.error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// `@field:{value}` appended to the query, the value escaped for the
+    /// query syntax.
+    fn insert_tag_value(&mut self, field: &str, value: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let snippet = format!("@{field}:{{{}}}", escape_tag_value(value));
+        self.query_input.update(cx, |state, cx| {
+            let cur = state.value().to_string();
+            let next = if cur.trim().is_empty() {
+                snippet
+            } else {
+                format!("{} {}", cur.trim_end(), snippet)
+            };
+            state.set_value(SharedString::from(next), window, cx);
+            state.focus(window, cx);
+        });
+        self.sync_params(window, cx);
         cx.notify();
     }
 
@@ -1226,5 +1390,22 @@ impl gpui::Render for ZedisSearchManager {
             .child(header)
             .child(div().flex_1().w_full().min_h_0().overflow_hidden().child(body))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod spelling_tests {
+    use super::replace_term;
+
+    #[test]
+    fn a_suggestion_replaces_the_term_as_a_whole_word_in_any_case() {
+        assert_eq!(replace_term("@title:helo world", "helo", "hello"), "@title:hello world");
+        assert_eq!(replace_term("Helo helo", "helo", "hello"), "hello hello");
+        assert_eq!(
+            replace_term("helloworld", "hello", "x"),
+            "helloworld",
+            "not inside a word"
+        );
+        assert_eq!(replace_term("@tags:{helo}", "helo", "hello"), "@tags:{hello}");
     }
 }

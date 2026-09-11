@@ -167,6 +167,34 @@ impl ZedisSearchManager {
             let num_docs = info.num_docs;
             let is_indexing = info.indexing;
             let failures = info.indexing_failures;
+            // What the index costs, from FT.INFO's `*_mb` fields: the total
+            // in the header, the parts in its tooltip.
+            let index_size = info.index_bytes().map(|total| {
+                let parts: Vec<String> = [
+                    ("size_inverted", info.inverted_index_bytes),
+                    ("size_doc_table", info.doc_table_bytes),
+                    ("size_sortable", info.sortable_values_bytes),
+                    ("size_key_table", info.key_table_bytes),
+                    ("size_vectors", info.vector_index_bytes),
+                    ("size_offsets", info.offset_vectors_bytes),
+                ]
+                .into_iter()
+                .filter_map(|(key, bytes)| {
+                    bytes.map(|bytes| format!("{}: {}", i18n_search(cx, key), format_size(bytes, DECIMAL)))
+                })
+                .collect();
+                (
+                    SharedString::from(format_size(total, DECIMAL)),
+                    SharedString::from(parts.join(" · ")),
+                )
+            });
+            // While backfilling, FT.INFO also says how far along it is.
+            let indexing_label: SharedString = match info.percent_indexed {
+                Some(share) if is_indexing && share < 1. => {
+                    format!("{} {:.0}%", i18n_search(cx, "indexing_chip"), share * 100.).into()
+                }
+                _ => i18n_search(cx, "indexing_chip"),
+            };
             let theme_yellow = cx.theme().yellow;
             let theme_red = cx.theme().red;
             let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(info.fields.len());
@@ -209,14 +237,23 @@ impl ZedisSearchManager {
                                 .text_xs()
                                 .text_color(muted),
                         )
+                        .when_some(index_size, |this, (total, breakdown)| {
+                            this.child(
+                                div()
+                                    .id("search-index-size")
+                                    .tooltip(move |window, cx| Tooltip::new(breakdown.clone()).build(window, cx))
+                                    .child(
+                                        Label::new(format!("{}: {total}", i18n_search(cx, "size_label")))
+                                            .text_xs()
+                                            .text_color(muted),
+                                    ),
+                            )
+                        })
                         // While RediSearch is backfilling, num_docs lags
                         // reality — surface that state so the user
                         // doesn't think the index is broken.
                         .when(is_indexing, |this| {
-                            this.child(
-                                self.chip(i18n_search(cx, "indexing_chip"), theme_yellow, cx)
-                                    .into_any_element(),
-                            )
+                            this.child(self.chip(indexing_label.clone(), theme_yellow, cx).into_any_element())
                         })
                         // hash_indexing_failures is the direct signal
                         // for "keys matched the prefix but were the
@@ -268,6 +305,9 @@ impl ZedisSearchManager {
                         ),
                 )
                 .child(v_flex().gap_1().children(rows))
+                .when_some(self.tag_values.as_ref(), |this, open| {
+                    this.child(self.render_tag_values(open, cx))
+                })
                 .into_any_element()
         } else if self.loading_info {
             div()
@@ -398,6 +438,98 @@ impl ZedisSearchManager {
             )
             .child(Label::new(field.name.clone()).text_sm())
             .children(flag_chips)
+            // A TAG field's values are a finite list worth seeing: the
+            // button opens them under the schema (FT.TAGVALS).
+            .when(matches!(field.kind(), FieldKind::Tag), |this| {
+                let name = field.name.clone();
+                let open = self.tag_values.as_ref().is_some_and(|open| open.field == name);
+                this.child(div().flex_1()).child(
+                    Button::new(SharedString::from(format!("schema-tagvals-{}", field.name)))
+                        .ghost()
+                        .xsmall()
+                        .icon(CustomIconName::List)
+                        .selected(open)
+                        .tooltip(i18n_search(cx, "tag_values_tooltip"))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            // The row itself inserts `@field:{}`; this
+                            // button is its own action.
+                            cx.stop_propagation();
+                            this.toggle_tag_values(name.clone(), cx);
+                        })),
+                )
+            })
+    }
+
+    /// The values of one TAG field under the schema rows, each a chip that
+    /// puts `@field:{value}` into the query. FT.TAGVALS is not paginated,
+    /// so a wide field is clipped and said to be.
+    pub(super) fn render_tag_values(&self, open: &TagValues, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        const SHOWN: usize = 200;
+        let muted = cx.theme().muted_foreground;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let field = open.field.clone();
+        let title: SharedString = t!("search.tag_values_label", field = field.as_str(), locale = &locale)
+            .to_string()
+            .into();
+        let mut chips: Vec<gpui::AnyElement> = Vec::with_capacity(open.values.len().min(SHOWN));
+        for (i, value) in open.values.iter().take(SHOWN).enumerate() {
+            let field = field.clone();
+            let value = value.clone();
+            chips.push(
+                Button::new(SharedString::from(format!("tagval-{i}")))
+                    .outline()
+                    .xsmall()
+                    .label(value.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.insert_tag_value(&field, &value, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let omitted = open.values.len().saturating_sub(SHOWN);
+        let omitted_label: SharedString = t!("search.tag_values_more", count = omitted, locale = &locale)
+            .to_string()
+            .into();
+        v_flex()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .mt_1()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(title).text_xs().text_color(muted))
+                    .when(open.loading, |this| {
+                        this.child(Spinner::new().with_size(px(12.)).color(muted))
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("search-tagvals-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.tag_values = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(!open.loading && open.values.is_empty(), |this| {
+                this.child(
+                    Label::new(i18n_search(cx, "tag_values_empty"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+            })
+            .when(!chips.is_empty(), |this| {
+                this.child(h_flex().gap_1().flex_wrap().children(chips))
+            })
+            .when(omitted > 0, |this| {
+                this.child(Label::new(omitted_label).text_xs().text_color(muted))
+            })
     }
 
     /// Generic colored "pill" used for type chips and key-type chips.
@@ -1156,6 +1288,40 @@ impl ZedisSearchManager {
                     .child(Label::new(i18n_search(cx, "no_results")).text_color(muted))
                     .into_any_element(),
             );
+            // FT.SPELLCHECK's answer for the query: the closest terms the
+            // index knows, best first, a click away from re-running.
+            if !self.spelling.is_empty() {
+                let mut chips: Vec<gpui::AnyElement> = Vec::new();
+                for (ti, entry) in self.spelling.iter().enumerate() {
+                    for (si, (suggestion, _)) in entry.suggestions.iter().take(3).enumerate() {
+                        let term = entry.term.clone();
+                        let suggestion = suggestion.clone();
+                        let tooltip: SharedString = format!("{term} → {suggestion}").into();
+                        chips.push(
+                            Button::new(SharedString::from(format!("spell-{ti}-{si}")))
+                                .outline()
+                                .xsmall()
+                                .label(suggestion.clone())
+                                .tooltip(tooltip)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.apply_spelling(&term, &suggestion, window, cx);
+                                }))
+                                .into_any_element(),
+                        );
+                    }
+                }
+                rows.push(
+                    h_flex()
+                        .px_4()
+                        .pb_4()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .child(Label::new(i18n_search(cx, "did_you_mean")).text_xs().text_color(muted))
+                        .children(chips)
+                        .into_any_element(),
+                );
+            }
         }
         for hit in &r.hits {
             let id = hit.doc_id.clone();

@@ -7,6 +7,8 @@ extend-ignore-re = [
 [default.extend-words]
 # Redis notify-keyspace-events event-class string (K + E + A), not "ACHE".
 AKE = "AKE"
+# The misspelling the FT.SPELLCHECK tests feed the index on purpose.
+helo = "helo"
 
 [files]
 extend-exclude = ["*.md", "*.toml", "assets/**"]

@@ -35,13 +35,13 @@ use zedis_connection::{
     ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand, ServerFlavor, SlotStatMetric,
     TsAlter, TsMRange, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
     acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations, cluster_migrate_slots, csv_header, dump_keys_chunk,
-    entry_to_csv, entry_to_json, ft_explain, ft_search, geo_add, geo_dist, get_connection_manager, get_server,
-    get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
-    parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance, probe_server_features, read_readable_chunk,
-    remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op, run_script, save_servers,
-    sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set,
-    sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
-    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
+    entry_to_csv, entry_to_json, ft_explain, ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist,
+    get_connection_manager, get_server, get_server_heat_probe, get_servers, kill_filter_commands, kill_running,
+    open_single_connection, parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance,
+    probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op,
+    run_script, save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor,
+    sentinel_remove, sentinel_set, sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule,
+    ts_delete_rule, ts_mrange, unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -4246,6 +4246,95 @@ fn stack_json_path_ops_run_and_report_their_result() {
             serde_json::json!({"n": 7.5, "ok": true, "s": "abcd", "arr": ["x"], "o": {}})
         );
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// What the search panel shows around a query: the index's size from
+/// FT.INFO, a TAG field's values, and the spelling suggestions offered
+/// when a query matches nothing.
+#[test]
+#[ignore]
+fn stack_search_index_size_tag_values_and_spelling() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack-tagvals", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let index = unique("idx");
+        let prefix = unique("doc");
+        cmd("FT.CREATE")
+            .arg(&index)
+            .arg("ON")
+            .arg("HASH")
+            .arg("PREFIX")
+            .arg(1)
+            .arg(format!("{prefix}:"))
+            .arg("SCHEMA")
+            .arg("title")
+            .arg("TEXT")
+            .arg("tags")
+            .arg("TAG")
+            .exec_async(&mut c)
+            .await
+            .expect("ft.create");
+        for (name, title, tags) in [("a", "hello world", "red,green"), ("b", "hello again", "blue")] {
+            cmd("HSET")
+                .arg(format!("{prefix}:{name}"))
+                .arg("title")
+                .arg(title)
+                .arg("tags")
+                .arg(tags)
+                .exec_async(&mut c)
+                .await
+                .expect("hset");
+        }
+
+        let info = ft_info(&mut c, &index).await.expect("ft.info");
+        assert_eq!(info.num_docs, 2);
+        assert!(
+            info.index_bytes().is_some_and(|bytes| bytes > 0),
+            "FT.INFO reports the index's size: {info:?}"
+        );
+        assert!(
+            info.inverted_index_bytes.is_some(),
+            "the inverted index is one of the parts"
+        );
+
+        let mut values = ft_tagvals(&mut c, &index, "tags").await.expect("ft.tagvals");
+        values.sort();
+        assert_eq!(
+            values,
+            vec!["blue", "green", "red"],
+            "TAG values, lowercased by the index"
+        );
+
+        let suggestions = ft_spellcheck(&mut c, &index, "helo", None)
+            .await
+            .expect("ft.spellcheck");
+        let for_term = suggestions
+            .iter()
+            .find(|entry| entry.term == "helo")
+            .expect("a suggestion for helo");
+        assert!(
+            for_term.suggestions.iter().any(|(word, _)| word == "hello"),
+            "the indexed term is proposed: {suggestions:?}"
+        );
+        assert!(
+            ft_spellcheck(&mut c, &index, "hello", None)
+                .await
+                .expect("ft.spellcheck")
+                .is_empty(),
+            "a known term gets no suggestion"
+        );
+
+        cmd("FT.DROPINDEX")
+            .arg(&index)
+            .arg("DD")
+            .exec_async(&mut c)
+            .await
+            .expect("ft.dropindex");
     });
 }
 

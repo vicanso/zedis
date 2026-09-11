@@ -131,8 +131,9 @@ pub use manager::{
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
-    ReducerFn, ReducerSpec, SearchOptions, SearchResult, ft_aggregate, ft_alter_add, ft_create, ft_dropindex,
-    ft_explain, ft_info, ft_list, ft_profile, ft_search,
+    ReducerFn, ReducerSpec, SearchOptions, SearchResult, SpellingSuggestion, escape_tag_value, ft_aggregate,
+    ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search, ft_spellcheck,
+    ft_tagvals,
 };
 // The capability matrix is pure logic and lives in `zedis-core`; re-exported
 // here so call sites keep using `crate::connection::Capability` unchanged.

@@ -102,6 +102,45 @@ pub struct IndexInfo {
     /// Key prefixes the index watches (empty means all keys).
     pub prefixes: Vec<String>,
     pub language: Option<String>,
+    /// Memory the index parts take, from FT.INFO's `*_mb` fields (MiB,
+    /// converted to bytes). `None` where the module does not report one.
+    pub inverted_index_bytes: Option<u64>,
+    pub vector_index_bytes: Option<u64>,
+    pub doc_table_bytes: Option<u64>,
+    pub sortable_values_bytes: Option<u64>,
+    pub key_table_bytes: Option<u64>,
+    pub offset_vectors_bytes: Option<u64>,
+    /// Share of the matching keys indexed so far, `0.0..=1.0`.
+    pub percent_indexed: Option<f64>,
+    pub bytes_per_record_avg: Option<f64>,
+}
+
+impl IndexInfo {
+    /// Everything FT.INFO reports a size for, added up; `None` when it
+    /// reports none.
+    pub fn index_bytes(&self) -> Option<u64> {
+        let parts = [
+            self.inverted_index_bytes,
+            self.vector_index_bytes,
+            self.doc_table_bytes,
+            self.sortable_values_bytes,
+            self.key_table_bytes,
+            self.offset_vectors_bytes,
+        ];
+        if parts.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(parts.into_iter().flatten().sum())
+    }
+}
+
+/// One misspelled query term and what `FT.SPELLCHECK` proposes for it,
+/// best score first.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpellingSuggestion {
+    pub term: String,
+    /// `(suggestion, score)`.
+    pub suggestions: Vec<(String, f64)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -595,6 +634,134 @@ fn parse_int(v: &Value) -> Option<i64> {
     }
 }
 
+fn parse_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Int(n) => Some(*n as f64),
+        Value::Double(n) => Some(*n),
+        _ => parse_simple_string(v).and_then(|s| s.parse().ok()),
+    }
+}
+
+/// FT.INFO's `*_mb` sizes are mebibytes (`bytes / 1024²`), as a decimal
+/// string on RESP2 and a double on RESP3.
+fn mib_to_bytes(v: &Value) -> Option<u64> {
+    parse_f64(v)
+        .filter(|mib| mib.is_finite() && *mib >= 0.)
+        .map(|mib| (mib * 1_048_576.).round() as u64)
+}
+
+/// `FT.TAGVALS index field` — every distinct value of a TAG field. Not
+/// paginated by the server, so the caller decides how many to show.
+pub async fn ft_tagvals(conn: &mut RedisAsyncConn, index: &str, field: &str) -> Result<Vec<String>> {
+    let value: Value = cmd("FT.TAGVALS").arg(index).arg(field).query_async(conn).await?;
+    Ok(match value {
+        Value::Array(items) | Value::Set(items) => items.iter().filter_map(parse_simple_string).collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// A TAG value as it is written inside `@field:{…}`: the query syntax
+/// reads punctuation and spaces as separators, so each one is escaped.
+pub fn escape_tag_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 4);
+    for c in value.chars() {
+        if c.is_whitespace() || r#",.<>{}[]"':;!@#$%^&*()-+=~/\|"#.contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `FT.SPELLCHECK index query [DIALECT n]` — for each term the index
+/// does not know, the closest terms it does, best first.
+pub async fn ft_spellcheck(
+    conn: &mut RedisAsyncConn,
+    index: &str,
+    query: &str,
+    dialect: Option<u32>,
+) -> Result<Vec<SpellingSuggestion>> {
+    let mut c = cmd("FT.SPELLCHECK");
+    c.arg(index).arg(query);
+    push_dialect(&mut c, dialect);
+    let value: Value = c.query_async(conn).await?;
+    Ok(parse_spellcheck(&value))
+}
+
+/// RESP2 answers `[["TERM", term, [[score, suggestion], …]], …]`; RESP3
+/// `{"results": {term: [{suggestion: score}, …]}}`. Terms the server
+/// has nothing for are dropped.
+fn parse_spellcheck(v: &Value) -> Vec<SpellingSuggestion> {
+    let mut out = Vec::new();
+    match v {
+        Value::Array(items) => {
+            for item in items {
+                let Value::Array(parts) = item else { continue };
+                let [tag, term, suggestions] = parts.as_slice() else {
+                    continue;
+                };
+                if !parse_simple_string(tag).is_some_and(|tag| tag.eq_ignore_ascii_case("TERM")) {
+                    continue;
+                }
+                let Some(term) = parse_simple_string(term) else {
+                    continue;
+                };
+                out.push(SpellingSuggestion {
+                    term,
+                    suggestions: parse_suggestions(suggestions),
+                });
+            }
+        }
+        Value::Map(entries) => {
+            for (key, val) in entries {
+                if !parse_simple_string(key).is_some_and(|key| key.eq_ignore_ascii_case("results")) {
+                    continue;
+                }
+                if let Value::Map(terms) = val {
+                    for (term, suggestions) in terms {
+                        let Some(term) = parse_simple_string(term) else {
+                            continue;
+                        };
+                        out.push(SpellingSuggestion {
+                            term,
+                            suggestions: parse_suggestions(suggestions),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out.retain(|entry| !entry.suggestions.is_empty());
+    for entry in &mut out {
+        entry
+            .suggestions
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    out
+}
+
+fn parse_suggestions(v: &Value) -> Vec<(String, f64)> {
+    let Value::Array(items) = v else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| match item {
+            // RESP2: `[score, suggestion]`.
+            Value::Array(pair) => match pair.as_slice() {
+                [score, suggestion] => Some((parse_simple_string(suggestion)?, parse_f64(score).unwrap_or(0.))),
+                _ => None,
+            },
+            // RESP3: `{suggestion: score}`.
+            Value::Map(entry) => entry.first().and_then(|(suggestion, score)| {
+                Some((parse_simple_string(suggestion)?, parse_f64(score).unwrap_or(0.)))
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
     // Attribute arrays mix `key value` pairs with bare flag tokens
     // (`SORTABLE`, `NOINDEX`, `NOSTEM`), so a plain pair iterator can't
@@ -743,6 +910,14 @@ fn parse_info(value: &Value) -> Option<IndexInfo> {
             "hash_indexing_failures" | "indexing_failures" => {
                 info.indexing_failures = parse_int(&val).unwrap_or_default().max(0) as u64;
             }
+            "inverted_sz_mb" => info.inverted_index_bytes = mib_to_bytes(&val),
+            "vector_index_sz_mb" => info.vector_index_bytes = mib_to_bytes(&val),
+            "doc_table_size_mb" => info.doc_table_bytes = mib_to_bytes(&val),
+            "sortable_values_size_mb" => info.sortable_values_bytes = mib_to_bytes(&val),
+            "key_table_size_mb" => info.key_table_bytes = mib_to_bytes(&val),
+            "offset_vectors_sz_mb" => info.offset_vectors_bytes = mib_to_bytes(&val),
+            "percent_indexed" => info.percent_indexed = parse_f64(&val),
+            "bytes_per_record_avg" => info.bytes_per_record_avg = parse_f64(&val),
             "attributes" | "fields" => {
                 if let Value::Array(items) = &val {
                     info.fields = items.iter().filter_map(parse_field_definition).collect();
@@ -1027,6 +1202,68 @@ mod tests {
             assert_eq!(a[p + 3], [1, 2, 3, 4]);
             assert_eq!(a[position(&a, "DIALECT") + 1], b"2");
         }
+    }
+
+    #[test]
+    fn info_sizes_convert_from_mebibytes_and_add_up() {
+        let raw = Value::Array(vec![
+            bs("num_docs"),
+            Value::Int(1),
+            bs("inverted_sz_mb"),
+            bs("0.5"),
+            bs("doc_table_size_mb"),
+            Value::Double(0.25),
+            bs("vector_index_sz_mb"),
+            bs("2"),
+            bs("percent_indexed"),
+            bs("0.75"),
+        ]);
+        let info = parse_info(&raw).expect("parse failed");
+        assert_eq!(info.inverted_index_bytes, Some(524_288));
+        assert_eq!(info.doc_table_bytes, Some(262_144));
+        assert_eq!(info.vector_index_bytes, Some(2_097_152));
+        assert_eq!(info.sortable_values_bytes, None);
+        assert_eq!(info.index_bytes(), Some(524_288 + 262_144 + 2_097_152));
+        assert_eq!(info.percent_indexed, Some(0.75));
+        assert_eq!(IndexInfo::default().index_bytes(), None, "nothing reported, no total");
+    }
+
+    #[test]
+    fn spellcheck_reads_both_reply_shapes_best_first() {
+        let resp2 = Value::Array(vec![Value::Array(vec![
+            bs("TERM"),
+            bs("helo"),
+            Value::Array(vec![
+                Value::Array(vec![bs("0.25"), bs("help")]),
+                Value::Array(vec![bs("0.5"), bs("hello")]),
+            ]),
+        ])]);
+        let parsed = parse_spellcheck(&resp2);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].term, "helo");
+        assert_eq!(parsed[0].suggestions[0], ("hello".to_string(), 0.5));
+        assert_eq!(parsed[0].suggestions[1], ("help".to_string(), 0.25));
+
+        let resp3 = Value::Map(vec![(
+            bs("results"),
+            Value::Map(vec![
+                (
+                    bs("helo"),
+                    Value::Array(vec![Value::Map(vec![(bs("hello"), Value::Double(0.5))])]),
+                ),
+                (bs("known"), Value::Array(vec![])),
+            ]),
+        )]);
+        let parsed = parse_spellcheck(&resp3);
+        assert_eq!(parsed.len(), 1, "a term with no suggestions is dropped");
+        assert_eq!(parsed[0].suggestions, vec![("hello".to_string(), 0.5)]);
+    }
+
+    #[test]
+    fn tag_values_are_escaped_for_the_query_syntax() {
+        assert_eq!(escape_tag_value("plain"), "plain");
+        assert_eq!(escape_tag_value("hello world"), "hello\\ world");
+        assert_eq!(escape_tag_value("a-b.c"), "a\\-b\\.c");
     }
 
     #[test]
