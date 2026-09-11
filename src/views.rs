@@ -63,6 +63,7 @@ mod secondary_window;
 mod sentinel_dialogs;
 mod server_info;
 mod server_load;
+mod server_report_dialog;
 mod servers;
 mod set_editor;
 mod setting_editor;
@@ -123,6 +124,7 @@ pub use lua_script_library::ZedisLuaScriptLibrary;
 pub use memory_analysis::ZedisMemoryAnalysis;
 pub use score_filter_dialog::open_score_filter_dialog;
 pub use sentinel_dialogs::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
+pub use server_report_dialog::{ServerReport, open_server_report_dialog};
 pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives

@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::get_server;
-use crate::helpers::{format_unix_millis_with, get_mono_font_family};
+use crate::assets::CustomIconName;
+use crate::connection::{ServerCommand, get_server};
+use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_metrics};
+use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
 use core::f64;
 use gpui::{
     App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, canvas, div,
@@ -107,9 +109,15 @@ struct MetricsChartData {
     max_total_commands_processed: f64,
     min_total_commands_processed: f64,
     total_commands_processed: Arc<Vec<f64>>,
-    max_output_kbps: f64,
-    min_output_kbps: f64,
+    max_net_kbps: f64,
+    min_net_kbps: f64,
+    input_kbps: Arc<Vec<f64>>,
     output_kbps: Arc<Vec<f64>>,
+    max_blocked_clients: f64,
+    blocked_clients: Arc<Vec<f64>>,
+    max_fragmentation: f64,
+    min_fragmentation: f64,
+    fragmentation: Arc<Vec<f64>>,
     max_key_hit_rate: f64,
     min_key_hit_rate: f64,
     key_hit_rate: Arc<Vec<f64>>,
@@ -183,6 +191,7 @@ impl MetricsRange {
 
 pub struct ZedisMetrics {
     title: SharedString,
+    server_state: Entity<ZedisServerState>,
     server_id: String,
     range: MetricsRange,
     latest_metrics: Option<RedisMetrics>,
@@ -229,9 +238,17 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
     let mut max_total_commands_processed = f64::MIN;
     let mut min_total_commands_processed = f64::MAX;
 
+    let mut input_kbps = Vec::with_capacity(n);
     let mut output_kbps = Vec::with_capacity(n);
-    let mut max_output_kbps = f64::MIN;
-    let mut min_output_kbps = f64::MAX;
+    let mut max_net_kbps = f64::MIN;
+    let mut min_net_kbps = f64::MAX;
+
+    let mut blocked_clients = Vec::with_capacity(n);
+    let mut max_blocked_clients = f64::MIN;
+
+    let mut fragmentation = Vec::with_capacity(n);
+    let mut max_fragmentation = f64::MIN;
+    let mut min_fragmentation = f64::MAX;
 
     let mut key_hit_rate = Vec::with_capacity(n);
     let mut max_key_hit_rate = f64::MIN;
@@ -287,10 +304,22 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
         min_total_commands_processed = min_total_commands_processed.min(processed);
         total_commands_processed.push(processed);
 
+        // One axis for both directions, so in and out compare by eye.
+        let input = metrics.instantaneous_input_kbps;
         let output = metrics.instantaneous_output_kbps;
-        max_output_kbps = max_output_kbps.max(output);
-        min_output_kbps = min_output_kbps.min(output);
+        max_net_kbps = max_net_kbps.max(input.max(output));
+        min_net_kbps = min_net_kbps.min(input.min(output));
+        input_kbps.push(input);
         output_kbps.push(output);
+
+        let blocked = metrics.blocked_clients as f64;
+        max_blocked_clients = max_blocked_clients.max(blocked);
+        blocked_clients.push(blocked);
+
+        let ratio = metrics.mem_fragmentation_ratio;
+        max_fragmentation = max_fragmentation.max(ratio);
+        min_fragmentation = min_fragmentation.min(ratio);
+        fragmentation.push(ratio);
 
         let keyspace_hits = metrics.keyspace_hits.saturating_sub(prev_metrics.keyspace_hits);
         let keyspace_misses = metrics.keyspace_misses.saturating_sub(prev_metrics.keyspace_misses);
@@ -336,9 +365,15 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
             total_commands_processed: Arc::new(total_commands_processed),
             max_total_commands_processed,
             min_total_commands_processed,
+            input_kbps: Arc::new(input_kbps),
             output_kbps: Arc::new(output_kbps),
-            max_output_kbps,
-            min_output_kbps,
+            max_net_kbps,
+            min_net_kbps,
+            blocked_clients: Arc::new(blocked_clients),
+            max_blocked_clients,
+            fragmentation: Arc::new(fragmentation),
+            max_fragmentation,
+            min_fragmentation,
             key_hit_rate: Arc::new(key_hit_rate),
             min_key_hit_rate,
             max_key_hit_rate,
@@ -505,6 +540,11 @@ pub(crate) fn make_line_canvas(
     stroke: Hsla,
     step_after: bool,
 ) -> impl IntoElement {
+    make_lines_canvas(params, vec![(values, stroke)], step_after)
+}
+
+/// Several lines on one frame, each with its own colour, sharing the axes.
+fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, step_after: bool) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
@@ -539,19 +579,22 @@ pub(crate) fn make_line_canvas(
             }
             .paint(&bounds, window, cx);
 
-            let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
+            for (values, stroke) in &series {
+                let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
+                let x = x.clone();
+                let y = y.clone();
+                let mut line = Line::new()
+                    .data(data)
+                    .x(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
+                    .y(move |d: &(SharedString, f64)| y.tick(&d.1))
+                    .stroke(*stroke)
+                    .stroke_width(2.);
 
-            let mut line = Line::new()
-                .data(data)
-                .x(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
-                .y(move |d: &(SharedString, f64)| y.tick(&d.1))
-                .stroke(stroke)
-                .stroke_width(2.);
-
-            if step_after {
-                line = line.stroke_style(StrokeStyle::StepAfter);
+                if step_after {
+                    line = line.stroke_style(StrokeStyle::StepAfter);
+                }
+                line.paint(&bounds, window);
             }
-            line.paint(&bounds, window);
         },
     )
     .size_full()
@@ -612,26 +655,16 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_c
 
 impl ZedisMetrics {
     pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = server_state.read(cx);
-        let server_id = state.server_id();
-        let name = if let Ok(server) = get_server(server_id) {
-            server.name
-        } else {
-            "--".to_string()
-        };
-        let nodes_description = state.nodes_description();
-        let title = format!(
-            "{name} - {}({})",
-            nodes_description.server_type, nodes_description.master_nodes
-        )
-        .into();
-        let metrics_history = get_metrics_cache().list_metrics(server_id);
+        let server_id = server_state.read(cx).server_id().to_string();
+        let title = Self::title_for(&server_state, cx);
+        let metrics_history = get_metrics_cache().list_metrics(&server_id);
         let latest_metrics = metrics_history.last().copied();
         let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
 
         let mut this = Self {
             title,
-            server_id: server_id.to_string(),
+            server_state,
+            server_id,
             range: MetricsRange::Live,
             latest_metrics,
             metrics_chart_data,
@@ -639,8 +672,22 @@ impl ZedisMetrics {
             heartbeat_task: None,
             _subscriptions: vec![],
         };
-        this.start_heartbeat(server_id.to_string(), cx);
+        this.start_heartbeat(cx);
         this
+    }
+
+    /// `name - type(masters)`, or `--` while the tab has no connection yet.
+    fn title_for(server_state: &Entity<ZedisServerState>, cx: &App) -> SharedString {
+        let state = server_state.read(cx);
+        let name = get_server(state.server_id())
+            .map(|server| server.name)
+            .unwrap_or_else(|_| "--".to_string());
+        let nodes_description = state.nodes_description();
+        format!(
+            "{name} - {}({})",
+            nodes_description.server_type, nodes_description.master_nodes
+        )
+        .into()
     }
 
     /// Switch the chart window. `Live` re-renders from the in-memory cache
@@ -681,29 +728,42 @@ impl ZedisMetrics {
         .detach();
     }
     /// Start the heartbeat task
-    fn start_heartbeat(&mut self, server_id: String, cx: &mut Context<Self>) {
-        // start task
+    fn start_heartbeat(&mut self, cx: &mut Context<Self>) {
         self.heartbeat_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_secs(HEARTBEAT_INTERVAL_SECS))
                     .await;
-                let metrics_history = get_metrics_cache().list_metrics(&server_id);
-                let _ = this.update(cx, |state, cx| {
-                    state.latest_metrics = metrics_history.last().copied();
-                    // Stat cards stay live in every range; the charts only
-                    // follow the heartbeat in the Live window — a history
-                    // window is a frozen snapshot until re-selected.
-                    if state.range == MetricsRange::Live {
-                        let (metrics_chart_data, tick_margin) =
-                            convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
-                        state.metrics_chart_data = metrics_chart_data;
-                        state.tick_margin = tick_margin;
-                    }
-                    cx.notify();
-                });
+                let _ = this.update(cx, |state, cx| state.tick(cx));
             }
         }));
+    }
+
+    /// One heartbeat: pull the latest samples for the tab's connection.
+    /// The connection is read each time rather than once at construction —
+    /// a restored tab connects after its route (and this view) is up, so a
+    /// view built against an empty id would otherwise load forever.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        if server_id != self.server_id {
+            self.server_id = server_id;
+            self.title = Self::title_for(&self.server_state, cx);
+            self.range = MetricsRange::Live;
+        }
+        if self.server_id.is_empty() {
+            return;
+        }
+        let metrics_history = get_metrics_cache().list_metrics(&self.server_id);
+        self.latest_metrics = metrics_history.last().copied();
+        // Stat cards stay live in every range; the charts only follow the
+        // heartbeat in the Live window — a history window is a frozen
+        // snapshot until re-selected.
+        if self.range == MetricsRange::Live {
+            let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
+            self.metrics_chart_data = metrics_chart_data;
+            self.tick_margin = tick_margin;
+        }
+        cx.notify();
     }
     fn render_chart_card<E: IntoElement>(
         &self,
@@ -776,8 +836,17 @@ impl ZedisMetrics {
             "100%".to_string()
         };
 
-        let net_in = format!("{:.1} KB/s", m.instantaneous_input_kbps);
-        let net_out = format!("{:.1} KB/s", m.instantaneous_output_kbps);
+        let net = format!(
+            "{:.1} / {:.1} KB/s",
+            m.instantaneous_input_kbps, m.instantaneous_output_kbps
+        );
+
+        // 0 means INFO did not report it (a proxy), not a perfect ratio.
+        let fragmentation = if m.mem_fragmentation_ratio > 0. {
+            format!("{:.2}", m.mem_fragmentation_ratio)
+        } else {
+            "--".to_string()
+        };
 
         let evicted = m.evicted_keys.to_string();
 
@@ -792,8 +861,8 @@ impl ZedisMetrics {
             .child(self.render_stat_card(cx, i18n_metrics(cx, "ops"), ops))
             .child(self.render_stat_card(cx, i18n_metrics(cx, "latency"), latency))
             .child(self.render_stat_card(cx, i18n_metrics(cx, "hit_rate"), hit_rate))
-            .child(self.render_stat_card(cx, i18n_metrics(cx, "net_in"), net_in))
-            .child(self.render_stat_card(cx, i18n_metrics(cx, "net_out"), net_out))
+            .child(self.render_stat_card(cx, i18n_metrics(cx, "net"), net))
+            .child(self.render_stat_card(cx, i18n_metrics(cx, "fragmentation"), fragmentation))
             .child(self.render_stat_card(cx, i18n_metrics(cx, "evicted_keys"), evicted))
             .into_any_element()
     }
@@ -879,20 +948,43 @@ impl ZedisMetrics {
 
     fn render_connected_clients_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "{}: {:.0} - {:.0}",
-            i18n_metrics(cx, "connected_clients"),
+            "{}: {:.0} - {:.0} / {:.0}",
+            i18n_metrics(cx, "clients_chart"),
             self.metrics_chart_data.min_connected_clients,
-            self.metrics_chart_data.max_connected_clients
+            self.metrics_chart_data.max_connected_clients,
+            self.metrics_chart_data.max_blocked_clients.max(0.)
         );
         let dates = self.metrics_chart_data.dates.clone();
-        let values = self.metrics_chart_data.connected_clients.clone();
+        let connected = self.metrics_chart_data.connected_clients.clone();
+        let blocked = self.metrics_chart_data.blocked_clients.clone();
+        // Blocked clients are a subset of connected, so one axis fits both.
         let max_val = self.metrics_chart_data.max_connected_clients.max(0.01);
+        let chart_1 = cx.theme().chart_1;
+        let chart_2 = cx.theme().chart_2;
+        let chart = make_lines_canvas(
+            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            vec![(connected, chart_2), (blocked, chart_1)],
+            true,
+        );
+        self.render_chart_card(cx, label, chart)
+    }
+
+    fn render_fragmentation_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = format!(
+            "{}: {:.2} - {:.2}",
+            i18n_metrics(cx, "fragmentation_ratio"),
+            self.metrics_chart_data.min_fragmentation,
+            self.metrics_chart_data.max_fragmentation
+        );
+        let dates = self.metrics_chart_data.dates.clone();
+        let values = self.metrics_chart_data.fragmentation.clone();
+        let max_val = self.metrics_chart_data.max_fragmentation.max(0.01);
         let stroke = cx.theme().chart_2;
         let chart = make_line_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+            self.chart_params(cx, dates, max_val, |v| format!("{:.2}", v)),
             values,
             stroke,
-            true,
+            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -917,22 +1009,81 @@ impl ZedisMetrics {
         self.render_chart_card(cx, label, chart)
     }
 
-    fn render_output_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_net_kbps_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
             "{}: {:.0} - {:.0}",
-            i18n_metrics(cx, "output_kbps"),
-            self.metrics_chart_data.min_output_kbps,
-            self.metrics_chart_data.max_output_kbps
+            i18n_metrics(cx, "net_kbps"),
+            self.metrics_chart_data.min_net_kbps,
+            self.metrics_chart_data.max_net_kbps
         );
         let dates = self.metrics_chart_data.dates.clone();
-        let values = self.metrics_chart_data.output_kbps.clone();
-        let max_val = self.metrics_chart_data.max_output_kbps.max(0.01);
+        let input = self.metrics_chart_data.input_kbps.clone();
+        let output = self.metrics_chart_data.output_kbps.clone();
+        let max_val = self.metrics_chart_data.max_net_kbps.max(0.01);
+        let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
         let chart = make_area_canvas(
             self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
-            vec![(values, chart_2, chart_2.opacity(0.4).into())],
+            vec![
+                (input, chart_1, chart_1.opacity(0.4).into()),
+                (output, chart_2, chart_2.opacity(0.4).into()),
+            ],
         );
         self.render_chart_card(cx, label, chart)
+    }
+
+    /// Export the samples of the shown range — every persisted one, not the
+    /// decimated set the charts draw — as CSV, one row per sample.
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let range = self.range;
+        if range == MetricsRange::Live {
+            let samples = get_metrics_cache().list_metrics(&self.server_id);
+            self.finish_export(samples, cx);
+            return;
+        }
+        let server_id = self.server_id.clone();
+        cx.spawn(async move |this, cx| {
+            let samples = cx
+                .background_spawn(async move { load_persisted_metrics(&server_id, range.duration_ms(), usize::MAX) })
+                .await;
+            let _ = this.update(cx, |this, cx| this.finish_export(samples, cx));
+        })
+        .detach();
+    }
+
+    fn finish_export(&mut self, samples: Vec<RedisMetrics>, cx: &mut Context<Self>) {
+        if samples.is_empty() {
+            let message = i18n_metrics(cx, "export_empty");
+            self.server_state
+                .update(cx, |state, cx| state.emit_info_notification(message, cx));
+            return;
+        }
+        let server = get_server(&self.server_id)
+            .map(|server| server.name)
+            .unwrap_or_else(|_| self.server_id.clone());
+        let server: String = server
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let suggested = format!(
+            "metrics-{server}-{}.csv",
+            self.range.label_key().trim_start_matches("range_")
+        );
+        let csv = metrics_csv(&samples);
+        export_to_file(
+            cx,
+            self.server_state.clone(),
+            csv.into_bytes(),
+            &suggested,
+            i18n_common(cx, "csv_exported"),
+            i18n_common(cx, "csv_export_failed"),
+        );
     }
 
     fn render_key_hit_rate_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -983,6 +1134,11 @@ impl Render for ZedisMetrics {
                 .into_any_element();
         }
         let has_chart_data = !self.metrics_chart_data.dates.is_empty();
+        let memory_report = self
+            .server_state
+            .read(cx)
+            .command_block(ServerCommand::MemoryDoctor)
+            .is_none();
         div()
             .size_full()
             .font_family(get_mono_font_family())
@@ -1022,24 +1178,55 @@ impl Render for ZedisMetrics {
                                     )
                                     .child(Label::new(self.title.clone())),
                             )
-                            .child(h_flex().items_center().gap_2().child(h_flex().gap_1().children(
-                                MetricsRange::ALL.map(|range| {
-                                    let selected = self.range == range;
-                                    let button = Button::new(range.button_id())
-                                        .xsmall()
-                                        .label(i18n_metrics(cx, range.label_key()));
-                                    let button = if selected { button.primary() } else { button.ghost() };
-                                    button.on_click(cx.listener(move |this, _, _window, cx| this.set_range(range, cx)))
-                                }),
-                            ))),
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .when(memory_report, |this| {
+                                        this.child(
+                                            Button::new("metrics-memory-report")
+                                                .ghost()
+                                                .small()
+                                                .icon(CustomIconName::MemoryStick)
+                                                .tooltip(i18n_metrics(cx, "memory_report_tooltip"))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    open_server_report_dialog(
+                                                        this.server_state.clone(),
+                                                        ServerReport::Memory,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                })),
+                                        )
+                                    })
+                                    .child(
+                                        Button::new("metrics-export-csv")
+                                            .ghost()
+                                            .small()
+                                            .icon(CustomIconName::Download)
+                                            .tooltip(i18n_metrics(cx, "export_tooltip"))
+                                            .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
+                                    )
+                                    .child(h_flex().gap_1().children(MetricsRange::ALL.map(|range| {
+                                        let selected = self.range == range;
+                                        let button = Button::new(range.button_id())
+                                            .xsmall()
+                                            .label(i18n_metrics(cx, range.label_key()));
+                                        let button = if selected { button.primary() } else { button.ghost() };
+                                        button.on_click(
+                                            cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
+                                        )
+                                    }))),
+                            ),
                     )
                     .child(self.render_stat_cards(columns, cx))
                     .when(has_chart_data, |this| {
                         this.child(self.render_cpu_usage_chart(cx))
                             .child(self.render_memory_usage_chart(cx))
+                            .child(self.render_fragmentation_chart(cx))
                             .child(self.render_latency_chart(cx))
                             .child(self.render_connected_clients_chart(cx))
-                            .child(self.render_output_kbps_chart(cx))
+                            .child(self.render_net_kbps_chart(cx))
                             .child(self.render_total_commands_processed_chart(cx))
                             .child(self.render_key_hit_rate_chart(cx))
                             .child(self.render_evicted_keys_chart(cx))
@@ -1047,5 +1234,90 @@ impl Render for ZedisMetrics {
             )
             .overflow_y_scrollbar()
             .into_any_element()
+    }
+}
+
+/// One row per sample, the raw INFO numbers plus a readable time.
+fn metrics_csv(samples: &[RedisMetrics]) -> String {
+    let rows: Vec<Vec<String>> = samples
+        .iter()
+        .map(|m| {
+            vec![
+                format_timestamp_ms_as(m.timestamp_ms, "%Y-%m-%d %H:%M:%S").to_string(),
+                m.timestamp_ms.to_string(),
+                m.latency_ms.to_string(),
+                m.connected_clients.to_string(),
+                m.blocked_clients.to_string(),
+                m.rejected_connections.to_string(),
+                m.used_memory.to_string(),
+                m.used_memory_rss.to_string(),
+                m.mem_fragmentation_ratio.to_string(),
+                m.total_connections_received.to_string(),
+                m.total_commands_processed.to_string(),
+                m.instantaneous_ops_per_sec.to_string(),
+                m.instantaneous_input_kbps.to_string(),
+                m.instantaneous_output_kbps.to_string(),
+                m.keyspace_hits.to_string(),
+                m.keyspace_misses.to_string(),
+                m.expired_keys.to_string(),
+                m.evicted_keys.to_string(),
+                m.used_cpu_sys.to_string(),
+                m.used_cpu_user.to_string(),
+            ]
+        })
+        .collect();
+    build_csv(
+        &[
+            "time",
+            "timestamp_ms",
+            "latency_ms",
+            "connected_clients",
+            "blocked_clients",
+            "rejected_connections",
+            "used_memory",
+            "used_memory_rss",
+            "mem_fragmentation_ratio",
+            "total_connections_received",
+            "total_commands_processed",
+            "instantaneous_ops_per_sec",
+            "instantaneous_input_kbps",
+            "instantaneous_output_kbps",
+            "keyspace_hits",
+            "keyspace_misses",
+            "expired_keys",
+            "evicted_keys",
+            "used_cpu_sys",
+            "used_cpu_user",
+        ],
+        &rows,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_csv_has_one_row_per_sample_with_the_raw_numbers() {
+        let samples = vec![
+            RedisMetrics {
+                timestamp_ms: 1_700_000_000_000,
+                used_memory: 1024,
+                mem_fragmentation_ratio: 1.25,
+                blocked_clients: 2,
+                ..Default::default()
+            },
+            RedisMetrics {
+                timestamp_ms: 1_700_000_060_000,
+                used_memory: 2048,
+                ..Default::default()
+            },
+        ];
+        let csv = metrics_csv(&samples);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("time,timestamp_ms,latency_ms,connected_clients,blocked_clients"));
+        assert!(lines[1].contains(",1700000000000,0,0,2,0,1024,0,1.25,"), "{}", lines[1]);
+        assert!(lines[2].contains(",1700000060000,0,0,0,0,2048,0,0,"), "{}", lines[2]);
     }
 }

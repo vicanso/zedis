@@ -329,6 +329,12 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::MemoryUsage => {
             c.arg("USAGE").arg(PROBE_KEY);
         }
+        ServerCommand::MemoryDoctor | ServerCommand::LatencyDoctor => {
+            c.arg("DOCTOR");
+        }
+        ServerCommand::MemoryStats => {
+            c.arg("STATS");
+        }
         ServerCommand::ObjectEncoding => {
             c.arg("ENCODING").arg(PROBE_KEY);
         }

@@ -33,7 +33,7 @@ use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
 };
-use crate::views::export_to_file;
+use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
 use ahash::AHashMap;
 use gpui::{
     AnyElement, Edges, Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px, relative,
@@ -2059,6 +2059,14 @@ impl ZedisSlowlogEditor {
         // Config panel. Hidden when tracking is already on or the
         // server pre-dates LATENCY altogether.
         let show_enable_button = self.latency_threshold_ms == 0 && !self.latency_unsupported;
+        // The server's own reading of the events below, where it has the
+        // command.
+        let show_doctor = !self.latency_unsupported
+            && self
+                .server_state
+                .read(cx)
+                .command_block(ServerCommand::LatencyDoctor)
+                .is_none();
 
         v_flex()
             .size_full()
@@ -2076,6 +2084,23 @@ impl ZedisSlowlogEditor {
                                 .xsmall()
                                 .label(i18n_slowlog_editor(cx, "enable_tracking_button"))
                                 .on_click(cx.listener(|this, _, w, cx| this.enable_latency_tracking(w, cx))),
+                        )
+                    })
+                    .when(show_doctor, |this| {
+                        this.child(
+                            Button::new("latency-doctor")
+                                .outline()
+                                .xsmall()
+                                .label(i18n_slowlog_editor(cx, "latency_doctor"))
+                                .tooltip(i18n_slowlog_editor(cx, "latency_doctor_tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    open_server_report_dialog(
+                                        this.server_state.clone(),
+                                        ServerReport::Latency,
+                                        window,
+                                        cx,
+                                    )
+                                })),
                         )
                     }),
             )

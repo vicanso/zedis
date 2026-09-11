@@ -117,6 +117,12 @@ pub enum ServerCommand {
     JsonStrAppend,
     /// `JSON.CLEAR` — empty a container or zero a number at a path.
     JsonClear,
+    /// `MEMORY DOCTOR` — the server's advice on its memory use.
+    MemoryDoctor,
+    /// `MEMORY STATS` — the allocator and overhead breakdown.
+    MemoryStats,
+    /// `LATENCY DOCTOR` — the server's analysis of its latency events.
+    LatencyDoctor,
 }
 
 impl ServerCommand {
@@ -175,6 +181,9 @@ impl ServerCommand {
         ServerCommand::JsonArrAppend,
         ServerCommand::JsonStrAppend,
         ServerCommand::JsonClear,
+        ServerCommand::MemoryDoctor,
+        ServerCommand::MemoryStats,
+        ServerCommand::LatencyDoctor,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -225,6 +234,8 @@ impl ServerCommand {
             ServerCommand::JsonArrAppend => "JSON.ARRAPPEND",
             ServerCommand::JsonStrAppend => "JSON.STRAPPEND",
             ServerCommand::JsonClear => "JSON.CLEAR",
+            ServerCommand::MemoryDoctor | ServerCommand::MemoryStats => "MEMORY",
+            ServerCommand::LatencyDoctor => "LATENCY",
         }
     }
 
@@ -238,6 +249,8 @@ impl ServerCommand {
             ServerCommand::ConfigRewrite => Some("REWRITE"),
             ServerCommand::SlowlogGet => Some("GET"),
             ServerCommand::LatencyLatest => Some("LATEST"),
+            ServerCommand::MemoryDoctor | ServerCommand::LatencyDoctor => Some("DOCTOR"),
+            ServerCommand::MemoryStats => Some("STATS"),
             ServerCommand::ClientList => Some("LIST"),
             ServerCommand::ClientKill => Some("KILL"),
             ServerCommand::AclList => Some("LIST"),
