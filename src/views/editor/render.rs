@@ -785,6 +785,12 @@ impl Render for ZedisEditor {
                 EditorAction::ChangeLog => {
                     open_change_log_dialog(this.server_state.clone(), window, cx);
                 }
+                EditorAction::FormatJson | EditorAction::MinifyJson => {
+                    let pretty = matches!(event, EditorAction::FormatJson);
+                    if let Some(bytes_editor) = this.bytes_editor.clone() {
+                        bytes_editor.update(cx, |editor, cx| editor.reformat_json(pretty, window, cx));
+                    }
+                }
                 _ => {
                     cx.propagate();
                 }

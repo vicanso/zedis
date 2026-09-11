@@ -186,6 +186,10 @@ pub enum EditorAction {
     FindReplace,
     /// Open the session change log for the selected collection key.
     ChangeLog,
+    /// Re-indent the JSON in the value editor.
+    FormatJson,
+    /// Put the JSON in the value editor on one line.
+    MinifyJson,
 }
 
 /// The type-native key operations the editors offer beyond add / edit /
@@ -218,6 +222,20 @@ pub enum KeyOpAction {
     StringAppend,
     /// `GETEX` — change the expiry while reading the value.
     StringGetEx,
+    /// `JSON.SET` — write a value at a path.
+    JsonSet,
+    /// `JSON.DEL` — remove the value at a path.
+    JsonDel,
+    /// `JSON.NUMINCRBY` — add to a number at a path.
+    JsonNumIncrBy,
+    /// `JSON.TOGGLE` — flip a boolean at a path.
+    JsonToggle,
+    /// `JSON.ARRAPPEND` — push a value onto an array at a path.
+    JsonArrAppend,
+    /// `JSON.STRAPPEND` — extend a string at a path.
+    JsonStrAppend,
+    /// `JSON.CLEAR` — empty a container or zero a number at a path.
+    JsonClear,
 }
 
 /// Actions scoped to the side-by-side value diff view.

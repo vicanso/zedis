@@ -43,6 +43,7 @@ use zedis_connection::{
     sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
     unassigned_slot_ranges, write_hash_field, write_readable_chunk,
 };
+use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
 
@@ -4138,6 +4139,112 @@ fn stack_modules_are_detected_and_usable() {
         assert_eq!(client.key_type(&key).await.expect("type"), "ReJSON-RL");
         let listing = zedis_connection::ft_list(&mut c).await.expect("ft._list");
         assert!(!listing.unsupported);
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
+/// The `JSON.*` path writes behind the JSON editor's menu and tree: each
+/// one is built by `run_key_op` and reports back what the panel shows —
+/// for both path syntaxes, since RedisJSON answers a `$` path per match
+/// and a legacy `.` path with a bare scalar.
+#[test]
+#[ignore]
+fn stack_json_path_ops_run_and_report_their_result() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack-json", standalone())).await;
+        let features = probe_server_features(&id, 0).await.expect("probe");
+        for c in [
+            ServerCommand::JsonSet,
+            ServerCommand::JsonDel,
+            ServerCommand::JsonNumIncrBy,
+            ServerCommand::JsonToggle,
+            ServerCommand::JsonArrAppend,
+            ServerCommand::JsonStrAppend,
+            ServerCommand::JsonClear,
+        ] {
+            assert_eq!(features.status(c), CommandStatus::Available, "{c:?} on the stack image");
+        }
+
+        let mut c = conn(&id, 0).await;
+        let key = unique("json-ops");
+        cmd("JSON.SET")
+            .arg(&key)
+            .arg("$")
+            .arg(r#"{"n":5,"ok":false,"s":"ab","arr":[1],"o":{"k":1}}"#)
+            .exec_async(&mut c)
+            .await
+            .expect("json.set");
+        let json = |path: &str, op: JsonPathOp| KeyOp::Json {
+            path: path.to_string(),
+            op,
+        };
+        assert_eq!(
+            run_key_op(&mut c, &key, json("$.n", JsonPathOp::NumIncrBy(2.0)))
+                .await
+                .expect("numincrby"),
+            KeyOpOutcome::Number("7".into()),
+            "a `$` path answers `[7]`, read back as the number"
+        );
+        assert_eq!(
+            run_key_op(&mut c, &key, json(".n", JsonPathOp::NumIncrBy(0.5)))
+                .await
+                .expect("numincrby, legacy path"),
+            KeyOpOutcome::Number("7.5".into())
+        );
+        assert_eq!(
+            run_key_op(&mut c, &key, json("$.ok", JsonPathOp::Toggle))
+                .await
+                .expect("toggle"),
+            KeyOpOutcome::Number("true".into())
+        );
+        assert_eq!(
+            run_key_op(
+                &mut c,
+                &key,
+                json("$.arr", JsonPathOp::ArrAppend(serde_json::json!("x")))
+            )
+            .await
+            .expect("arrappend"),
+            KeyOpOutcome::Count(2)
+        );
+        assert_eq!(
+            run_key_op(&mut c, &key, json("$.s", JsonPathOp::StrAppend("cd".into())))
+                .await
+                .expect("strappend"),
+            KeyOpOutcome::Count(4)
+        );
+        assert_eq!(
+            run_key_op(
+                &mut c,
+                &key,
+                json("$.o.k2", JsonPathOp::Set(serde_json::json!({"deep": true})))
+            )
+            .await
+            .expect("set a new member"),
+            KeyOpOutcome::Done
+        );
+        assert_eq!(
+            run_key_op(&mut c, &key, json("$.o", JsonPathOp::Clear))
+                .await
+                .expect("clear"),
+            KeyOpOutcome::Count(1)
+        );
+        assert_eq!(
+            run_key_op(&mut c, &key, json("$.arr[0]", JsonPathOp::Del))
+                .await
+                .expect("del"),
+            KeyOpOutcome::Count(1)
+        );
+        let doc: String = cmd("JSON.GET").arg(&key).query_async(&mut c).await.expect("json.get");
+        let doc: serde_json::Value = serde_json::from_str(&doc).expect("a JSON document");
+        assert_eq!(
+            doc,
+            serde_json::json!({"n": 7.5, "ok": true, "s": "abcd", "arr": ["x"], "o": {}})
+        );
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
 }

@@ -17,6 +17,7 @@ use super::{
     value::{DataFormat, RedisBytesValue, RedisValue},
 };
 use crate::{connection::RedisAsyncConn, error::Error};
+use bytes::Bytes;
 use redis::cmd;
 use std::sync::Arc;
 
@@ -31,6 +32,9 @@ pub(crate) async fn get_redis_json_value(conn: &mut RedisAsyncConn, key: &str) -
         key_type: KeyType::Json,
         data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
             format: DataFormat::Text,
+            // The bytes are what the version history snapshots and the
+            // diff reads; without them a document's history is empty.
+            bytes: Bytes::from(data.clone().into_bytes()),
             text: Some(data.into()),
             ..Default::default()
         }))),

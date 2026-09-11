@@ -22,14 +22,14 @@ use crate::states::{
 use bytes::Bytes;
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px, relative};
 use gpui::{div, hsla, prelude::*};
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::highlighter::Language;
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorMode, EditorState, Enter, InputEvent, InputModeKind, RopeExt, TabSize,
 };
 use gpui_kit::component::label::Label;
 use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_kit::component::{ActiveTheme, IconName, IndexPath, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, IndexPath, Selectable, Sizable, h_flex, v_flex};
 use pretty_hex::HexConfig;
 use pretty_hex::config_hex;
 use std::cell::RefCell;
@@ -37,8 +37,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::jsonpath_completion::{JsonDoc, JsonPathCompletionProvider};
+use super::{JsonTreeEvent, JsonTreeTarget, ZedisJsonTree};
+use crate::connection::Capability;
 use crate::states::KeyType;
+use rust_i18n::t;
+use serde_json::Value;
 use tracing::info;
+use zedis_core::json::{JsonSyntaxError, format_json, minify_json};
 
 // Constants for editor configuration
 const DEFAULT_TAB_SIZE: usize = 2;
@@ -122,6 +127,17 @@ pub struct ZedisBytesEditor {
     /// Save path then decodes the text back to raw bytes (see
     /// `value_bytes_for_save`).
     is_hex_text: bool,
+
+    /// The tree that stands in for the text of a JSON value in
+    /// `json_tree_mode`.
+    json_tree: Entity<ZedisJsonTree>,
+
+    /// Whether a JSON value is shown as a tree instead of text.
+    json_tree_mode: bool,
+
+    /// The text changed since the tree last read it. Rebuilt on the next
+    /// tree render, not on every keystroke in the text.
+    json_tree_stale: bool,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -357,9 +373,31 @@ impl ZedisBytesEditor {
                     return;
                 }
                 this.value_modified = original != value.as_str();
+                this.json_tree_stale = true;
                 cx.notify();
             }
         }));
+
+        // The JSON tree edits a plain string's document locally and hands
+        // the text back; for a RedisJSON key the server reloads instead.
+        let json_tree = cx.new(|cx| ZedisJsonTree::new(server_state.clone(), cx));
+        subscriptions.push(
+            cx.subscribe_in(&json_tree, window, |this, _, event, window, cx| match event {
+                JsonTreeEvent::DocEdited(text) => {
+                    let text = text.clone();
+                    this.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+                    this.value_modified = true;
+                    cx.notify();
+                }
+                JsonTreeEvent::QueryPath(path) => {
+                    let path = path.clone();
+                    this.jsonpath_open = true;
+                    this.jsonpath_input
+                        .update(cx, |state, cx| state.set_value(path, window, cx));
+                    this.run_jsonpath_query(window, cx);
+                }
+            }),
+        );
 
         let readonly = server_state.read(cx).readonly();
         info!("Creating new string editor view");
@@ -437,6 +475,9 @@ impl ZedisBytesEditor {
             jsonpath_open: false,
             jsonpath_result_editor,
             is_json_value: false,
+            json_tree,
+            json_tree_mode: false,
+            json_tree_stale: true,
             is_hex_text: false,
             _subscriptions: subscriptions,
         };
@@ -553,6 +594,7 @@ impl ZedisBytesEditor {
             None
         };
         self.jsonpath_doc.borrow_mut().set_raw(json_text);
+        self.json_tree_stale = true;
     }
 
     /// When the editor is in hex-text mode, decode the user's input back to
@@ -581,10 +623,16 @@ impl ZedisBytesEditor {
         if self.readonly {
             return;
         }
+        // The search panel belongs to the text.
+        self.json_tree_mode = false;
         self.editor.update(cx, |state, cx| {
             state.focus(window, cx);
             state.open_search(true, cx);
         });
+    }
+
+    pub fn is_json_value(&self) -> bool {
+        self.is_json_value
     }
 
     /// Check if the editor is readonly
@@ -622,8 +670,107 @@ impl ZedisBytesEditor {
             state.set_value(text, window, cx);
         });
         self.value_modified = true;
+        self.json_tree_stale = true;
         cx.notify();
     }
+
+    /// Re-render the JSON in the editor: indented, or on one line. Text
+    /// that is not JSON is reported with where it stops being JSON, and
+    /// left alone.
+    pub fn reformat_json(&mut self, pretty: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        let text = self.editor.read(cx).value();
+        let rendered = if pretty {
+            format_json(text.as_ref())
+        } else {
+            minify_json(text.as_ref())
+        };
+        match rendered {
+            Ok(rendered) if rendered != text.as_ref() => {
+                self.editor
+                    .update(cx, |state, cx| state.set_value(rendered, window, cx));
+                self.json_tree_stale = true;
+                cx.notify();
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let message = json_invalid_message(&error, cx);
+                self.server_state
+                    .update(cx, |state, cx| state.emit_error_notification(message, cx));
+            }
+        }
+    }
+
+    fn set_json_tree_mode(&mut self, tree: bool, cx: &mut Context<Self>) {
+        if self.json_tree_mode == tree {
+            return;
+        }
+        self.json_tree_mode = tree;
+        cx.notify();
+    }
+
+    /// Hand the tree the current text — the editor's, so unsaved edits show
+    /// — and tell it where its operations go.
+    fn sync_json_tree(&mut self, cx: &mut Context<Self>) {
+        self.json_tree_stale = false;
+        let text = self.editor.read(cx).value();
+        let doc = serde_json::from_str::<Value>(text.as_ref()).ok();
+        let server_state = self.server_state.read(cx);
+        let target = if server_state.value().is_some_and(|value| value.is_redis_json()) {
+            JsonTreeTarget::Server
+        } else {
+            JsonTreeTarget::Local
+        };
+        let editable = !self.readonly
+            && match target {
+                JsonTreeTarget::Server => server_state.can(Capability::JsonPathWrite),
+                JsonTreeTarget::Local => true,
+            };
+        self.json_tree
+            .update(cx, |tree, cx| tree.set_document(doc, target, editable, cx));
+    }
+
+    /// Text / Tree, in the JSONPath row so it exists only for a JSON value.
+    /// The segmented control the terminal's reply format uses: an outline
+    /// group whose chosen button is painted pressed.
+    fn render_json_view_switch(&self, cx: &Context<Self>) -> impl IntoElement {
+        let tree_mode = self.json_tree_mode;
+        ButtonGroup::new("json-view-switch")
+            .compact()
+            .small()
+            .outline()
+            .child(
+                Button::new("json-view-text")
+                    .label(i18n_editor(cx, "json_view_text"))
+                    .selected(!tree_mode),
+            )
+            .child(
+                Button::new("json-view-tree")
+                    .label(i18n_editor(cx, "json_view_tree"))
+                    .selected(tree_mode),
+            )
+            .on_click(cx.listener(|this, clicks: &Vec<usize>, _window, cx| {
+                if let Some(ix) = clicks.first() {
+                    this.set_json_tree_mode(*ix == 1, cx);
+                }
+            }))
+    }
+}
+
+/// A syntax error as the notifications show it.
+pub fn json_invalid_message(error: &JsonSyntaxError, cx: &App) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(
+        "editor.json_invalid",
+        line = error.line,
+        column = error.column,
+        message = error.message,
+        locale = locale
+    )
+    .to_string()
+    .into()
 }
 
 impl Render for ZedisBytesEditor {
@@ -678,6 +825,19 @@ impl Render for ZedisBytesEditor {
                 if !self.is_json_value {
                     return editor.h_full().into_any_element();
                 }
+                let body = if self.json_tree_mode {
+                    if self.json_tree_stale {
+                        self.sync_json_tree(cx);
+                    }
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(self.json_tree.clone())
+                        .into_any_element()
+                } else {
+                    editor.into_any_element()
+                };
                 v_flex()
                     .size_full()
                     // Collapsed by default: a slim toggle row instead of the
@@ -693,7 +853,7 @@ impl Render for ZedisBytesEditor {
                             this.child(self.render_jsonpath_result(outcome, cx))
                         })
                     })
-                    .child(editor)
+                    .child(body)
                     .into_any_element()
             }
         }
@@ -783,6 +943,7 @@ impl ZedisBytesEditor {
                     .label(i18n_editor(cx, "jsonpath_run"))
                     .on_click(cx.listener(|this, _, window, cx| this.run_jsonpath_query(window, cx))),
             )
+            .child(self.render_json_view_switch(cx))
     }
 
     /// Slim collapsed-state row that stands in for the JSONPath bar: a single
@@ -795,6 +956,7 @@ impl ZedisBytesEditor {
             .py_0p5()
             .border_b_1()
             .border_color(cx.theme().border)
+            .justify_between()
             .child(
                 Button::new("jsonpath-expand")
                     .ghost()
@@ -809,6 +971,7 @@ impl ZedisBytesEditor {
                         cx.notify();
                     })),
             )
+            .child(self.render_json_view_switch(cx))
     }
 
     /// Render the JSONPath result. Two shapes:

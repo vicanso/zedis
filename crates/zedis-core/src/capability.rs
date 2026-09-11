@@ -119,6 +119,10 @@ pub enum Capability {
     HllMerge,
     /// Combine bitmaps into a destination (`BITOP`).
     BitmapCombine,
+    /// Edit one path of a JSON document in place (`JSON.SET` / `JSON.DEL`
+    /// / `JSON.NUMINCRBY` / …) instead of saving the whole value. Its own
+    /// capability because the commands come from a module.
+    JsonPathWrite,
     /// `CLIENT KILL`.
     KillClient,
     /// ACL create / edit / delete users.
@@ -184,6 +188,7 @@ impl Capability {
         Capability::GeoWrite,
         Capability::HllMerge,
         Capability::BitmapCombine,
+        Capability::JsonPathWrite,
         Capability::KillClient,
         Capability::AclWrite,
         Capability::ConfigWrite,
@@ -221,6 +226,7 @@ impl Capability {
                 | Capability::GeoWrite
                 | Capability::HllMerge
                 | Capability::BitmapCombine
+                | Capability::JsonPathWrite
                 | Capability::KillClient
                 | Capability::AclWrite
                 | Capability::ConfigWrite
@@ -271,6 +277,9 @@ impl Capability {
             Capability::GeoWrite => &[ServerCommand::GeoAdd],
             Capability::HllMerge => &[ServerCommand::PfMerge],
             Capability::BitmapCombine => &[ServerCommand::BitOp],
+            // `JSON.SET` alone stands for the JSON editor's path menu; each
+            // other command is probed for its own item.
+            Capability::JsonPathWrite => &[ServerCommand::JsonSet],
             _ => &[],
         }
     }
@@ -338,6 +347,7 @@ mod tests {
         (Capability::GeoWrite, false),
         (Capability::HllMerge, false),
         (Capability::BitmapCombine, false),
+        (Capability::JsonPathWrite, false),
         (Capability::KillClient, false),
         (Capability::AclWrite, false),
         (Capability::ConfigWrite, false),

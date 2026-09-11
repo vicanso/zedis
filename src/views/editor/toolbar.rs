@@ -24,7 +24,7 @@ use super::*;
 const REPLACE_KEYSTROKE: &str = "cmd-shift-f";
 #[cfg(not(target_os = "macos"))]
 const REPLACE_KEYSTROKE: &str = "ctrl-h";
-use crate::connection::Capability;
+use crate::connection::{Capability, ServerCommand};
 
 impl ZedisEditor {
     /// Render the key information bar with actions (copy, save, TTL, delete)
@@ -335,17 +335,34 @@ impl ZedisEditor {
         // stays compact: bitmap view, value file export / import, diff,
         // delete.
         // A plain String key gets the counter / append / expiry operations
-        // the terminal would otherwise be the only route to.
-        let string_ops: Vec<KeyOpAction> =
-            if key_type == KeyType::String && !self.readonly && server_state.can(Capability::SaveValue) {
+        // the terminal would otherwise be the only route to; a JSON key the
+        // path-level `JSON.*` writes, each only where the server has it.
+        let key_ops: Vec<KeyOpAction> = match key_type {
+            KeyType::String if !self.readonly && server_state.can(Capability::SaveValue) => {
                 let mut ops = vec![KeyOpAction::StringIncrBy, KeyOpAction::StringAppend];
                 if server_state.supports(floors::GETEX) {
                     ops.push(KeyOpAction::StringGetEx);
                 }
                 ops
-            } else {
-                Vec::new()
-            };
+            }
+            KeyType::Json if !self.readonly && server_state.can(Capability::JsonPathWrite) => {
+                let features = server_state.features();
+                [
+                    (KeyOpAction::JsonSet, ServerCommand::JsonSet),
+                    (KeyOpAction::JsonDel, ServerCommand::JsonDel),
+                    (KeyOpAction::JsonNumIncrBy, ServerCommand::JsonNumIncrBy),
+                    (KeyOpAction::JsonToggle, ServerCommand::JsonToggle),
+                    (KeyOpAction::JsonArrAppend, ServerCommand::JsonArrAppend),
+                    (KeyOpAction::JsonStrAppend, ServerCommand::JsonStrAppend),
+                    (KeyOpAction::JsonClear, ServerCommand::JsonClear),
+                ]
+                .into_iter()
+                .filter(|(_, command)| features.is_usable(*command))
+                .map(|(action, _)| action)
+                .collect()
+            }
+            _ => Vec::new(),
+        };
         let bitmap_item = bitmap_candidate && !bitmap_view;
         let export_item = has_bytes_value;
         let diff_with_server_item = has_bytes_value;
@@ -376,12 +393,16 @@ impl ZedisEditor {
         // Same condition as the diff: an editable string value on a
         // writable connection.
         let find_replace_item = diff_editable;
+        // Re-rendering the JSON — indented or on one line — for an editable
+        // JSON value, RedisJSON or a string holding JSON.
+        let json_items = diff_editable && self.bytes_editor.as_ref().is_some_and(|e| e.read(cx).is_json_value());
         // A collection key with edits recorded this session. Shown on a
         // read-only connection too: the log is what was already written.
         let change_log_item = matches!(key_type, KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset)
             && server_state.change_log_for(&key).is_some();
         if change_log_item
             || find_replace_item
+            || json_items
             || rename_item
             || copy_item
             || bitmap_item
@@ -389,7 +410,7 @@ impl ZedisEditor {
             || import_item
             || diff_item
             || delete_item
-            || !string_ops.is_empty()
+            || !key_ops.is_empty()
         {
             btns.push(
                 Button::new("zedis-editor-more")
@@ -431,6 +452,18 @@ impl ZedisEditor {
                                 IconName::Search,
                                 Box::new(EditorAction::FindReplace),
                                 move |_, _cx| Label::new(label.clone()),
+                            );
+                        }
+                        if json_items {
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::Braces,
+                                Box::new(EditorAction::FormatJson),
+                                move |_, cx| Label::new(i18n_editor(cx, "format_json")),
+                            );
+                            menu = menu.menu_element_with_icon(
+                                CustomIconName::ListChecvronsDownUp,
+                                Box::new(EditorAction::MinifyJson),
+                                move |_, cx| Label::new(i18n_editor(cx, "minify_json")),
                             );
                         }
                         if change_log_item {
@@ -503,12 +536,13 @@ impl ZedisEditor {
                         {
                             menu = menu.separator();
                         }
-                        // String-native operations, behind their own submenu
+                        // Type-native operations, behind their own submenu
                         // so the key-level actions below stay one flat list.
-                        // Counters and APPEND are ancient; GETEX is 6.2, so
-                        // it only appears where it exists.
-                        if !string_ops.is_empty() {
-                            let ops = string_ops.clone();
+                        // Counters and APPEND are ancient; GETEX is 6.2 and
+                        // the JSON writes are a module's, so each appears
+                        // only where it exists.
+                        if !key_ops.is_empty() {
+                            let ops = key_ops.clone();
                             menu = menu.submenu_with_icon(
                                 Some(Icon::new(CustomIconName::Zap)),
                                 i18n_key_ops(cx, "menu_tooltip"),

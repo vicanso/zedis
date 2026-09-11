@@ -26,6 +26,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::RwLock;
 use zedis_core::codec::{bson, java, pickle};
+use zedis_core::json::keep_stored_layout;
 
 pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 
@@ -1071,10 +1072,24 @@ impl ZedisServerState {
             None
         };
 
+        // A plain string holding JSON is shown indented but keeps the layout
+        // it was stored with: one that was on a single line goes back on a
+        // single line, so editing one field does not multiply its size.
+        // The editor keeps showing the indented text; only the bytes — the
+        // next save's compare-and-set baseline — are what the server holds.
+        let wire_text: SharedString = if !is_redis_json && format == DataFormat::Json {
+            match std::str::from_utf8(&original_bytes_value.bytes) {
+                Ok(stored) => keep_stored_layout(stored, &new_value).into_owned().into(),
+                Err(_) => new_value.clone(),
+            }
+        } else {
+            new_value.clone()
+        };
+
         let Some(value) = self.value.as_mut() else { return };
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-            bytes: Bytes::from(new_value.clone().to_string().into_bytes()),
+            bytes: Bytes::from(wire_text.to_string().into_bytes()),
             text: Some(new_value.clone()),
             format,
             ..Default::default()
@@ -1082,7 +1097,7 @@ impl ZedisServerState {
 
         cx.notify();
         let cas_baseline = original_bytes_value.bytes.clone();
-        let draft = Bytes::from(new_value.to_string().into_bytes());
+        let draft = Bytes::from(wire_text.to_string().into_bytes());
         let key_done = key.clone();
         self.spawn_with_arg(
             ServerTask::SaveValue,
@@ -1116,7 +1131,7 @@ impl ZedisServerState {
                     }
                 } else {
                     let mut binding = cmd("SET");
-                    let mut new_cmd = binding.arg(key.as_str()).arg(new_value.as_str());
+                    let mut new_cmd = binding.arg(key.as_str()).arg(wire_text.as_str());
                     // KEEPTTL where the server has it; otherwise re-apply the TTL by hand
                     new_cmd = if client.supports(floors::SET_KEEPTTL) {
                         new_cmd.arg("KEEPTTL")

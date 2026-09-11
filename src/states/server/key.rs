@@ -904,6 +904,18 @@ impl ZedisServerState {
         // Taken before `op` moves into the task. `None` for the String
         // operations, whose history is before-and-after snapshots instead.
         let description = op.describe();
+        // That snapshot: the value this operation is about to change, kept
+        // like a save keeps the value it overwrites, so a path write to a
+        // document can be diffed and restored.
+        let snapshot = self
+            .value
+            .as_ref()
+            .and_then(|value| value.bytes_value())
+            .map(|bytes| bytes.bytes.clone())
+            .filter(|bytes| !bytes.is_empty());
+        if let Some(bytes) = snapshot {
+            self.push_value_history(key.clone(), bytes);
+        }
         self.spawn_with_arg(
             ServerTask::RunKeyOperation,
             key.clone(),

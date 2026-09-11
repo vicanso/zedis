@@ -32,8 +32,8 @@ use crate::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
         ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
         ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
-        ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, export_to_file, key_op_title_key, looks_like_bitmap,
-        looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
+        ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, export_to_file, json_invalid_message, key_op_title_key,
+        looks_like_bitmap, looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
     },
 };
 use bytes::Bytes;
@@ -53,6 +53,7 @@ use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
+use zedis_core::json::check_json;
 use zedis_ui::ZedisDialog;
 
 mod dialogs;
@@ -602,7 +603,7 @@ impl ZedisEditor {
             state.load_bytes_into_editor(bytes, window, cx);
         });
     }
-    fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The value editor is no longer `.disabled()` in read-only mode (kept
         // legible), so the read-only lock has to be enforced here instead — this
         // hard-blocks every save path (Save button, cmd-s, …) at the source. The
@@ -622,6 +623,18 @@ impl ZedisEditor {
         let Some(key) = server_state.key() else {
             return;
         };
+        // What the text has to be before it is written: a RedisJSON
+        // document must parse; a string that was JSON when it was loaded
+        // is asked about, because a string may hold anything.
+        let (is_redis_json, is_json_string) = server_state
+            .value()
+            .map(|value| {
+                let json_string = value
+                    .bytes_value()
+                    .is_some_and(|bytes| bytes.format == DataFormat::Json);
+                (value.is_redis_json(), json_string)
+            })
+            .unwrap_or((false, false));
         let Some(editor) = self.bytes_editor.as_ref() else {
             return;
         };
@@ -653,6 +666,29 @@ impl ZedisEditor {
                 }
                 None => {
                     let value = state.value(cx);
+                    if (is_redis_json || is_json_string)
+                        && let Err(error) = check_json(value.as_ref())
+                    {
+                        let message = json_invalid_message(&error, cx);
+                        if is_redis_json {
+                            self.server_state
+                                .update(cx, |state, cx| state.emit_error_notification(message, cx));
+                            return;
+                        }
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let body = t!("editor.json_invalid_save_body", error = message, locale = locale).to_string();
+                        let server_state = self.server_state.clone();
+                        ZedisDialog::new_alert(i18n_editor(cx, "json_invalid_save_title"), body)
+                            .button_props(dialog_button_props(cx).ok_text(i18n_editor(cx, "json_invalid_save_anyway")))
+                            .on_ok(move |_, window, cx| {
+                                let (key, value) = (key.clone(), value.clone());
+                                server_state.update(cx, |state, cx| state.update_value(key, value, cx));
+                                window.close_dialog(cx);
+                                true
+                            })
+                            .open(window, cx);
+                        return;
+                    }
                     self.server_state.update(cx, move |state, cx| {
                         state.update_value(key, value, cx);
                     });

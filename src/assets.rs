@@ -116,6 +116,7 @@ pub enum CustomIconName {
     Regex,
     RefreshCw,
     Power,
+    Braces,
 }
 
 impl CustomIconName {
@@ -172,6 +173,7 @@ impl CustomIconName {
             CustomIconName::Regex => "icons/regex.svg",
             CustomIconName::RefreshCw => "icons/refresh-cw.svg",
             CustomIconName::Power => "icons/power.svg",
+            CustomIconName::Braces => "icons/braces.svg",
         }
         .into()
     }

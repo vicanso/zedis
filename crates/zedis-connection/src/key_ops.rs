@@ -27,7 +27,8 @@
 
 use crate::async_connection::RedisAsyncConn;
 use crate::error::Error;
-use redis::cmd;
+use redis::{Value, cmd};
+use zedis_core::json::JsonPathOp;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -60,6 +61,9 @@ pub enum KeyOp {
     /// `GETEX key EX seconds` / `GETEX key PERSIST` (6.2+ — the caller
     /// gates). Reads the value and changes its expiry in one command.
     StringGetEx { ttl: Option<u64> },
+    /// One `JSON.*` write at a path of a RedisJSON document — the same
+    /// operations the JSON tree applies locally to a plain string.
+    Json { path: String, op: JsonPathOp },
 }
 
 /// What an operation reported back, in the shape the panel renders it.
@@ -92,15 +96,20 @@ impl KeyOp {
             KeyOp::ZsetIncrBy { member, delta } => Some(format!("ZINCRBY {} {member}", format_number(*delta))),
             KeyOp::ZsetPop { end, count } => Some(format!("{} {count}", pop(end, "ZPOPMIN", "ZPOPMAX"))),
             KeyOp::HashIncrBy { field, delta } => Some(format!("HINCRBY {field} {delta}")),
-            KeyOp::StringIncrBy { .. } | KeyOp::StringAppend { .. } | KeyOp::StringGetEx { .. } => None,
+            // A JSON document's history is its snapshots, like a string's.
+            KeyOp::StringIncrBy { .. }
+            | KeyOp::StringAppend { .. }
+            | KeyOp::StringGetEx { .. }
+            | KeyOp::Json { .. } => None,
         }
     }
 
     pub fn is_destructive(&self) -> bool {
-        matches!(
-            self,
-            KeyOp::ListTrim { .. } | KeyOp::ListPop { .. } | KeyOp::ZsetPop { .. }
-        )
+        match self {
+            KeyOp::ListTrim { .. } | KeyOp::ListPop { .. } | KeyOp::ZsetPop { .. } => true,
+            KeyOp::Json { op, .. } => op.is_destructive(),
+            _ => false,
+        }
     }
 }
 
@@ -186,6 +195,73 @@ pub async fn run_key_op(conn: &mut RedisAsyncConn, key: &str, op: KeyOp) -> Resu
             let _: Option<String> = command.query_async(conn).await?;
             Ok(KeyOpOutcome::Done)
         }
+        KeyOp::Json { path, op } => run_json_op(conn, key, &path, op).await,
+    }
+}
+
+/// One `JSON.*` write. A `$`-rooted path makes RedisJSON answer per match
+/// in an array; a legacy `.`-rooted one answers a scalar — the reply is
+/// read either way, and only the first match is reported.
+async fn run_json_op(conn: &mut RedisAsyncConn, key: &str, path: &str, op: JsonPathOp) -> Result<KeyOpOutcome> {
+    let mut command = cmd(op.command());
+    command.arg(key).arg(path);
+    match &op {
+        JsonPathOp::Set(value) | JsonPathOp::ArrAppend(value) => {
+            command.arg(value.to_string());
+        }
+        JsonPathOp::NumIncrBy(delta) => {
+            command.arg(format_number(*delta));
+        }
+        // The server wants a JSON string, quotes included.
+        JsonPathOp::StrAppend(text) => {
+            command.arg(serde_json::to_string(text)?);
+        }
+        JsonPathOp::Del | JsonPathOp::Toggle | JsonPathOp::Clear => {}
+    }
+    let reply: Value = command.query_async(conn).await?;
+    Ok(match op {
+        JsonPathOp::Set(_) => KeyOpOutcome::Done,
+        // Answered as a JSON-encoded string: `[6]` for `$`, `6` for a
+        // legacy path.
+        JsonPathOp::NumIncrBy(_) => {
+            let text = reply_text(&reply);
+            let number = text
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .to_string();
+            KeyOpOutcome::Number(number)
+        }
+        JsonPathOp::Toggle => match first_integer(&reply) {
+            Some(flag) => KeyOpOutcome::Number((flag != 0).to_string()),
+            None => KeyOpOutcome::Done,
+        },
+        JsonPathOp::Del | JsonPathOp::ArrAppend(_) | JsonPathOp::StrAppend(_) | JsonPathOp::Clear => {
+            match first_integer(&reply) {
+                Some(count) => KeyOpOutcome::Count(count.max(0) as u64),
+                None => KeyOpOutcome::Done,
+            }
+        }
+    })
+}
+
+fn reply_text(reply: &Value) -> String {
+    match reply {
+        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        Value::SimpleString(text) | Value::VerbatimString { text, .. } => text.clone(),
+        Value::Int(n) => n.to_string(),
+        Value::Array(items) => items.first().map(reply_text).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// The reply's integer, or the first non-null one of a per-match array.
+fn first_integer(reply: &Value) -> Option<i64> {
+    match reply {
+        Value::Int(n) => Some(*n),
+        Value::Array(items) => items.iter().find_map(first_integer),
+        _ => None,
     }
 }
 
@@ -200,7 +276,7 @@ fn format_number(value: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FromEnd, KeyOp, format_number};
+    use super::{FromEnd, JsonPathOp, KeyOp, Value, first_integer, format_number, reply_text};
 
     #[test]
     fn only_the_data_losing_operations_ask_for_confirmation() {
@@ -237,6 +313,31 @@ mod tests {
         );
         assert!(!KeyOp::StringAppend { text: "x".into() }.is_destructive());
         assert!(!KeyOp::StringGetEx { ttl: Some(60) }.is_destructive());
+        // JSON writes follow their own operation's answer.
+        assert!(
+            KeyOp::Json {
+                path: "$.a".into(),
+                op: JsonPathOp::Del
+            }
+            .is_destructive()
+        );
+        assert!(
+            !KeyOp::Json {
+                path: "$.a".into(),
+                op: JsonPathOp::Toggle
+            }
+            .is_destructive()
+        );
+    }
+
+    #[test]
+    fn json_replies_are_read_for_either_path_syntax() {
+        // `$` paths answer per match; legacy paths answer a scalar.
+        assert_eq!(first_integer(&Value::Array(vec![Value::Nil, Value::Int(3)])), Some(3));
+        assert_eq!(first_integer(&Value::Int(1)), Some(1));
+        assert_eq!(first_integer(&Value::Array(vec![Value::Nil])), None);
+        assert_eq!(reply_text(&Value::BulkString(b"[6]".to_vec())), "[6]");
+        assert_eq!(reply_text(&Value::Array(vec![Value::BulkString(b"7".to_vec())])), "7");
     }
 
     #[test]

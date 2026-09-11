@@ -438,6 +438,13 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::GeoAdd => &["GEOADD", PROBE_KEY, "0", "0", "m"],
         ServerCommand::PfMerge => &["PFMERGE", PROBE_KEY, PROBE_KEY],
         ServerCommand::BitOp => &["BITOP", "OR", PROBE_KEY, PROBE_KEY],
+        ServerCommand::JsonSet => &["JSON.SET", PROBE_KEY, "$", "{}"],
+        ServerCommand::JsonDel => &["JSON.DEL", PROBE_KEY, "$"],
+        ServerCommand::JsonNumIncrBy => &["JSON.NUMINCRBY", PROBE_KEY, "$", "1"],
+        ServerCommand::JsonToggle => &["JSON.TOGGLE", PROBE_KEY, "$"],
+        ServerCommand::JsonArrAppend => &["JSON.ARRAPPEND", PROBE_KEY, "$", "0"],
+        ServerCommand::JsonStrAppend => &["JSON.STRAPPEND", PROBE_KEY, "$", "\"\""],
+        ServerCommand::JsonClear => &["JSON.CLEAR", PROBE_KEY, "$"],
         _ => &["PING"],
     }
 }

@@ -101,6 +101,22 @@ pub enum ServerCommand {
     /// `TS.MRANGE` — read many series at once by label. Read-only, and the
     /// hard dependency of the multi-series panel.
     TsMRange,
+    /// `JSON.SET` — write a value at a path. Stands for the JSON path
+    /// operations as a whole: a server that has it has the module (RedisJSON
+    /// or valkey-json), and the others are probed for their own menu items.
+    JsonSet,
+    /// `JSON.DEL` — remove the value at a path.
+    JsonDel,
+    /// `JSON.NUMINCRBY` — add to a number at a path.
+    JsonNumIncrBy,
+    /// `JSON.TOGGLE` — flip a boolean at a path.
+    JsonToggle,
+    /// `JSON.ARRAPPEND` — push onto an array at a path.
+    JsonArrAppend,
+    /// `JSON.STRAPPEND` — extend a string at a path.
+    JsonStrAppend,
+    /// `JSON.CLEAR` — empty a container or zero a number at a path.
+    JsonClear,
 }
 
 impl ServerCommand {
@@ -152,6 +168,13 @@ impl ServerCommand {
         ServerCommand::PfMerge,
         ServerCommand::BitOp,
         ServerCommand::TsMRange,
+        ServerCommand::JsonSet,
+        ServerCommand::JsonDel,
+        ServerCommand::JsonNumIncrBy,
+        ServerCommand::JsonToggle,
+        ServerCommand::JsonArrAppend,
+        ServerCommand::JsonStrAppend,
+        ServerCommand::JsonClear,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -195,6 +218,13 @@ impl ServerCommand {
             ServerCommand::PfMerge => "PFMERGE",
             ServerCommand::BitOp => "BITOP",
             ServerCommand::TsMRange => "TS.MRANGE",
+            ServerCommand::JsonSet => "JSON.SET",
+            ServerCommand::JsonDel => "JSON.DEL",
+            ServerCommand::JsonNumIncrBy => "JSON.NUMINCRBY",
+            ServerCommand::JsonToggle => "JSON.TOGGLE",
+            ServerCommand::JsonArrAppend => "JSON.ARRAPPEND",
+            ServerCommand::JsonStrAppend => "JSON.STRAPPEND",
+            ServerCommand::JsonClear => "JSON.CLEAR",
         }
     }
 
@@ -264,6 +294,13 @@ impl ServerCommand {
                 | ServerCommand::GeoAdd
                 | ServerCommand::PfMerge
                 | ServerCommand::BitOp
+                | ServerCommand::JsonSet
+                | ServerCommand::JsonDel
+                | ServerCommand::JsonNumIncrBy
+                | ServerCommand::JsonToggle
+                | ServerCommand::JsonArrAppend
+                | ServerCommand::JsonStrAppend
+                | ServerCommand::JsonClear
         )
     }
 

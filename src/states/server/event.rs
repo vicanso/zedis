@@ -379,8 +379,11 @@ impl ZedisServerState {
         use crate::connection::Capability;
         let cap = match event {
             EditorAction::Create => Capability::CreateKey,
-            // Replace edits the draft the Save button then writes.
-            EditorAction::Save | EditorAction::FindReplace => Capability::SaveValue,
+            // Replace and the JSON re-renderings edit the draft the Save
+            // button then writes.
+            EditorAction::Save | EditorAction::FindReplace | EditorAction::FormatJson | EditorAction::MinifyJson => {
+                Capability::SaveValue
+            }
             EditorAction::UpdateTtl | EditorAction::EditTtlDuration | EditorAction::EditTtlAbsolute => {
                 Capability::SetTtl
             }

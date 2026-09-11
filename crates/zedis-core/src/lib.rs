@@ -26,6 +26,7 @@ pub mod features;
 pub mod fs;
 pub mod fuzzy;
 pub mod hex;
+pub mod json;
 pub mod jsonpath;
 pub mod keysizes;
 pub mod rdb;

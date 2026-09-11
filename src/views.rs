@@ -36,6 +36,7 @@ mod geo_map;
 mod hash_editor;
 mod hll_editor;
 mod hotkeys;
+mod json_tree;
 mod jsonpath_completion;
 mod key_op_dialog;
 mod key_tag_dialog;
@@ -87,7 +88,7 @@ pub use about::open_about_window;
 pub use acl_manager::ZedisAclManager;
 pub use bitmap_editor::{BitmapEvent, ZedisBitmapEditor};
 pub(crate) use bitmap_editor::{bitmap_eligible, looks_like_bitmap};
-pub use bytes_editor::ZedisBytesEditor;
+pub use bytes_editor::{ZedisBytesEditor, json_invalid_message};
 pub use change_log_dialog::open_change_log_dialog;
 pub use client_dialogs::{KillFilterSupport, ZedisClientKillFilterDialog, ZedisClientPauseDialog};
 pub use clients_manager::ZedisClientsManager;
@@ -108,7 +109,11 @@ pub use hash_editor::ZedisHashEditor;
 pub use hll_editor::ZedisHllEditor;
 pub(crate) use hll_editor::looks_like_hll;
 pub use hotkeys::ZedisHotkeys;
-pub use key_op_dialog::{open_key_op_dialog, title_key as key_op_title_key};
+pub use json_tree::{JsonTreeEvent, JsonTreeTarget, ZedisJsonTree};
+pub use key_op_dialog::{
+    KeyOpPrefill, open_key_op_dialog, open_key_op_dialog_prefilled, open_key_op_form, run_key_op_confirmed,
+    title_key as key_op_title_key,
+};
 pub use key_tag_dialog::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog};
 pub use key_tree::ZedisKeyTree;
 pub use keyspace_notifications::ZedisKeyspaceNotifications;
