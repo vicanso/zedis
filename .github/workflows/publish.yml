@@ -25,7 +25,7 @@ env:
   ZEDIS_BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'nightly' || 'stable' }}
   GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.98.0
+  RUST_TOOLCHAIN: 1.98.1
   APP_NAME: Zedis
 
 jobs:

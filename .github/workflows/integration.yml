@@ -30,7 +30,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.98.0
+  RUST_TOOLCHAIN: 1.98.1
 
 jobs:
   live:

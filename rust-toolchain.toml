@@ -7,7 +7,13 @@
 # Bumping the version: update `channel` here AND the `RUST_TOOLCHAIN` env
 # in .github/workflows/{lint,integration,publish,smoke}.yml (the lint
 # workflow fails with a pointer here if they drift) + the Toolchain line
-# in CLAUDE.md.
+# in CLAUDE.md + the Rust version named in CONTRIBUTING.md (both the
+# English and the Chinese half). Only the workflow pins are checked by
+# CI — the prose ones are on you, and are what the 1.98.1 bump missed.
+#
+# This is the toolchain the project builds with. It is NOT the MSRV:
+# `rust-version` in Cargo.toml is the older compiler `cargo install`
+# users are promised, gated separately by the `msrv` job.
 [toolchain]
-channel = "1.98.0"
+channel = "1.98.1"
 components = ["clippy", "rustfmt"]
