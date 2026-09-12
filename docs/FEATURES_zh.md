@@ -58,17 +58,17 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 集合编辑器
 **Hash、List、Set、Sorted Set 以可分页、可编辑的表格打开——绝不用一条 `HGETALL` 把服务端拖死。**
 
-所有集合都增量加载（`HSCAN` / `SSCAN` / `ZSCAN`，List 用 `LRANGE` 窗口），配无限滚动与"已加载 / 总数"计数，因此百万字段的 hash 和十个字段的一样秒开。关键字过滤用于收窄表格——hash / set / sorted set 走扫描的 `MATCH`、在服务端完成，list 则在已加载的窗口上本地过滤。行可在右侧可调宽的面板中就地增删改，Hash 在服务端支持时带**字段级 TTL** 列，List 可选 `RPUSH` / `LPUSH`。Sorted Set 按分数走（`ZRANGE` / `ZREVRANGE`），工具栏可切换升序 / 降序。**批量添加**支持粘贴 TSV/CSV（每行一条），可见表格可导出 CSV/JSON。
+所有集合都增量加载（`HSCAN` / `SSCAN` / `ZSCAN`，List 用 `LRANGE` 窗口），配无限滚动与"已加载 / 总数"计数，因此百万字段的 hash 和十个字段的一样秒开。关键字过滤用于收窄表格——hash / set / sorted set 走扫描的 `MATCH`、在服务端完成，list 则在已加载的窗口上本地过滤。行可在右侧可调宽的面板中就地增删改，Hash 在服务端支持时带**字段级 TTL** 列，List 可选 `RPUSH` / `LPUSH`。Sorted Set 按分数走（`ZRANGE` / `ZREVRANGE`），工具栏可切换升序 / 降序。**批量添加**支持粘贴 TSV/CSV（每行一条），可见表格可导出 CSV/JSON。元素**与字符串值同样解码**——MessagePack、gzip、JWT 都认，图片只给出名字而不绘制——因此一张塞满二进制的表也能读成文本；而写入与删除送回的始终是**存储的原始字节**，既非文本又不属于已知格式的元素以 hex 编辑。行可**多选**批量删除，工具栏直接调用该类型自己的操作（`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY`），省去读出、修改、写回的往返。Sorted Set 在排序之外还支持**分数区间过滤**（`ZRANGEBYSCORE`）。
 
 ### 专项类型查看器
 **不透明的值都会打开为专用的交互式查看器。**
 
-**位图/Bitfield** 在 GPU 网格上绘制每一位（`SETBIT`/`BITCOUNT`/`BITFIELD`）；**HyperLogLog** 展示 `PFCOUNT` 基数；**向量集 + KNN**（Redis 8）经 `VSIM` 逐跳遍历 HNSW 图，可用作用于元素属性的 `FILTER` 表达式收窄结果（8.2+ 经 `WITHATTRIBS` 把邻居属性一并显示，`FILTER-EF` 控制候选预算），并显示被查元素反量化后的 `VEMB` 分量、可一键复制；**地理地图** 用 `GEOPOS` 把 sorted set 的成员画在可缩放拖动的无底图雷达上，并支持 `GEOSEARCH` 半径筛选与 Shift+点击量距；**概率型**（RedisBloom：Bloom/Cuckoo/Count-Min/Top-K/t-digest）与**时间序列**（RedisTimeSeries `TS.INFO` + 分桶 `TS.RANGE` 图表）各有专卡。按 key 的类型 / 模块分发。没有专用查看器的模块类型（RedisGraph、Tair 等）也不是死路：编辑器会显示类型名和服务器加载的模块，把值以 `DUMP` 序列化字节只读展示，沿用字符串的自动加载上限，且 32 MB 以上绝不发 `DUMP`（它会在服务器主线程序列化整个值）；重命名、TTL、删除、跨服务器复制照常可用，键树的类型过滤器也会按名字列出这些类型。
+**位图/Bitfield** 在 GPU 网格上绘制每一位（`SETBIT`/`BITCOUNT`/`BITFIELD`）；**HyperLogLog** 展示 `PFCOUNT` 基数；**向量集 + KNN**（Redis 8）经 `VSIM` 逐跳遍历 HNSW 图，可用作用于元素属性的 `FILTER` 表达式收窄结果（8.2+ 经 `WITHATTRIBS` 把邻居属性一并显示，`FILTER-EF` 控制候选预算），并显示被查元素反量化后的 `VEMB` 分量、可一键复制；**地理地图** 用 `GEOPOS` 把 sorted set 的成员画在可缩放拖动的无底图雷达上，并支持 `GEOSEARCH` 半径筛选与 Shift+点击量距；**概率型**（RedisBloom：Bloom/Cuckoo/Count-Min/Top-K/t-digest）与**时间序列**（RedisTimeSeries `TS.INFO` + 分桶 `TS.RANGE` 图表）各有专卡。按 key 的类型 / 模块分发。没有专用查看器的模块类型（RedisGraph、Tair 等）也不是死路：编辑器会显示类型名和服务器加载的模块，把值以 `DUMP` 序列化字节只读展示，沿用字符串的自动加载上限，且 32 MB 以上绝不发 `DUMP`（它会在服务器主线程序列化整个值）；重命名、TTL、删除、跨服务器复制照常可用，键树的类型过滤器也会按名字列出这些类型。这些查看器不只读，也**写**：Bitmap 翻转位并按位合并多个 key（`BITOP`），HyperLogLog 支持合并（`PFMERGE`），Geo 可新增成员并测算距离（`GEOADD` / `GEODIST`，半径与矩形范围搜索皆可），Time Series 新增 `TS.ADD` / `TS.ALTER` 与压缩规则，并带一个多序列 **`TS.MRANGE` 浏览器**，可按标签选取若干序列一起绘图。
 
 ### 模块面板
 **RediSearch（FT.*）与 Functions（Lua library）的专用面板。**
 
-**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。查询里的每个 `$name` 占位符都有一行 **PARAMS 编辑器**：TEXT，或向量类型（FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16）把逗号分隔的浮点数编成 `KNN` / `VECTOR_RANGE` 需要的小端二进制；绑定同样随 `FT.EXPLAIN` / `FT.PROFILE` 发送。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS` / `KILL`。模块 / 版本不满足时自动隐藏。
+**RediSearch**：列出 / 查看索引，配 chip 运行 `FT.SEARCH` / `FT.AGGREGATE`，表单创建 / alter / drop。查询里的每个 `$name` 占位符都有一行 **PARAMS 编辑器**：TEXT，或向量类型（FLOAT32 / FLOAT64 / FLOAT16 / BFLOAT16）把逗号分隔的浮点数编成 `KNN` / `VECTOR_RANGE` 需要的小端二进制；绑定同样随 `FT.EXPLAIN` / `FT.PROFILE` 发送。**Functions**（Redis 7+）：经 `FUNCTION LIST/LOAD/DELETE` 管理 library，带 tree-sitter Lua 编辑器、起步模板、直接 **`FCALL`** 调用，以及 `DUMP` / `RESTORE` / `FLUSH` / `STATS` / `KILL`。索引还会报告**占用空间**，TAG 字段可列出已索引的取值（`FT.TAGVALS`），查询会对匹配不到的词给出**拼写建议**（`FT.SPELLCHECK`）。模块 / 版本不满足时自动隐藏。
 
 ### Redis Streams
 **浏览、实时跟踪、管理消费者组，全程不离开 GUI。**
@@ -89,19 +89,19 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 实时指标
 **CPU、内存、延迟、连接数、吞吐与淘汰的实时图表——并保留 7 天历史。**
 
-顶部 8 张概要卡（内存 · 连接数 · OPS · 延迟 · 命中率 · 网络进 / 出 · 淘汰键数），下方是 GPU 加速的时序图表：CPU 使用率、内存使用、延迟、已连接客户端、累计命令数、输出 KB/s、键命中率与淘汰键数。采样同时落盘（每分钟一条，保留 7 天），**Live / 1h / 24h / 7d** 时间范围即使重启应用也能回答"昨晚内存有没有涨"。
+顶部 8 张概要卡（内存 · 连接数 · OPS · 延迟 · 命中率 · 网络进 / 出 · 淘汰键数），下方是 GPU 加速的时序图表：CPU 使用率、内存使用、延迟、已连接客户端、累计命令数、输出 KB/s、键命中率与淘汰键数。采样同时落盘（每分钟一条，保留 7 天），**Live / 1h / 24h / 7d** 时间范围即使重启应用也能回答"昨晚内存有没有涨"。历史数据可**导出 CSV**，网络吞吐与客户端数成对绘制，流量尖峰因此可以直接对照其背后的连接数来看。
 
 ### 内存分析器 + 体检建议
 **排查 BigKey、查看 TTL 分布、获取离线体检与可选 AI 建议。**
 
-Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。Redis 8+ 上还有一张 **key 大小分布** 卡片，直读 `INFO keysizes` —— 服务端按类型分桶的精确计数（string 按值字节、容器按元素数），零采样，未扫描也能看，集群下跨 master 求和。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。
+Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动选 `OBJECT FREQ`/`IDLETIME`），并配 **TTL 直方图**。Redis 8+ 上还有一张 **key 大小分布** 卡片，直读 `INFO keysizes` —— 服务端按类型分桶的精确计数（string 按值字节、容器按元素数），零采样，未扫描也能看，集群下跨 master 求和。扫描一结束，**离线规则引擎** 即自动给出体检建议 —— 大 key、`volatile-*` 策略下无法淘汰的键、`noeviction`、内存碎片偏高、应合并为 Hash 的大量小 string、占用大部分内存的前缀 —— 零配置、零网络。也可一键将报告（只含 key *名称*、大小、TTL，绝不含 value）发送到任意 **OpenAI 兼容** 接口，用当前界面语言内联返回建议。报告还会按**类型与存储编码**拆分键空间——哪些编码占大头、各自开销多少——对**模块类型**给出名字而非一团不透明的字节，并支持**按前缀下钻**：点击一个命名空间即可将分析范围收窄到它，大 key 的排查因此可以逐层深入，而不必从头再来。
 
 完全不想碰生产环境？**分析 RDB** 可离线解析本地备份文件 —— 流式解析器（支持到 Redis 8.10 的全部取值编码，含 8.8 的 Array 与 8.10 的 compact hash，值按长度跳过，多 GB 文件以 I/O 速度解析）喂给同一套表格、TTL 直方图和规则引擎，全程不向任何服务器发送命令。大小为 key 在文件中的序列化字节数：不等于在线内存，但用于大 key 与前缀排查的排序完全可信。在线扫描与文件解析都有进度条，前缀分组与 Top key 两张表均可导出 CSV。
 
 ### 性能诊断
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 
-Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` 含用户、客户端库、查询缓冲与内存列 / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开，另有按 ID / ADDR / LADDR / USER / TYPE / MAXAGE 的**按条件终止**表单，以及与 `UNPAUSE` 并列的定时 `CLIENT PAUSE`（WRITE 或 ALL））、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。
+Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` 含用户、客户端库、查询缓冲与内存列 / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开，另有按 ID / ADDR / LADDR / USER / TYPE / MAXAGE 的**按条件终止**表单，以及与 `UNPAUSE` 并列的定时 `CLIENT PAUSE`（WRITE 或 ALL））、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。一键还可取回服务端自己的诊断结论——**`MEMORY DOCTOR`**、**`MEMORY STATS`** 与 **`LATENCY DOCTOR`**——渲染成可读报告，而不是一堵原始文本墙。Valkey 8.1+ 上慢日志面板还接入 **`COMMANDLOG`**：慢命令旁边并列服务端记录的超大**请求**与超大**回复**日志，正是用来揪出那个发送 10 MB 参数的客户端。
 
 ### 热点 Key
 **`HOTKEYS` 跟踪（Redis 8.6+）：哪些 key 在烧 CPU 和带宽。**
@@ -116,7 +116,9 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 集群健康与管理
 **带复制延迟的拓扑树、slot 分布图、逐节点负载，以及重分片向导。**
 
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE`，Sentinel 下则有 `FAILOVER` / `RESET` / `REMOVE` / `MONITOR`（添加主节点）/ `SET`（quorum、down-after、failover-timeout、parallel-syncs、auth-pass）/ `FLUSHCONFIG`，`CKQUORUM` 按哨兵逐个回答——每个写操作都过确认对话框、PROD 升级。`SENTINEL` 命令直接发给哨兵本身（连接里的种子加上它们上报的同伴），绝不发给池化的数据主节点；每个主节点行显示哨兵对它的描述：quorum、哨兵数、各时间、宕机标记。连接未填主节点名而哨兵监控多个主节点时，取名字排序的第一个并提示，其余在面板里一键切换并写回连接。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。仅在多节点部署出现。
+以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE`，Sentinel 下则有 `FAILOVER` / `RESET` / `REMOVE` / `MONITOR`（添加主节点）/ `SET`（quorum、down-after、failover-timeout、parallel-syncs、auth-pass）/ `FLUSHCONFIG`，`CKQUORUM` 按哨兵逐个回答——每个写操作都过确认对话框、PROD 升级。`SENTINEL` 命令直接发给哨兵本身（连接里的种子加上它们上报的同伴），绝不发给池化的数据主节点；每个主节点行显示哨兵对它的描述：quorum、哨兵数、各时间、宕机标记。连接未填主节点名而哨兵监控多个主节点时，取名字排序的第一个并提示，其余在面板里一键切换并写回连接。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。**无人认领或被两个节点同时认领**的 slot 会被标出并提供一键修复，**再平衡**可将其重新均分；Valkey 9+ 上迁移直接走服务端自己的**原子槽位交接**，无需逐 key 搬运。
+
+**单机**服务器上，同一页面即**复制视图**：按 `INFO replication` 呈现主库与各从库及其延迟，并提供改变拓扑的命令。`REPLICAOF host port` 挂载从库，`REPLICAOF NO ONE` 将其提升为主，**`FAILOVER`** 以协调的方式移交主库角色而非强行切换。Sentinel 与 Cluster 条目则各自使用它们自己的故障转移机制，因此该页面不会给出两套做法。
 
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**
@@ -131,7 +133,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### CONFIG 编辑器
 **带类型与内联参数文档的 `CONFIG GET/SET` 编辑器。**
 
-运行时参数以类型化编辑器呈现而非裸字符串，并按关注点分组（内存与淘汰、RDB、AOF、碎片整理、复制、集群、客户端与网络、安全与 ACL、TLS、延迟与慢日志、日志、数据类型限制、脚本）。常用参数带取自官方 `redis.conf` 的内联说明——每个旋钮是干什么的，就写在你改它的地方；目前提供中文与英文，其他界面语言回退到英文。`maxmemory-policy` 选择器在服务器支持时包含 Redis 8.6 的 `allkeys-lrm` / `volatile-lrm`（按最近修改淘汰）。写入经 `CONFIG SET` 执行，走 PROD 升级的确认对话框。
+运行时参数以类型化编辑器呈现而非裸字符串，并按关注点分组（内存与淘汰、RDB、AOF、碎片整理、复制、集群、客户端与网络、安全与 ACL、TLS、延迟与慢日志、日志、数据类型限制、脚本）。常用参数带取自官方 `redis.conf` 的内联说明——每个旋钮是干什么的，就写在你改它的地方；目前提供中文与英文，其他界面语言回退到英文。`maxmemory-policy` 选择器在服务器支持时包含 Redis 8.6 的 `allkeys-lrm` / `volatile-lrm`（按最近修改淘汰）。写入经 `CONFIG SET` 执行，走 PROD 升级的确认对话框。`CONFIG SET` 的效果只活到下次重启，因此面板还提供 **`CONFIG REWRITE`**——一次带确认的点击即可把运行时配置写回服务端自己的配置文件；若该服务端启动时就没有配置文件，也会如实告知。
 
 ---
 
@@ -140,12 +142,12 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Key 组织
 **带 TTL chip 的命名空间树、收藏、纯客户端标签与备注。**
 
-键按 `:` 整理成嵌套树，带紧凑 TTL chip（绿色存活 / 红色将过期 / 灰色永久）。收藏常用键、回溯搜索历史，并打颜色**标签与备注**——存于本地 redb 文件，**完全不占 Redis 存储**，永不离开本机。展开某个文件夹时，若它只有一个子文件夹，整条链会一次性展开——`app:user:profile:…` 这样的深层命名空间只需点一次，而不是逐层点；被你手动折叠的文件夹则不会被再次自动展开。切分也比朴素的 `split(':')` 聪明：位于集群 **hash tag** 内（`user:{tenant:42}:profile`）、**引号包裹的 JSON 片段**内、或 **ISO-8601 时间戳**内的分隔符不算层级边界，这类键会保持完整，而不会碎成名为 `55`、`44.487892+00` 的文件夹。分隔符、树深度、扫描条数与 TTL chip 是否显示，都可按服务器单独覆盖。
+键按 `:` 整理成嵌套树，带紧凑 TTL chip（绿色存活 / 红色将过期 / 灰色永久）。收藏常用键、回溯搜索历史，并打颜色**标签与备注**——存于本地 redb 文件，**完全不占 Redis 存储**，永不离开本机。展开某个文件夹时，若它只有一个子文件夹，整条链会一次性展开——`app:user:profile:…` 这样的深层命名空间只需点一次，而不是逐层点；被你手动折叠的文件夹则不会被再次自动展开。切分也比朴素的 `split(':')` 聪明：位于集群 **hash tag** 内（`user:{tenant:42}:profile`）、**引号包裹的 JSON 片段**内、或 **ISO-8601 时间戳**内的分隔符不算层级边界，这类键会保持完整，而不会碎成名为 `55`、`44.487892+00` 的文件夹。分隔符、树深度、扫描条数与 TTL chip 是否显示，都可按服务器单独覆盖。树可按名称、TTL 或类型**排序**（升序或降序）；当命名空间带来的噪声多于结构时，**平铺列表**开关可以完全去掉文件夹层级。关键字过滤除子串外也接受**正则表达式**，**Shift 点击**可一次选中整段连续行，供下面的批量操作使用。
 
 ### Key 编辑与历史
 **重命名、字段级 TTL、文件导入导出、批量粘贴、版本历史。**
 
-原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+；8.0+ 上字段写入与 TTL 合为一条 `HSETEX`，编辑值时 `KEEPTTL` 保住原 TTL）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除**单个** key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，可在 工具 → 已删除的键 恢复、TTL 原样保留；设置中可关闭 —— 批量删除不入回收站）——生产环境手滑删 key 不再是不可挽回的事故。超大的 String/JSON 值绝不盲目加载：编辑器先显示大小，点击**仍要加载**才真正拉取。Redis 8.4+ / Valkey 8.1+ 上，string 保存是**乐观并发**（`SET … IFEQ` 对比你加载时的字节）：并发写入者的修改绝不会被静默覆盖——保存被拒绝时会重新加载最新值，并在覆盖前征求确认。
+原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+；8.0+ 上字段写入与 TTL 合为一条 `HSETEX`，编辑值时 `KEEPTTL` 保住原 TTL）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除**单个** key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，可在 工具 → 已删除的键 恢复、TTL 原样保留；设置中可关闭 —— 批量删除不入回收站）——生产环境手滑删 key 不再是不可挽回的事故。超大的 String/JSON 值绝不盲目加载：编辑器先显示大小，点击**仍要加载**才真正拉取。Redis 8.4+ / Valkey 8.1+ 上，string 保存是**乐观并发**（`SET … IFEQ` 对比你加载时的字节）：并发写入者的修改绝不会被静默覆盖——保存被拒绝时会重新加载最新值，并在覆盖前征求确认。键栏会显示值的**存储编码**与**空闲时间**，TTL 也可以用日期选择器设为一个**绝对时刻**（`EXPIREAT`），而不必换算成秒数。值编辑器支持**查找替换**；内容为 JSON 的字符串可以用 **JSON 树**打开并按路径操作（`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR`——当 key 只是普通字符串而非 RedisJSON 文档时在本地施加），每次保存前都会**校验，并可先格式化或压缩**。每个会话还有一份**变更日志**记录你改过什么，集合类型附带结构化 diff。
 
 ### 批量 Key 操作
 **多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。**
@@ -155,16 +157,16 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 跨服务器工具
 **在两台服务器间复制 / 对比 key、或对比完整配置。**
 
-**复制** key（连值带 TTL，`DUMP`/`RESTORE`）、**对比** string key 与对端同名 key（并排 diff）、或**对比**两台的 `CONFIG GET *`（斑马线表格只列差异）。专为排查"prod 和 staging 为何不一致"。
+**复制** key（连值带 TTL，`DUMP`/`RESTORE`）、**对比** string key 与对端同名 key（并排 diff）、或**对比**两台的 `CONFIG GET *`（斑马线表格只列差异）。专为排查"prod 和 staging 为何不一致"。整个**前缀**也能搬：按模式选定 key，Zedis 直接经 `DUMP` / `RESTORE` 流式送到另一台服务器，保留 TTL，并给出逐 key 的结果列表。两个**数据库**还可以按前缀比对——两边都有、只此处有、只彼处有、或两边都有但值不同——迁移结果因此可以核验，而不是全靠假设。
 
 ---
 
 ## 🔐 安全 & 隐私
 
 ### 隐私优先
-**数据与凭据都留在本机，绝不外传。**
+**数据与凭据都留在本机；唯一你没主动发起的请求是更新检查。**
 
-标签、备注、收藏与搜索历史存于**本地 redb 文件** —— 完全不占 Redis 存储，也不发往任何地方。连接密钥**加密存储**，以 JSON 分享连接时**默认剥离凭据**。可选的 AI 分析只发送 key 的**名称、大小与 TTL —— 绝不含 value**，且只发往**你自己配置**的 OpenAI 兼容接口。自定义脚本查看器经你本机的 Shell 本地运行。**无遥测、无账号、无云端。**
+标签、备注、收藏与搜索历史存于**本地 redb 文件** —— 完全不占 Redis 存储，也不发往任何地方。连接密钥**加密存储**，以 JSON 分享连接时**默认剥离凭据**。可选的 AI 分析只发送 key 的**名称、大小与 TTL —— 绝不含 value**，且只发往**你自己配置**的 OpenAI 兼容接口。自定义脚本查看器经你本机的 Shell 本地运行。**无遥测、无账号、无云端。**Zedis 唯一主动发起的请求是**启动时的更新检查**——最多每两天一次，只带应用版本号，且可在设置中关闭（见下文*保持更新*）。Windows 版二进制经 SignPath Foundation 做了 **Authenticode 签名**，因此你运行的安装包可被验证为 GitHub Actions 从本仓库构建的那一个。
 
 ### 连接安全
 **环境标签 + 对生产升级措辞的确认对话框。**
@@ -174,7 +176,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### ACL 用户管理（Redis 6+）
 **覆盖完整 ACL 生命周期的 GUI。**
 
-列出用户，查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设（Full / Read-only / Disabled）和可切换 chip（命令类别 + 通配符）编辑。ACL v2 **选择器**（Redis 7.0+）—— 附加的 `( … )` 权限组 —— 逐组按 SETUSER 原生语法展示，并可经规则编辑器无损往返：生成的规则文本以 `clearselectors` 开路，因为裸 `( … )` 在服务端是**追加**语义，否则每次保存都会悄悄复制一遍所有选择器。
+列出用户，查看 flags / 命令 / key 模式 / 频道规则，并通过快捷预设（Full / Read-only / Disabled）和可切换 chip（命令类别 + 通配符）编辑。ACL v2 **选择器**（Redis 7.0+）—— 附加的 `( … )` 权限组 —— 逐组按 SETUSER 原生语法展示，并可经规则编辑器无损往返：生成的规则文本以 `clearselectors` 开路，因为裸 `( … )` 在服务端是**追加**语义，否则每次保存都会悄悄复制一遍所有选择器。除编辑外，面板还会读取服务端的**安全日志**（`ACL LOG`）——谁在何时被拒绝了什么——客户端报权限错误时，真正的线索就在这里。**演练测试器**（`ACL DRYRUN`）可以在不真正执行的前提下回答"这个用户能否对这个 key 执行这条命令"，**`ACL GENPASS`** 生成强密码，整套用户规则还可**保存到 / 载入自服务端的 aclfile**（`ACL SAVE` / `ACL LOAD`），从而在重启后依然生效。
 
 ### 安全连接与分组
 **TLS/SSL 与 SSH 隧道，配可命名、可分享的服务器分组。**

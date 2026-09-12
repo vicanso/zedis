@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.10.0](https://github.com/vicanso/zedis/compare/v0.9.0..v0.10.0) - 2026-09-12
+
+### ⛰️  Features
+
+- *(acl)* Security log, dry-run tester, GENPASS and aclfile save/load - ([cc0ee6c](https://github.com/vicanso/zedis/commit/cc0ee6c86e2d0820528bfeffaac9e159b6456e3b))
+- *(cluster)* Slot repairs, Valkey 9 atomic migration, and rebalance - ([2070be9](https://github.com/vicanso/zedis/commit/2070be9dcf0db661fccb1ed7f9962139d60599e4))
+- *(config)* CONFIG REWRITE, so an edit survives a restart - ([8ecf19f](https://github.com/vicanso/zedis/commit/8ecf19f25c0cdcf34822261d872eb32dbaaeeb1a))
+- *(editor)* Decode Hash/List/Set/ZSet elements like strings, editing their stored bytes ([#141](https://github.com/orhun/git-cliff/issues/141)) - ([93596f9](https://github.com/vicanso/zedis/commit/93596f920c8998f7a1aa67d08db89c5ea30b001a))
+- *(editor)* JSON tree view, path-level JSON.* ops, and validation with format & minify before save - ([eb5b758](https://github.com/vicanso/zedis/commit/eb5b758df988f2b8a7ac3e4eaea3d3a421d50288))
+- *(editor)* Find & replace, a collection change log, and bounded key histories - ([f7ca4e9](https://github.com/vicanso/zedis/commit/f7ca4e9a91c74deb2ce83175af274a4e8269dd8c))
+- *(editor)* TimeSeries writes and explorer, Geo/HLL/Bitmap writes, stream admin - ([5e553ab](https://github.com/vicanso/zedis/commit/5e553ab15ed67bbbb60679d70cf4582ed1b4c5b3))
+- *(editor)* TimeSeries, Geo, HLL and Bitmap writes, plus stream admin - ([b0455d9](https://github.com/vicanso/zedis/commit/b0455d965c9ef242c76f091d646412d4873edc6b))
+- *(editor)* Multi-select delete, type-native ops, and a ZSet score filter - ([c992a23](https://github.com/vicanso/zedis/commit/c992a23e2d48ccf0bd803d42ac834cd5d38f9218))
+- *(editor)* Storage encoding chip and an absolute expiry picker - ([0c0f47c](https://github.com/vicanso/zedis/commit/0c0f47c27bcb728d6a598732851ad471637be170))
+- *(key-tree)* Sort, flat list, regex keyword and Shift range select - ([b321dc3](https://github.com/vicanso/zedis/commit/b321dc3730e21e54f32578e124929c5dabfa3807))
+- *(memory)* Type/encoding shares, module type names, prefix drill-down - ([88bc7c3](https://github.com/vicanso/zedis/commit/88bc7c3ba1f1147dd5b047315f2c093e3cfe6c9e))
+- *(metrics)* MEMORY/LATENCY DOCTOR, CSV export, and paired net/client charts - ([cb5371c](https://github.com/vicanso/zedis/commit/cb5371c52f9ee556eccb677ce4e1966c5859a232))
+- *(migration)* Copy keys server-to-server through DUMP/RESTORE and compare a prefix across two databases - ([d756dbc](https://github.com/vicanso/zedis/commit/d756dbc4e0741d549e878db53b4f6cd061d327db))
+- *(pubsub)* Browse active channels and export received messages - ([c37a72c](https://github.com/vicanso/zedis/commit/c37a72cb090f5ee3e0f9421d92a2e1856dc96b7a))
+- *(release)* Authenticode-sign the Windows exe and MSI through SignPath - ([4ff4db9](https://github.com/vicanso/zedis/commit/4ff4db96ec7e715351f0d208c5fc59a2df0c6e7d))
+- *(search)* Index size, TAG values, and SPELLCHECK suggestions - ([9c8ff71](https://github.com/vicanso/zedis/commit/9c8ff71700b8cd662eaa83e85e0ac862e0a14be8))
+- *(slowlog)* Valkey 8.1 COMMANDLOG — large-request and large-reply logs - ([3d8b52d](https://github.com/vicanso/zedis/commit/3d8b52dc698acaa0e6af09145f435460e14eed94))
+- *(topology)* Standalone replication — REPLICAOF and FAILOVER - ([1f88467](https://github.com/vicanso/zedis/commit/1f88467246a8851425473491b0cf2cb3a1717b5f))
+- Keepalive for dedicated links, Pub/Sub status line, server clone and sort - ([7517ce5](https://github.com/vicanso/zedis/commit/7517ce5e2759bc1adf9d3719d797e026f8eedf65))
+
+### 🐛 Bug Fixes
+
+- *(geo)* Send GEODIST's unit lowercase — Redis 6.2 rejects M - ([4f850f5](https://github.com/vicanso/zedis/commit/4f850f54416be42fbf06277a009335b52c9ccb2e))
+- *(key-tree)* Make the multi-selection visible and reversible - ([2a3ffa2](https://github.com/vicanso/zedis/commit/2a3ffa232a8008f906cd980998c53928f46f3fb2))
+- *(persistence)* Confirm BGSAVE with Run BGSAVE, not Delete ([#140](https://github.com/orhun/git-cliff/issues/140)) - ([6f05ba1](https://github.com/vicanso/zedis/commit/6f05ba1820ed9782f7820785c20ff70a72144d49))
+
+### 🚜 Refactor
+
+- *(key-tree)* Move key segmentation into zedis-core and bench it - ([cedc7fa](https://github.com/vicanso/zedis/commit/cedc7fa1107f137981d3656c67c49b8128d9768a))
+
+### 📚 Documentation
+
+- Pin the site and SECURITY.md to 0.9.0 - ([cd5105c](https://github.com/vicanso/zedis/commit/cd5105c892dfb2fb76299a2fe6274ad690c51020))
+
+### 🧪 Testing
+
+- *(live)* MTLS, credentialed sentinel and cluster, and an SSH tunnel - ([1ef0760](https://github.com/vicanso/zedis/commit/1ef0760a7742da867d77c7f2fdbfa4f780d56465))
+- *(live)* MTLS, credentialed sentinel and cluster, and an SSH tunnel - ([9b17c47](https://github.com/vicanso/zedis/commit/9b17c47184a11b9a78a6f9323acbb0ce097ca975))
+- *(live)* MTLS, credentialed sentinel and cluster, and an SSH tunnel - ([197ff38](https://github.com/vicanso/zedis/commit/197ff38df94f93016bccd697c505289d17c23e08))
+
+### ⚙️ Miscellaneous Tasks
+
+- Bump the pinned toolchain to 1.98.1 - ([f1a5af4](https://github.com/vicanso/zedis/commit/f1a5af4c7c10fe082c9df8d658eaa4504f945710))
+
+### Build
+
+- *(deps)* Bump toml in the minor-and-patch group ([#139](https://github.com/orhun/git-cliff/issues/139)) - ([96e6a1a](https://github.com/vicanso/zedis/commit/96e6a1a142be9245f77a4e2f41b964f59a0fc7cc))
+
 ## [0.9.0](https://github.com/vicanso/zedis/compare/v0.8.3..v0.9.0) - 2026-09-05
 
 ### ⛰️  Features
