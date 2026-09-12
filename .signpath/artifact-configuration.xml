@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for the Windows build. One configuration
+  serves both architectures: the x86_64 and aarch64 jobs each submit a
+  GitHub Actions artifact with the same two file names.
+
+  The artifact is what publish.yml uploads right before it submits the
+  signing request. actions/upload-artifact zips zedis.exe and zedis.msi at
+  the archive root, hence the <zip-file> root element. Deep signing: the exe
+  embedded in the MSI is signed first, then the MSI itself; the standalone
+  exe (shipped as zedis-windows-<arch>.zip) is the same binary and is signed
+  as well.
+
+  Paths inside the MSI follow its directory table as an administrative
+  install (msiexec /a) lays it out: wix/main.wxs puts zedis.exe under
+  PFiles\zedis (ProgramFiles64Folder / ProgramFilesFolder, both named
+  PFiles, then APPLICATIONFOLDER). The "verify Authenticode signatures" step
+  of publish.yml prints that path from the signed MSI; if main.wxs ever
+  moves the file, update it here.
+
+  This file is the reviewed copy. SignPath reads the one pasted into
+  app.signpath.io -> project "zedis" -> Artifact configurations; keep the two
+  identical (see README.md next to this file).
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="zedis.exe">
+      <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+    </pe-file>
+    <msi-file path="zedis.msi">
+      <pe-file path="PFiles/zedis/zedis.exe">
+        <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+      </pe-file>
+      <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>

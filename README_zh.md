@@ -112,6 +112,8 @@ scoop bucket add extras
 scoop install zedis
 ```
 
+`.msi` 以及 `.zip` 里的 `.exe` 都带 Authenticode 签名，详见[代码签名策略](#-代码签名策略code-signing-policy)。
+
 ### Linux
 
 Arch Linux（AUR）：
@@ -136,6 +138,30 @@ cargo install --locked zedis-gui
 # 最新版：直接从 GitHub 源码编译（会解析 git 依赖）
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
+
+---
+
+## 🔏 代码签名策略（Code signing policy）
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+每个 release 附带的 Windows 二进制 —— `zedis-windows-*.msi`，以及 `zedis-windows-*.zip` 里的 `zedis.exe` —— 都使用 SignPath Foundation 的证书做了 Authenticode 签名。被签名的就是 GitHub Actions 从本仓库对应 tag 构建出的产物（[`publish.yml`](./.github/workflows/publish.yml)），每次发版都经人工审批后才签名。macOS 版本另行使用维护者的 Apple Developer ID 签名并公证。
+
+**团队**
+
+- 提交者与审阅者（committers / reviewers）：[@vicanso](https://github.com/vicanso)
+- 审批者（approvers）：[@vicanso](https://github.com/vicanso)
+
+团队之外的改动一律以 pull request 提交，由提交者审阅后合并。
+
+**隐私声明**
+
+本程序不会向其他联网系统传输任何信息，除非用户或安装、运行本程序的人明确要求；仅有以下两处例外，且都由你掌控：
+
+- **更新检查。** 启动时（最多每两天一次）Zedis 会从 GitHub Releases 下载发布清单，判断是否有新版本。请求只带应用版本号（`User-Agent`），不含任何关于你、你的机器或数据的信息。可在 *设置 → 自动检查更新* 中关闭；新版本只有在你点击更新时才会下载。
+- **AI 助手。** 只有在 *设置 → AI 服务地址* 中填入了端点之后，你明确交给它的文本（命令描述、内存报告）才会发送到该端点，不会发往别处。
+
+你的 Redis 服务器、SSH 隧道和可选代理只连接到你指定的地址。Zedis 没有遥测，也不会上传崩溃报告：崩溃报告只保存在本地，直到你自己导出诊断包。
 
 ---
 

@@ -22,7 +22,7 @@ Instead, report privately via GitHub's [**Report a vulnerability**](https://gith
 We aim to acknowledge your report within a few days and will keep you updated as we work on a fix, coordinating disclosure timing with you.
 
 ### Scope
-Zedis is a **local desktop client** — it stores connection secrets encrypted at rest, keeps metadata (tags, notes, favorites, history) in a local file, and makes no outbound network calls unless you explicitly configure the optional AI analysis. Reports are especially welcome around:
+Zedis is a **local desktop client** — it stores connection secrets encrypted at rest, keeps metadata (tags, notes, favorites, history) in a local file, and its only unprompted outbound network call is the startup update check against GitHub Releases (off with one Settings switch); the optional AI analysis talks only to the endpoint you configure. The full privacy statement is in the README's [Code signing policy](./README.md#-code-signing-policy). Reports are especially welcome around:
 
 - connection-secret handling and the at-rest encryption,
 - TLS/SSL and SSH-tunnel handling,
@@ -62,7 +62,7 @@ exactly the kind we want.
 我们会争取在数日内确认你的报告,并在修复过程中持续同步进展,与你协调披露时间。
 
 ### 范围
-Zedis 是**本地桌面客户端** —— 连接密钥加密存储,元数据(标签、备注、收藏、历史)只存本地文件,且除非你显式配置可选的 AI 分析,否则不发起任何外发网络请求。以下方面的报告尤其欢迎:
+Zedis 是**本地桌面客户端** —— 连接密钥加密存储,元数据(标签、备注、收藏、历史)只存本地文件,唯一会主动发起的外发网络请求是启动时对 GitHub Releases 的更新检查(设置里一键关闭);可选的 AI 分析只连接你自己配置的端点。完整的隐私声明见 README 的[代码签名策略](./README_zh.md#-代码签名策略code-signing-policy)。以下方面的报告尤其欢迎:
 
 - 连接密钥的处理与静态加密;
 - TLS/SSL 与 SSH 隧道的处理;

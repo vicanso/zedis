@@ -6,8 +6,18 @@ on:
     # Daily nightly at 18:00 UTC (02:00 Beijing). Skipped when main has no
     # new commits since the last nightly — see the gate in prepare_vars.
     - cron: "0 18 * * *"
-  # Manual nightly (always builds, even without new commits).
+  # Manual nightly (always builds, even without new commits). The
+  # `signpath_policy` input runs the Windows code-signing steps against
+  # SignPath's self-signed test certificate — no approval needed — to exercise
+  # the pipeline end to end; tag pushes always sign with release-signing (see
+  # the windows job). Runbook: .signpath/README.md.
   workflow_dispatch:
+    inputs:
+      signpath_policy:
+        description: "Sign the Windows build via SignPath (test-signing = unapproved test certificate, pipeline dry run)"
+        type: choice
+        options: ["none", "test-signing"]
+        default: "none"
 
 env:
   # Baked into the binaries (startup::BUILD_CHANNEL): the rolling build from
@@ -273,6 +283,12 @@ jobs:
     needs: prepare_vars
     if: needs.prepare_vars.outputs.should_build == 'true'
     runs-on: windows-latest
+    # The SignPath action reads this run's job details and artifact with the
+    # default token; everything that writes (asset uploads, the nightly
+    # release) authenticates with the GH_TOKEN PAT instead.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -306,6 +322,130 @@ jobs:
           cargo wix --nocapture --no-build -p zedis-gui --target ${{ matrix.target }}
           ls target/wix/*
           mv target/wix/zedis-*.msi ./zedis.msi
+      - name: resolve SignPath policy
+        # Which SignPath signing policy this build uses, if any:
+        #   tag push          → release-signing: the SignPath Foundation
+        #                       certificate, approved by hand on app.signpath.io
+        #                       (the submit step below waits for that click)
+        #   workflow_dispatch → the `signpath_policy` input (test-signing =
+        #                       self-signed test certificate, no approval —
+        #                       exercises the whole pipeline)
+        #   nightly           → unsigned
+        # The repository variable SIGNPATH_ORGANIZATION_ID is the on-switch.
+        # Unset (SignPath onboarding not finished) ships an unsigned build with
+        # a warning, so releases keep working before the application is
+        # approved; set without the API-token secret is a misconfiguration.
+        id: signpath
+        shell: bash
+        env:
+          ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+          DISPATCH_POLICY: ${{ github.event.inputs.signpath_policy }}
+        run: |
+          policy=""
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            policy="release-signing"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${DISPATCH_POLICY:-none}" != "none" ]; then
+            policy="$DISPATCH_POLICY"
+          fi
+          if [ -n "$policy" ] && [ -z "$ORGANIZATION_ID" ]; then
+            echo "::warning::SIGNPATH_ORGANIZATION_ID is not set — shipping an unsigned Windows build"
+            policy=""
+          fi
+          if [ -n "$policy" ] && [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::SIGNPATH_ORGANIZATION_ID is set but the SIGNPATH_API_TOKEN secret is missing"
+            exit 1
+          fi
+          echo "policy=$policy" >> "$GITHUB_OUTPUT"
+          echo "SignPath policy: ${policy:-<none, unsigned build>}"
+      - name: upload unsigned build for signing
+        # SignPath signs a GitHub Actions artifact, never a file handed to it
+        # directly: the artifact is what its GitHub App verifies as built by
+        # this run of this repository. upload-artifact zips both files at the
+        # archive root — the <zip-file> layout .signpath/artifact-configuration.xml
+        # describes. The run attempt in the name lets a re-run of a timed-out
+        # job upload afresh (artifact names are unique per run).
+        if: steps.signpath.outputs.policy != ''
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-unsigned-${{ matrix.suffix }}-${{ github.run_attempt }}
+          path: |
+            zedis.exe
+            zedis.msi
+          if-no-files-found: error
+          retention-days: 3
+      - name: submit SignPath signing request
+        # release-signing parks here until an approver clicks Approve on
+        # app.signpath.io — one request per architecture, 30 minutes each
+        # before the step times out (re-run the job to resubmit).
+        # test-signing needs no approval and returns within a minute.
+        if: steps.signpath.outputs.policy != ''
+        id: signpath_request
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: zedis
+          signing-policy-slug: ${{ steps.signpath.outputs.policy }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: signed
+      - name: install signed binaries
+        # The signed zip is extracted into ./signed. From here on zedis.exe and
+        # zedis.msi are the signed ones, so the smoke test, the zips, the
+        # checksums and latest.json all describe what ships.
+        if: steps.signpath.outputs.policy != ''
+        shell: pwsh
+        run: |
+          foreach ($f in @("zedis.exe", "zedis.msi")) {
+            if (-not (Test-Path "signed/$f")) {
+              Write-Host "::error::signed artifact is missing $f"
+              exit 1
+            }
+            Copy-Item -Force "signed/$f" $f
+          }
+          Write-Host "signing request: ${{ steps.signpath_request.outputs.signing-request-web-url }}"
+      - name: verify Authenticode signatures
+        # signtool verify /pa is the Windows default authentication policy:
+        # the signature chains to a trusted root and carries its timestamp.
+        # The exe inside the MSI is checked too, through an administrative
+        # install (msiexec /a lays the payload out without installing
+        # anything) — that is what catches a wrong nested path in the artifact
+        # configuration, and the printed path is the one that file must use.
+        # The test certificate chains to no trusted root, so under test-signing
+        # the failures are reported but do not fail the job.
+        if: steps.signpath.outputs.policy != ''
+        shell: pwsh
+        env:
+          STRICT: ${{ steps.signpath.outputs.policy == 'release-signing' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { Write-Host "::error::signtool.exe not found in the Windows SDK"; exit 1 }
+
+          $msi = (Resolve-Path zedis.msi).Path
+          $layout = Join-Path $env:RUNNER_TEMP "msi-layout"
+          $p = Start-Process msiexec -ArgumentList @("/a", "`"$msi`"", "/qn", "TARGETDIR=`"$layout`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Host "::error::administrative install of zedis.msi failed: $($p.ExitCode)"; exit 1 }
+          $inner = Get-ChildItem $layout -Recurse -Filter zedis.exe | Select-Object -First 1
+          if (-not $inner) { Write-Host "::error::zedis.exe not found inside zedis.msi"; exit 1 }
+          Write-Host "zedis.exe inside the MSI: $($inner.FullName.Substring($layout.Length + 1))"
+
+          $failed = 0
+          foreach ($f in @("zedis.exe", "zedis.msi", $inner.FullName)) {
+            & $signtool.FullName verify /pa /v $f
+            if ($LASTEXITCODE -ne 0) {
+              $failed++
+              Write-Host "::warning::signature verification failed: $f"
+            }
+          }
+          if ($failed -eq 0) { Write-Host "all signatures verified"; exit 0 }
+          if ($env:STRICT -eq "true") { Write-Host "::error::$failed signature(s) failed to verify"; exit 1 }
+          Write-Host "test-signing: $failed verification failure(s) expected (test certificate is not trusted)"
+          exit 0
       - name: smoke test (first frame must paint)
         # x86_64 only: the aarch64 build is cross-compiled and cannot run on
         # this runner. GUI-subsystem exes detach from the shell, so

@@ -114,6 +114,8 @@ scoop bucket add extras
 scoop install zedis
 ```
 
+The `.msi` and the `.exe` in the `.zip` are Authenticode-signed — see the [Code signing policy](#-code-signing-policy).
+
 ### Linux
 
 Arch Linux (AUR):
@@ -139,6 +141,30 @@ cargo install --locked zedis-gui
 # Latest: build straight from GitHub (resolves the git dependencies)
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
+
+---
+
+## 🔏 Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+The Windows binaries attached to each release — `zedis-windows-*.msi` and the `zedis.exe` inside `zedis-windows-*.zip` — are Authenticode-signed with the SignPath Foundation certificate. What gets signed is exactly what GitHub Actions built from the tagged commit of this repository ([`publish.yml`](./.github/workflows/publish.yml)), and every release is approved by hand before it is signed. macOS builds are signed and notarized separately with the maintainer's Apple Developer ID.
+
+**Team**
+
+- Committers and reviewers: [@vicanso](https://github.com/vicanso)
+- Approvers: [@vicanso](https://github.com/vicanso)
+
+Changes from outside the team arrive as pull requests and are reviewed by a committer before they are merged.
+
+**Privacy policy**
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it, with two exceptions, both under your control:
+
+- **Update check.** On startup, at most once every two days, Zedis downloads the release manifest from GitHub Releases to learn whether a newer version exists. The request carries nothing but the app version in its `User-Agent` — nothing about you, your machine or your data. Turn it off with *Settings → Check for Updates Automatically*; a new version is only downloaded when you click Update.
+- **AI assistant.** Only after you enter an endpoint under *Settings → AI Base URL*, the text you explicitly hand it — a command description, a memory report — is sent to that endpoint and nowhere else.
+
+Your Redis servers, SSH tunnels and the optional proxy connect only where you point them. Zedis has no telemetry and sends no crash reports: they stay on disk until you export a diagnostics bundle yourself.
 
 ---
 
