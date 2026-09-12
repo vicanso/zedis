@@ -15,20 +15,24 @@
 //! Criterion benches for the pure hot paths behind the "millions of keys
 //! at 60 FPS" pitch: fuzzy matching (the ⌘K / ⌘P palettes re-score every
 //! loaded key per keystroke), RDB parsing (the offline memory analyzer
-//! walks whole dump files) and JSONPath evaluation (re-run per render
-//! while a path is active — parse included, matching the app's call
-//! shape). Run with `make bench` and compare reports before/after
+//! walks whole dump files), JSONPath evaluation (re-run per render while
+//! a path is active — parse included, matching the app's call shape) and
+//! key segmentation (the key-tree build splits every loaded key once per
+//! rebuild). Run with `make bench` and compare reports before/after
 //! touching these paths; `make lint` (clippy `--all-targets`) keeps the
 //! benches compiling.
 //!
-//! The fourth hot path — the key-tree build (`new_key_tree_items`) —
-//! lives in the binary crate on gpui types, so a bench target cannot
-//! import it; add it here if it ever moves into a library crate.
+//! Key segmentation is the inner loop of the key-tree build. The build
+//! itself (`new_key_tree_items`) stays in the binary crate because its
+//! rows are gpui view models, but the per-key work it repeats — and the
+//! only part whose cost grows with the keyspace — is `key_segments`,
+//! which lives here and is benched directly.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use zedis_core::fuzzy::{fuzzy_score_prepared, prepare_fuzzy_query};
 use zedis_core::jsonpath::run_jsonpath;
+use zedis_core::key_segments::{folder_prefixes, split_key_segments};
 use zedis_core::rdb::RdbParser;
 
 /// Realistic key names in the shapes the tree and palettes see.
@@ -110,5 +114,59 @@ fn bench_jsonpath(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_fuzzy, bench_rdb, bench_jsonpath);
+/// Keys whose separators are *not* all level boundaries: a cluster hash tag,
+/// an ISO timestamp and an embedded JSON blob each hold the scanner in a
+/// suppressed run, and the unbalanced brace pays a second full pass (the
+/// fallback rescan). Real keyspaces mix these in with the plain ones.
+fn awkward_key_corpus() -> Vec<String> {
+    (0..10_000)
+        .map(|i| match i % 4 {
+            0 => format!("user:{{tenant:{i}}}:profile"),
+            1 => format!("evt:2022-05-11T11:55:44.487892+00:00:{i}"),
+            2 => format!(r#"item:{i}/{{"name":"x","at":"12:13:05"}}"#),
+            _ => format!("broken:{{{i}:unclosed"),
+        })
+        .collect()
+}
+
+/// One key-tree rebuild's segmentation pass. Every loaded key is split once
+/// per rebuild — an expand/collapse, a filter change or a new SCAN page all
+/// pay this — so it is the part of the build whose cost tracks the keyspace.
+fn bench_key_segments(c: &mut Criterion) {
+    let plain = key_corpus();
+    c.bench_function("key_segments_split_10k", |b| {
+        b.iter(|| {
+            let mut segments = 0usize;
+            for key in &plain {
+                segments += split_key_segments(black_box(key), ":", 10).len();
+            }
+            black_box(segments)
+        })
+    });
+
+    let awkward = awkward_key_corpus();
+    c.bench_function("key_segments_split_10k_awkward", |b| {
+        b.iter(|| {
+            let mut segments = 0usize;
+            for key in &awkward {
+                segments += split_key_segments(black_box(key), ":", 10).len();
+            }
+            black_box(segments)
+        })
+    });
+
+    // The allocating variant: the tag-aggregate pass walks a key's folder
+    // prefixes, so this one is String-bound where the splits above are not.
+    c.bench_function("key_segments_folder_prefixes_10k", |b| {
+        b.iter(|| {
+            let mut prefixes = 0usize;
+            for key in &plain {
+                prefixes += folder_prefixes(black_box(key), ":", 10).len();
+            }
+            black_box(prefixes)
+        })
+    });
+}
+
+criterion_group!(benches, bench_fuzzy, bench_rdb, bench_jsonpath, bench_key_segments);
 criterion_main!(benches);

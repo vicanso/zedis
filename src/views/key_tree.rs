@@ -22,8 +22,9 @@ use crate::{
         get_search_history_manager, recent_keys_scope,
     },
     helpers::{
-        EditorAction, TtlFilter, format_ttl_chip, get_mono_font_family, group_thousands, humanize_keystroke,
-        parse_duration, theme_color_for_tag, ttl_chip_kind, validate_long_string, validate_ttl,
+        EditorAction, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
+        humanize_keystroke, parse_duration, split_key_segments, theme_color_for_tag, ttl_chip_kind,
+        validate_long_string, validate_ttl,
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, ProbKind, QueryMode, ServerEvent, ServerView, ZedisGlobalStore,

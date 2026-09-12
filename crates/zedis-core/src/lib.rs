@@ -28,6 +28,7 @@ pub mod fuzzy;
 pub mod hex;
 pub mod json;
 pub mod jsonpath;
+pub mod key_segments;
 pub mod keysizes;
 pub mod rdb;
 pub mod replication;

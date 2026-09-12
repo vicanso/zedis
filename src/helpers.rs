@@ -69,5 +69,6 @@ pub use zedis_core::hex::{bytes_to_hex_text, parse_hex_text};
 pub use zedis_core::jsonpath::{
     JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
 };
+pub use zedis_core::key_segments::{folder_prefixes, split_key_segments};
 pub use zedis_core::ttl::{TtlFilter, format_ttl_chip, ttl_chip_kind};
 pub use zedis_core::validate::*;

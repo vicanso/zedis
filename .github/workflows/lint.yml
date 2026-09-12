@@ -125,6 +125,47 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # Coverage is an informational signal here, never a gate — there is no
+  # threshold and the job cannot fail the workflow.
+  #
+  # Scoped to the three library crates on purpose. The GUI crate is mostly
+  # `views/` render code that no unit test can meaningfully execute, so a
+  # workspace-wide percentage would be dominated by code that is
+  # deliberately uncovered, and chasing it would buy tests written to move
+  # a number. Read this per PR as "did this change add logic that nothing
+  # exercises?", not as a target to raise.
+  coverage:
+    name: coverage (lib crates)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: llvm-tools-preview
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-coverage
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: coverage
+        # The live integration tests in zedis-connection are #[ignore]d, so
+        # this measures the mocked/pure suites only — the same set `make
+        # test` runs.
+        run: |
+          cargo llvm-cov --summary-only \
+            -p zedis-core -p zedis-connection -p zedis-db \
+            | tee coverage.txt
+          {
+            echo "### Coverage — library crates"
+            echo ""
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   windows:
     name: windows-x86_64
     runs-on: windows-latest
