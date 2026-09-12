@@ -89,6 +89,7 @@ pub use server::cluster::{
     ClusterMasterRanges, ClusterNodeLoad, RebalanceLeg, fetch_cluster_node_loads, fetch_slot_migrations,
     plan_cluster_rebalance_moves, plan_cluster_reshard, source_owners_for_slots,
 };
+pub use server::element::KvElement;
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
 // Used by the value-diff view to render the same RFC 7396 merge patch

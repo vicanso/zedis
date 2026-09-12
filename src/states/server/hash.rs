@@ -23,6 +23,7 @@
 
 use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
+    element::KvElement,
     value::{RedisHashValue, RedisValue, RedisValueStatus},
 };
 use crate::helpers::unix_ts;
@@ -34,6 +35,7 @@ use crate::{
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_hash_editor},
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::{HashMap, HashSet};
@@ -63,7 +65,7 @@ async fn get_redis_hash_value(
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<(SharedString, SharedString)>)> {
+) -> Result<(u64, Vec<(KvElement, KvElement)>)> {
     // Build pattern: wrap keyword with wildcards or match all fields
     let pattern = keyword
         .as_ref()
@@ -86,15 +88,10 @@ async fn get_redis_hash_value(
         return Ok((next_cursor, vec![]));
     }
 
-    // Convert bytes to UTF-8 strings (lossy conversion for non-UTF8 data)
+    // The bytes stay as answered; the text each shows is decoded from them.
     let values = raw_values
-        .iter()
-        .map(|(field, value)| {
-            (
-                SharedString::new(String::from_utf8_lossy(field)),
-                SharedString::new(String::from_utf8_lossy(value)),
-            )
-        })
+        .into_iter()
+        .map(|(field, value)| (KvElement::from_raw(field), KvElement::from_raw(value)))
         .collect();
 
     Ok((next_cursor, values))
@@ -107,7 +104,7 @@ async fn get_redis_hash_value(
 async fn get_hash_field_ttls(
     conn: &mut RedisAsyncConn,
     key: &str,
-    fields: &[SharedString],
+    fields: &[KvElement],
 ) -> Result<HashMap<SharedString, i64>> {
     if fields.is_empty() {
         return Ok(HashMap::new());
@@ -115,14 +112,14 @@ async fn get_hash_field_ttls(
     let mut c = cmd("HTTL");
     c.arg(key).arg("FIELDS").arg(fields.len());
     for field in fields {
-        c.arg(field.as_ref());
+        c.arg(field.raw().as_ref());
     }
     let ttls: Vec<i64> = c.query_async(conn).await?;
     let map = fields
         .iter()
         .zip(ttls.iter())
         .filter(|(_, ttl)| **ttl >= 0)
-        .map(|(field, ttl)| (field.clone(), *ttl))
+        .map(|(field, ttl)| (field.text().clone(), *ttl))
         .collect();
     Ok(map)
 }
@@ -154,7 +151,7 @@ pub(crate) async fn first_load_hash_value(
     let done = cursor == 0;
 
     let field_ttls = if supports_field_ttl {
-        let field_names: Vec<SharedString> = values.iter().map(|(f, _)| f.clone()).collect();
+        let field_names: Vec<KvElement> = values.iter().map(|(f, _)| f.clone()).collect();
         get_hash_field_ttls(conn, key, &field_names).await.unwrap_or_else(|e| {
             debug!(error = %e, "hash field TTLs unavailable, showing none");
             HashMap::new()
@@ -267,11 +264,12 @@ impl ZedisServerState {
         // overwrite of an unloaded field is logged as an operation instead:
         // its old value is not known here, and guessing "added" would lie.
         let log_key = self.key.clone();
-        let loaded_old = self
-            .value
-            .as_ref()
-            .and_then(|v| v.hash_value())
-            .and_then(|h| h.values.iter().find(|(f, _)| f == &field).map(|(_, v)| v.to_string()));
+        let loaded_old = self.value.as_ref().and_then(|v| v.hash_value()).and_then(|h| {
+            h.values
+                .iter()
+                .find(|(f, _)| f.raw().as_ref() == field.as_bytes())
+                .map(|(_, v)| v.text().to_string())
+        });
         let log_field = field.to_string();
         let log_value = value.to_string();
         self.exec_hash_op(
@@ -280,7 +278,7 @@ impl ZedisServerState {
             |_| {}, // Wait for server confirmation to avoid duplicate UI entries during scan
             move |key, mut conn| async move {
                 let created =
-                    write_hash_field(&mut conn, &key, field.as_str(), value.as_str(), field_ttl, atomic).await?;
+                    write_hash_field(&mut conn, &key, field.as_bytes(), value.as_bytes(), field_ttl, atomic).await?;
                 Ok(usize::from(created))
             },
             move |this, count, cx| {
@@ -299,13 +297,19 @@ impl ZedisServerState {
                     let hash = Arc::make_mut(hash_data);
                     hash.size += count;
                     // Optimistically append if we are at the end of the scan
-                    if hash.done && !hash.values.iter().any(|(f, _)| f == &field_clone) {
+                    if hash.done
+                        && !hash
+                            .values
+                            .iter()
+                            .any(|(f, _)| f.raw().as_ref() == field_clone.as_bytes())
+                    {
                         if let Some(secs) = ttl
                             && secs > 0
                         {
                             hash.field_ttls.insert(field_clone.clone(), secs);
                         }
-                        hash.values.push((field_clone, value_clone));
+                        hash.values
+                            .push((KvElement::from_text(&field_clone), KvElement::from_text(&value_clone)));
                     }
                     if hash.size > SUCCESS_NOTIFY_THRESHOLD {
                         this.emit_success_notification(
@@ -326,23 +330,25 @@ impl ZedisServerState {
     /// value.
     ///
     /// # Arguments
-    /// * `old_field` - The current field name (before any rename)
-    /// * `new_field` - The new field name (same as `old_field` when not renaming)
-    /// * `new_value` - The new value to store
+    /// * `old_field` - The field as loaded (its bytes name it to the server)
+    /// * `new_field` - The field's bytes after the edit (the same when not renaming)
+    /// * `new_value` - The value's bytes after the edit
     /// * `ttl`       - `Some(secs)` sets a TTL, `Some(-1)` removes it, `None` leaves it unchanged
     /// * `cx`        - GPUI context
     pub fn update_hash_value(
         &mut self,
-        old_field: SharedString,
-        new_field: SharedString,
-        new_value: SharedString,
+        old_field: KvElement,
+        new_field: Bytes,
+        new_value: Bytes,
         ttl: Option<i64>,
         cx: &mut Context<Self>,
     ) {
+        let new_field = KvElement::from_raw(new_field);
+        let new_value = KvElement::from_raw(new_value);
         let old_field_clone = old_field.clone();
         let new_field_clone = new_field.clone();
         let new_value_clone = new_value.clone();
-        let is_rename = old_field != new_field;
+        let is_rename = old_field.raw() != new_field.raw();
         let atomic = self.hsetex_available();
         let field_ttl = FieldTtl::from_editor(ttl);
 
@@ -350,26 +356,26 @@ impl ZedisServerState {
         let log_old_value = self.value.as_ref().and_then(|v| v.hash_value()).and_then(|h| {
             h.values
                 .iter()
-                .find(|(f, _)| f == &old_field)
-                .map(|(_, v)| v.to_string())
+                .find(|(f, _)| f.raw() == old_field.raw())
+                .map(|(_, v)| v.text().to_string())
         });
-        let log_old_field = old_field.to_string();
-        let log_new_field = new_field.to_string();
-        let log_new_value = new_value.to_string();
+        let log_old_field = old_field.text().to_string();
+        let log_new_field = new_field.text().to_string();
+        let log_new_value = new_value.text().to_string();
         self.exec_hash_op(
             ServerTask::UpdateHashField,
             cx,
             move |hash| {
                 // Optimistic UI update: replace field entry
-                if let Some(pos) = hash.values.iter().position(|(f, _)| f == &old_field_clone) {
+                if let Some(pos) = hash.values.iter().position(|(f, _)| f.raw() == old_field_clone.raw()) {
                     hash.values[pos] = (new_field_clone.clone(), new_value_clone);
                 }
                 // Optimistic TTL update
                 if let Some(t) = ttl {
                     if t > 0 {
-                        hash.field_ttls.insert(new_field_clone, t);
+                        hash.field_ttls.insert(new_field_clone.text().clone(), t);
                     } else {
-                        hash.field_ttls.remove(&new_field_clone);
+                        hash.field_ttls.remove(new_field_clone.text());
                     }
                 }
             },
@@ -378,30 +384,22 @@ impl ZedisServerState {
                     rename_hash_field(
                         &mut conn,
                         &key,
-                        old_field.as_str(),
-                        new_field.as_str(),
-                        new_value.as_str(),
+                        old_field.raw(),
+                        new_field.raw(),
+                        new_value.raw(),
                         field_ttl,
                         atomic,
                     )
                     .await?;
                 } else {
-                    write_hash_field(
-                        &mut conn,
-                        &key,
-                        new_field.as_str(),
-                        new_value.as_str(),
-                        field_ttl,
-                        atomic,
-                    )
-                    .await?;
+                    write_hash_field(&mut conn, &key, new_field.raw(), new_value.raw(), field_ttl, atomic).await?;
                 }
                 Ok(())
             },
             move |this, _, cx| {
                 if let Some(log_key) = log_key {
                     let at = unix_ts();
-                    let entries = if log_old_field == log_new_field {
+                    let entries = if !is_rename {
                         vec![ChangeEntry::element(
                             at,
                             log_new_field,
@@ -455,29 +453,29 @@ impl ZedisServerState {
     /// Redis field count and the local UI state.
     ///
     /// # Arguments
-    /// * `remove_field` - The field name to remove from the HASH
+    /// * `remove_field` - The field to remove, as loaded
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn remove_hash_value(&mut self, remove_field: SharedString, cx: &mut Context<Self>) {
+    pub fn remove_hash_value(&mut self, remove_field: KvElement, cx: &mut Context<Self>) {
         let remove_field_clone = remove_field.clone();
         let log_key = self.key.clone();
         let log_old = self.value.as_ref().and_then(|v| v.hash_value()).and_then(|h| {
             h.values
                 .iter()
-                .find(|(f, _)| f == &remove_field)
-                .map(|(_, v)| v.to_string())
+                .find(|(f, _)| f.raw() == remove_field.raw())
+                .map(|(_, v)| v.text().to_string())
         });
-        let log_field = remove_field.to_string();
+        let log_field = remove_field.text().to_string();
         self.exec_hash_op(
             ServerTask::RemoveHashField,
             cx,
             move |hash| {
                 hash.size = hash.size.saturating_sub(1);
-                hash.values.retain(|(f, _)| f != &remove_field_clone);
+                hash.values.retain(|(f, _)| f.raw() != remove_field_clone.raw());
             },
             move |key, mut conn| async move {
                 let count: usize = cmd("HDEL")
                     .arg(&key)
-                    .arg(remove_field.as_str())
+                    .arg(remove_field.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
@@ -499,7 +497,7 @@ impl ZedisServerState {
     /// Removes several fields in one `HDEL` — the table's multi-select
     /// delete. One round trip and one optimistic update rather than N of
     /// each.
-    pub fn remove_hash_values(&mut self, remove_fields: Vec<SharedString>, cx: &mut Context<Self>) {
+    pub fn remove_hash_values(&mut self, remove_fields: Vec<KvElement>, cx: &mut Context<Self>) {
         if remove_fields.is_empty() {
             return;
         }
@@ -509,27 +507,30 @@ impl ZedisServerState {
             remove_fields
                 .iter()
                 .map(|field| {
-                    let old = loaded
-                        .as_ref()
-                        .and_then(|h| h.values.iter().find(|(f, _)| f == field).map(|(_, v)| v.to_string()));
-                    (field.to_string(), old)
+                    let old = loaded.as_ref().and_then(|h| {
+                        h.values
+                            .iter()
+                            .find(|(f, _)| f.raw() == field.raw())
+                            .map(|(_, v)| v.text().to_string())
+                    });
+                    (field.text().to_string(), old)
                 })
                 .collect()
         };
-        let gone: HashSet<SharedString> = remove_fields.iter().cloned().collect();
+        let gone: HashSet<Bytes> = remove_fields.iter().map(|field| field.raw().clone()).collect();
         self.exec_hash_op(
             ServerTask::RemoveHashField,
             cx,
             move |hash| {
                 let before = hash.values.len();
-                hash.values.retain(|(field, _)| !gone.contains(field));
+                hash.values.retain(|(field, _)| !gone.contains(field.raw()));
                 hash.size = hash.size.saturating_sub(before - hash.values.len());
             },
             move |key, mut conn| async move {
                 let mut command = cmd("HDEL");
                 command.arg(&key);
                 for field in &remove_fields {
-                    command.arg(field.as_str());
+                    command.arg(field.raw().as_ref());
                 }
                 let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)
@@ -587,7 +588,7 @@ impl ZedisServerState {
                 let (new_cursor, new_values) = get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await?;
 
                 let ttls = if supports_field_ttl && !new_values.is_empty() {
-                    let fields: Vec<SharedString> = new_values.iter().map(|(f, _)| f.clone()).collect();
+                    let fields: Vec<KvElement> = new_values.iter().map(|(f, _)| f.clone()).collect();
                     get_hash_field_ttls(&mut conn, &key, &fields).await.unwrap_or_else(|e| {
                         debug!(error = %e, "hash field TTLs unavailable, showing none");
                         HashMap::new()

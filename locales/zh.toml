@@ -614,6 +614,11 @@ bulk_add_placeholder_list = "每行一个值"
 bulk_add_placeholder_set = "每行一个成员"
 bulk_add_success = "已添加 %{count} 行"
 bulk_add_empty = "没有要添加的内容 — 至少粘贴一行。"
+binary_hex_hint = "二进制——以十六进制显示和编辑，写回的是这些字节。"
+hex_invalid = "不是合法的十六进制——两位一组，可以有空格。"
+preview_decoded = "解码"
+preview_hex = "十六进制"
+preview_format = "识别为：%{format}"
 
 [settings]
 http_proxy = "HTTP 代理"

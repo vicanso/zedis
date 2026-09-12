@@ -615,6 +615,11 @@ bulk_add_placeholder_list = "одно значение в строке"
 bulk_add_placeholder_set = "один элемент в строке"
 bulk_add_success = "Добавлено строк: %{count}"
 bulk_add_empty = "Нечего добавлять — вставьте хотя бы одну строку."
+binary_hex_hint = "Двоичные данные — показаны и редактируются как hex; байты записываются как введены."
+hex_invalid = "Некорректный hex — пары шестнадцатеричных цифр, пробелы допустимы."
+preview_decoded = "Декодировано"
+preview_hex = "Hex"
+preview_format = "Распознано: %{format}"
 
 [settings]
 http_proxy = "HTTP-прокси"

@@ -45,6 +45,7 @@ use value::{KeyType, RedisValue, RedisValueData};
 use zedis_core::change_log::ChangeEntry;
 
 pub mod cluster;
+pub mod element;
 pub mod event;
 pub mod hash;
 pub mod history;

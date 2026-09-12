@@ -14,6 +14,7 @@
 
 use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
+    element::KvElement,
     value::{RedisListValue, RedisValue, RedisValueStatus},
 };
 use crate::helpers::unix_ts;
@@ -22,6 +23,7 @@ use crate::{
     error::Error,
     states::ServerEvent,
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
@@ -30,25 +32,15 @@ use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Fetch a range of elements from a Redis List.
-///
-/// Returns a vector of strings. Binary data is lossily converted to UTF-8.
+/// Fetch a range of elements from a Redis List, bytes kept as answered.
 async fn get_redis_list_value(
     conn: &mut RedisAsyncConn,
     key: &str,
     start: usize,
     stop: usize,
-) -> Result<Vec<SharedString>> {
-    // Fetch raw bytes to handle binary data safely
+) -> Result<Vec<KvElement>> {
     let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(start).arg(stop).query_async(conn).await?;
-    if value.is_empty() {
-        return Ok(vec![]);
-    }
-    let value: Vec<SharedString> = value
-        .iter()
-        .map(|v| SharedString::new(String::from_utf8_lossy(v)))
-        .collect();
-    Ok(value)
+    Ok(value.into_iter().map(KvElement::from_raw).collect())
 }
 
 /// Initial load for a List key.
@@ -158,7 +150,7 @@ impl ZedisServerState {
             .value
             .as_ref()
             .and_then(|v| v.list_value())
-            .and_then(|l| l.values.get(index).map(|v| v.to_string()));
+            .and_then(|l| l.values.get(index).map(|v| v.text().to_string()));
         // Note: For List removal, rollback requires the original value.
         // In this simplified version, we focus on the shared structure.
         self.exec_list_op(
@@ -218,7 +210,9 @@ impl ZedisServerState {
                 .map(|i| {
                     (
                         *i,
-                        loaded.as_ref().and_then(|l| l.values.get(*i).map(|v| v.to_string())),
+                        loaded
+                            .as_ref()
+                            .and_then(|l| l.values.get(*i).map(|v| v.text().to_string())),
                     )
                 })
                 .collect()
@@ -259,7 +253,7 @@ impl ZedisServerState {
     /// Pushes a new value to the list (LPUSH or RPUSH).
     pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
         let is_lpush = mode == "1";
-        let val_clone = new_value.clone();
+        let val_clone = KvElement::from_text(&new_value);
         let log_key = self.key.clone();
         let log_value = new_value.to_string();
 
@@ -305,20 +299,15 @@ impl ZedisServerState {
     }
     /// Update a specific item in a Redis List.
     ///
-    /// Performs an optimistic lock check: verifies if the current value at `index`
-    /// matches `original_value` before updating.
-    pub fn update_list_value(
-        &mut self,
-        index: usize,
-        original: SharedString,
-        new: SharedString,
-        cx: &mut Context<Self>,
-    ) {
+    /// Performs an optimistic lock check: the element at `index` must still
+    /// hold `original`'s bytes before `new` is written.
+    pub fn update_list_value(&mut self, index: usize, original: KvElement, new: Bytes, cx: &mut Context<Self>) {
+        let new = KvElement::from_raw(new);
         let new_val = new.clone();
         let old_val = original.clone();
         let log_key = self.key.clone();
-        let log_old = original.to_string();
-        let log_new = new.to_string();
+        let log_old = original.text().to_string();
+        let log_new = new.text().to_string();
 
         self.exec_list_op(
             ServerTask::UpdateListValue,
@@ -330,8 +319,8 @@ impl ZedisServerState {
             },
             move |key, mut conn| async move {
                 // Optimistic check: Ensure value hasn't changed on server
-                let current: String = cmd("LINDEX").arg(&key).arg(index).query_async(&mut conn).await?;
-                if current != original.as_str() {
+                let current: Vec<u8> = cmd("LINDEX").arg(&key).arg(index).query_async(&mut conn).await?;
+                if current.as_slice() != original.raw().as_ref() {
                     return Err(Error::Invalid {
                         message: "Value changed on server".into(),
                     });
@@ -339,7 +328,7 @@ impl ZedisServerState {
                 let _: () = cmd("LSET")
                     .arg(&key)
                     .arg(index)
-                    .arg(new.as_str())
+                    .arg(new.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
                 Ok(())

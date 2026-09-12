@@ -53,7 +53,7 @@ impl FieldTtl {
 }
 
 /// `HSETEX key [KEEPTTL | EX secs] FIELDS 1 field value`.
-fn hsetex_cmd(key: &str, field: &str, value: &str, ttl: FieldTtl) -> Cmd {
+fn hsetex_cmd(key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) -> Cmd {
     let mut c = cmd("HSETEX");
     c.arg(key);
     match ttl {
@@ -71,7 +71,7 @@ fn hsetex_cmd(key: &str, field: &str, value: &str, ttl: FieldTtl) -> Cmd {
 
 /// The pre-8.0 shape: `HSET`, then whichever TTL command the decision
 /// needs (none for `Keep` — nothing can be kept once `HSET` ran).
-fn push_fallback(p: &mut Pipeline, key: &str, field: &str, value: &str, ttl: FieldTtl) {
+fn push_fallback(p: &mut Pipeline, key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) {
     p.cmd("HSET").arg(key).arg(field).arg(value);
     match ttl {
         FieldTtl::Expire(secs) => {
@@ -91,8 +91,8 @@ fn push_fallback(p: &mut Pipeline, key: &str, field: &str, value: &str, ttl: Fie
 pub async fn write_hash_field(
     conn: &mut RedisAsyncConn,
     key: &str,
-    field: &str,
-    value: &str,
+    field: &[u8],
+    value: &[u8],
     ttl: FieldTtl,
     atomic: bool,
 ) -> Result<bool> {
@@ -115,9 +115,9 @@ pub async fn write_hash_field(
 pub async fn rename_hash_field(
     conn: &mut RedisAsyncConn,
     key: &str,
-    old_field: &str,
-    new_field: &str,
-    value: &str,
+    old_field: &[u8],
+    new_field: &[u8],
+    value: &[u8],
     ttl: FieldTtl,
     atomic: bool,
 ) -> Result<()> {
@@ -162,15 +162,15 @@ mod tests {
     #[test]
     fn hsetex_spells_each_decision() {
         assert_eq!(
-            words(&hsetex_cmd("k", "f", "v", FieldTtl::Keep)),
+            words(&hsetex_cmd("k", b"f", b"v", FieldTtl::Keep)),
             ["HSETEX", "k", "KEEPTTL", "FIELDS", "1", "f", "v"]
         );
         assert_eq!(
-            words(&hsetex_cmd("k", "f", "v", FieldTtl::Expire(60))),
+            words(&hsetex_cmd("k", b"f", b"v", FieldTtl::Expire(60))),
             ["HSETEX", "k", "EX", "60", "FIELDS", "1", "f", "v"]
         );
         assert_eq!(
-            words(&hsetex_cmd("k", "f", "v", FieldTtl::Persist)),
+            words(&hsetex_cmd("k", b"f", b"v", FieldTtl::Persist)),
             ["HSETEX", "k", "FIELDS", "1", "f", "v"]
         );
     }
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn fallback_is_hset_then_the_ttl_command() {
         let mut p = pipe();
-        push_fallback(&mut p, "k", "f", "v", FieldTtl::Expire(60));
+        push_fallback(&mut p, "k", b"f", b"v", FieldTtl::Expire(60));
         assert_eq!(
             pipeline_words(&p),
             [
@@ -187,10 +187,10 @@ mod tests {
             ]
         );
         let mut p = pipe();
-        push_fallback(&mut p, "k", "f", "v", FieldTtl::Persist);
+        push_fallback(&mut p, "k", b"f", b"v", FieldTtl::Persist);
         assert_eq!(pipeline_words(&p)[1], ["HPERSIST", "k", "FIELDS", "1", "f"]);
         let mut p = pipe();
-        push_fallback(&mut p, "k", "f", "v", FieldTtl::Keep);
+        push_fallback(&mut p, "k", b"f", b"v", FieldTtl::Keep);
         assert_eq!(pipeline_words(&p).len(), 1, "nothing can keep a TTL after HSET");
     }
 }

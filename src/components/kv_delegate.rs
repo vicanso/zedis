@@ -14,10 +14,10 @@
 
 use super::{KvTableColumn, KvTableColumnType, select_offset};
 use crate::helpers::get_mono_font_family;
-use crate::states::{KeyType, RedisValue, ZedisServerState, i18n_common};
+use crate::states::{DataFormat, KeyType, KvElement, RedisValue, ZedisServerState, i18n_common};
 use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    IconName, StyledExt, WindowExt,
+    ActiveTheme, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -42,6 +42,13 @@ pub trait ZedisKvFetcher: 'static {
     /// editable format (e.g. a humanized duration vs. raw seconds).
     fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         self.get(row_ix, col_ix)
+    }
+
+    /// The element behind a cell — its bytes and how they decode — for the
+    /// types that keep one (hash, list, set, sorted set). `None` for a
+    /// derived column (a score, a TTL) and for types that do not.
+    fn element(&self, _row_ix: usize, _col_ix: usize) -> Option<KvElement> {
+        None
     }
 
     /// Returns the total count of items available.
@@ -447,10 +454,30 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .fetcher
             .get(row_ix, self.fetcher_col(col_ix))
             .unwrap_or_else(|| "--".into());
+        // Anything but plain text gets its format named beside it: the
+        // decoded ones (msgpack, gzip, …) so the shown JSON is not mistaken
+        // for what is stored, binary so the hex is.
+        let format_chip = self
+            .fetcher
+            .element(row_ix, self.fetcher_col(col_ix))
+            .map(|element| element.format())
+            .filter(|format| *format != DataFormat::Text);
+        let muted = cx.theme().muted_foreground;
         let group_name: SharedString = format!("td-{}-{}", row_ix, col_ix).into();
         let copied_message = i18n_common(cx, "copied_to_clipboard");
         base.group(group_name.clone())
             .overflow_hidden()
+            .when_some(format_chip, |this, format| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .mr_1()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(muted.opacity(0.18))
+                        .child(Label::new(format.as_str()).text_xs().text_color(muted)),
+                )
+            })
             .child(
                 Label::new(value.clone())
                     .text_align(column.align)

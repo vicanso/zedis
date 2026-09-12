@@ -615,6 +615,11 @@ bulk_add_placeholder_list = "Ein Wert pro Zeile"
 bulk_add_placeholder_set = "Ein Element pro Zeile"
 bulk_add_success = "%{count} Zeilen hinzugefügt"
 bulk_add_empty = "Nichts hinzuzufügen — bitte mindestens eine Zeile einfügen."
+binary_hex_hint = "Binär – als Hex angezeigt und bearbeitet; die Bytes werden so zurückgeschrieben."
+hex_invalid = "Kein gültiges Hex – Paare von Hexziffern, Leerzeichen erlaubt."
+preview_decoded = "Dekodiert"
+preview_hex = "Hex"
+preview_format = "Erkannt: %{format}"
 
 [settings]
 http_proxy = "HTTP-Proxy"

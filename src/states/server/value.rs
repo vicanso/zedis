@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::element::KvElement;
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::{HeatMetric, floors, get_connection_manager};
 use bytes::Bytes;
@@ -250,7 +251,7 @@ pub struct RedisSetValue {
     pub keyword: Option<SharedString>,
     pub cursor: u64,
     pub size: usize,
-    pub values: Vec<SharedString>,
+    pub values: Vec<KvElement>,
     pub done: bool,
 }
 
@@ -278,7 +279,7 @@ pub struct RedisZsetValue {
     pub keyword: Option<SharedString>,
     pub cursor: u64,
     pub size: usize,
-    pub values: Vec<(SharedString, f64)>,
+    pub values: Vec<(KvElement, f64)>,
     pub done: bool,
     pub sort_order: SortOrder,
     /// Active score window as `ZRANGEBYSCORE` spells it (`-inf`, `(5`, …).
@@ -299,8 +300,10 @@ pub struct RedisHashValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
     pub done: bool,
-    pub values: Vec<(SharedString, SharedString)>,
-    /// Per-field TTL in seconds (only populated on Redis 7.4+).
+    /// `(field, value)` pairs in `HSCAN` order.
+    pub values: Vec<(KvElement, KvElement)>,
+    /// Per-field TTL in seconds (only populated on Redis 7.4+), keyed by
+    /// the field's shown text.
     /// A field absent from this map has no expiry.
     pub field_ttls: HashMap<SharedString, i64>,
 }
@@ -310,7 +313,7 @@ pub struct RedisHashValue {
 pub struct RedisListValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
-    pub values: Vec<SharedString>,
+    pub values: Vec<KvElement>,
 }
 
 /// Structure: (Message ID, Vec<(Field, Value)>)

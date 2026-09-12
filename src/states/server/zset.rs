@@ -22,6 +22,7 @@
 //! - Support for ascending and descending sort orders
 //! - Efficient incremental loading for large ZSETs
 
+use super::element::KvElement;
 use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisValue, RedisValueStatus, RedisZsetValue, SortOrder},
@@ -33,6 +34,7 @@ use crate::{
     helpers::normalize_score_bound,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_zset_editor},
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::HashSet;
@@ -61,7 +63,7 @@ async fn get_redis_zset_value(
     sort_order: SortOrder,
     start: usize,
     stop: usize,
-) -> Result<Vec<(SharedString, f64)>> {
+) -> Result<Vec<(KvElement, f64)>> {
     // Choose command based on sort order
     let cmd_name = if sort_order == SortOrder::Asc {
         "ZRANGE"
@@ -83,13 +85,10 @@ async fn get_redis_zset_value(
         return Ok(vec![]);
     }
 
-    // Convert bytes to UTF-8 strings (lossy conversion for non-UTF8 data)
+    // The bytes stay as answered; the text each shows is decoded from them.
     let values = raw_values
-        .iter()
-        .map(|(name, score)| {
-            let name = SharedString::new(String::from_utf8_lossy(name));
-            (name, *score)
-        })
+        .into_iter()
+        .map(|(name, score)| (KvElement::from_raw(name), score))
         .collect();
 
     Ok(values)
@@ -115,7 +114,7 @@ async fn search_redis_zset_value(
     cursor: u64,
     pattern: &str,
     count: u64,
-) -> Result<(u64, Vec<(SharedString, f64)>)> {
+) -> Result<(u64, Vec<(KvElement, f64)>)> {
     // Execute ZSCAN with MATCH and COUNT options
     let (next_cursor, raw_values): (u64, Vec<Vec<u8>>) = cmd("ZSCAN")
         .arg(key)
@@ -134,17 +133,10 @@ async fn search_redis_zset_value(
 
     // ZSCAN returns alternating member/score pairs, process in chunks of 2
     let mut values = Vec::with_capacity(raw_values.len() / 2);
-    for chunk in raw_values.chunks(2) {
-        let member = &chunk[0];
-        let score_bytes = &chunk[1];
-
-        // Parse score from bytes
-        let score_str = String::from_utf8_lossy(score_bytes);
-        let score = score_str.parse::<f64>().unwrap_or_default();
-
-        // Convert member to string
-        let name = SharedString::new(String::from_utf8_lossy(member));
-        values.push((name, score));
+    for pair in raw_values.as_chunks::<2>().0 {
+        let [member, score_bytes] = pair;
+        let score = String::from_utf8_lossy(score_bytes).parse::<f64>().unwrap_or_default();
+        values.push((KvElement::from_raw(member.clone()), score));
     }
 
     Ok((next_cursor, values))
@@ -165,7 +157,7 @@ async fn get_redis_zset_by_score(
     max: &str,
     offset: usize,
     count: usize,
-) -> Result<Vec<(SharedString, f64)>> {
+) -> Result<Vec<(KvElement, f64)>> {
     let descending = matches!(sort_order, SortOrder::Desc);
     let mut command = cmd(if descending {
         "ZREVRANGEBYSCORE"
@@ -195,7 +187,7 @@ async fn get_redis_zset_by_score(
             .get(1)
             .map(|bytes| String::from_utf8_lossy(bytes).parse::<f64>().unwrap_or_default())
             .unwrap_or_default();
-        values.push((SharedString::new(String::from_utf8_lossy(member)), score));
+        values.push((KvElement::from_raw(member.clone()), score));
     }
     Ok(values)
 }
@@ -304,7 +296,7 @@ impl ZedisServerState {
     /// * `score` - The score to assign to the member
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_zset_value(&mut self, new_value: SharedString, score: f64, cx: &mut Context<Self>) {
-        self.add_or_update_zset_value(new_value, score, None, cx);
+        self.add_or_update_zset_value(KvElement::from_text(&new_value), score, None, cx);
     }
     /// Updates a member in the Redis ZSET with the specified score.
     ///
@@ -314,39 +306,38 @@ impl ZedisServerState {
     /// * `new_value` - The member name to update
     /// * `score` - The score to assign to the member
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn update_zset_value(
-        &mut self,
-        old_value: SharedString,
-        new_value: SharedString,
-        score: f64,
-        cx: &mut Context<Self>,
-    ) {
-        self.add_or_update_zset_value(new_value, score, Some(old_value), cx);
+    pub fn update_zset_value(&mut self, old_value: KvElement, new_value: Bytes, score: f64, cx: &mut Context<Self>) {
+        self.add_or_update_zset_value(KvElement::from_raw(new_value), score, Some(old_value), cx);
     }
     fn add_or_update_zset_value(
         &mut self,
-        new_value: SharedString,
+        new_value: KvElement,
         score: f64,
-        old_value: Option<SharedString>,
+        old_value: Option<KvElement>,
         cx: &mut Context<Self>,
     ) {
         let new_value_clone = new_value.clone();
         let old_value_clone = old_value.clone();
         let is_removed = old_value.is_some();
+        // A rename changes the member's bytes; a score change keeps them.
+        let same_member = old_value.as_ref().is_some_and(|old| old.raw() == new_value.raw());
         // Scores before the write, from the loaded page: the edited member's
         // (it is in the table), and the target's when it already existed.
         let log_key = self.key.clone();
         let (log_old_score, log_existing_score) = {
             let loaded = self.value.as_ref().and_then(|v| v.zset_value());
-            let score_of = |member: &SharedString| {
-                loaded
-                    .as_ref()
-                    .and_then(|z| z.values.iter().find(|(m, _)| m == member).map(|(_, s)| s.to_string()))
+            let score_of = |member: &KvElement| {
+                loaded.as_ref().and_then(|z| {
+                    z.values
+                        .iter()
+                        .find(|(m, _)| m.raw() == member.raw())
+                        .map(|(_, s)| s.to_string())
+                })
             };
             (old_value.as_ref().and_then(&score_of), score_of(&new_value))
         };
-        let log_old_member = old_value.as_ref().map(|m| m.to_string());
-        let log_new_member = new_value.to_string();
+        let log_old_member = old_value.as_ref().map(|m| m.text().to_string());
+        let log_new_member = new_value.text().to_string();
         let log_new_score = score.to_string();
 
         self.exec_zset_op(
@@ -356,7 +347,7 @@ impl ZedisServerState {
                 let mut exists = false;
                 // Update if exists or handle "rename" logic
                 if let Some(ref old) = old_value_clone
-                    && let Some(item) = zset.values.iter_mut().find(|v| &v.0 == old)
+                    && let Some(item) = zset.values.iter_mut().find(|v| v.0.raw() == old.raw())
                 {
                     *item = (new_value_clone.clone(), score);
                     exists = true;
@@ -365,7 +356,7 @@ impl ZedisServerState {
                 if !exists {
                     // Remove old if this is a rename that wasn't found in current visible page
                     if let Some(ref old) = old_value_clone {
-                        zset.values.retain(|v| &v.0 != old);
+                        zset.values.retain(|v| v.0.raw() != old.raw());
                     }
 
                     // Insert into correct position using binary search if no filter is active
@@ -385,11 +376,19 @@ impl ZedisServerState {
                 let count: usize = cmd("ZADD")
                     .arg(&key)
                     .arg(score)
-                    .arg(new_value.as_str())
+                    .arg(new_value.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
-                if let Some(old) = old_value {
-                    let _: () = cmd("ZREM").arg(&key).arg(old.as_str()).query_async(&mut conn).await?;
+                // A rename drops the old member; the same member just
+                // changed its score.
+                if let Some(old) = old_value
+                    && !same_member
+                {
+                    let _: () = cmd("ZREM")
+                        .arg(&key)
+                        .arg(old.raw().as_ref())
+                        .query_async(&mut conn)
+                        .await?;
                 }
                 Ok(count)
             },
@@ -398,7 +397,7 @@ impl ZedisServerState {
                     let at = unix_ts();
                     let entries = match log_old_member {
                         // A score change on the same member.
-                        Some(old) if old == log_new_member => vec![ChangeEntry::element(
+                        Some(_) if same_member => vec![ChangeEntry::element(
                             at,
                             log_new_member,
                             log_old_score.as_deref(),
@@ -710,29 +709,29 @@ impl ZedisServerState {
     /// by removing it from the values list.
     ///
     /// # Arguments
-    /// * `remove_value` - The member name to remove from the ZSET
+    /// * `remove_value` - The member to remove, as loaded
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn remove_zset_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
+    pub fn remove_zset_value(&mut self, remove_value: KvElement, cx: &mut Context<Self>) {
         let remove_value_clone = remove_value.clone();
         let log_key = self.key.clone();
         let log_old_score = self.value.as_ref().and_then(|v| v.zset_value()).and_then(|z| {
             z.values
                 .iter()
-                .find(|(m, _)| m == &remove_value)
+                .find(|(m, _)| m.raw() == remove_value.raw())
                 .map(|(_, s)| s.to_string())
         });
-        let log_member = remove_value.to_string();
+        let log_member = remove_value.text().to_string();
         self.exec_zset_op(
             ServerTask::RemoveZsetValue,
             cx,
             move |zset| {
                 zset.size = zset.size.saturating_sub(1);
-                zset.values.retain(|(name, _)| name != &remove_value_clone);
+                zset.values.retain(|(name, _)| name.raw() != remove_value_clone.raw());
             },
             move |key, mut conn| async move {
                 let _: () = cmd("ZREM")
                     .arg(&key)
-                    .arg(remove_value.as_str())
+                    .arg(remove_value.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
                 Ok(())
@@ -757,7 +756,7 @@ impl ZedisServerState {
     /// Removes several members in one `ZREM` — the table's multi-select
     /// delete. One round trip and one optimistic update rather than N of
     /// each.
-    pub fn remove_zset_values(&mut self, remove_values: Vec<SharedString>, cx: &mut Context<Self>) {
+    pub fn remove_zset_values(&mut self, remove_values: Vec<KvElement>, cx: &mut Context<Self>) {
         if remove_values.is_empty() {
             return;
         }
@@ -767,27 +766,30 @@ impl ZedisServerState {
             remove_values
                 .iter()
                 .map(|member| {
-                    let old = loaded
-                        .as_ref()
-                        .and_then(|z| z.values.iter().find(|(m, _)| m == member).map(|(_, s)| s.to_string()));
-                    (member.to_string(), old)
+                    let old = loaded.as_ref().and_then(|z| {
+                        z.values
+                            .iter()
+                            .find(|(m, _)| m.raw() == member.raw())
+                            .map(|(_, s)| s.to_string())
+                    });
+                    (member.text().to_string(), old)
                 })
                 .collect()
         };
-        let gone: HashSet<SharedString> = remove_values.iter().cloned().collect();
+        let gone: HashSet<Bytes> = remove_values.iter().map(|m| m.raw().clone()).collect();
         self.exec_zset_op(
             ServerTask::RemoveZsetValue,
             cx,
             move |zset| {
                 let before = zset.values.len();
-                zset.values.retain(|(name, _)| !gone.contains(name));
+                zset.values.retain(|(name, _)| !gone.contains(name.raw()));
                 zset.size = zset.size.saturating_sub(before - zset.values.len());
             },
             move |key, mut conn| async move {
                 let mut command = cmd("ZREM");
                 command.arg(&key);
                 for value in &remove_values {
-                    command.arg(value.as_str());
+                    command.arg(value.raw().as_ref());
                 }
                 let _: () = command.query_async(&mut conn).await?;
                 Ok(())

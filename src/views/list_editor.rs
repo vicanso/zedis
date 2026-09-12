@@ -16,7 +16,7 @@ use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
     helpers::fast_contains_ignore_case,
-    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -29,7 +29,7 @@ use zedis_ui::ZedisFormFieldType;
 /// a mapping between visible items and their original indices when filtering.
 struct ZedisListValues {
     /// Currently visible items (filtered subset or all items)
-    visible_items: Vec<SharedString>,
+    visible_items: Vec<KvElement>,
     /// Maps visible item indices to original list indices (Some when filtered, None otherwise)
     visible_item_indexes: Option<Vec<usize>>,
     /// The underlying Redis value data
@@ -69,7 +69,7 @@ impl ZedisListValues {
         let mut visible_items = Vec::with_capacity(capacity);
 
         for (index, item) in value.values.iter().enumerate() {
-            if fast_contains_ignore_case(item.as_str(), &keyword) {
+            if fast_contains_ignore_case(item.text().as_str(), &keyword) {
                 visible_item_indexes.push(index);
                 visible_items.push(item.clone());
             }
@@ -89,6 +89,14 @@ impl ZedisKvFetcher for ZedisListValues {
     /// Returns from the filtered visible items when a keyword filter is active,
     /// otherwise returns directly from the original list values.
     fn get(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
+        self.element(row_ix, 1).map(|element| element.text().clone())
+    }
+
+    fn get_edit(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
+        self.element(row_ix, 1).map(|element| element.edit_text())
+    }
+
+    fn element(&self, row_ix: usize, _col_ix: usize) -> Option<KvElement> {
         let value = self.value.list_value()?;
         if value.keyword.is_some() {
             self.visible_items.get(row_ix).cloned()
@@ -215,12 +223,18 @@ impl ZedisKvFetcher for ZedisListValues {
             return;
         };
 
-        let Some(original_value) = list_value.values.get(real_index) else {
+        let Some(original) = list_value.values.get(real_index).cloned() else {
+            return;
+        };
+        let Ok(new_value) = original.bytes_from_edit(new_value) else {
+            self.server_state.update(cx, |state, cx| {
+                state.emit_error_notification(i18n_kv_table(cx, "hex_invalid"), cx);
+            });
             return;
         };
 
         self.server_state.update(cx, |state, cx| {
-            state.update_list_value(real_index, original_value.clone(), new_value.clone(), cx);
+            state.update_list_value(real_index, original, new_value, cx);
         });
     }
 

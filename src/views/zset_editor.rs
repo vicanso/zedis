@@ -26,7 +26,7 @@
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
-    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -66,8 +66,22 @@ impl ZedisKvFetcher for ZedisZsetValues {
         if col_ix == 2 {
             Some(score.to_string().into())
         } else {
-            Some(member.clone())
+            Some(member.text().clone())
         }
+    }
+
+    fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
+        if col_ix == 2 {
+            return self.get(row_ix, col_ix);
+        }
+        Some(self.value.zset_value()?.values.get(row_ix)?.0.edit_text())
+    }
+
+    fn element(&self, row_ix: usize, col_ix: usize) -> Option<KvElement> {
+        if col_ix == 2 {
+            return None;
+        }
+        Some(self.value.zset_value()?.values.get(row_ix)?.0.clone())
     }
 
     /// Returns the total cardinality of the ZSET (from Redis ZCARD).
@@ -113,7 +127,7 @@ impl ZedisKvFetcher for ZedisZsetValues {
         let Some(zset) = self.value.zset_value() else {
             return;
         };
-        let members: Vec<SharedString> = rows
+        let members: Vec<KvElement> = rows
             .iter()
             .filter_map(|row| zset.values.get(*row).map(|(member, _)| member.clone()))
             .collect();
@@ -187,8 +201,14 @@ impl ZedisKvFetcher for ZedisZsetValues {
 
         // Parse score and execute update operation
         let score = score_str.parse::<f64>().unwrap_or(0.0);
+        let Ok(member) = original_member.bytes_from_edit(member) else {
+            self.server_state.update(cx, |state, cx| {
+                state.emit_error_notification(i18n_kv_table(cx, "hex_invalid"), cx);
+            });
+            return;
+        };
         self.server_state.update(cx, |state, cx| {
-            state.update_zset_value(original_member, member.clone(), score, cx);
+            state.update_zset_value(original_member, member, score, cx);
         });
     }
 

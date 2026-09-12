@@ -615,6 +615,11 @@ bulk_add_placeholder_list = "une valeur par ligne"
 bulk_add_placeholder_set = "un membre par ligne"
 bulk_add_success = "%{count} lignes ajoutées"
 bulk_add_empty = "Rien à ajouter — collez au moins une ligne."
+binary_hex_hint = "Binaire — affiché et modifié en hexadécimal ; les octets sont réécrits tels quels."
+hex_invalid = "Hexadécimal invalide — paires de chiffres hex, espaces autorisées."
+preview_decoded = "Décodé"
+preview_hex = "Hex"
+preview_format = "Détecté : %{format}"
 
 [settings]
 http_proxy = "Proxy HTTP"

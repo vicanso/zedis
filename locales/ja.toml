@@ -615,6 +615,11 @@ bulk_add_placeholder_list = "1 行 1 値"
 bulk_add_placeholder_set = "1 行 1 メンバー"
 bulk_add_success = "%{count} 行を追加しました"
 bulk_add_empty = "追加するデータがありません — 少なくとも 1 行貼り付けてください。"
+binary_hex_hint = "バイナリ — 16 進で表示・編集し、そのバイトをそのまま書き戻します。"
+hex_invalid = "有効な 16 進ではありません — 2 桁ずつ、空白は可。"
+preview_decoded = "デコード"
+preview_hex = "16 進"
+preview_format = "検出: %{format}"
 
 [settings]
 http_proxy = "HTTP プロキシ"

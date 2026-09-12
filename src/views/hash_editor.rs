@@ -27,7 +27,7 @@ use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
     helpers::format_duration,
-    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -70,31 +70,41 @@ impl ZedisKvFetcher for ZedisHashValues {
         let (field, value) = hash.values.get(row_ix)?;
 
         if col_ix == TTL_COL_IX {
-            return Some(match hash.field_ttls.get(field).copied() {
+            return Some(match hash.field_ttls.get(field.text()).copied() {
                 Some(t) => format_duration(Duration::from_secs(t as u64)).into(),
                 None => SharedString::default(),
             });
         }
 
         if col_ix == 2 {
-            Some(value.clone())
+            Some(value.text().clone())
         } else {
-            Some(field.clone())
+            Some(field.text().clone())
         }
     }
 
-    /// Returns the raw seconds for the TTL column in the edit form, while
-    /// `get` returns a human-readable duration for the display table.
+    /// The edit form starts from the bytes as stored (hex for a binary
+    /// element), and from raw seconds for the TTL column where `get`
+    /// shows a human-readable duration.
     fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         if col_ix == TTL_COL_IX {
             let hash = self.value.hash_value()?;
             let (field, _) = hash.values.get(row_ix)?;
-            return Some(match hash.field_ttls.get(field).copied() {
+            return Some(match hash.field_ttls.get(field.text()).copied() {
                 Some(t) => format!("{}", t).into(),
                 None => SharedString::default(),
             });
         }
-        self.get(row_ix, col_ix)
+        self.element(row_ix, col_ix).map(|element| element.edit_text())
+    }
+
+    fn element(&self, row_ix: usize, col_ix: usize) -> Option<KvElement> {
+        let (field, value) = self.value.hash_value()?.values.get(row_ix)?;
+        match col_ix {
+            1 => Some(field.clone()),
+            2 => Some(value.clone()),
+            _ => None,
+        }
     }
 
     /// Returns the total number of fields in the HASH (from Redis HLEN).
@@ -136,7 +146,7 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(hash) = self.value.hash_value() else {
             return;
         };
-        let fields: Vec<SharedString> = rows
+        let fields: Vec<KvElement> = rows
             .iter()
             .filter_map(|row| hash.values.get(*row).map(|(field, _)| field.clone()))
             .collect();
@@ -180,7 +190,7 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(value) = values.get(1) else {
             return;
         };
-        let Some((old_field, _)) = self.value.hash_value().and_then(|v| v.values.get(row_ix).cloned()) else {
+        let Some((old_field, old_value)) = self.value.hash_value().and_then(|v| v.values.get(row_ix).cloned()) else {
             return;
         };
 
@@ -192,7 +202,7 @@ impl ZedisKvFetcher for ZedisHashValues {
                 let had_ttl = self
                     .value
                     .hash_value()
-                    .map(|h| h.field_ttls.contains_key(&old_field))
+                    .map(|h| h.field_ttls.contains_key(old_field.text()))
                     .unwrap_or(false);
                 if had_ttl { Some(-1) } else { None }
             } else {
@@ -201,15 +211,21 @@ impl ZedisKvFetcher for ZedisHashValues {
                 let old_secs = self
                     .value
                     .hash_value()
-                    .and_then(|h| h.field_ttls.get(&old_field).copied())
+                    .and_then(|h| h.field_ttls.get(old_field.text()).copied())
                     .unwrap_or(-1);
                 // Only include TTL if it actually changed
                 if new_secs != old_secs { Some(new_secs) } else { None }
             }
         });
 
-        let field = field.clone();
-        let value = value.clone();
+        // The form edits a binary element as hex; the bytes are what go
+        // back to the server.
+        let (Ok(field), Ok(value)) = (old_field.bytes_from_edit(field), old_value.bytes_from_edit(value)) else {
+            self.server_state.update(cx, |this, cx| {
+                this.emit_error_notification(i18n_kv_table(cx, "hex_invalid"), cx);
+            });
+            return;
+        };
         self.server_state.update(cx, |this, cx| {
             this.update_hash_value(old_field, field, value, ttl, cx);
         });

@@ -615,6 +615,11 @@ bulk_add_placeholder_list = "one value per line"
 bulk_add_placeholder_set = "one member per line"
 bulk_add_success = "Added %{count} rows"
 bulk_add_empty = "Nothing to add — paste at least one row."
+binary_hex_hint = "Binary — shown and edited as hex; the bytes are written back as typed."
+hex_invalid = "Not valid hex — pairs of hex digits, spaces allowed."
+preview_decoded = "Decoded"
+preview_hex = "Hex"
+preview_format = "Detected: %{format}"
 
 [settings]
 http_proxy = "HTTP proxy"

@@ -14,6 +14,7 @@
 
 use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
+    element::KvElement,
     value::{RedisSetValue, RedisValue, RedisValueStatus},
 };
 use crate::helpers::unix_ts;
@@ -22,6 +23,7 @@ use crate::{
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_set_editor},
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::collections::HashSet;
@@ -47,7 +49,7 @@ async fn get_redis_set_value(
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
-) -> Result<(u64, Vec<SharedString>)> {
+) -> Result<(u64, Vec<KvElement>)> {
     // Build pattern: wrap keyword with wildcards or match all
     let pattern = keyword
         .as_ref()
@@ -70,11 +72,8 @@ async fn get_redis_set_value(
         return Ok((next_cursor, vec![]));
     }
 
-    // Convert bytes to UTF-8 strings (lossy conversion for non-UTF8 data)
-    let values = raw_values
-        .iter()
-        .map(|v| SharedString::new(String::from_utf8_lossy(v)))
-        .collect();
+    // The bytes stay as answered; the text each shows is decoded from them.
+    let values = raw_values.into_iter().map(KvElement::from_raw).collect();
 
     Ok((next_cursor, values))
 }
@@ -168,18 +167,21 @@ impl ZedisServerState {
             cx,
         );
     }
-    pub fn update_set_value(&mut self, old_value: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
+    /// Replaces a member: `SREM` of the member as loaded, `SADD` of its
+    /// edited bytes, in one pipeline.
+    pub fn update_set_value(&mut self, old_value: KvElement, new_value: Bytes, cx: &mut Context<Self>) {
+        let new_value = KvElement::from_raw(new_value);
         let old_value_clone = old_value.clone();
         let new_value_clone = new_value.clone();
         let log_key = self.key.clone();
-        let log_old = old_value.to_string();
-        let log_new = new_value.to_string();
+        let log_old = old_value.text().to_string();
+        let log_new = new_value.text().to_string();
 
         self.exec_set_op(
             ServerTask::UpdateSetValue,
             cx,
             move |set| {
-                if let Some(pos) = set.values.iter().position(|v| v == &old_value_clone) {
+                if let Some(pos) = set.values.iter().position(|v| v.raw() == old_value_clone.raw()) {
                     set.values[pos] = new_value_clone;
                 }
             },
@@ -188,10 +190,10 @@ impl ZedisServerState {
                 let (_, count): (usize, usize) = redis::pipe()
                     .cmd("SREM")
                     .arg(&key)
-                    .arg(old_value.as_str())
+                    .arg(old_value.raw().as_ref())
                     .cmd("SADD")
                     .arg(&key)
-                    .arg(new_value.as_str())
+                    .arg(new_value.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
@@ -220,7 +222,7 @@ impl ZedisServerState {
     /// * `new_value` - The member value to add to the SET
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_set_value(&mut self, new_value: SharedString, cx: &mut Context<Self>) {
-        let val_clone = new_value.clone();
+        let val_clone = KvElement::from_text(&new_value);
         let log_key = self.key.clone();
         let log_member = new_value.to_string();
 
@@ -252,7 +254,7 @@ impl ZedisServerState {
                     let set = Arc::make_mut(set_data);
                     set.size += count;
                     // Only append to UI if scan is complete to maintain consistency
-                    if set.done && !set.values.contains(&val_clone) {
+                    if set.done && !set.values.iter().any(|v| v.raw() == val_clone.raw()) {
                         set.values.push(val_clone);
                     }
                     if set.size > SUCCESS_NOTIFY_THRESHOLD {
@@ -383,24 +385,24 @@ impl ZedisServerState {
     /// Redis cardinality and the local UI state.
     ///
     /// # Arguments
-    /// * `remove_value` - The member value to remove from the SET
+    /// * `remove_value` - The member to remove, as loaded
     /// * `cx` - GPUI context for spawning async tasks and UI updates
-    pub fn remove_set_value(&mut self, remove_value: SharedString, cx: &mut Context<Self>) {
+    pub fn remove_set_value(&mut self, remove_value: KvElement, cx: &mut Context<Self>) {
         let val_clone = remove_value.clone();
         let log_key = self.key.clone();
-        let log_member = remove_value.to_string();
+        let log_member = remove_value.text().to_string();
 
         self.exec_set_op(
             ServerTask::RemoveSetValue,
             cx,
             move |set| {
                 set.size -= 1;
-                set.values.retain(|v| v != &val_clone);
+                set.values.retain(|v| v.raw() != val_clone.raw());
             },
             move |key, mut conn| async move {
                 let count: usize = cmd("SREM")
                     .arg(&key)
-                    .arg(remove_value.as_str())
+                    .arg(remove_value.raw().as_ref())
                     .query_async(&mut conn)
                     .await?;
                 Ok(count)
@@ -423,26 +425,26 @@ impl ZedisServerState {
     /// delete. One round trip and one optimistic update rather than N of
     /// each, which is the whole point: clearing fifty members used to be
     /// fifty confirmations and fifty commands.
-    pub fn remove_set_values(&mut self, remove_values: Vec<SharedString>, cx: &mut Context<Self>) {
+    pub fn remove_set_values(&mut self, remove_values: Vec<KvElement>, cx: &mut Context<Self>) {
         if remove_values.is_empty() {
             return;
         }
         let log_key = self.key.clone();
-        let log_members: Vec<String> = remove_values.iter().map(|m| m.to_string()).collect();
-        let gone: HashSet<SharedString> = remove_values.iter().cloned().collect();
+        let log_members: Vec<String> = remove_values.iter().map(|m| m.text().to_string()).collect();
+        let gone: HashSet<Bytes> = remove_values.iter().map(|v| v.raw().clone()).collect();
         self.exec_set_op(
             ServerTask::RemoveSetValue,
             cx,
             move |set| {
                 let before = set.values.len();
-                set.values.retain(|v| !gone.contains(v));
+                set.values.retain(|v| !gone.contains(v.raw()));
                 set.size = set.size.saturating_sub(before - set.values.len());
             },
             move |key, mut conn| async move {
                 let mut command = cmd("SREM");
                 command.arg(&key);
                 for value in &remove_values {
-                    command.arg(value.as_str());
+                    command.arg(value.raw().as_ref());
                 }
                 let count: usize = command.query_async(&mut conn).await?;
                 Ok(count)

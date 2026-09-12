@@ -14,12 +14,12 @@
 
 use gpui::{
     AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
-    Window, div, prelude::*,
+    Window, div, prelude::*, px,
 };
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::form::{field, v_form};
+use gpui_kit::component::form::{Field, field, v_form};
 use gpui_kit::component::highlighter::Language;
 use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, NumberInput, NumberInputEvent, Position, StepAction, Textarea,
@@ -30,6 +30,7 @@ use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::v_flex;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -84,6 +85,9 @@ pub enum ZedisFormFieldType {
 #[derive(Clone)]
 pub struct ZedisFormField {
     style: StyleRefinement,
+    /// Takes the height the form has left instead of a height of its own —
+    /// the one editor of a form in [`ZedisFormOptions::fill_height`] mode.
+    fill: bool,
     name: SharedString,
     label: SharedString,
     placeholder: SharedString,
@@ -185,6 +189,7 @@ impl ZedisFormField {
             visible_on: None,
             visible_on_filled: None,
             style: StyleRefinement::default(),
+            fill: false,
             suffix_builder: None,
         }
     }
@@ -278,6 +283,16 @@ impl ZedisFormField {
     }
 }
 
+impl ZedisFormField {
+    /// Let this field take the height the form has left. Only an inline
+    /// form in [`ZedisFormOptions::fill_height`] mode honours it; elsewhere
+    /// the field keeps the height its style says.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+}
+
 impl Styled for ZedisFormField {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
@@ -309,6 +324,12 @@ pub struct ZedisFormOptions {
     /// When set, the add-fields section is only shown when the referenced
     /// RadioGroup's selected index is in the given list.
     support_add_fields_on: Option<(SharedString, Vec<usize>)>,
+    /// Lay the fields out as a flex column that fills the parent, with the
+    /// [`ZedisFormField::fill`] field taking what is left, instead of the
+    /// form grid in a scroll container. For an inline form whose parent
+    /// has a definite height — an entry panel — where a field should end
+    /// exactly at the bottom without anyone computing its height.
+    fill_height: bool,
 }
 
 impl Default for ZedisFormOptions {
@@ -332,6 +353,7 @@ impl Default for ZedisFormOptions {
             dialog_max_height: None,
             support_add_fields: false,
             support_add_fields_on: None,
+            fill_height: false,
         }
     }
 }
@@ -403,6 +425,11 @@ impl ZedisFormOptions {
     }
 
     /// Support adding fields to the form.
+    pub fn fill_height(mut self) -> Self {
+        self.fill_height = true;
+        self
+    }
+
     pub fn support_add_fields(mut self) -> Self {
         self.support_add_fields = true;
         self
@@ -598,6 +625,7 @@ pub struct ZedisForm {
     pub is_processing: bool,
     disabled: bool,
     in_dialog: bool,
+    fill_height: bool,
     pending_field_updates: Vec<(SharedString, SharedString)>,
 }
 
@@ -757,6 +785,7 @@ impl ZedisForm {
             is_processing: false,
             disabled: false,
             in_dialog: false,
+            fill_height: options.fill_height,
             pending_field_updates: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -1051,21 +1080,24 @@ impl Render for ZedisForm {
             }
         }
 
-        let mut form_container = v_form()
-            .w_full()
-            .gap_2()
-            .when_some(self.title.clone(), |this, title| {
-                this.child(field().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)))
-            })
-            .when_some(self.description.clone(), |this, description| {
-                this.child(
-                    field().child(
-                        Label::new(description)
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-                )
-            });
+        // The fields are collected first: the form grid in a scroll
+        // container is the usual home, a flex column that fills the parent
+        // the fill-height one, and both take the same items.
+        let mut items: Vec<FormItem> = Vec::new();
+        if let Some(title) = self.title.clone() {
+            items.push(FormItem::field(
+                field().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)),
+            ));
+        }
+        if let Some(description) = self.description.clone() {
+            items.push(FormItem::field(
+                field().child(
+                    Label::new(description)
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                ),
+            ));
+        }
         let parent_id = Arc::new(self.id.clone());
 
         // Render optional tab bar for multi-tab forms.
@@ -1085,7 +1117,7 @@ impl Render for ZedisForm {
             for tab in tabs {
                 tab_bar = tab_bar.child(Tab::new().label(tab.clone()));
             }
-            form_container = form_container.child(field().child(tab_bar));
+            items.push(FormItem::field(field().child(tab_bar)));
         }
 
         let new_field = |item: &ZedisFormField| field().required(item.required).label(item.label.clone());
@@ -1105,8 +1137,9 @@ impl Render for ZedisForm {
             match field_state {
                 ZedisFormFieldState::Input(state) => {
                     if field.field_type == ZedisFormFieldType::InputNumber {
-                        form_container = form_container
-                            .child(new_field(field).child(NumberInput::new(state).disabled(field_disabled)));
+                        items.push(FormItem::field(
+                            new_field(field).child(NumberInput::new(state).disabled(field_disabled)),
+                        ));
                     } else {
                         let mut input = Input::new(state)
                             .disabled(field_disabled)
@@ -1115,27 +1148,32 @@ impl Render for ZedisForm {
                         if let Some(builder) = &field.suffix_builder {
                             input = input.suffix(builder(window, cx));
                         }
-                        form_container = form_container.child(new_field(field).child(input));
+                        items.push(FormItem::field(new_field(field).child(input)));
                     }
                 }
                 ZedisFormFieldState::Textarea(state) => {
                     // `mask` and `suffix` are single-line adornments and have
                     // no counterpart here — gpui-component keeps them on
                     // `Input` alone.
-                    form_container = form_container.child(
-                        new_field(field)
-                            .child(Textarea::new(state).disabled(field_disabled).refine_style(&field.style)),
-                    );
+                    items.push(FormItem::field(new_field(field).child(
+                        Textarea::new(state).disabled(field_disabled).refine_style(&field.style),
+                    )));
                 }
                 ZedisFormFieldState::Editor(state) => {
-                    form_container = form_container.child(
-                        new_field(field).child(Editor::new(state).disabled(field_disabled).refine_style(&field.style)),
-                    );
+                    let editor = Editor::new(state).disabled(field_disabled);
+                    if self.fill_height && field.fill {
+                        let control = editor.flex_1().min_h_0().w_full().into_any_element();
+                        items.push(FormItem::Fill(fill_field(field, control, cx)));
+                    } else {
+                        items.push(FormItem::field(
+                            new_field(field).child(editor.refine_style(&field.style)),
+                        ));
+                    }
                 }
                 ZedisFormFieldState::Checkbox(state) => {
                     let id = ElementId::NamedChild(parent_id.clone(), index.to_string().into());
                     let state_clone = state.clone();
-                    form_container = form_container.child(
+                    items.push(FormItem::field(
                         new_field(field).child(
                             Checkbox::new(id)
                                 .label(field.placeholder.clone())
@@ -1147,14 +1185,14 @@ impl Render for ZedisForm {
                                     });
                                 }),
                         ),
-                    );
+                    ));
                 }
                 ZedisFormFieldState::RadioGroup(state) => {
                     let id = ElementId::NamedChild(parent_id.clone(), index.to_string().into());
                     let state = state.clone();
                     let selected = *state.read(cx);
                     let form_entity = cx.entity().clone();
-                    form_container = form_container.child(
+                    items.push(FormItem::field(
                         new_field(field).child(
                             RadioGroup::horizontal(id)
                                 .children(field.options.clone().unwrap_or_default())
@@ -1167,7 +1205,7 @@ impl Render for ZedisForm {
                                     form_entity.update(cx, |_, cx| cx.notify());
                                 }),
                         ),
-                    );
+                    ));
                 }
             }
         }
@@ -1175,7 +1213,7 @@ impl Render for ZedisForm {
         let show_add_fields = self.should_show_add_fields(cx);
         if show_add_fields {
             for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
-                form_container = form_container.child(
+                items.push(FormItem::field(
                     field().child(
                         h_flex()
                             .gap_2()
@@ -1190,11 +1228,11 @@ impl Render for ZedisForm {
                                     })),
                             ),
                     ),
-                )
+                ))
             }
         }
         if show_add_fields {
-            form_container = form_container.child(
+            items.push(FormItem::field(
                 field().child(
                     h_flex().justify_end().child(
                         Button::new("add-add-field")
@@ -1205,7 +1243,7 @@ impl Render for ZedisForm {
                             })),
                     ),
                 ),
-            );
+            ));
         }
 
         // Render validation errors as a markdown alert.
@@ -1218,8 +1256,9 @@ impl Render for ZedisForm {
                 .map(|(name, value)| format!("- {name}: {value}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            form_container = form_container
-                .child(field().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))));
+            items.push(FormItem::field(
+                field().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))),
+            ));
         }
 
         // Inline forms keep the action bar in-body. Dialog forms hoist it to
@@ -1228,7 +1267,28 @@ impl Render for ZedisForm {
         if !self.in_dialog
             && let Some(bar) = self.render_action_bar(window, cx)
         {
-            form_container = form_container.child(field().child(bar));
+            items.push(FormItem::field(field().child(bar)));
+        }
+
+        // Fill mode: a flex column the parent sizes, every field at its own
+        // height except the one that takes the rest — and no scroll
+        // container, which is what would make that impossible.
+        if self.fill_height {
+            return v_flex()
+                .size_full()
+                .gap_y(px(8.))
+                .children(items.into_iter().map(|item| match item {
+                    FormItem::Field(field) => (*field).flex_none().into_any_element(),
+                    FormItem::Fill(element) => element,
+                }))
+                .into_any_element();
+        }
+        let mut form_container = v_form().w_full().gap_2();
+        for item in items {
+            form_container = match item {
+                FormItem::Field(field) => form_container.child(*field),
+                FormItem::Fill(element) => form_container.child(field().child(element)),
+            };
         }
 
         // Dialog already owns the body scrollbar (gpui-component `Dialog`
@@ -1241,4 +1301,44 @@ impl Render for ZedisForm {
             div().child(form_container).overflow_y_scrollbar().into_any_element()
         }
     }
+}
+
+/// The least a fill field keeps when its parent is short.
+const FILL_FIELD_MIN_HEIGHT: f32 = 96.0;
+
+/// One entry of a form's body: a field of the grid, or the element that
+/// takes the height left in fill mode.
+enum FormItem {
+    Field(Box<Field>),
+    Fill(AnyElement),
+}
+
+impl FormItem {
+    fn field(field: Field) -> Self {
+        FormItem::Field(Box::new(field))
+    }
+}
+
+/// A field that takes the height the form has left: the label the other
+/// fields wear, over a control that flexes.
+fn fill_field(field: &ZedisFormField, control: AnyElement, cx: &App) -> AnyElement {
+    v_flex()
+        .flex_1()
+        // Shrinks with the parent, but not below a few lines of editor.
+        .min_h(px(FILL_FIELD_MIN_HEIGHT))
+        .w_full()
+        .gap(px(2.))
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(field.label.clone())
+                .when(field.required, |this| {
+                    this.child(div().text_color(cx.theme().danger).child("*"))
+                }),
+        )
+        .child(v_flex().flex_1().min_h_0().w_full().child(control))
+        .into_any_element()
 }

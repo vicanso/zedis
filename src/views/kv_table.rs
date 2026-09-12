@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::connection::Capability;
-use crate::constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT, WORKSPACE_TAB_BAR_HEIGHT};
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{bytes_to_hex_text, get_mono_font_family};
 use crate::{
     assets::CustomIconName,
     components::{
@@ -22,18 +21,19 @@ use crate::{
     },
     helpers::{EditorAction, KeyOpAction, build_csv, humanize_keystroke},
     states::{
-        KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_key_ops,
-        i18n_kv_table, i18n_list_editor, i18n_zset_editor, update_app_state_and_save_quiet_debounced,
+        DataFormat, KeyType, KvElement, ServerEvent, ZedisGlobalStore, ZedisServerState, detect_and_decode,
+        dialog_button_props, i18n_common, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor,
+        update_app_state_and_save_quiet_debounced,
     },
     views::{export_to_file, key_op_title_key, open_key_op_dialog, open_score_filter_dialog},
 };
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
-use gpui_kit::component::TITLE_BAR_HEIGHT;
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, WindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
+    button::{Button, ButtonGroup, ButtonVariants},
     h_flex,
     input::{Escape, Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
@@ -48,6 +48,11 @@ use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 pub const FOOTER_HEIGHT: f32 = 50.0;
+/// The entry panel's decoded preview: what a MessagePack / gzip / JSON
+/// element decodes to, above the form that edits its bytes.
+const PREVIEW_HEIGHT: f32 = 220.0;
+/// Bytes per row in the preview's hex view.
+const PREVIEW_HEX_BYTES_PER_ROW: usize = 16;
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
@@ -128,6 +133,11 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     edit_row: Option<usize>,
     /// The original values of the row that is being edited
     original_values: IndexMap<SharedString, SharedString>,
+    /// The element the open row's main value column holds, for the decoded
+    /// preview above the form.
+    edit_element: Option<KvElement>,
+    /// Whether that preview shows the bytes as hex instead of decoded.
+    preview_hex: bool,
     /// Whether the values have been modified
     values_modified: bool,
     /// Whether the values should be filled
@@ -397,6 +407,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             edit_row: None,
             values_should_fill: false,
             original_values: IndexMap::new(),
+            edit_element: None,
+            preview_hex: false,
             values_modified: false,
             value_states,
             readonly,
@@ -543,9 +555,111 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             let value = self.fetcher.get_edit(row_ix, index + 1).unwrap_or_default();
             self.original_values.insert(column.name.clone(), value);
         }
+        // The preview follows the main value column: the flexible one (a
+        // hash's value, a member), or the first value column without one.
+        self.edit_element = self
+            .columns
+            .iter()
+            .position(|column| column.column_type == KvTableColumnType::Value && column.flex)
+            .or_else(|| {
+                self.columns
+                    .iter()
+                    .position(|column| column.column_type == KvTableColumnType::Value)
+            })
+            .and_then(|index| self.fetcher.element(row_ix, index + 1));
+        self.preview_hex = false;
         self.editor_form = None;
         self.values_modified = false;
     }
+
+    /// The element whose decoding is worth a preview: anything but plain
+    /// text, which the form already shows as is.
+    fn previewed_element(&self) -> Option<&KvElement> {
+        self.edit_element
+            .as_ref()
+            .filter(|_| self.edit_row.is_some_and(|row| row != usize::MAX))
+            .filter(|element| element.format() != DataFormat::Text)
+    }
+
+    /// The decoded rendering (or hex) of the open row's element, above the
+    /// form that edits its bytes.
+    fn render_element_preview(&self, element: &KvElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let decodable = element.is_decoded() || element.format() == DataFormat::Json;
+        let show_hex = self.preview_hex || !decodable;
+        let text: SharedString = if show_hex {
+            bytes_to_hex_text(element.raw(), PREVIEW_HEX_BYTES_PER_ROW).into()
+        } else {
+            let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+            detect_and_decode(element.raw(), max_len).1
+        };
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let format_label: SharedString = t!(
+            "kv_table.preview_format",
+            format = element.format().as_str(),
+            locale = &locale
+        )
+        .to_string()
+        .into();
+        v_flex()
+            .w_full()
+            .h(px(PREVIEW_HEIGHT))
+            .mb_2()
+            .gap_1()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(format_label).text_xs().text_color(muted))
+                    .when(element.is_binary(), |this| {
+                        this.child(
+                            Label::new(i18n_kv_table(cx, "binary_hex_hint"))
+                                .text_xs()
+                                .text_color(theme.yellow),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .when(decodable, |this| {
+                        this.child(
+                            ButtonGroup::new("kv-preview-mode")
+                                .compact()
+                                .xsmall()
+                                .outline()
+                                .child(
+                                    Button::new("kv-preview-decoded")
+                                        .label(i18n_kv_table(cx, "preview_decoded"))
+                                        .selected(!self.preview_hex),
+                                )
+                                .child(
+                                    Button::new("kv-preview-hex")
+                                        .label(i18n_kv_table(cx, "preview_hex"))
+                                        .selected(self.preview_hex),
+                                )
+                                .on_click(cx.listener(|this, clicks: &Vec<usize>, _window, cx| {
+                                    if let Some(ix) = clicks.first() {
+                                        this.preview_hex = *ix == 1;
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(4.))
+                    .px_2()
+                    .py_1()
+                    .overflow_y_scrollbar()
+                    .child(Label::new(text).text_xs().font_family(get_mono_font_family())),
+            )
+    }
+
     /// Open a dialog to paste many rows at once. The pasted text is
     /// parsed into rows (one per line, tab-separated preferred,
     /// comma fallback) and each row is dispatched through the same
@@ -817,7 +931,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.editor_form = None;
         self.edit_row = None;
     }
+    /// The entry panel: the decoded preview, when the element has one, above
+    /// the edit form, which fills what is left.
     fn enhance_render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let form = self.edit_form(window, cx);
+        let preview = self
+            .previewed_element()
+            .cloned()
+            .map(|element| self.render_element_preview(&element, cx).into_any_element());
+        v_flex()
+            .size_full()
+            .children(preview)
+            .child(v_flex().flex_1().min_h_0().w_full().child(form))
+    }
+
+    fn edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ZedisForm> {
         if let Some(form) = &self.editor_form {
             if std::mem::take(&mut self.values_should_fill) {
                 let original_values = &self.original_values;
@@ -829,48 +957,17 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }
         let mut fields = Vec::with_capacity(4);
         let is_adding = self.is_adding_row();
-        let mut reset_form_height = window.viewport_size().height.as_f32()
-            - TITLE_BAR_HEIGHT.as_f32()
-            - STATUS_BAR_HEIGHT.as_f32()
-            - EDITOR_KEY_BAR_HEIGHT.as_f32()
-            - FOOTER_HEIGHT;
-        // The workspace tab strip (`main.rs::render_tab_bar`) only appears with
-        // more than one open tab, adding a bar above the content that the fixed
-        // chrome heights above don't cover. Subtract it when it's showing, or
-        // the form over-reserves by that height and its footer buttons overflow
-        // below the scroll fold.
-        if cx.global::<ZedisGlobalStore>().read(cx).open_tabs().len() > 1 {
-            reset_form_height -= WORKSPACE_TAB_BAR_HEIGHT.as_f32();
-        }
-        // The field / editor height estimates below were tuned against a ~14px
-        // base font. Scale them by the live rem size so a larger font enlarges
-        // the reserved per-field space too, instead of overflowing the form and
-        // forcing a scrollbar. The chrome heights above are fixed-height bars,
-        // so they are deliberately not scaled.
+        // A fixed-height editor (a column that is not the flexible one)
+        // scales with the font; the flexible column takes whatever height
+        // the form has left, so nothing is computed for it.
         let font_scale = window.rem_size().as_f32() / 14.0;
-        let normal_field_height = 60. * font_scale;
         if is_adding && self.fetcher.key_type() == KeyType::List {
             fields.push(
                 ZedisFormField::new("position", i18n_list_editor(cx, "position"))
                     .field_type(ZedisFormFieldType::RadioGroup)
                     .options(vec!["RPUSH".into(), "LPUSH".into()]),
             );
-            reset_form_height -= normal_field_height;
         }
-
-        let mut flex_field_count = 0;
-
-        for column in self.columns.iter() {
-            if column.column_type != KvTableColumnType::Value {
-                continue;
-            }
-            if column.flex {
-                flex_field_count += 1;
-                continue;
-            }
-            reset_form_height -= normal_field_height;
-        }
-        let flex_field_height = (reset_form_height / flex_field_count as f32).max(150. * font_scale);
 
         let mut first = true;
         // A read-only *connection* (no `MutateContainer` capability) makes the
@@ -897,11 +994,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.focus();
                 first = false;
             }
-            // Flexible fields get an explicit height derived from the form
-            // height (rather than `flex_1`) so the editor area has a definite
-            // size inside the form's scroll container.
             if column.flex {
-                field = field.h(px(flex_field_height - 30. * font_scale));
+                field = field.fill();
             }
             if let Some(field_type) = column.field_type.clone() {
                 if field_type == ZedisFormFieldType::Editor && !column.flex {
@@ -933,7 +1027,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             };
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
+        // With a flexible column the form fills the panel and that column
+        // takes the rest; a form of fixed-height fields only (a stream
+        // entry, one editor per field) keeps the scrolling grid instead.
+        let fills_panel = self
+            .columns
+            .iter()
+            .any(|column| column.column_type == KvTableColumnType::Value && column.flex);
         let form_opts = ZedisFormOptions::new(fields)
+            .when(fills_panel, |this| this.fill_height())
             .on_cancel(on_cancel)
             .cancel_label(i18n_common(cx, "cancel"))
             .when(is_adding || can_update, |this| {
@@ -974,7 +1076,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             f
         });
         self.editor_form = Some(form.clone());
-        form.clone()
+        form
     }
 }
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {

@@ -15,7 +15,7 @@
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
-    states::{KeyType, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
@@ -70,6 +70,14 @@ impl ZedisKvFetcher for ZedisSetValues {
     ///
     /// For SETs, there's only one column (the member value itself).
     fn get(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
+        Some(self.value.set_value()?.values.get(row_ix)?.text().clone())
+    }
+
+    fn get_edit(&self, row_ix: usize, _col_ix: usize) -> Option<SharedString> {
+        Some(self.value.set_value()?.values.get(row_ix)?.edit_text())
+    }
+
+    fn element(&self, row_ix: usize, _col_ix: usize) -> Option<KvElement> {
         self.value.set_value()?.values.get(row_ix).cloned()
     }
 
@@ -112,9 +120,15 @@ impl ZedisKvFetcher for ZedisSetValues {
         let Some(old_value) = self.value.set_value().and_then(|v| v.values.get(index).cloned()) else {
             return;
         };
+        let Ok(new_value) = old_value.bytes_from_edit(new_value) else {
+            self.server_state.update(cx, |this, cx| {
+                this.emit_error_notification(i18n_kv_table(cx, "hex_invalid"), cx);
+            });
+            return;
+        };
 
         self.server_state.update(cx, |this, cx| {
-            this.update_set_value(old_value, new_value.clone(), cx);
+            this.update_set_value(old_value, new_value, cx);
         });
     }
 
@@ -129,7 +143,7 @@ impl ZedisKvFetcher for ZedisSetValues {
         let Some(set) = self.value.set_value() else {
             return;
         };
-        let values: Vec<SharedString> = rows.iter().filter_map(|row| set.values.get(*row).cloned()).collect();
+        let values: Vec<KvElement> = rows.iter().filter_map(|row| set.values.get(*row).cloned()).collect();
         self.server_state.update(cx, |this, cx| {
             this.remove_set_values(values, cx);
         });

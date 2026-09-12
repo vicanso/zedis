@@ -3770,24 +3770,24 @@ fn standalone_hash_field_writes_carry_their_ttl() {
         }
 
         // Fallback path, available on every 7.4+ server.
-        let created = write_hash_field(&mut c, &key, "f", "v1", FieldTtl::Expire(1000), false)
+        let created = write_hash_field(&mut c, &key, b"f", b"v1", FieldTtl::Expire(1000), false)
             .await
             .expect("hset+hexpire");
         assert!(created, "first write creates the field");
         assert!((900..=1000).contains(&ttl_of(&mut c, &key, "f").await));
-        let created = write_hash_field(&mut c, &key, "f", "v2", FieldTtl::Persist, false)
+        let created = write_hash_field(&mut c, &key, b"f", b"v2", FieldTtl::Persist, false)
             .await
             .expect("hset+hpersist");
         assert!(!created, "second write overwrites");
         assert_eq!(ttl_of(&mut c, &key, "f").await, -1, "Persist removed the TTL");
 
         if atomic {
-            let created = write_hash_field(&mut c, &key, "f", "v3", FieldTtl::Expire(500), true)
+            let created = write_hash_field(&mut c, &key, b"f", b"v3", FieldTtl::Expire(500), true)
                 .await
                 .expect("hsetex ex");
             assert!(!created, "HSETEX on an existing field reports an overwrite");
             assert!((450..=500).contains(&ttl_of(&mut c, &key, "f").await));
-            write_hash_field(&mut c, &key, "f", "v4", FieldTtl::Keep, true)
+            write_hash_field(&mut c, &key, b"f", b"v4", FieldTtl::Keep, true)
                 .await
                 .expect("hsetex keepttl");
             let value: String = cmd("HGET").arg(&key).arg("f").query_async(&mut c).await.expect("hget");
@@ -3796,7 +3796,7 @@ fn standalone_hash_field_writes_carry_their_ttl() {
                 (450..=500).contains(&ttl_of(&mut c, &key, "f").await),
                 "KEEPTTL: the value changed, the TTL did not"
             );
-            rename_hash_field(&mut c, &key, "f", "g", "v5", FieldTtl::Expire(300), true)
+            rename_hash_field(&mut c, &key, b"f", b"g", b"v5", FieldTtl::Expire(300), true)
                 .await
                 .expect("rename");
             let old: i64 = cmd("HEXISTS")
