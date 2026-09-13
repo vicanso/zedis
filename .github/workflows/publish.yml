@@ -283,12 +283,19 @@ jobs:
     needs: prepare_vars
     if: needs.prepare_vars.outputs.should_build == 'true'
     runs-on: windows-latest
-    # The SignPath action reads this run's job details and artifact with the
-    # default token; everything that writes (asset uploads, the nightly
-    # release) authenticates with the GH_TOKEN PAT instead.
+    # A `permissions:` block REPLACES the default token's permissions, it does
+    # not add to them — so every scope this job needs must be listed here.
+    # `contents: write` is not optional: softprops/action-gh-release takes its
+    # `token` input, which *defaults to `github.token`*, so the step's
+    # `env: GITHUB_TOKEN` is never consulted and the nightly release is updated
+    # with the default token. Dropping it to `read` is what broke the nightly
+    # with "Resource not accessible by integration" on an otherwise-working
+    # step (macos / linux declare no block and inherit the repo default).
+    # `actions: read` is for the SignPath action, which reads this run's job
+    # details and artifact.
     permissions:
       actions: read
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
