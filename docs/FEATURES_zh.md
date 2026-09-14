@@ -58,7 +58,7 @@ Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页�
 ### 集合编辑器
 **Hash、List、Set、Sorted Set 以可分页、可编辑的表格打开——绝不用一条 `HGETALL` 把服务端拖死。**
 
-所有集合都增量加载（`HSCAN` / `SSCAN` / `ZSCAN`，List 用 `LRANGE` 窗口），配无限滚动与"已加载 / 总数"计数，因此百万字段的 hash 和十个字段的一样秒开。关键字过滤用于收窄表格——hash / set / sorted set 走扫描的 `MATCH`、在服务端完成，list 则在已加载的窗口上本地过滤。行可在右侧可调宽的面板中就地增删改，Hash 在服务端支持时带**字段级 TTL** 列，List 可选 `RPUSH` / `LPUSH`。Sorted Set 按分数走（`ZRANGE` / `ZREVRANGE`），工具栏可切换升序 / 降序。**批量添加**支持粘贴 TSV/CSV（每行一条），可见表格可导出 CSV/JSON。元素**与字符串值同样解码**——MessagePack、gzip、JWT 都认，图片只给出名字而不绘制——因此一张塞满二进制的表也能读成文本；而写入与删除送回的始终是**存储的原始字节**，既非文本又不属于已知格式的元素以 hex 编辑。行可**多选**批量删除，工具栏直接调用该类型自己的操作（`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY`），省去读出、修改、写回的往返。Sorted Set 在排序之外还支持**分数区间过滤**（`ZRANGEBYSCORE`）。
+所有集合都增量加载（`HSCAN` / `SSCAN` / `ZSCAN`，List 用 `LRANGE` 窗口），配无限滚动与"已加载 / 总数"计数，因此百万字段的 hash 和十个字段的一样秒开。关键字过滤用于收窄表格——hash / set / sorted set 走扫描的 `MATCH`、在服务端完成，list 则在已加载的窗口上本地过滤。行可在右侧可调宽的面板中就地增删改，Hash 在服务端支持时带**字段级 TTL** 列，List 可选 `RPUSH` / `LPUSH`。Sorted Set 按分数走（`ZRANGE` / `ZREVRANGE`），工具栏可切换升序 / 降序。**批量添加**支持粘贴 TSV/CSV（每行一条），可见表格可导出 CSV/JSON。元素**与字符串值同样解码**——MessagePack、gzip、JWT 都认，图片只给出名字而不绘制——因此一张塞满二进制的表也能读成文本；而写入与删除送回的始终是**存储的原始字节**，既非文本又不属于已知格式的元素以 hex 编辑。JSON 元素在表单上方获得与字符串编辑器相同的 **Text / Tree** 切换——树上的操作改写表单文本，由 Save 写回；MessagePack 或 gzip 解出 JSON 的元素也有同一棵树，但只读。行可**多选**批量删除，工具栏直接调用该类型自己的操作（`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY`），省去读出、修改、写回的往返。Sorted Set 在排序之外还支持**分数区间过滤**（`ZRANGEBYSCORE`）。
 
 ### 专项类型查看器
 **不透明的值都会打开为专用的交互式查看器。**

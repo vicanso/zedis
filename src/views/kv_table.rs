@@ -22,12 +22,15 @@ use crate::{
     helpers::{EditorAction, KeyOpAction, build_csv, humanize_keystroke},
     states::{
         DataFormat, KeyType, KvElement, ServerEvent, ZedisGlobalStore, ZedisServerState, detect_and_decode,
-        dialog_button_props, i18n_common, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor,
+        dialog_button_props, i18n_common, i18n_editor, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor,
         update_app_state_and_save_quiet_debounced,
     },
-    views::{export_to_file, key_op_title_key, open_key_op_dialog, open_score_filter_dialog},
+    views::{
+        JsonTreeEvent, JsonTreeTarget, ZedisJsonTree, export_to_file, key_op_title_key, open_key_op_dialog,
+        open_score_filter_dialog,
+    },
 };
-use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
@@ -43,6 +46,7 @@ use gpui_kit::component::{
 };
 use indexmap::IndexMap;
 use rust_i18n::t;
+use serde_json::Value;
 use std::sync::Arc;
 use tracing::info;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
@@ -53,6 +57,60 @@ pub const FOOTER_HEIGHT: f32 = 50.0;
 const PREVIEW_HEIGHT: f32 = 220.0;
 /// Bytes per row in the preview's hex view.
 const PREVIEW_HEX_BYTES_PER_ROW: usize = 16;
+
+/// Which rendering of the open row's element the preview shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PreviewMode {
+    /// The decoded text — or, for an element whose bytes are JSON, that
+    /// text as stored (the string editor's *Text*).
+    #[default]
+    Decoded,
+    /// The document as a JSON tree, the string editor's *Tree*.
+    Tree,
+    /// The stored bytes as a hex dump.
+    Hex,
+}
+
+impl PreviewMode {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Decoded => "kv-preview-decoded",
+            Self::Tree => "kv-preview-tree",
+            Self::Hex => "kv-preview-hex",
+        }
+    }
+}
+
+/// The renderings the preview offers: the decoded text, a tree when the
+/// element is JSON-shaped, and always the bytes as hex.
+fn preview_modes(json_shaped: bool) -> Vec<PreviewMode> {
+    if json_shaped {
+        vec![PreviewMode::Decoded, PreviewMode::Tree, PreviewMode::Hex]
+    } else {
+        vec![PreviewMode::Decoded, PreviewMode::Hex]
+    }
+}
+
+/// Whether the tree may edit the element. Only one whose stored bytes *are*
+/// JSON, on a connection and a fetcher that let the row be edited: a tree
+/// built from a decoding (MessagePack, a gzip of JSON) is a read-only view
+/// of it — ADR 8 — and a row being added has no stored bytes yet.
+fn tree_editable(format: DataFormat, adding: bool, readonly: bool, readonly_on_edit: bool) -> bool {
+    format == DataFormat::Json && !adding && !readonly_on_edit && Capability::MutateContainer.allowed(readonly)
+}
+
+/// The JSON document behind the element's preview: the stored text when the
+/// bytes are JSON, otherwise what they decode to. `None` when neither
+/// parses — a decoding clipped by `max_truncate_length` included, so a tree
+/// is never built from a truncated payload.
+fn element_json_document(element: &KvElement, max_truncate_length: usize) -> Option<Value> {
+    let text = match element.format() {
+        DataFormat::Json => element.edit_text(),
+        _ if element.is_decoded() => detect_and_decode(element.raw(), max_truncate_length).1,
+        _ => return None,
+    };
+    serde_json::from_str(text.as_ref()).ok()
+}
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
 
@@ -136,8 +194,20 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     /// The element the open row's main value column holds, for the decoded
     /// preview above the form.
     edit_element: Option<KvElement>,
-    /// Whether that preview shows the bytes as hex instead of decoded.
-    preview_hex: bool,
+    /// The form field that column edits — where a tree operation's result
+    /// is written.
+    edit_element_column: Option<SharedString>,
+    /// Whether `edit_element` parses as JSON (stored or decoded), so the
+    /// preview can offer a tree. Decided once when the row opens.
+    edit_element_json: bool,
+    /// Which rendering the preview shows.
+    preview: PreviewMode,
+    /// The tree rendering of `edit_element`; `Local` target, so operations
+    /// rewrite the form's text and Save writes them.
+    json_tree: Entity<ZedisJsonTree>,
+    /// The tree's document lags the form's text; rebuilt when the tree is
+    /// next shown (see `sync_json_tree`).
+    json_tree_stale: bool,
     /// Whether the values have been modified
     values_modified: bool,
     /// Whether the values should be filled
@@ -383,6 +453,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             _ => {}
         }));
 
+        // The tree behind the entry panel's JSON preview. No JSONPath bar
+        // lives there, so its row menu offers no Query.
+        let json_tree = cx.new(|cx| ZedisJsonTree::new(server_state.clone(), cx).without_query());
+        subscriptions.push(cx.subscribe(&json_tree, |this, _, event, cx| match event {
+            JsonTreeEvent::DocEdited(text) => this.apply_tree_edit(text.clone(), cx),
+            JsonTreeEvent::QueryPath(_) => {}
+        }));
+
         // Nothing renders these — `reset_edit_state` clears them and focuses
         // the first, and the visible cell editor is the `ZedisForm` built in
         // `render_edit_form`. They stay plain `InputState`s for that reason;
@@ -408,7 +486,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             values_should_fill: false,
             original_values: IndexMap::new(),
             edit_element: None,
-            preview_hex: false,
+            edit_element_column: None,
+            edit_element_json: false,
+            preview: PreviewMode::Decoded,
+            json_tree,
+            json_tree_stale: true,
             values_modified: false,
             value_states,
             readonly,
@@ -526,7 +608,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.fetcher.supports_batch_remove() && self.mode.contains(KvTableMode::REMOVE)
     }
 
-    fn handle_select_row(&mut self, row_ix: usize, _cx: &mut Context<Self>) {
+    fn handle_select_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         // Open the detail panel on select. An action mode (UPDATE/REMOVE/ADD)
         // opens the editor; otherwise `Capability::ViewEntry` still allows a
         // view-only preview (entry contents — e.g. a stream entry's id +
@@ -557,7 +639,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }
         // The preview follows the main value column: the flexible one (a
         // hash's value, a member), or the first value column without one.
-        self.edit_element = self
+        let main_column = self
             .columns
             .iter()
             .position(|column| column.column_type == KvTableColumnType::Value && column.flex)
@@ -565,9 +647,16 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 self.columns
                     .iter()
                     .position(|column| column.column_type == KvTableColumnType::Value)
-            })
-            .and_then(|index| self.fetcher.element(row_ix, index + 1));
-        self.preview_hex = false;
+            });
+        self.edit_element_column = main_column.map(|index| self.columns[index].name.clone());
+        self.edit_element = main_column.and_then(|index| self.fetcher.element(row_ix, index + 1));
+        let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+        self.edit_element_json = self
+            .edit_element
+            .as_ref()
+            .is_some_and(|element| element_json_document(element, max_truncate_length).is_some());
+        self.preview = PreviewMode::Decoded;
+        self.json_tree_stale = true;
         self.editor_form = None;
         self.values_modified = false;
     }
@@ -581,18 +670,120 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             .filter(|element| element.format() != DataFormat::Text)
     }
 
-    /// The decoded rendering (or hex) of the open row's element, above the
-    /// form that edits its bytes.
+    /// Switch the preview's rendering. Entering the tree marks it stale, so
+    /// it is rebuilt from the form's current text rather than from whatever
+    /// it showed last.
+    fn set_preview(&mut self, mode: PreviewMode, cx: &mut Context<Self>) {
+        if self.preview == mode {
+            return;
+        }
+        self.preview = mode;
+        if mode == PreviewMode::Tree {
+            self.json_tree_stale = true;
+        }
+        cx.notify();
+    }
+
+    /// Hand the tree its document. A JSON element's tree follows the form —
+    /// unsaved edits show, and an operation starts from what the user typed
+    /// — while a decoded element's tree is the decoding, read-only.
+    fn sync_json_tree(&mut self, cx: &mut Context<Self>) {
+        self.json_tree_stale = false;
+        let Some(element) = self.edit_element.clone() else {
+            return;
+        };
+        let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+        let doc = match (element.format(), &self.editor_form, &self.edit_element_column) {
+            (DataFormat::Json, Some(form), Some(column)) => {
+                let text = form.read(cx).get_field_value(column, cx);
+                serde_json::from_str::<Value>(text.as_ref()).ok()
+            }
+            _ => element_json_document(&element, max_truncate_length),
+        };
+        let editable = tree_editable(
+            element.format(),
+            self.is_adding_row(),
+            self.readonly,
+            self.fetcher.readonly_on_edit(),
+        );
+        self.json_tree.update(cx, |tree, cx| {
+            tree.set_document(doc, JsonTreeTarget::Local, editable, cx)
+        });
+    }
+
+    /// A tree operation rewrote the document: the form's value field takes
+    /// the new text, so Save writes it like any typed edit.
+    fn apply_tree_edit(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        let (Some(form), Some(column)) = (&self.editor_form, &self.edit_element_column) else {
+            return;
+        };
+        let column = column.clone();
+        form.update(cx, |form, cx| {
+            form.schedule_field_update(column, text);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// The decoded rendering, the JSON tree, or the hex of the open row's
+    /// element, above the form that edits its bytes.
     fn render_element_preview(&self, element: &KvElement, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let decodable = element.is_decoded() || element.format() == DataFormat::Json;
-        let show_hex = self.preview_hex || !decodable;
-        let text: SharedString = if show_hex {
-            bytes_to_hex_text(element.raw(), PREVIEW_HEX_BYTES_PER_ROW).into()
+        let mode = if decodable { self.preview } else { PreviewMode::Hex };
+        let modes = preview_modes(self.edit_element_json);
+        // A JSON element's decoded rendering is its text as stored, so the
+        // switch reads Text / Tree / Hex exactly like the string editor's;
+        // any other decoding keeps the Decoded label.
+        let stored_json = element.format() == DataFormat::Json;
+        let label_for = |mode: PreviewMode| -> SharedString {
+            match mode {
+                PreviewMode::Decoded if stored_json => i18n_editor(cx, "json_view_text"),
+                PreviewMode::Decoded => i18n_kv_table(cx, "preview_decoded"),
+                PreviewMode::Tree => i18n_editor(cx, "json_view_tree"),
+                PreviewMode::Hex => i18n_kv_table(cx, "preview_hex"),
+            }
+        };
+        let switch = modes.iter().fold(
+            ButtonGroup::new("kv-preview-mode").compact().xsmall().outline(),
+            |group, candidate| {
+                group.child(
+                    Button::new(candidate.id())
+                        .label(label_for(*candidate))
+                        .selected(*candidate == mode),
+                )
+            },
+        );
+        let body: AnyElement = if mode == PreviewMode::Tree {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .border_1()
+                .border_color(theme.border)
+                .rounded(px(4.))
+                .child(self.json_tree.clone())
+                .into_any_element()
         } else {
-            let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
-            detect_and_decode(element.raw(), max_len).1
+            let text: SharedString = if mode == PreviewMode::Hex {
+                bytes_to_hex_text(element.raw(), PREVIEW_HEX_BYTES_PER_ROW).into()
+            } else {
+                let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+                detect_and_decode(element.raw(), max_len).1
+            };
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .border_1()
+                .border_color(theme.border)
+                .rounded(px(4.))
+                .px_2()
+                .py_1()
+                .overflow_y_scrollbar()
+                .child(Label::new(text).text_xs().font_family(get_mono_font_family()))
+                .into_any_element()
         };
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let format_label: SharedString = t!(
@@ -622,42 +813,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     .child(div().flex_1())
                     .when(decodable, |this| {
                         this.child(
-                            ButtonGroup::new("kv-preview-mode")
-                                .compact()
-                                .xsmall()
-                                .outline()
-                                .child(
-                                    Button::new("kv-preview-decoded")
-                                        .label(i18n_kv_table(cx, "preview_decoded"))
-                                        .selected(!self.preview_hex),
-                                )
-                                .child(
-                                    Button::new("kv-preview-hex")
-                                        .label(i18n_kv_table(cx, "preview_hex"))
-                                        .selected(self.preview_hex),
-                                )
-                                .on_click(cx.listener(|this, clicks: &Vec<usize>, _window, cx| {
-                                    if let Some(ix) = clicks.first() {
-                                        this.preview_hex = *ix == 1;
-                                        cx.notify();
-                                    }
-                                })),
+                            switch.on_click(cx.listener(move |this, clicks: &Vec<usize>, _window, cx| {
+                                if let Some(mode) = clicks.first().and_then(|ix| modes.get(*ix)) {
+                                    this.set_preview(*mode, cx);
+                                }
+                            })),
                         )
                     }),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(4.))
-                    .px_2()
-                    .py_1()
-                    .overflow_y_scrollbar()
-                    .child(Label::new(text).text_xs().font_family(get_mono_font_family())),
-            )
+            .child(body)
     }
 
     /// Open a dialog to paste many rows at once. The pasted text is
@@ -935,6 +1099,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// the edit form, which fills what is left.
     fn enhance_render_edit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let form = self.edit_form(window, cx);
+        // The form exists now, so a stale tree can read its text.
+        if self.preview == PreviewMode::Tree && self.json_tree_stale && self.previewed_element().is_some() {
+            self.sync_json_tree(cx);
+        }
         let preview = self
             .previewed_element()
             .cloned()
@@ -1446,7 +1614,49 @@ pub(crate) use define_kv_editor;
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bulk_rows;
+    use super::{PreviewMode, element_json_document, parse_bulk_rows, preview_modes, tree_editable};
+    use crate::states::{DataFormat, KvElement};
+
+    #[test]
+    fn json_shaped_elements_offer_a_tree_and_the_rest_do_not() {
+        assert_eq!(
+            preview_modes(true),
+            vec![PreviewMode::Decoded, PreviewMode::Tree, PreviewMode::Hex]
+        );
+        assert_eq!(preview_modes(false), vec![PreviewMode::Decoded, PreviewMode::Hex]);
+    }
+
+    #[test]
+    fn only_a_json_element_gets_an_editable_tree() {
+        // Stored JSON on a writable connection edits through the tree.
+        assert!(tree_editable(DataFormat::Json, false, false, false));
+        // ADR 8: a decoding is a read-only view, however JSON-shaped.
+        assert!(!tree_editable(DataFormat::MessagePack, false, false, false));
+        assert!(!tree_editable(DataFormat::Gzip, false, false, false));
+        // A row being added, a read-only connection, and a fetcher that is
+        // read-only on edit (streams) each keep the tree read-only.
+        assert!(!tree_editable(DataFormat::Json, true, false, false));
+        assert!(!tree_editable(DataFormat::Json, false, true, false));
+        assert!(!tree_editable(DataFormat::Json, false, false, true));
+    }
+
+    #[test]
+    fn the_tree_document_is_the_stored_json_or_the_decoding() {
+        let stored = KvElement::from_text(r#"{"a":1}"#);
+        assert_eq!(element_json_document(&stored, 1024), Some(serde_json::json!({"a": 1})));
+
+        let packed = rmp_serde::to_vec(&serde_json::json!({"name": "zedis", "n": 7})).expect("msgpack");
+        let decoded = KvElement::from_raw(packed);
+        assert_eq!(decoded.format(), DataFormat::MessagePack);
+        assert_eq!(
+            element_json_document(&decoded, 1024),
+            Some(serde_json::json!({"name": "zedis", "n": 7}))
+        );
+
+        // Plain text has no document, and neither does JSON whose decoding
+        // was clipped: a tree must never be built from a truncated payload.
+        assert_eq!(element_json_document(&KvElement::from_text("plain"), 1024), None);
+    }
 
     #[test]
     fn parse_single_column_preserves_commas() {

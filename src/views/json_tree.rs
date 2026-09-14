@@ -96,6 +96,9 @@ pub struct ZedisJsonTree {
     rows: Rc<HashMap<SharedString, Row>>,
     target: JsonTreeTarget,
     editable: bool,
+    /// Whether the row menu offers *Query* — only where a JSONPath bar
+    /// exists to receive it.
+    query: bool,
     /// Containers the user opened, kept across rebuilds so a reload after
     /// an operation does not fold the tree back up.
     expanded: HashSet<SharedString>,
@@ -122,9 +125,17 @@ impl ZedisJsonTree {
             rows: Rc::new(HashMap::new()),
             target: JsonTreeTarget::Local,
             editable: false,
+            query: true,
             expanded: HashSet::new(),
             _subscriptions: vec![subscription],
         }
+    }
+
+    /// This tree sits nowhere near a JSONPath bar: drop the *Query* item
+    /// from the row menu, so it never offers a command with no destination.
+    pub fn without_query(mut self) -> Self {
+        self.query = false;
+        self
     }
 
     /// Show `doc` (`None` when the text is not JSON), with the operations
@@ -319,6 +330,7 @@ struct MenuScope {
     features: Arc<ServerFeatures>,
     target: JsonTreeTarget,
     editable: bool,
+    query: bool,
 }
 
 impl MenuScope {
@@ -351,12 +363,14 @@ impl MenuScope {
                 RowCommand::CopyValue,
                 i18n_editor(cx, "json_tree_copy_value"),
                 None,
-            ))
-            .item(item(
+            ));
+        if self.query {
+            menu = menu.item(item(
                 RowCommand::Query,
                 i18n_editor(cx, "json_tree_query"),
                 Some(IconName::Search),
             ));
+        }
         if !self.editable {
             return menu;
         }
@@ -502,6 +516,7 @@ impl Render for ZedisJsonTree {
             features: self.server_state.read(cx).features(),
             target: self.target,
             editable: self.editable,
+            query: self.query,
         };
         Tree::new(&self.tree_state, move |ix, entry, _selected, _window, cx| {
             render_row(ix, entry, &rows, cx)
