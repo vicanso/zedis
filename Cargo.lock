@@ -733,15 +733,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1368,7 +1359,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -2056,7 +2047,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2094,7 +2085,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -2357,7 +2348,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2414,17 +2405,6 @@ dependencies = [
  "rayon-core",
  "smallvec",
  "zune-inflate",
-]
-
-[[package]]
-name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
-dependencies = [
- "bit-set 0.8.0",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]
@@ -3157,7 +3137,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.57.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -3182,9 +3162,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-base"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330"
+checksum = "9d45dcaaeac889bf1e7757db1beb26c9043c8ea3156651facc11c6be56bb6722"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3193,7 +3173,6 @@ dependencies = [
  "futures",
  "gpui-pre",
  "gpui-pre-macros",
- "gpui-pre-platform",
  "gpui-pre-sum-tree",
  "html5ever",
  "instant",
@@ -3211,7 +3190,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "smol",
- "syntect",
  "tracing",
  "unicode-segmentation",
  "web-time",
@@ -3219,9 +3197,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd7938c395be32cea6127b92f7206501ad1fe7e121a609de1aafdedcb4d98be"
+checksum = "52b7ab4921dc9d2624648fb40580067bfe0f47dd14f5f8f6e070d40c6d4246d4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3246,6 +3224,7 @@ dependencies = [
  "once_cell",
  "paste",
  "raw-window-handle",
+ "regex",
  "resvg 0.45.1",
  "ropey",
  "rust-i18n",
@@ -3264,9 +3243,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-component-macros"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dacef57cadf1ce9b05b1f1ba6b3f3fed2521fd814f548eea0e4d8e43c5857795"
+checksum = "21fee2d71a84a6af828e7915a1b4c6721610a47ba5ef30b35c2f8edafdd753cc"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -3276,24 +3255,23 @@ dependencies = [
 
 [[package]]
 name = "gpui-kit"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3279d239b0b9228e04511ada0131120f1d7983147586e28a69820630755569f"
+checksum = "a74f10f4499d99378c73c0251541a5d92bde45cb83dd658f0618fb32769d5898"
 dependencies = [
  "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
- "gpui-pre-reqwest-client",
  "gpui-pre-web",
 ]
 
 [[package]]
 name = "gpui-kit-assets"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb6fed67d6488fa9333b6534d17f5eaef32b83e3d7148b83a3d444a1884bd1c"
+checksum = "be79bcf18842485308282d138cffaacb6191ece5643f4ee66d1828524be2a8e3"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -3441,18 +3419,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "url",
-]
-
-[[package]]
-name = "gpui-pre-http-client-tls"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10157341e736f024112d995fb89750aa8b4e80c9157b3dc22200127a64b27dc1"
-dependencies = [
- "log",
- "rustls",
- "rustls-platform-verifier",
- "webpki-roots",
 ]
 
 [[package]]
@@ -3659,24 +3625,6 @@ dependencies = [
  "wasm-streams",
  "web-sys",
  "windows-registry 0.4.0",
-]
-
-[[package]]
-name = "gpui-pre-reqwest-client"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfa3df55759b31177cc5c4abb302921844a89698cc91783685a2002200a6257d"
-dependencies = [
- "anyhow",
- "bytes",
- "futures",
- "gpui-pre-http-client",
- "gpui-pre-http-client-tls",
- "gpui-pre-reqwest",
- "gpui-pre-util",
- "log",
- "regex",
- "tokio",
 ]
 
 [[package]]
@@ -4256,7 +4204,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5662,7 +5610,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7208,7 +7156,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7986,7 +7934,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8054,7 +8002,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9168,24 +9116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "syntect"
-version = "5.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
-dependencies = [
- "bincode",
- "fancy-regex",
- "flate2",
- "fnv",
- "once_cell",
- "regex-syntax",
- "serde",
- "serde_derive",
- "thiserror 2.0.20",
- "walkdir",
-]
-
-[[package]]
 name = "sys-locale"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9312,10 +9242,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10765,7 +10695,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
