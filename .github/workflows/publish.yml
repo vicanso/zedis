@@ -389,7 +389,7 @@ jobs:
         # test-signing needs no approval and returns within a minute.
         if: steps.signpath.outputs.policy != ''
         id: signpath_request
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
