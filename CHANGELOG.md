@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.11.0](https://github.com/vicanso/zedis/compare/v0.10.0..v0.11.0) - 2026-09-15
+
+### ⛰️  Features
+
+- *(editor)* Text / Tree switch for JSON elements in collection panels ([#141](https://github.com/orhun/git-cliff/issues/141)) - ([feebdbe](https://github.com/vicanso/zedis/commit/feebdbe49fae50e50c78ef3e6d2d7ea862e0372b))
+
+### 🐛 Bug Fixes
+
+- *(ci)* Restore contents: write on the Windows publish job - ([1830df1](https://github.com/vicanso/zedis/commit/1830df1eba01874a67605ed03d72e1549473266a))
+- *(editor)* Keep the line-number gutter and fonts steady on gpui-kit 0.6.1 - ([15cef64](https://github.com/vicanso/zedis/commit/15cef6406d4c171a5b652a58999682f59ec8d0c1))
+- Rustls tls handshake ([#145](https://github.com/orhun/git-cliff/issues/145)) - ([e9f730c](https://github.com/vicanso/zedis/commit/e9f730c21e0bb4dca659a17d8a3a3d705ef42ca5))
+
+### Build
+
+- *(deps)* Bump gpui-kit from 0.6.0 to 0.6.1 in the gpui group ([#143](https://github.com/orhun/git-cliff/issues/143)) - ([38d0ff5](https://github.com/vicanso/zedis/commit/38d0ff540bd9a8059ee10205e6ac391199e10a1e))
+- *(deps)* Bump the minor-and-patch group with 11 updates ([#144](https://github.com/orhun/git-cliff/issues/144)) - ([0af2c8b](https://github.com/vicanso/zedis/commit/0af2c8b9d9405003a39eceec62d7440f60a9a241))
+- *(deps)* Bump signpath/github-action-submit-signing-request ([#142](https://github.com/orhun/git-cliff/issues/142)) - ([4d1b3d0](https://github.com/vicanso/zedis/commit/4d1b3d00b85a5aa897404eabf7531173022ac547))
+
 ## [0.10.0](https://github.com/vicanso/zedis/compare/v0.9.0..v0.10.0) - 2026-09-12
 
 ### ⛰️  Features

@@ -7,8 +7,8 @@ Security fixes are applied to the latest release line only.
 
 | Version | Supported |
 | --- | --- |
-| 0.10.x (latest) | ✅ |
-| < 0.10 | ❌ |
+| 0.11.x (latest) | ✅ |
+| < 0.11 | ❌ |
 
 ### Reporting a vulnerability
 **Please do not report security vulnerabilities through public GitHub issues.**
@@ -47,8 +47,8 @@ exactly the kind we want.
 
 | 版本 | 是否支持 |
 | --- | --- |
-| 0.10.x(最新) | ✅ |
-| < 0.10 | ❌ |
+| 0.11.x(最新) | ✅ |
+| < 0.11 | ❌ |
 
 ### 报告漏洞
 **请勿通过公开的 GitHub issue 报告安全漏洞。**
