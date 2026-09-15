@@ -1,6 +1,6 @@
 ---
 name: gpui-kit
-description: "How to build desktop applications with GPUI Kit, the Rust framework published as the gpui-kit crate (GPUI plus gpui_kit::component, gpui_kit::base, gpui_kit::assets). Use when setting up a gpui-kit app, choosing or using a component (Button, Input, Select, Dialog, Sheet, Tabs, Sidebar, List, DataTable, Tree, Chart, etc.), handling component state, theming, or window overlays, and for GPUI mechanics: actions and keybindings, async tasks, contexts, custom elements, entities, events, focus, global state, layout and styling, ElementId, and tests. Holds the normative Coding Guides: read them before any architecture, state-ownership, public API, naming, or testing decision. Pairs with the gpui-kit-design-guides skill for the Design Guides."
+description: 'How to build desktop applications with GPUI Kit, the Rust framework published as the gpui-kit crate (GPUI plus gpui_kit::component, gpui_kit::base, gpui_kit::assets). Use when setting up a gpui-kit app, choosing or using a component (Button, Input, Select, Dialog, Sheet, Tabs, Sidebar, List, DataTable, Tree, Chart, etc.), handling component state, theming, or window overlays, and for GPUI mechanics: actions and keybindings, async tasks, contexts, custom elements, entities, events, focus, global state, layout and styling, ElementId, and tests including UI integration testing. Holds the normative Coding Guides: read them before any architecture, state-ownership, public API, naming, or testing decision. Pairs with the gpui-kit-design-guides skill for the Design Guides.'
 ---
 
 # GPUI Kit
@@ -9,6 +9,11 @@ Applications depend on one crate, `gpui-kit`. GPUI is `use gpui_kit::*;`, and
 each layer is reachable by name: `gpui_kit::component` (styled components),
 `gpui_kit::base` (unstyled behavior), `gpui_kit::assets` (default icons),
 `gpui_kit::platform`.
+
+Start with [component-family conventions](references/conventions.md) to choose the constructor, state owner, event, and layout contract for the task. Learn the family once, then verify the specific component supports the capability.
+
+For a complete compiled view with retained state, subscriptions, and overlay
+layers, read [the tested application recipe](references/recipes.md).
 
 ## Read the Guides First
 
@@ -80,8 +85,9 @@ A floor, not a substitute for the guides.
 
 ## Documentation
 
-- **Full reference**: fetch `https://gpui-kit.com/llms-full.txt`
-- **Per-component API**: fetch `https://gpui-kit.com/docs/components/{name}.md`,
+- **Find a task/component page**: use `https://gpui-kit.com/llms.txt`, then load its Markdown page.
+- **Full reference**: `https://gpui-kit.com/llms-full.txt` is available when broad reference is actually needed
+- **Per-component API**: fetch `https://gpui-kit.com/component/{name}.md`,
   e.g. `button.md`, `input.md`, `select.md`, `dialog.md`, `data-table.md`
 - **Any site page** can be fetched as Markdown by appending `.md` to the URL
 
@@ -219,6 +225,19 @@ fetch the component's `.md` doc.
 | --------- | --------------------------------------------------------------- | ------------------------------ |
 | `Chart`   | `chart::{AreaChart, BarChart, LineChart, PieChart, RadarChart}` | Bar, line, area, pie charts    |
 | `Plot`    | `plot::Plot`                                                    | `#[derive(IntoPlot)]` for data |
+
+## Testing
+
+**UI integration testing** means rendering real components in headless windows,
+simulating input, and checking state, focus, layout and owner callbacks. Use
+`#[gpui_kit::test]` to run tests and `gpui_kit::test` to operate and inspect the UI.
+When asked to add component interaction coverage, describe it as UI integration testing.
+
+For unit tests, GPUI context tests or UI integration tests, read
+[Testing](references/gpui/test.md). It includes dependency setup, a complete
+runnable UI flow, scoped native interactions, frame/async handling and the
+limits of accessibility and geometry assertions. Use the production view and
+verify the action's outcome through normal Rust assertions.
 
 ## GPUI References
 

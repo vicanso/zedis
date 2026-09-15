@@ -14,7 +14,7 @@
 
 //! Window placement and theme application at launch and on change.
 
-use crate::helpers::apply_default_ui_font_size;
+use crate::helpers::{apply_default_ui_font_size, reapply_fonts};
 use crate::states::ZedisAppState;
 use gpui::{App, Bounds, Pixels, WindowAppearance, px, size};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
@@ -116,9 +116,10 @@ pub(crate) fn apply_named_theme(name: &str, cx: &mut App) -> bool {
         return false;
     };
     Theme::global_mut(cx).apply_config(&config);
-    // apply_config resets font_size to stock 16 unless the theme JSON sets it.
+    // apply_config resets font_size to stock 16 unless the theme JSON sets it,
+    // and the families to stock typography unless it names them.
     apply_default_ui_font_size(cx);
-    cx.refresh_windows();
+    reapply_fonts(cx);
     true
 }
 
@@ -154,8 +155,11 @@ pub(crate) fn restore_default_themes(cx: &mut App) {
     theme.light_theme = Rc::new(light);
     theme.dark_theme = Rc::new(dark);
     // Not applied to the live Theme yet — caller still runs Theme::change.
-    // Pin rem base here too so a bare restore (if ever used alone) keeps 14.
+    // Pin rem base here too so a bare restore (if ever used alone) keeps 14,
+    // and write the user's families into the fresh slots (they carry stock
+    // typography) so that Theme::change keeps them.
     apply_default_ui_font_size(cx);
+    reapply_fonts(cx);
 }
 
 /// Open the "update available" dialog on the main window. **Download** opens the

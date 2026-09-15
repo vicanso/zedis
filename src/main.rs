@@ -5,9 +5,9 @@ use crate::helpers::{
     CrashContext, DiagnosticsAction, InstanceMessage, InstanceRole, MemuAction, MultiSearchAction, PaletteAction,
     RecentKeysAction, ShortcutsAction, UpdateAction, WindowAction, apply_default_ui_font_size, apply_fonts,
     claim_instance, get_or_create_config_dir, init_logger, install_panic_hook, instance_messages, is_app_store_build,
-    load_keybinding_overrides, logs_dir, new_hot_keys, post_instance_message, register_extra_languages,
-    release_instance, set_configured_proxy, set_datetime_prefs, take_config_recoveries, take_instance_server,
-    take_pending_crash, with_app_identity,
+    load_keybinding_overrides, logs_dir, new_hot_keys, post_instance_message, register_editing_rules,
+    register_extra_languages, release_instance, set_configured_proxy, set_datetime_prefs, take_config_recoveries,
+    take_instance_server, take_pending_crash, with_app_identity,
 };
 use crate::states::{
     HINT_WELCOME, Route, ServerView, ZedisAppState, ZedisGlobalStore, flush_app_state_on_quit,
@@ -173,6 +173,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_kit::component::init(cx);
+        // Editing rules (auto-close pairs, smart indent) for the languages
+        // registered above; `init` installs the provider they hang off.
+        register_editing_rules(cx);
         launch(cx, app_state);
     });
     Ok(())
@@ -231,6 +234,16 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
     info!(bounds = ?window_bounds, maximized, "resolved window bounds");
     let app_state = cx.new(|_| app_state);
     let app_store = ZedisGlobalStore::new(app_state);
+    // Fonts first: `apply_fonts` records the families and writes them into
+    // the light / dark theme slots as well as the live theme, so the theme
+    // application below keeps them (a named theme puts them back itself).
+    {
+        let (ui_font, mono_font) = {
+            let store = app_store.read(cx);
+            (store.ui_font_family(), store.mono_font_family())
+        };
+        apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+    }
     // A saved named theme wins; otherwise fall back to the Light/Dark/System
     // mode (resolved against the OS appearance by the renderer).
     let saved_theme_name = app_store.read(cx).theme_name();
@@ -257,15 +270,6 @@ pub(crate) fn launch(cx: &mut App, app_state: ZedisAppState) {
     // From here on every exit path flushes the state on the way out; nothing
     // else needs to remember to.
     flush_app_state_on_quit(cx);
-    // Apply the saved font preferences onto the (already-initialized)
-    // Theme before the first frame, so the initial paint uses them.
-    {
-        let (ui_font, mono_font) = {
-            let store = cx.global::<ZedisGlobalStore>().read(cx);
-            (store.ui_font_family(), store.mono_font_family())
-        };
-        apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
-    }
     // Mirror the persisted proxy setting into helpers::proxy before the
     // startup update check fires — its HTTP runs on background threads
     // that can't read the store.

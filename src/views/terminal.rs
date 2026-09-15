@@ -49,6 +49,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, info, warn};
+use zedis_ui::stable_gutter_padding;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -420,6 +421,11 @@ impl ZedisTerminal {
                 .language(Language::from_str("bash").name())
                 .line_number(true)
                 .soft_wrap(true)
+                // Redis command lines, not shell code: an apostrophe or a
+                // lone quote inside a value must not grow a partner, and with
+                // no bash grammar compiled in nothing would tell the editor
+                // it is inside a string.
+                .auto_close(false)
         });
         let search_input_state = cx.new(|cx| InputState::new(window, cx));
 
@@ -1248,6 +1254,7 @@ impl Render for ZedisTerminal {
                             .w_full()
                             .h_full()
                             .font_family(font_family.clone())
+                            .pl(stable_gutter_padding(&self.cmd_output_state, font_family.clone(), cx))
                             .readonly(true)
                             .appearance(false)
                             .bordered(false)
@@ -1370,6 +1377,7 @@ impl Render for ZedisTerminal {
                                     .w_full()
                                     .h_full()
                                     .font_family(font_family.clone())
+                                    .pl(stable_gutter_padding(&self.batch_input_state, font_family.clone(), cx))
                                     .appearance(false),
                             ),
                         )

@@ -48,7 +48,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use tracing::info;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, stable_gutter_padding};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -949,6 +949,7 @@ impl ZedisFunctionEditor {
                                 .disabled(true)
                                 .h_full()
                                 .w_full()
+                                .pl(stable_gutter_padding(editor, get_mono_font_family(), cx))
                                 .font_family(get_mono_font_family()),
                         )
                         .into_any_element(),
@@ -1355,6 +1356,7 @@ impl ZedisFunctionEditor {
                                     .appearance(false)
                                     .bordered(false)
                                     .h_full()
+                                    .pl(stable_gutter_padding(&code_input, get_mono_font_family(), cx))
                                     .font_family(get_mono_font_family()),
                             ),
                     ),

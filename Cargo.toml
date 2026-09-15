@@ -265,7 +265,7 @@ gpui_macros = { package = "gpui-pre-macros", version = "0.3.3" }
 # on the component crate's native highlighter — LanguageConfig /
 # LanguageRegistry, pulling tree-sitter + tree-sitter-json only, not the
 # 30-parser `tree-sitter-languages` bundle; we register Lua ourselves.
-gpui-kit = { version = "0.6.0", features = ["tree-sitter"] }
+gpui-kit = { version = "0.6.1", features = ["tree-sitter"] }
 
 [build-dependencies]
 winres = "0.1.12"

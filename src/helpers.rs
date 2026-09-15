@@ -48,7 +48,7 @@ pub use single_instance::{
     InstanceMessage, InstanceRole, claim_instance, instance_messages, post_instance_message, release_instance,
     take_instance_server,
 };
-pub use syntax::register_extra_languages;
+pub use syntax::{register_editing_rules, register_extra_languages};
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
 #[cfg(target_os = "macos")]
 pub use updater::relaunch;

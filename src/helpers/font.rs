@@ -15,6 +15,7 @@
 use arc_swap::ArcSwap;
 use gpui::{App, SharedString, px};
 use gpui_kit::component::Theme;
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
 /// Bundled and registered at startup via `add_fonts` (see `main.rs` +
@@ -46,6 +47,10 @@ pub fn apply_default_ui_font_size(cx: &mut App) {
 static MONO_FONT_FAMILY: LazyLock<ArcSwap<String>> =
     LazyLock::new(|| ArcSwap::from_pointee(DEFAULT_MONO_FONT.to_string()));
 
+/// The UI family last applied, so [`reapply_fonts`] can put it back after a
+/// theme application without a handle on the app state.
+static UI_FONT_FAMILY: LazyLock<ArcSwap<String>> = LazyLock::new(|| ArcSwap::from_pointee(DEFAULT_UI_FONT.to_string()));
+
 pub fn get_mono_font_family() -> String {
     MONO_FONT_FAMILY.load().as_ref().clone()
 }
@@ -60,19 +65,48 @@ fn resolve_family<'a>(name: Option<&'a str>, default: &'a str) -> &'a str {
 /// Apply the user's font choices for the whole app:
 /// - the monospace global (all `get_mono_font_family()` call sites);
 /// - the theme's `font_family` (which gpui-component's `Root` cascades to every
-///   element) and `mono_font_family` (used by gpui-component's own widgets).
+///   element) and `mono_font_family` (used by gpui-component's own widgets);
+/// - the theme's light / dark config slots, so the next `Theme::change`
+///   keeps the families.
 ///
 /// `None`/empty falls back to the system UI font / bundled JetBrains Mono.
-/// Bundled theme configs never set these fields, so the values survive theme
-/// and light/dark switches — apply once at startup and again on each change.
+///
+/// Every theme application (`Theme::change`, `apply_config`) rebuilds the
+/// typography from stock defaults unless the config names a family, which is
+/// why the slots are written too: a light / dark switch then keeps the
+/// user's fonts. A named theme replaces the live values outright —
+/// [`reapply_fonts`] after it. (gpui-component's mono-font probe, a full
+/// font enumeration of ~100ms on macOS, runs once inside
+/// `gpui_kit::component::init`'s own `Theme::change` and is cached for the
+/// process; nothing here can move it.)
 pub fn apply_fonts(cx: &mut App, ui_font: Option<&str>, mono_font: Option<&str>) {
     let ui = resolve_family(ui_font, DEFAULT_UI_FONT).to_string();
     let mono = resolve_family(mono_font, DEFAULT_MONO_FONT).to_string();
     MONO_FONT_FAMILY.store(Arc::new(mono.clone()));
-    {
-        let theme = Theme::global_mut(cx);
-        theme.font_family = SharedString::from(ui);
-        theme.mono_font_family = SharedString::from(mono);
+    UI_FONT_FAMILY.store(Arc::new(ui.clone()));
+    write_families(cx, ui, mono);
+}
+
+/// Put the families [`apply_fonts`] last recorded back onto the live theme and
+/// its light / dark slots. Call after anything that applies a theme config
+/// (`apply_named_theme`, `restore_default_themes`).
+pub fn reapply_fonts(cx: &mut App) {
+    let ui = UI_FONT_FAMILY.load().as_ref().clone();
+    let mono = MONO_FONT_FAMILY.load().as_ref().clone();
+    write_families(cx, ui, mono);
+}
+
+fn write_families(cx: &mut App, ui: String, mono: String) {
+    let ui = SharedString::from(ui);
+    let mono = SharedString::from(mono);
+    let theme = Theme::global_mut(cx);
+    theme.font_family = ui.clone();
+    theme.mono_font_family = mono.clone();
+    for slot in [&mut theme.light_theme, &mut theme.dark_theme] {
+        let mut config = (**slot).clone();
+        config.font_family = Some(ui.clone());
+        config.mono_font_family = Some(mono.clone());
+        *slot = Rc::new(config);
     }
     cx.refresh_windows();
 }

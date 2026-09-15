@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::editor_gutter::stable_gutter_padding;
 use gpui::{
     AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
     Window, div, prelude::*, px,
@@ -1160,7 +1161,11 @@ impl Render for ZedisForm {
                     )));
                 }
                 ZedisFormFieldState::Editor(state) => {
-                    let editor = Editor::new(state).disabled(field_disabled);
+                    let editor = Editor::new(state).disabled(field_disabled).pl(stable_gutter_padding(
+                        state,
+                        cx.theme().mono_font_family.clone(),
+                        cx,
+                    ));
                     if self.fill_height && field.fill {
                         let control = editor.flex_1().min_h_0().w_full().into_any_element();
                         items.push(FormItem::Fill(fill_field(field, control, cx)));
