@@ -637,6 +637,23 @@ fn host_key_error(e: russh::Error) -> Error {
     }
 }
 
+/// The RSA signature hash this server accepts, asked over RFC 8308's
+/// `server-sig-algs`.
+///
+/// It is not optional book-keeping: `PrivateKeyWithHashAlg::new(_, None)`
+/// signs an RSA key with the legacy `ssh-rsa` (SHA-1), which OpenSSH has
+/// refused by default since 8.8 — the server then answers a bare
+/// `Failure { remaining_methods: [PublicKey] }` and the key looks rejected.
+/// So every RSA key, from a file or from the agent, asks first.
+///
+/// `None` means the server sent no extension, or offers no `rsa-sha2-*`:
+/// SHA-1 is then all russh can sign with, which is also what it did before.
+/// The call waits up to a second for the extension and never fails the
+/// login on its own.
+async fn negotiated_rsa_hash(session: &SshHandle) -> Option<HashAlg> {
+    session.best_supported_rsa_hash().await.unwrap_or(None).flatten()
+}
+
 async fn authenticate(session: &mut SshHandle, target: &SshTarget) -> Result<()> {
     let user = target.user.as_str();
     let key = target.key.as_str();
@@ -655,8 +672,15 @@ async fn authenticate(session: &mut SshHandle, target: &SshTarget) -> Result<()>
         } else {
             match load_private_key(key, &target.key_passphrase) {
                 Ok(key_pair) => {
-                    let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
-                    debug!(user, "public key authentication");
+                    // An RSA key has to be signed with the hash the server
+                    // actually accepts — see `negotiated_rsa_hash`.
+                    let hash_alg = if key_pair.algorithm().is_rsa() {
+                        negotiated_rsa_hash(session).await
+                    } else {
+                        None
+                    };
+                    let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg);
+                    debug!(user, ?hash_alg, "public key authentication");
                     session.authenticate_publickey(user, key_with_alg).await?
                 }
                 Err(e) if target.key_from_config => {
@@ -802,7 +826,7 @@ async fn authenticate_via_agent(
         let mut is_detect_hash_alg = false;
         for public_key in candidates {
             if !is_detect_hash_alg && public_key.algorithm().is_rsa() {
-                hash_alg = session.best_supported_rsa_hash().await.unwrap_or(None).flatten();
+                hash_alg = negotiated_rsa_hash(session).await;
                 is_detect_hash_alg = true;
             }
             match session

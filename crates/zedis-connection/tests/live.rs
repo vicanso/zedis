@@ -3009,6 +3009,28 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
             get_connection_manager().get_client(&id, 0).await.is_err(),
             "an unknown ssh user was let in"
         );
+
+        // 5. An RSA key. It reaches the same sshd on its own port, so this is
+        //    a real handshake and not the cached session from case 2 — the
+        //    point of the case, because RSA is the one algorithm whose
+        //    signature is negotiated: signed as the legacy ssh-rsa (SHA-1) it
+        //    is refused by every OpenSSH since 8.8, and the fixture's sshd
+        //    pins SHA-2 so an older host cannot let it pass either.
+        let rsa_addr = env::var("ZEDIS_IT_SSH_RSA").expect("ZEDIS_IT_SSH_RSA");
+        let rsa_key = env::var("ZEDIS_IT_SSH_KEY_RSA").expect("ZEDIS_IT_SSH_KEY_RSA");
+        let mut rsa = server("it-ssh-rsa", standalone());
+        rsa.ssh_tunnel = Some(true);
+        rsa.ssh_addr = Some(rsa_addr);
+        rsa.ssh_username = Some(user.clone());
+        rsa.ssh_key = Some(rsa_key);
+        let id = register(rsa).await;
+        get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("tunnelled client (rsa key)")
+            .ping()
+            .await
+            .expect("ping through the rsa-authenticated tunnel");
     });
 }
 

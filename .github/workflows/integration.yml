@@ -98,7 +98,7 @@ jobs:
       - name: assert the optional scenarios started
         if: matrix.stack != '1'
         run: |
-          for var in ZEDIS_IT_MTLS ZEDIS_IT_SSH; do
+          for var in ZEDIS_IT_MTLS ZEDIS_IT_SSH ZEDIS_IT_SSH_RSA; do
             grep -q "^$var=" scripts/it/.env && continue
             echo "::error::$var is missing — up.sh skipped that scenario, so its tests did not run"
             tail -30 scripts/it/.run/sshd.log 2>/dev/null || true

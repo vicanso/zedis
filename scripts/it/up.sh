@@ -65,6 +65,10 @@ PORT_REPL_PRIMARY=$((PORT_BASE + 7))
 PORT_REPL_REPLICA=$((PORT_BASE + 8))
 PORT_MTLS=$((PORT_BASE + 9))
 PORT_SSH=$((PORT_BASE + 10))
+# A second port on the same sshd. SSH sessions are cached by `user@addr`, so
+# two tests can only both *authenticate* if they reach it under two
+# addresses — the RSA signature test needs a handshake of its own.
+PORT_SSH_RSA=$((PORT_BASE + 11))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
@@ -356,7 +360,7 @@ if has ssh; then
   if [ ! -x "$SSHD_BIN" ]; then
     echo "ssh: no sshd on this host — skipping the scenario (the tunnel tests skip with it)"
   else
-    echo "ssh :$PORT_SSH"
+    echo "ssh :$PORT_SSH,$PORT_SSH_RSA"
     rm -rf "$IT_DIR/ssh"
     mkdir -p "$IT_DIR/ssh"
     ssh-keygen -q -t ed25519 -N "" -C zedis-it-host -f "$IT_DIR/ssh/host_ed25519"
@@ -365,12 +369,18 @@ if has ssh; then
     # path, which an unencrypted key never reaches.
     cp "$IT_DIR/ssh/id_ed25519" "$IT_DIR/ssh/id_ed25519_enc"
     ssh-keygen -q -p -P "" -N "$SSH_KEY_PASSPHRASE" -f "$IT_DIR/ssh/id_ed25519_enc"
-    cp "$IT_DIR/ssh/id_ed25519.pub" "$IT_DIR/ssh/authorized_keys"
+    # An RSA client key as well, because RSA is the one algorithm whose
+    # *signature* has to be negotiated: signed as the legacy ssh-rsa (SHA-1)
+    # it is refused by every OpenSSH since 8.8, and an ed25519-only fixture
+    # can never notice. See `negotiated_rsa_hash` in ssh_tunnel.rs.
+    ssh-keygen -q -t rsa -b 2048 -N "" -C zedis-it-client-rsa -f "$IT_DIR/ssh/id_rsa"
+    cat "$IT_DIR/ssh/id_ed25519.pub" "$IT_DIR/ssh/id_rsa.pub" > "$IT_DIR/ssh/authorized_keys"
     chmod 700 "$IT_DIR/ssh"
     chmod 600 "$IT_DIR/ssh/host_ed25519" "$IT_DIR/ssh/id_ed25519" "$IT_DIR/ssh/id_ed25519_enc" \
-      "$IT_DIR/ssh/authorized_keys"
+      "$IT_DIR/ssh/id_rsa" "$IT_DIR/ssh/authorized_keys"
     cat > "$IT_DIR/ssh/sshd_config" <<CONF
 Port $PORT_SSH
+Port $PORT_SSH_RSA
 ListenAddress 127.0.0.1
 HostKey $IT_DIR/ssh/host_ed25519
 AuthorizedKeysFile $IT_DIR/ssh/authorized_keys
@@ -387,8 +397,20 @@ PermitTunnel no
 X11Forwarding no
 PrintMotd no
 LogLevel VERBOSE
+# Refuse the legacy SHA-1 RSA signature, which is what OpenSSH 8.8+ does on
+# its own. Stated here so the RSA case is a real regression guard on an
+# older sshd too, which would otherwise still accept ssh-rsa and pass.
+PubkeyAcceptedAlgorithms rsa-sha2-256,rsa-sha2-512,ssh-ed25519
 CONF
+    # The directive is OpenSSH 8.5+; an sshd that does not know it refuses to
+    # start at all, so drop it there rather than lose the whole scenario.
+    if ! "$SSHD_BIN" -t -f "$IT_DIR/ssh/sshd_config" 2>/dev/null; then
+      grep -v '^PubkeyAcceptedAlgorithms ' "$IT_DIR/ssh/sshd_config" > "$IT_DIR/ssh/sshd_config.next"
+      mv "$IT_DIR/ssh/sshd_config.next" "$IT_DIR/ssh/sshd_config"
+      echo "  sshd rejected PubkeyAcceptedAlgorithms — RSA SHA-2 is not pinned on this host"
+    fi
     wait_port_free "$PORT_SSH" ssh
+    wait_port_free "$PORT_SSH_RSA" ssh
     start_local sshd "$SSHD_BIN" -D -e -f "$IT_DIR/ssh/sshd_config"
     ready=0
     for _ in $(seq 1 40); do
@@ -399,8 +421,10 @@ CONF
     if [ "$ready" = 1 ]; then
       echo "  sshd ready"
       env_put ZEDIS_IT_SSH "127.0.0.1:$PORT_SSH"
+      env_put ZEDIS_IT_SSH_RSA "127.0.0.1:$PORT_SSH_RSA"
       env_put ZEDIS_IT_SSH_USER "$(id -un)"
       env_put ZEDIS_IT_SSH_KEY "$IT_DIR/ssh/id_ed25519"
+      env_put ZEDIS_IT_SSH_KEY_RSA "$IT_DIR/ssh/id_rsa"
       env_put ZEDIS_IT_SSH_KEY_ENC "$IT_DIR/ssh/id_ed25519_enc"
       env_put ZEDIS_IT_SSH_KEY_PASSPHRASE "$SSH_KEY_PASSPHRASE"
     else
