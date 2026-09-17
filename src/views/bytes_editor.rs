@@ -795,11 +795,13 @@ impl Render for ZedisBytesEditor {
         match &self.data {
             ByteEditorData::Image(value) => div()
                 .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
                 .overflow_hidden()
-                .child(img(value.clone()).object_fit(ObjectFit::Contain).flex_shrink_0())
+                // `img()` sizes itself to the bitmap when width/height are Auto,
+                // so object-fit is a no-op and the parent clips the overflow.
+                // Pin the element to the panel; ScaleDown letterboxes a large
+                // image inside those bounds and leaves a small image at its
+                // intrinsic size (Contain would upscale it).
+                .child(img(value.clone()).size_full().object_fit(ObjectFit::ScaleDown))
                 .into_any_element(),
             ByteEditorData::Hex(value) => {
                 let state = self
