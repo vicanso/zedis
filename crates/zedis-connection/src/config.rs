@@ -17,9 +17,11 @@ use crate::string::{decrypt, encrypt};
 use arc_swap::ArcSwap;
 use indexmap::IndexMap;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+#[cfg(not(target_family = "wasm"))]
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(not(target_family = "wasm"))]
 use smol::unblock;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -31,6 +33,9 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 use zedis_core::env::is_development;
+// The saved server list lives in a file. In the browser there is none: the
+// bridge holds the list and the page asks it over HTTP (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::fs::{
     ConfigRecovery, get_or_create_config_dir, load_config_with_recovery, resolve_path, write_file_atomic_with_backup,
 };
@@ -946,6 +951,9 @@ impl RedisServer {
 
     /// The TLS material redis-rs needs, or `None` when TLS is off or every
     /// certificate field is empty (system roots, no client auth).
+    /// The TLS material redis-rs needs to dial. Native only: the browser
+    /// never opens a socket, so it never presents a certificate.
+    #[cfg(not(target_family = "wasm"))]
     pub fn tls_certificates(&self) -> Result<Option<TlsCertificates>> {
         if !self.tls.unwrap_or(false) {
             return Ok(None);
@@ -985,6 +993,7 @@ pub(crate) fn tls_material(value: &str) -> Result<Vec<u8>> {
 /// decrypted with `passphrase`; the legacy OpenSSL form (`Proc-Type:
 /// 4,ENCRYPTED` inside a `BEGIN RSA PRIVATE KEY` block) is refused with a
 /// pointer at `openssl pkcs8 -topk8`, which rewrites it as PKCS#8.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn decrypt_private_key_pem(pem: Vec<u8>, passphrase: &str) -> Result<Vec<u8>> {
     let text = String::from_utf8_lossy(&pem);
     if text.contains("Proc-Type: 4,ENCRYPTED") {
@@ -1058,6 +1067,9 @@ fn server_sort_key(server: &RedisServer) -> (u8, String, i64, String) {
     (bucket, group_key, order, name_key)
 }
 
+/// The saved server list. Native only: in the browser the list comes from
+/// the bridge, which is also the only process holding the credentials.
+#[cfg(not(target_family = "wasm"))]
 pub fn get_servers() -> Result<Vec<RedisServer>> {
     if !SERVER_CONFIG_MAP.load().is_empty() {
         let mut servers: Vec<RedisServer> = SERVER_CONFIG_MAP.load().values().cloned().collect();

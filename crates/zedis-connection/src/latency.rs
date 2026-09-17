@@ -21,7 +21,7 @@
 //! gets recorded; the GUI surfaces that fact when LATEST comes back
 //! empty so users don't think the panel is broken.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Value, cmd};
 

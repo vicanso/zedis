@@ -27,7 +27,7 @@
 //! (`UNKILLABLE`): only `SHUTDOWN NOSAVE` ends it, and that is left to the
 //! operator on purpose.
 
-use crate::async_connection::open_single_connection;
+use crate::async_connection::open_multiplexed_connection;
 use crate::config::{RedisServer, SERVER_TYPE_SENTINEL};
 use crate::error::Error;
 use crate::manager::get_connection_manager;
@@ -82,7 +82,7 @@ pub async fn kill_running(server: &RedisServer, target: KillTarget) -> Result<Ve
     let nodes = kill_targets(server).await?;
     let runs = nodes.iter().map(|node| async move {
         let addr = format_host_port(&node.host, node.port);
-        let outcome = match open_single_connection(node, 0, false).await {
+        let outcome = match open_multiplexed_connection(node, 0, false).await {
             Err(e) => KillOutcome::Failed(e.to_string()),
             Ok(mut conn) => {
                 let (command, sub) = match target {

@@ -1,0 +1,41 @@
+[package]
+name = "zedis-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+categories.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords = ["redis", "http", "bridge"]
+description = "HTTP bridge that forwards RESP frames to the Redis servers Zedis has configured."
+# Not published: it ships as a deployable server, not a library.
+publish = false
+
+[[bin]]
+name = "zedis-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Every Redis concern — the server list, its credential encryption, SSH
+# tunnels, TLS, Sentinel and cluster discovery — already lives here. The
+# bridge adds an HTTP surface and nothing else, and deliberately does not
+# depend on the GUI crate: that one links a window system (ADR 9).
+zedis-connection = { workspace = true }
+# `get_or_create_config_dir` / `write_file_atomic` for the token file;
+# zedis-connection does not re-export the fs helpers.
+zedis-core = { workspace = true }
+axum = "0.8.9"
+base64 = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# `fs` for reading the web build's files off disk; the workspace set has
+# rt/net/macros/time but not fs, and a blocking read in an async handler is
+# not an improvement.
+tokio = { workspace = true, features = ["fs"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# `v4` for tokens: the workspace default is `v7`, whose leading bits are a
+# timestamp, and a bearer token should not carry a predictable prefix.
+uuid = { workspace = true, features = ["v4"] }

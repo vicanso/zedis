@@ -23,6 +23,9 @@ pub mod csv;
 pub mod diff;
 pub mod env;
 pub mod features;
+/// Config, cache and download directories. Native only: see the
+/// target-gated dependencies in this crate's manifest.
+#[cfg(not(target_family = "wasm"))]
 pub mod fs;
 pub mod fuzzy;
 pub mod hex;

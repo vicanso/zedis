@@ -21,7 +21,7 @@
 //! stages are attributed by classifying the error of one real connection
 //! attempt rather than probed separately.
 
-use super::async_connection::{open_single_connection, resolve_connection_timeout};
+use super::async_connection::{open_multiplexed_connection, resolve_connection_timeout};
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL};
 use super::ssh_tunnel::{
     SshSession, new_ssh_session, resolve_ssh_target, resolve_ssh_target_with, run_in_tokio, user_ssh_config,
@@ -335,7 +335,7 @@ pub async fn probe_redis(server: &RedisServer) -> RedisProbe {
         || server.username.as_deref().is_some_and(|u| !u.trim().is_empty());
     let start = Instant::now();
     let result = async {
-        let mut conn = open_single_connection(server, 0, false).await?;
+        let mut conn = open_multiplexed_connection(server, 0, false).await?;
         let _: () = cmd("PING").query_async(&mut conn).await?;
         Ok::<(), Error>(())
     }

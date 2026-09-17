@@ -22,18 +22,38 @@ pub mod clients;
 pub mod error;
 pub mod floors;
 pub mod reply_format;
+#[cfg(not(target_family = "wasm"))]
 pub mod script_kill;
+#[cfg(not(target_family = "wasm"))]
 pub mod sentinel;
 pub mod string;
 pub mod time;
 
 mod acl;
-mod async_connection;
+/// Native-only: dialing, the local key store and the local files.
+///
+/// Excluded from the browser build, where Redis is reached through the HTTP
+/// bridge and there is no socket, keychain or filesystem to use (ADR 9).
+macro_rules! native_only {
+    ($($m:ident),* $(,)?) => { $( #[cfg(not(target_family = "wasm"))] mod $m; )* };
+}
+native_only!(
+    async_connection,
+    diagnostics,
+    master_key,
+    readable_import,
+    ssh_cluster_connection,
+    ssh_stream,
+    ssh_tunnel,
+);
+mod bridge;
 mod command;
+#[cfg(not(target_family = "wasm"))]
 mod compare;
 mod config;
+mod conn;
 mod danger;
-mod diagnostics;
+#[cfg(not(target_family = "wasm"))]
 mod dump_restore;
 mod functions;
 mod hash_fields;
@@ -44,28 +64,28 @@ mod latency;
 mod list_ops;
 mod lua_script;
 mod manager;
-mod master_key;
 mod module_ops;
+#[cfg(not(target_family = "wasm"))]
 mod multi_search;
+#[cfg(not(target_family = "wasm"))]
 mod probe;
 mod readable_export;
-mod readable_import;
 mod search;
 mod server_report;
 mod slot_stats;
-mod ssh_cluster_connection;
-mod ssh_stream;
-mod ssh_tunnel;
 
 pub use acl::{
     AclDryRun, AclLogEntry, AclSelector, AclUser, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
     acl_list, acl_load, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, split_acl_rules,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use async_connection::{
-    RedisAsyncConn, client_name, open_monitor_connection, open_node_connection, open_node_connection_cached,
-    open_seed_connection, open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
+    client_name, open_monitor_connection, open_node_connection, open_node_connection_cached, open_seed_connection,
+    open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
+pub use bridge::{BridgeConn, BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeTransport, PipelineSpec};
 pub use clients::{KillFilter, PauseMode, kill_filter_commands, kill_filter_summary, pause_args};
+#[cfg(not(target_family = "wasm"))]
 pub use compare::{
     CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, DifferingKey, KeyDifference,
     compare_prefix, prefix_pattern, values_equal,
@@ -74,14 +94,17 @@ pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
     TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, servers_toml_redacted, tag_color_index,
 };
+pub use conn::RedisAsyncConn;
 pub use danger::{
-    ConfirmStrictness, DangerKind, classify_dangerous_line, confirm_strictness, is_write_command,
+    ConfirmStrictness, DangerKind, classify_dangerous, classify_dangerous_line, confirm_strictness, is_write_command,
     requires_write_confirm,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use diagnostics::{
     DiagHint, DiagOutcome, DiagStage, DiagStatus, diag_stages, diag_timeout, dial_endpoint, probe_dns, probe_redis,
     probe_ssh_auth, probe_ssh_tunnel, probe_tcp,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use dump_restore::{
     ConflictMode, ConflictPreview, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key,
     dump_keys_chunk, preview_dump_conflicts, preview_key_conflicts, restore_keys_chunk,
@@ -103,7 +126,9 @@ pub use module_ops::{
     BitOpKind, TS_AGGREGATORS, TsAlter, TsMRange, TsSeries, bit_op, geo_add, geo_dist, has_positive_matcher, pf_merge,
     ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
+#[cfg(not(target_family = "wasm"))]
 pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
@@ -112,27 +137,34 @@ pub use readable_export::{
     ReadLimits, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, next_stream_id,
     read_readable_chunk,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use readable_import::{
     ImportFormat, ReadableWriteStatus, detect_import_format, parse_readable_entries, preview_import_conflicts,
     sniff_import_format, write_readable_chunk,
 };
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
+#[cfg(not(target_family = "wasm"))]
 pub use script_kill::{KillOutcome, KillReply, KillTarget, kill_running};
+#[cfg(not(target_family = "wasm"))]
 pub use sentinel::{
     SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,
     sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset, sentinel_set, summarize_replies,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
+#[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
+#[cfg(not(target_family = "wasm"))]
 pub use manager::{
-    AccessMode, AtomicSlotMigration, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition,
-    FAILOVER_TIMEOUT_MS, HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel,
-    PubsubChannelsSnapshot, REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, ShardedPubSub,
-    SlowLogEntry, ValueMatch, ValueSearchRound, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
-    cluster_migrate_slots, get_connection_manager, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots,
-    slots_in_ranges, unassigned_slot_ranges,
+    AtomicSlotMigration, ShardedPubSub, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
+    cluster_migrate_slots, get_connection_manager,
+};
+pub use manager::{
+    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
+    HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
+    REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound,
+    group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots, slots_in_ranges, unassigned_slot_ranges,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
@@ -145,13 +177,19 @@ pub use search::{
 pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
+/// Native only: the caches it sweeps belong to the pool and the SSH session
+/// store, neither of which exists in the browser.
+#[cfg(not(target_family = "wasm"))]
 pub fn clear_expired_cache() {
     let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
     if removed_count > 0 {
         info!(removed_count, total_count, "clear expired redis connection")
     }
 
+    #[cfg(not(target_family = "wasm"))]
     let (removed_count, total_count) = manager::clear_expired_clients();
+    #[cfg(target_family = "wasm")]
+    let (removed_count, total_count) = (0usize, 0usize);
     if removed_count > 0 {
         info!(removed_count, total_count, "clear expired redis client")
     }

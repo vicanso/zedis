@@ -33,7 +33,11 @@ name = "zedis"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/*", "zedis-cmd-builder"]
+members = ["crates/*", "zedis-bridge", "zedis-cmd-builder", "zedis-web"]
+# A bare `cargo build` here builds the root binary only, and these three are
+# not part of it. `zedis-web` in particular is built from its own directory,
+# where its `rust-toolchain.toml` selects the nightly its wasm target needs.
+default-members = ["."]
 
 # Single source of truth for the app version. `zedis-connection` builds the
 # `CLIENT SETNAME` value from `CARGO_PKG_VERSION`, so a sub-crate carrying its
@@ -68,7 +72,12 @@ flate2 = "1.1.9"
 futures = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
-gpui-kit = { workspace = true }
+# `tree-sitter` is asked for here, not in `[workspace.dependencies]`, so it
+# reaches only this binary. Two reasons: `zedis-ui` is a widget crate that
+# needs none of it, and gpui-component drops the tree-sitter *dependency* on
+# wasm while still compiling the code behind the *feature* — leaving it on
+# workspace-wide makes any wasm build of any member fail (ADR 9).
+gpui-kit = { workspace = true, features = ["tree-sitter"] }
 gpui_macros = { workspace = true }
 home = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -208,11 +217,24 @@ prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.9.1"
 rand = "0.10.2"
 redb = "4.2.0"
+# Both runtime adapters are on. redis picks per connection: it takes tokio
+# when `Handle::try_current()` finds an ambient runtime and smol otherwise
+# (`aio/runtime.rs`), so the GUI — whose Redis calls run on gpui's own thread
+# pool, with no tokio context — keeps using smol exactly as before, while the
+# HTTP bridge's axum handlers get tokio. `tokio-comp` pulls in no new crate:
+# it asks for `tokio/net`, `tokio/rt` and `tokio/time`, all of which the SSH
+# stack already enables, so the only added code is redis's 185-line tokio
+# adapter, and `tokio-rustls-comp` (which implies it) only adds redis's TLS
+# connector for that runtime — `tokio-rustls` is already here for SSH. The
+# plain `tokio-comp` on its own does not build: a rustls feature is globally
+# on, so the tokio runtime has to implement `connect_tcp_tls` too.
+# See ADR 9.
 redis = { version = "1.6.0", features = [
     "cluster",
     "cluster-async",
     "smol-comp",
     "smol-rustls-comp",
+    "tokio-rustls-comp",
     "tls-rustls-insecure",
     "aio",
 ] }
@@ -265,7 +287,7 @@ gpui_macros = { package = "gpui-pre-macros", version = "0.3.3" }
 # on the component crate's native highlighter — LanguageConfig /
 # LanguageRegistry, pulling tree-sitter + tree-sitter-json only, not the
 # 30-parser `tree-sitter-languages` bundle; we register Lua ourselves.
-gpui-kit = { version = "0.6.1", features = ["tree-sitter"] }
+gpui-kit = { version = "0.6.1" }
 
 [build-dependencies]
 winres = "0.1.12"

@@ -26,7 +26,7 @@
 //! afterwards so a proxy that drops the link on an unknown command can't
 //! poison the shared pool.
 
-use crate::async_connection::open_single_connection;
+use crate::async_connection::open_multiplexed_connection;
 use crate::config::get_server;
 use crate::error::Error;
 use crate::manager::HeatProbe;
@@ -119,10 +119,10 @@ pub fn note_server_command_error(
 /// Probes `server_id` (through database `db`) and caches the result.
 pub async fn probe_server_features(server_id: &str, db: usize) -> Result<Arc<ServerFeatures>> {
     let server = get_server(server_id)?;
-    let conn = open_single_connection(&server, db, false).await?;
+    let conn = open_multiplexed_connection(&server, db, false).await?;
     let features = run_probe(conn.clone(), || {
         let server = server.clone();
-        async move { open_single_connection(&server, db, false).await }
+        async move { open_multiplexed_connection(&server, db, false).await }
     })
     .await;
     // Which of OBJECT FREQ / IDLETIME is meaningful here — one more read-only

@@ -33,7 +33,7 @@
 //! u32             CRC32 over every byte before the footer magic
 //! ```
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use super::manager::get_connection_manager;
 use crate::error::Error;
 use futures::future::try_join_all;

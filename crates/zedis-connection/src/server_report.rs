@@ -16,7 +16,7 @@
 //! DOCTOR` answer prose, `MEMORY STATS` the numbers behind the memory one.
 //! All three are read-only.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Value, cmd};
 

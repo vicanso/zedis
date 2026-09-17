@@ -20,7 +20,7 @@
 //! project only the fields the UI needs so module upgrades don't
 //! break the GUI.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::string::redis_value_to_string;
 use redis::{Value, cmd};

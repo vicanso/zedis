@@ -22,7 +22,7 @@
 //! server rule since 7.4), so *keeping* a TTL across a value edit is only
 //! possible through `HSETEX KEEPTTL`.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Cmd, Pipeline, Value, cmd, pipe};
 

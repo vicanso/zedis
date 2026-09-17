@@ -20,6 +20,23 @@ use crate::floors::{self, Floor};
 use crate::hotkeys::HotkeysReport;
 use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
 use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
+use zedis_core::string::split_host_port_or;
+
+/// A display-only stand-in for a master the bridge answered for.
+///
+/// Callers of the fan-out read `host` and `port` to label a row and nothing
+/// else (`stat.rs`, `server_info.rs`), so a bridge node needs no more than
+/// that — and must carry no less *and no more*: the real entry holds
+/// credentials, which stay on the bridge.
+fn node_label_server(label: &str) -> RedisServer {
+    let (host, port) = split_host_port_or(label, 0);
+    RedisServer {
+        name: label.to_string(),
+        host: host.to_string(),
+        port,
+        ..Default::default()
+    }
+}
 
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -635,6 +652,27 @@ impl RedisClient {
                 message: "Commands are empty".to_string(),
             });
         };
+        // Through the bridge the fan-out happens on the far side: this code
+        // runs in the browser under the web build, where there is no socket
+        // to dial a master with, and handing the browser connectable node
+        // addresses is exactly what the bridge exists to avoid (ADR 9).
+        if let RedisAsyncConn::Bridge(conn) = &self.connection {
+            let packed: Vec<Vec<u8>> = cmds.iter().map(|cmd| cmd.get_packed_command()).collect();
+            let (labels, values) = conn
+                .fanout_masters(packed)
+                .await
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+            let servers = labels.iter().map(|label| node_label_server(label)).collect();
+            let typed = values
+                .into_iter()
+                .map(|value| {
+                    T::from_redis_value(value).map_err(|e| Error::Invalid {
+                        message: format!("a fan-out reply could not be read: {e}"),
+                    })
+                })
+                .collect::<Result<Vec<T>>>()?;
+            return Ok((servers, typed));
+        }
         let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
         let mut new_cmds = vec![Some(first.clone()); addrs.len()];
         for (index, cmd) in cmds.iter().enumerate() {
@@ -654,6 +692,47 @@ impl RedisClient {
         cmds: Vec<Option<Cmd>>,
     ) -> Result<Vec<Option<T>>> {
         let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        // Through the bridge, every entry names the node it is for. Both
+        // callers are strictly positional — `cluster_slot_stats` labels reply
+        // `i` with node `i`, and `scan` carries one cursor per node — so an
+        // index that meant a different node on the far side would attribute
+        // rows to the wrong master, or resume a scan from another node's
+        // cursor and silently return the wrong keys. Matching by label makes
+        // a topology that moved between the two discoveries show up as a
+        // missing reply instead.
+        if let RedisAsyncConn::Bridge(conn) = &self.connection {
+            let mut wanted = Vec::new();
+            let mut packed = Vec::new();
+            for (server, cmd) in addrs.iter().zip(cmds.iter()) {
+                if let Some(cmd) = cmd {
+                    wanted.push(format!("{}:{}", server.host, server.port));
+                    packed.push(cmd.get_packed_command());
+                }
+            }
+            if packed.is_empty() {
+                return Ok((0..addrs.len()).map(|_| None).collect());
+            }
+            let (labels, values) = conn
+                .fanout_nodes(packed, wanted)
+                .await
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+            let mut answers: Vec<Option<T>> = (0..addrs.len()).map(|_| None).collect();
+            for (label, value) in labels.iter().zip(values) {
+                let Some(index) = addrs
+                    .iter()
+                    .position(|server| format!("{}:{}", server.host, server.port) == *label)
+                else {
+                    // A master this caller does not know about: the topology
+                    // moved. Dropping it is right — there is no slot to put it
+                    // in without guessing.
+                    continue;
+                };
+                answers[index] = Some(T::from_redis_value(value).map_err(|e| Error::Invalid {
+                    message: format!("a fan-out reply could not be read: {e}"),
+                })?);
+            }
+            return Ok(answers);
+        }
         let values = query_async_masters(&addrs, self.db, cmds).await?;
         Ok(values)
     }

@@ -1,0 +1,16 @@
+# Nightly, and only in this directory.
+#
+# GPUI's browser backend enables `gpui-pre-web`'s default `multithreaded`
+# feature, which reaches `wasm_thread` and its `#![feature(...)]`. That is not
+# a misconfiguration to route around: upstream's own web crates pin nightly
+# the same way (`crates/story-web/rust-toolchain.toml` in longbridge/gpui-kit),
+# because browser threads need wasm atomics.
+#
+# The rest of the repo stays on the stable channel pinned at the root. Build
+# this crate from *this* directory so rustup reads the file:
+#
+#   cd zedis-web && cargo build --target wasm32-unknown-unknown
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
