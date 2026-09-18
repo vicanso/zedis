@@ -26,6 +26,8 @@ use super::{
     element::KvElement,
     value::{RedisHashValue, RedisValue, RedisValueStatus},
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
     connection::{

@@ -19,6 +19,8 @@ use super::{
         StreamIdmpInfo, StreamInfoData, StreamPendingEntry, StreamRefPolicy, StreamSummary, StreamTrim,
     },
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_stream_editor;
 use crate::{
@@ -26,7 +28,6 @@ use crate::{
     error::Error,
 };
 use gpui::{SharedString, prelude::*};
-use redis::aio::MultiplexedConnection;
 use redis::cmd;
 use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
@@ -332,7 +333,7 @@ pub(crate) async fn first_load_stream_value(conn: &mut RedisAsyncConn, key: &str
 /// `streams` feature is not enabled (keeps the dep surface lean).
 /// Reply shape: `[ [ stream_name, [ [id, [f, v, f, v, …]], … ] ], … ]`.
 pub(crate) async fn tail_read(
-    conn: &mut MultiplexedConnection,
+    conn: &mut RedisAsyncConn,
     key: &str,
     last_id: &str,
     block_ms: u64,

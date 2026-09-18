@@ -20,12 +20,17 @@ use crate::{
     },
     views::{
         ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisHotkeys,
-        ZedisKeyTree, ZedisKeyspaceNotifications, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics,
-        ZedisMonitor, ZedisPersistence, ZedisProtoEditor, ZedisScriptEditor, ZedisSearchManager, ZedisServerInfo,
-        ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal, ZedisTimeSeriesExplorer,
-        ZedisTopology, ZedisUnsupportedPanel, ZedisValueSearch,
+        ZedisKeyTree, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisPersistence, ZedisSearchManager,
+        ZedisServerInfo, ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal,
+        ZedisTimeSeriesExplorer, ZedisUnsupportedPanel, ZedisValueSearch,
     },
 };
+// Push streams (MONITOR, keyspace events), node administration (Topology) and
+// the two local-file managers are the bridge's side of the wire (ADR 9).
+#[cfg(target_family = "wasm")]
+use crate::connection::{CommandStatus, ServerCommand};
+#[cfg(not(target_family = "wasm"))]
+use crate::views::{ZedisKeyspaceNotifications, ZedisMonitor, ZedisProtoEditor, ZedisScriptEditor, ZedisTopology};
 use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -57,7 +62,9 @@ pub struct ZedisContent {
 
     /// Cached views - lazily initialized and cleared when switching routes
     servers: Option<Entity<ZedisServers>>,
+    #[cfg(not(target_family = "wasm"))]
     proto_editor: Option<Entity<ZedisProtoEditor>>,
+    #[cfg(not(target_family = "wasm"))]
     script_editor: Option<Entity<ZedisScriptEditor>>,
     value_editor: Option<Entity<ZedisEditor>>,
     terminal: Option<Entity<ZedisTerminal>>,
@@ -112,9 +119,11 @@ impl ZedisContent {
             self.drop_editor_suite();
         }
         if route != Route::Protos {
+            #[cfg(not(target_family = "wasm"))]
             self.proto_editor.take();
         }
         if route != Route::Scripts {
+            #[cfg(not(target_family = "wasm"))]
             self.script_editor.take();
         }
         // Tool panels: keep only the one the current route still shows —
@@ -307,7 +316,9 @@ impl ZedisContent {
             should_focus: false,
             focus_handle,
             active: true,
+            #[cfg(not(target_family = "wasm"))]
             proto_editor: None,
+            #[cfg(not(target_family = "wasm"))]
             script_editor: None,
             _subscriptions: subscriptions,
         }
@@ -403,6 +414,7 @@ impl ZedisContent {
         )
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn render_proto_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let proto_editor = self
             .proto_editor
@@ -414,6 +426,7 @@ impl ZedisContent {
         div().size_full().child(proto_editor)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn render_script_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let script_editor = self
             .script_editor
@@ -456,6 +469,7 @@ impl ZedisContent {
             ServerView::Slowlog => cx.new(|cx| ZedisSlowlogEditor::new(state, window, cx)).into(),
             ServerView::MemoryAnalysis => cx.new(|cx| ZedisMemoryAnalysis::new(state, window, cx)).into(),
             ServerView::Clients => cx.new(|cx| ZedisClientsManager::new(state, window, cx)).into(),
+            #[cfg(not(target_family = "wasm"))]
             ServerView::Monitor => cx.new(|cx| ZedisMonitor::new(state, window, cx)).into(),
             ServerView::Config => cx.new(|cx| ZedisConfigEditor::new(state, window, cx)).into(),
             ServerView::Acl => cx.new(|cx| ZedisAclManager::new(state, window, cx)).into(),
@@ -463,8 +477,20 @@ impl ZedisContent {
             ServerView::Functions => cx.new(|cx| ZedisFunctionEditor::new(state, window, cx)).into(),
             ServerView::LuaScripts => cx.new(|cx| ZedisLuaScriptLibrary::new(state, window, cx)).into(),
             ServerView::Persistence => cx.new(|cx| ZedisPersistence::new(state, window, cx)).into(),
+            #[cfg(not(target_family = "wasm"))]
             ServerView::KeyspaceNotifications => cx.new(|cx| ZedisKeyspaceNotifications::new(state, window, cx)).into(),
+            #[cfg(not(target_family = "wasm"))]
             ServerView::Topology => cx.new(|cx| ZedisTopology::new(state, window, cx)).into(),
+            // A held socket, or administration that dials each node: the
+            // bridge's side of the wire (ADR 9). The same placeholder a
+            // missing command gets, in the same cache slot.
+            #[cfg(target_family = "wasm")]
+            ServerView::Monitor | ServerView::KeyspaceNotifications | ServerView::Topology => {
+                let command = view.required_commands().first().copied().unwrap_or(ServerCommand::Info);
+                self.placeholders.insert(view);
+                cx.new(|_| ZedisUnsupportedPanel::new(state, view, command, CommandStatus::Missing))
+                    .into()
+            }
             ServerView::ServerLoad => cx.new(|cx| ZedisServerLoad::new(state, window, cx)).into(),
             ServerView::Hotkeys => cx.new(|cx| ZedisHotkeys::new(state, window, cx)).into(),
             ServerView::TimeSeriesExplorer => cx.new(|cx| ZedisTimeSeriesExplorer::new(state, window, cx)).into(),
@@ -596,12 +622,14 @@ impl Render for ZedisContent {
                 .child(self.render_servers(window, cx))
                 .into_any_element()
             }
+            #[cfg(not(target_family = "wasm"))]
             Route::Protos => {
                 if should_focus {
                     self.focus_handle.focus(window, cx);
                 }
                 base.child(self.render_proto_editor(window, cx)).into_any_element()
             }
+            #[cfg(not(target_family = "wasm"))]
             Route::Scripts => {
                 if should_focus {
                     self.focus_handle.focus(window, cx);

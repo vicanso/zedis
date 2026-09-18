@@ -1,0 +1,4 @@
+# Nothing inherited from a parent should reach the wasm build; upstream's web
+# crate clears the flags the same way.
+[target.wasm32-unknown-unknown]
+rustflags = []

@@ -25,8 +25,9 @@ use redis::cmd;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
+use web_time::Instant;
 
 #[derive(Debug, Default, Clone)]
 pub struct RedisKeySpaceStats {

@@ -16,6 +16,8 @@ use super::{
     KeyType, RedisValueData,
     value::{DataFormat, RedisBytesValue, RedisValue},
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use redis::cmd;

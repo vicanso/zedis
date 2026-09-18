@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use gpui::{App, AssetSource, Result, SharedString};
+#[cfg(not(target_family = "wasm"))]
 use gpui_kit::assets::Assets as ComponentAssets;
 use gpui_kit::component::{Icon, ThemeRegistry};
 use rust_embed::RustEmbed;
@@ -21,6 +22,10 @@ impl AssetSource for Assets {
         if path.is_empty() {
             return Ok(None);
         }
+        // The kit's icons are embedded on the desktop; in the browser they
+        // are fetched, by the kit's own source that the web entry composes
+        // in front of this one (ADR 9).
+        #[cfg(not(target_family = "wasm"))]
         if let Some(f) = ComponentAssets::get(path) {
             return Ok(Some(f.data));
         }
@@ -31,9 +36,12 @@ impl AssetSource for Assets {
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        #[cfg(not(target_family = "wasm"))]
         let mut files: Vec<SharedString> = ComponentAssets::iter()
             .filter_map(|p| p.starts_with(path).then(|| p.into()))
             .collect();
+        #[cfg(target_family = "wasm")]
+        let mut files: Vec<SharedString> = Vec::new();
 
         files.extend(
             Self::iter()

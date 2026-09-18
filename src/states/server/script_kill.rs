@@ -19,11 +19,30 @@
 //! status bar while the link is down with `BUSY` as the reason, and by
 //! the Lua script and Functions panels.
 
-use crate::connection::{KillOutcome, KillTarget, get_server, kill_running};
-use crate::states::{ServerTask, ZedisGlobalStore, ZedisServerState};
+use crate::connection::KillTarget;
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::{KillOutcome, get_server, kill_running};
+use crate::states::ZedisServerState;
+#[cfg(not(target_family = "wasm"))]
+use crate::states::{ServerTask, ZedisGlobalStore};
 use gpui::prelude::*;
+#[cfg(not(target_family = "wasm"))]
 use rust_i18n::t;
 
+/// Reaching a `BUSY` server means dialling around the stuck pool, which only
+/// the bridge could do on a tab's behalf and does not yet. The buttons that
+/// call this are hidden in the browser; this is the belt behind the braces.
+#[cfg(target_family = "wasm")]
+impl ZedisServerState {
+    pub fn kill_running_script(&mut self, target: KillTarget, _cx: &mut Context<Self>) {
+        tracing::warn!(
+            target = target.command(),
+            "script kill is not available in the browser build"
+        );
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 impl ZedisServerState {
     /// Send the kill to every data node of this entry and report. No
     /// capability gate: it changes no data, and a read-only ACL user gets

@@ -13,17 +13,22 @@
 // limitations under the License.
 
 use crate::connection::ServerCommand;
-use crate::connection::{
-    RedisServer, ReplyFormat, get_server, get_servers, save_servers, set_redis_connection_timeout,
-    set_redis_response_timeout,
-};
+use crate::connection::{RedisServer, ReplyFormat, get_server, get_servers, save_servers};
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::{set_redis_connection_timeout, set_redis_response_timeout};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
+#[cfg(target_family = "wasm")]
+use crate::helpers::browser_store_path;
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::get_or_create_config_dir;
 use crate::helpers::{
-    ConfigRecovery, DEFAULT_UI_FONT_SIZE, UpdateInfo, decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir,
-    load_config_with_recovery, set_configured_proxy, unix_ts, write_file_atomic_with_backup,
+    ConfigRecovery, DEFAULT_UI_FONT_SIZE, UpdateInfo, get_key_tree_widths, load_config_with_recovery, unix_ts,
+    write_file_atomic_with_backup,
 };
 use crate::helpers::{DEFAULT_DATE_FORMAT, TimeZonePref};
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{decrypt, encrypt, set_configured_proxy};
 use crate::startup::is_nightly_build;
 use crate::states::i18n_common;
 use chrono::Local;
@@ -336,6 +341,7 @@ pub const HINT_FIRST_CONNECT: &str = "first_connect";
 pub const HINT_TOPOLOGY: &str = "topology";
 pub const HINT_MEMORY_ANALYSIS: &str = "memory_analysis";
 
+#[cfg(not(target_family = "wasm"))]
 fn get_or_create_server_config() -> Result<PathBuf> {
     // Same file name in both environments — a development run is isolated by its
     // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
@@ -345,6 +351,15 @@ fn get_or_create_server_config() -> Result<PathBuf> {
     }
     std::fs::write(&path, "")?;
     Ok(path)
+}
+
+/// In a browser the preferences are the visitor's and the device's, so they
+/// live in the browser: `zedis.toml` is a `localStorage` entry, which is what
+/// a path from `browser_store_path` means to `fs` there (ADR 9). Nothing to
+/// create — an absent entry reads as "first run".
+#[cfg(target_family = "wasm")]
+fn get_or_create_server_config() -> Result<PathBuf> {
+    Ok(browser_store_path("zedis.toml"))
 }
 
 /// Notification category for user feedback
@@ -685,6 +700,16 @@ impl Global for ZedisGlobalStore {}
 /// `zedis.toml.bak` of the previous version (see `write_file_atomic_with_backup`).
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
     let path = get_or_create_server_config()?;
+    // What a tab stores is readable by every script on the origin, and there
+    // is no master key in a tab to encrypt it under — so the two secrets this
+    // state can hold are not part of what is stored there. They stay in
+    // memory for the session, as they did before anything was stored.
+    #[cfg(target_family = "wasm")]
+    let state = &ZedisAppState {
+        ai_api_key: None,
+        http_proxy: None,
+        ..state.clone()
+    };
     let value = toml::to_string(state)?;
     write_file_atomic_with_backup(&path, value.as_bytes())?;
     Ok(())
@@ -762,11 +787,15 @@ impl ZedisAppState {
         };
         state.route_token = state.route.as_str().to_string();
 
-        if let Some(redis_connection_timeout) = state.redis_connection_timeout {
-            set_redis_connection_timeout(redis_connection_timeout);
-        }
-        if let Some(redis_response_timeout) = state.redis_response_timeout {
-            set_redis_response_timeout(redis_response_timeout);
+        // The timeouts govern the dial, which the bridge does on the web.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if let Some(redis_connection_timeout) = state.redis_connection_timeout {
+                set_redis_connection_timeout(redis_connection_timeout);
+            }
+            if let Some(redis_response_timeout) = state.redis_response_timeout {
+                set_redis_response_timeout(redis_response_timeout);
+            }
         }
 
         Ok(state)
@@ -937,12 +966,14 @@ impl ZedisAppState {
         self.max_key_tree_depth = Some(max_key_tree_depth);
     }
     pub fn set_redis_connection_timeout(&mut self, redis_connection_timeout: Option<Duration>) {
+        #[cfg(not(target_family = "wasm"))]
         if let Some(redis_connection_timeout) = redis_connection_timeout {
             set_redis_connection_timeout(redis_connection_timeout);
         }
         self.redis_connection_timeout = redis_connection_timeout;
     }
     pub fn set_redis_response_timeout(&mut self, redis_response_timeout: Option<Duration>) {
+        #[cfg(not(target_family = "wasm"))]
         if let Some(redis_response_timeout) = redis_response_timeout {
             set_redis_response_timeout(redis_response_timeout);
         }
@@ -1166,10 +1197,16 @@ impl ZedisAppState {
     }
 
     pub fn http_proxy(&self) -> String {
-        self.http_proxy
+        #[cfg(not(target_family = "wasm"))]
+        let value = self
+            .http_proxy
             .as_ref()
-            .map(|stored| decrypt(stored).unwrap_or_else(|_| stored.clone()))
-            .unwrap_or_default()
+            .map(|stored| decrypt(stored).unwrap_or_else(|_| stored.clone()));
+        // No master key in a tab, and nothing is written to disk there
+        // either (`fs` refuses), so the stored form *is* the plain form.
+        #[cfg(target_family = "wasm")]
+        let value = self.http_proxy.clone();
+        value.unwrap_or_default()
     }
     /// Persist the proxy setting and mirror the plaintext into
     /// `helpers::proxy` so the next HTTP request (updater / AI, background
@@ -1178,14 +1215,17 @@ impl ZedisAppState {
     /// a credential-free address stays readable in `zedis.toml`.
     pub fn set_http_proxy(&mut self, value: String) {
         let value = value.trim().to_string();
+        #[cfg(not(target_family = "wasm"))]
         set_configured_proxy(&value);
-        self.http_proxy = if value.is_empty() {
-            None
-        } else if value.contains('@') {
+        #[cfg(not(target_family = "wasm"))]
+        let stored = if value.contains('@') {
             Some(encrypt(&value).unwrap_or_else(|_| value.clone()))
         } else {
-            Some(value)
+            Some(value.clone())
         };
+        #[cfg(target_family = "wasm")]
+        let stored = Some(value.clone());
+        self.http_proxy = if value.is_empty() { None } else { stored };
     }
 
     pub fn ai_base_url(&self) -> String {
@@ -1199,20 +1239,24 @@ impl ZedisAppState {
     /// Falls back to the stored value if decryption fails (e.g. a
     /// hand-edited plaintext key in `zedis.toml`).
     pub fn ai_api_key(&self) -> String {
-        self.ai_api_key
+        #[cfg(not(target_family = "wasm"))]
+        let value = self
+            .ai_api_key
             .as_ref()
-            .map(|cipher| decrypt(cipher).unwrap_or_else(|_| cipher.clone()))
-            .unwrap_or_default()
+            .map(|cipher| decrypt(cipher).unwrap_or_else(|_| cipher.clone()));
+        #[cfg(target_family = "wasm")]
+        let value = self.ai_api_key.clone();
+        value.unwrap_or_default()
     }
     /// Store the API key, encrypting it before persistence. An empty
     /// value clears it.
     pub fn set_ai_api_key(&mut self, api_key: String) {
         let api_key = api_key.trim();
-        self.ai_api_key = if api_key.is_empty() {
-            None
-        } else {
-            Some(encrypt(api_key).unwrap_or_else(|_| api_key.to_string()))
-        };
+        #[cfg(not(target_family = "wasm"))]
+        let stored = encrypt(api_key).unwrap_or_else(|_| api_key.to_string());
+        #[cfg(target_family = "wasm")]
+        let stored = api_key.to_string();
+        self.ai_api_key = if api_key.is_empty() { None } else { Some(stored) };
     }
     /// Model name passed to the AI endpoint. Empty when unset.
     pub fn ai_model(&self) -> String {
@@ -1655,6 +1699,14 @@ impl ZedisAppState {
                     // buttons set it; the edit form leaves it None).
                     if server.sort_order.is_none() {
                         server.sort_order = existing_server.sort_order;
+                    }
+                    // The desktop form has no notion of an owner, so its
+                    // entry arrives without one; a bridge's file edited here
+                    // must not turn someone's private entry into everyone's.
+                    // In the browser the form does say, and the bridge decides.
+                    #[cfg(not(target_family = "wasm"))]
+                    if server.owner.is_none() {
+                        server.owner = existing_server.owner.clone();
                     }
                     *existing_server = server;
                 } else {

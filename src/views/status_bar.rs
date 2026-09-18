@@ -1287,7 +1287,9 @@ impl ZedisStatusBar {
             // cannot help, the kill can — offered right where the reason is
             // shown, on a connection a BUSY server still answers.
             .when(
-                is_link_down && server_state.last_connection_error == ConnectionErrorKind::Busy,
+                cfg!(not(target_family = "wasm"))
+                    && is_link_down
+                    && server_state.last_connection_error == ConnectionErrorKind::Busy,
                 |this| {
                     this.child(
                         Button::new("zedis-status-bar-kill-script")

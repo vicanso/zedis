@@ -19,7 +19,9 @@
 //! raw bytes — no decompression or format detection, so the file shows
 //! exactly what is stored.
 
-use crate::async_connection::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{cmd, pipe};
 use zedis_core::csv::build_csv_record;

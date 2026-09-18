@@ -25,7 +25,9 @@
 //! and silently ignore unknown keys rather than fail the whole call,
 //! since module upgrades shouldn't break the GUI.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Cmd, Value, cmd};
 

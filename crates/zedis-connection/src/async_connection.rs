@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::conn::RedisAsyncConn;
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
-use super::ssh_cluster_connection::SshMultiplexedConnection;
 use super::ssh_tunnel::{open_single_sni_tls_connection, open_single_ssh_tunnel_connection, tls_server_name};
 use crate::error::{ConnectionErrorKind, Error};
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
-    AsyncConnectionConfig, Client, Cmd, ConnectionInfo, FromRedisValue, IntoConnectionInfo, Pipeline, RedisFuture,
+    AsyncConnectionConfig, Client, Cmd, ConnectionInfo, FromRedisValue, IntoConnectionInfo, Pipeline,
     Value,
     aio::{ConnectionLike, MultiplexedConnection},
-    cluster_async::ClusterConnection,
     cmd,
     io::tcp::{TcpSettings, socket2::TcpKeepalive},
 };
@@ -85,7 +84,7 @@ pub fn client_name() -> &'static str {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
+pub(crate) static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
     humantime::parse_duration(&value).ok()
 });
@@ -228,7 +227,15 @@ pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) 
 /// # Returns
 ///
 /// A multiplexed Redis connection connected to the specified database
-pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: bool) -> Result<MultiplexedConnection> {
+///
+/// Crate-internal because it names a concrete transport. Callers outside
+/// this crate take [`open_single_connection`], which hands back the
+/// `ConnectionLike` enum every other path already speaks.
+pub(crate) async fn open_multiplexed_connection(
+    config: &RedisServer,
+    db: usize,
+    use_cache: bool,
+) -> Result<MultiplexedConnection> {
     // Generate a unique key for this connection based on config hash and database number
     let key = config.get_hash(db);
 
@@ -284,6 +291,24 @@ pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: 
 
     Ok(conn)
 }
+
+/// A dedicated connection to `config`'s database `db`, as the
+/// [`ConnectionLike`] enum the rest of the app speaks.
+///
+/// This is the public way to reach one endpoint outside the pooled client.
+/// It returns [`RedisAsyncConn`] rather than the concrete multiplexed
+/// connection so that every request/response path in the app goes through
+/// one type: a transport added as a variant there (an HTTP bridge for the
+/// web build, ADR 9) reaches these callers without touching them.
+///
+/// `use_cache` shares the underlying connection through the process-wide
+/// pool; pass `false` for anything that blocks or holds session state.
+pub async fn open_single_connection(config: &RedisServer, db: usize, use_cache: bool) -> Result<RedisAsyncConn> {
+    Ok(RedisAsyncConn::Single(
+        open_multiplexed_connection(config, db, use_cache).await?,
+    ))
+}
+
 /// The first connection to a configured endpoint, before its topology is
 /// known — what discovery, the form's Test button and the diagnostics dial.
 ///
@@ -325,9 +350,9 @@ pub async fn open_seed_connection(config: &RedisServer) -> Result<MultiplexedCon
 
 pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<MultiplexedConnection> {
     if config.server_type == Some(SERVER_TYPE_SENTINEL) && config.has_sentinel_credentials() {
-        return open_single_connection(&config.sentinel_login(), 0, false).await;
+        return open_multiplexed_connection(&config.sentinel_login(), 0, false).await;
     }
-    match open_single_connection(config, 0, false).await {
+    match open_multiplexed_connection(config, 0, false).await {
         Ok(conn) => Ok(conn),
         Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => {
             let retry = if config.has_sentinel_credentials() {
@@ -345,7 +370,7 @@ pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<Multiplex
                 anonymous.password = None;
                 anonymous
             };
-            open_single_connection(&retry, 0, false).await
+            open_multiplexed_connection(&retry, 0, false).await
         }
         Err(e) => Err(e),
     }
@@ -388,63 +413,6 @@ pub async fn open_monitor_connection(config: &RedisServer) -> Result<redis::aio:
     Ok(monitor)
 }
 
-/// A wrapper enum for Redis asynchronous connections.
-///
-/// This unifies `MultiplexedConnection` (for single nodes) and
-/// `ClusterConnection` (for clusters) under a single type,
-/// allowing generic usage across the application.
-#[derive(Clone)]
-pub enum RedisAsyncConn {
-    Single(MultiplexedConnection),
-    Cluster(ClusterConnection),
-    SshCluster(ClusterConnection<SshMultiplexedConnection>),
-}
-
-impl ConnectionLike for RedisAsyncConn {
-    #[inline]
-    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
-        let cmd_future = match self {
-            RedisAsyncConn::Single(conn) => conn.req_packed_command(cmd),
-            RedisAsyncConn::Cluster(conn) => conn.req_packed_command(cmd),
-            RedisAsyncConn::SshCluster(conn) => conn.req_packed_command(cmd),
-        };
-        if let Some(delay) = *DELAY {
-            return Box::pin(async move {
-                smol::Timer::after(delay).await;
-                cmd_future.await
-            });
-        }
-        cmd_future
-    }
-    #[inline]
-    fn req_packed_commands<'a>(
-        &'a mut self,
-        cmd: &'a Pipeline,
-        offset: usize,
-        count: usize,
-    ) -> RedisFuture<'a, Vec<Value>> {
-        let cmd_future = match self {
-            RedisAsyncConn::Single(conn) => conn.req_packed_commands(cmd, offset, count),
-            RedisAsyncConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
-            RedisAsyncConn::SshCluster(conn) => conn.req_packed_commands(cmd, offset, count),
-        };
-        if let Some(delay) = *DELAY {
-            return Box::pin(async move {
-                smol::Timer::after(delay).await;
-                cmd_future.await
-            });
-        }
-        cmd_future
-    }
-    #[inline]
-    fn get_db(&self) -> i64 {
-        match self {
-            RedisAsyncConn::Single(conn) => conn.get_db(),
-            RedisAsyncConn::Cluster(_) => 0,
-            RedisAsyncConn::SshCluster(conn) => conn.get_db(),
-        }
-    }
-}
 
 /// Queries multiple Redis master nodes concurrently.
 ///
@@ -477,7 +445,7 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
                 return Ok::<Option<T>, Error>(None);
             };
             // Establish a multiplexed async connection to the specific node.
-            let mut conn = open_single_connection(addr, db, true).await?;
+            let mut conn = open_multiplexed_connection(addr, db, true).await?;
 
             // Execute the command asynchronously.
             let value: T = current_cmd.query_async(&mut conn).await?;
@@ -521,7 +489,7 @@ pub(crate) async fn query_async_masters_pipeline(
             let Some(current_pipe) = current_pipe else {
                 return Ok::<Option<Vec<Value>>, Error>(None);
             };
-            let mut conn = open_single_connection(&addr, db, true).await?;
+            let mut conn = open_multiplexed_connection(&addr, db, true).await?;
 
             let values: Vec<Value> = current_pipe.query_async(&mut conn).await?;
 
@@ -572,5 +540,5 @@ async fn open_node_connection_inner(
     let mut config = get_server(server_name)?;
     config.host = host.to_string();
     config.port = port;
-    open_single_connection(&config, 0, use_cache).await
+    open_multiplexed_connection(&config, 0, use_cache).await
 }

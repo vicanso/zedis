@@ -423,7 +423,7 @@ impl ZedisMemoryAnalysis {
                         .items_center()
                         // AI advice: send the report (key names / sizes / TTLs
                         // only) to the configured OpenAI-compatible endpoint.
-                        .when(has_data, |this| {
+                        .when(cfg!(not(target_family = "wasm")) && has_data, |this| {
                             this.child(
                                 Button::new("reco-ai-analysis")
                                     .ghost()

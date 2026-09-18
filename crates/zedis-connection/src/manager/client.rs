@@ -16,10 +16,32 @@
 //! slow logs, topology.
 
 use super::*;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::floors::{self, Floor};
 use crate::hotkeys::HotkeysReport;
 use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
+use redis::Pipeline;
 use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
+use zedis_core::string::split_host_port_or;
+
+/// A display-only stand-in for a master the bridge answered for.
+///
+/// Callers of the fan-out read `host` and `port` to label a row and nothing
+/// else (`stat.rs`, `server_info.rs`), so a bridge node needs no more than
+/// that — and must carry no less *and no more*: the real entry holds
+/// credentials, which stay on the bridge.
+fn node_label_server(label: &str) -> RedisServer {
+    let (host, port) = split_host_port_or(label, 0);
+    RedisServer {
+        name: label.to_string(),
+        host: host.to_string(),
+        port,
+        ..Default::default()
+    }
+}
 
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
@@ -318,8 +340,32 @@ impl RedisClient {
     /// A second, uncached connection built from the same topology as
     /// [`connection`](Self::connection) — see
     /// [`ConnectionManager::open_dedicated_connection`].
+    ///
+    /// Native only: it dials, or fans a *pipeline* out to every master —
+    /// neither of which the browser does. The bridge owns both (ADR 9).
+    #[cfg(not(target_family = "wasm"))]
     pub async fn open_dedicated_connection(&self) -> Result<RedisAsyncConn> {
         get_async_connection(&self.client, self.db, false).await
+    }
+
+    /// The browser's dedicated connection: a bridge *session*, which is the
+    /// same promise over HTTP — one backend connection, this caller's alone,
+    /// so connection-scoped state stays where it was typed (ADR 4).
+    #[cfg(target_family = "wasm")]
+    pub async fn open_dedicated_connection(&self) -> Result<RedisAsyncConn> {
+        let Some(conn) = self.connection.as_bridge() else {
+            return Err(Error::Invalid {
+                message: "not a bridge connection".to_string(),
+            });
+        };
+        let transport = conn.transport();
+        let session = transport
+            .open_session(conn.server_id().to_string(), self.db)
+            .await
+            .map_err(|e| Error::Invalid { message: e.to_string() })?;
+        Ok(RedisAsyncConn::Bridge(
+            BridgeConn::new(transport, conn.server_id(), self.db).with_session(session),
+        ))
     }
 
     /// Checks if the client is a cluster client.
@@ -369,6 +415,7 @@ impl RedisClient {
     /// * `keys_per_node` - A vector of vectors of keys, one for each master node.
     /// # Returns
     /// * `Result<(), Error>` - The result of the operation.
+    ///
     pub async fn unlike_keys(&self, keys_per_node: Vec<Vec<String>>) -> Result<(), Error> {
         let verb = self.delete_verb();
         let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
@@ -383,7 +430,7 @@ impl RedisClient {
             }
             pipes[index] = Some(pipe);
         }
-        query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+        self.query_async_masters_pipelines(pipes).await?;
         Ok(())
     }
 
@@ -630,19 +677,49 @@ impl RedisClient {
     /// # Returns
     /// * `Vec<T>` - A vector of results from the commands.
     pub async fn query_async_masters<T: FromRedisValue>(&self, cmds: Vec<Cmd>) -> Result<(Vec<RedisServer>, Vec<T>)> {
-        let Some(first) = cmds.first() else {
+        if cmds.is_empty() {
             return Err(Error::Invalid {
                 message: "Commands are empty".to_string(),
             });
-        };
-        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let mut new_cmds = vec![Some(first.clone()); addrs.len()];
-        for (index, cmd) in cmds.iter().enumerate() {
-            new_cmds[index] = Some(cmd.clone());
         }
-        let values = query_async_masters(&addrs, self.db, new_cmds).await?;
-        let values: Vec<T> = values.into_iter().flatten().collect();
-        Ok((addrs, values))
+        // Through the bridge the fan-out happens on the far side: this code
+        // runs in the browser under the web build, where there is no socket
+        // to dial a master with, and handing the browser connectable node
+        // addresses is exactly what the bridge exists to avoid (ADR 9).
+        if let Some(conn) = self.connection.as_bridge() {
+            let packed: Vec<Vec<u8>> = cmds.iter().map(|cmd| cmd.get_packed_command()).collect();
+            let (labels, values) = conn
+                .fanout_masters(packed)
+                .await
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+            let servers = labels.iter().map(|label| node_label_server(label)).collect();
+            let typed = values
+                .into_iter()
+                .map(|value| {
+                    T::from_redis_value(value).map_err(|e| Error::Invalid {
+                        message: format!("a fan-out reply could not be read: {e}"),
+                    })
+                })
+                .collect::<Result<Vec<T>>>()?;
+            return Ok((servers, typed));
+        }
+        // The browser has no other kind of connection, so the branch above is
+        // the whole function there; dialling each master is native work.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+            // Non-empty, checked above: the first command is what pads
+            // the masters no explicit command was given for.
+            let mut new_cmds = vec![Some(cmds[0].clone()); addrs.len()];
+            for (index, cmd) in cmds.iter().enumerate() {
+                new_cmds[index] = Some(cmd.clone());
+            }
+            let values = query_async_masters(&addrs, self.db, new_cmds).await?;
+            let values: Vec<T> = values.into_iter().flatten().collect();
+            Ok((addrs, values))
+        }
+        #[cfg(target_family = "wasm")]
+        unreachable!("a bridge connection is the only kind the browser has")
     }
     /// Executes commands on all master nodes concurrently.
     /// # Arguments
@@ -654,9 +731,113 @@ impl RedisClient {
         cmds: Vec<Option<Cmd>>,
     ) -> Result<Vec<Option<T>>> {
         let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let values = query_async_masters(&addrs, self.db, cmds).await?;
-        Ok(values)
+        // Through the bridge, every entry names the node it is for. Both
+        // callers are strictly positional — `cluster_slot_stats` labels reply
+        // `i` with node `i`, and `scan` carries one cursor per node — so an
+        // index that meant a different node on the far side would attribute
+        // rows to the wrong master, or resume a scan from another node's
+        // cursor and silently return the wrong keys. Matching by label makes
+        // a topology that moved between the two discoveries show up as a
+        // missing reply instead.
+        if let Some(conn) = self.connection.as_bridge() {
+            let mut wanted = Vec::new();
+            let mut packed = Vec::new();
+            for (server, cmd) in addrs.iter().zip(cmds.iter()) {
+                if let Some(cmd) = cmd {
+                    wanted.push(format!("{}:{}", server.host, server.port));
+                    packed.push(cmd.get_packed_command());
+                }
+            }
+            if packed.is_empty() {
+                return Ok((0..addrs.len()).map(|_| None).collect());
+            }
+            let (labels, values) = conn
+                .fanout_nodes(packed, wanted)
+                .await
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+            let mut answers: Vec<Option<T>> = (0..addrs.len()).map(|_| None).collect();
+            for (label, value) in labels.iter().zip(values) {
+                let Some(index) = addrs
+                    .iter()
+                    .position(|server| format!("{}:{}", server.host, server.port) == *label)
+                else {
+                    // A master this caller does not know about: the topology
+                    // moved. Dropping it is right — there is no slot to put it
+                    // in without guessing.
+                    continue;
+                };
+                answers[index] = Some(T::from_redis_value(value).map_err(|e| Error::Invalid {
+                    message: format!("a fan-out reply could not be read: {e}"),
+                })?);
+            }
+            return Ok(answers);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let values = query_async_masters(&addrs, self.db, cmds).await?;
+            Ok(values)
+        }
+        #[cfg(target_family = "wasm")]
+        unreachable!("a bridge connection is the only kind the browser has")
     }
+    /// Run one *batch* per master: `pipes[i]` is for `master_nodes[i]`, and a
+    /// `None` means that master is not asked anything this round.
+    ///
+    /// Six callers want this shape — the key-tree scan's `TYPE`/`TTL` round,
+    /// the memory sample, the value search, the bulk unlink and two collection
+    /// readers — and every one of them is a *pipeline per node*, not a
+    /// pipeline. It cannot be flattened into one: redis-rs refuses a cluster
+    /// pipeline whose commands span slots (`route_for_pipeline` answers
+    /// `CrossSlot`), and a page of scanned keys is exactly that.
+    ///
+    /// Through the bridge the batches are flattened onto the wire — one label
+    /// per command, repeated — and regrouped by label on the way back. That is
+    /// the same rule the single-command fan-out follows, and for the same
+    /// reason: the two sides discover the topology separately, so position is
+    /// not a promise but a label is (ADR 9).
+    pub async fn query_async_masters_pipelines(&self, pipes: Vec<Option<Pipeline>>) -> Result<Vec<Option<Vec<Value>>>> {
+        let addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
+        if let Some(conn) = self.connection.as_bridge() {
+            let mut labels = Vec::new();
+            let mut packed = Vec::new();
+            for (server, pipe) in addrs.iter().zip(pipes.iter()) {
+                let Some(pipe) = pipe else { continue };
+                let label = format!("{}:{}", server.host, server.port);
+                for cmd in pipe.cmd_iter() {
+                    packed.push(cmd.get_packed_command());
+                    labels.push(label.clone());
+                }
+            }
+            if packed.is_empty() {
+                return Ok((0..addrs.len()).map(|_| None).collect());
+            }
+            let (reply_labels, values) = conn
+                .fanout_nodes(packed, labels)
+                .await
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
+            let mut answers: Vec<Option<Vec<Value>>> = (0..addrs.len()).map(|_| None).collect();
+            for (label, value) in reply_labels.iter().zip(values) {
+                let Some(index) = addrs
+                    .iter()
+                    .position(|server| format!("{}:{}", server.host, server.port) == *label)
+                else {
+                    // A master this caller has never heard of: the topology
+                    // moved between the two discoveries. Dropped rather than
+                    // guessed at, so the caller sees a missing batch.
+                    continue;
+                };
+                answers[index].get_or_insert_with(Vec::new).push(value);
+            }
+            return Ok(answers);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            query_async_masters_pipeline(addrs, self.db, pipes).await
+        }
+        #[cfg(target_family = "wasm")]
+        unreachable!("a bridge connection is the only kind the browser has")
+    }
+
     /// `DBSIZE` on the pooled connection. A standalone (or the Sentinel
     /// master) answers directly; on a cluster redis-rs fans the command out
     /// to every master of its *live* slot map and sums the replies
@@ -694,6 +875,7 @@ impl RedisClient {
     ///   not asked once per sampled key.
     /// # Returns
     /// * `(Vec<u64>, Vec<KeyMemoryUsage>)` - A tuple containing the new cursors and the key memory usage.
+    ///
     pub async fn sample_scan_memory_usage(
         &self,
         ratio: f32,
@@ -749,7 +931,7 @@ impl RedisClient {
             pipes[index] = Some(pipe);
         }
 
-        let results_per_node = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+        let results_per_node = self.query_async_masters_pipelines(pipes).await?;
 
         let mut keys_memory_usage = Vec::with_capacity(capacity);
         for (index, results) in results_per_node.into_iter().enumerate() {
@@ -1025,6 +1207,7 @@ impl RedisClient {
     /// mid-round types as "none" (dropped) or reads as empty (no match); a
     /// mid-round *type change* can fail the round's pipeline, which surfaces
     /// as this round's error — same contract as the key-tree `scan`.
+    ///
     pub async fn scan_values_round(
         &self,
         pattern: &str,
@@ -1062,7 +1245,7 @@ impl RedisClient {
             }
             pipes[idx] = Some(pipe);
         }
-        let type_results = query_async_masters_pipeline(master_addrs.clone(), self.db, pipes).await?;
+        let type_results = self.query_async_masters_pipelines(pipes).await?;
 
         let redis_string = |val: &Value| match val {
             Value::SimpleString(s) => s.clone(),
@@ -1117,7 +1300,7 @@ impl RedisClient {
             }
             pipes[idx] = Some(pipe);
         }
-        let len_results = query_async_masters_pipeline(master_addrs.clone(), self.db, pipes).await?;
+        let len_results = self.query_async_masters_pipelines(pipes).await?;
 
         let mut survivors_per_node: Vec<Vec<(String, String)>> = Vec::with_capacity(candidates_per_node.len());
         for (candidates, lens) in candidates_per_node.into_iter().zip(len_results) {
@@ -1164,7 +1347,7 @@ impl RedisClient {
             }
             pipes[idx] = Some(pipe);
         }
-        let value_results = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+        let value_results = self.query_async_masters_pipelines(pipes).await?;
 
         // Match evaluation is pure CPU from here. Only the first match per
         // key is recorded (one row per key); the inline preview shows the
@@ -1294,6 +1477,7 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
+    ///
     pub async fn first_scan(
         &self,
         pattern: &str,
@@ -1368,6 +1552,7 @@ impl RedisClient {
     /// * `count` - The count of keys to return.
     /// # Returns
     /// * `(Vec<u64>, Vec<String>)` - A tuple containing the new cursors and the keys.
+    ///
     pub async fn scan(
         &self,
         cursors: Option<Vec<u64>>,
@@ -1406,7 +1591,7 @@ impl RedisClient {
             }
         }
 
-        let pipe_results = query_async_masters_pipeline(master_addrs, self.db, pipes).await?;
+        let pipe_results = self.query_async_masters_pipelines(pipes).await?;
 
         let capacity: usize = keys_per_node.iter().map(|ks| ks.len()).sum();
         let mut all_keys = Vec::with_capacity(capacity);

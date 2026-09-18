@@ -22,6 +22,8 @@
 //! than a spike.
 
 use crate::assets::CustomIconName;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, CommandStat, get_connection_manager};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
@@ -42,7 +44,8 @@ use gpui_kit::component::{
 };
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;

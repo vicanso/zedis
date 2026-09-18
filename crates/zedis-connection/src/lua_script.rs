@@ -21,7 +21,9 @@
 //! here, do a single `SCRIPT LOAD + EVAL`, and tell the caller via
 //! `was_hit=false` so it can update its hit-rate counter.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Value, cmd};
 

@@ -10,8 +10,9 @@ updates:
     open-pull-requests-limit: 5
     groups:
       # GPUI is published as the gpui-pre-* snapshot family that gpui-kit
-      # pins; the four have to move together or two GPUIs end up in the
-      # tree (see the intro of CLAUDE.md). One PR for the whole set.
+      # pins; every name the workspace uses from it (gpui-pre, -platform,
+      # -macros, and -web for zedis-web) has to move together or two GPUIs
+      # end up in the tree (see the intro of CLAUDE.md). One PR for the set.
       gpui:
         patterns:
           - "gpui-kit"

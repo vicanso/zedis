@@ -818,7 +818,7 @@ impl ZedisFunctionEditor {
                     })
                     // Not a write: stopping a runaway FCALL changes no data,
                     // and a read-only ACL user gets the server's answer.
-                    .when(!self.unsupported, |this| {
+                    .when(cfg!(not(target_family = "wasm")) && !self.unsupported, |this| {
                         this.child(
                             Button::new("functions-kill")
                                 .ghost()

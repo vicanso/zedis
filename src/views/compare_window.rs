@@ -23,6 +23,7 @@ use crate::connection::{
     compare_prefix, get_servers,
 };
 use crate::error::Error;
+use crate::helpers::channel;
 use crate::helpers::{get_mono_font_family, with_app_identity};
 use crate::states::{ZedisGlobalStore, i18n_common, i18n_compare, i18n_copy};
 use crate::views::{CopyPreset, open_migration_copy_window};
@@ -264,7 +265,7 @@ impl ZedisCompareWindow {
         let options = CompareOptions { prefix, limit };
         // Progress crosses from the background task on a channel; a
         // foreground task folds it into the view.
-        let (tx, rx) = smol::channel::unbounded::<CompareProgress>();
+        let (tx, rx) = channel::unbounded::<CompareProgress>();
         let task = cx.background_spawn(async move {
             compare_prefix(&source, &target, &options, &cancel, move |progress| {
                 let _ = tx.try_send(progress);

@@ -23,6 +23,9 @@
 
 use super::{Result, TRASH_TABLE, get_database};
 use crate::error::Error;
+#[cfg(target_family = "wasm")]
+use crate::mem_store::{ReadableDatabase, ReadableTable};
+#[cfg(not(target_family = "wasm"))]
 use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 

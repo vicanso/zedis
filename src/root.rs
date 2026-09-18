@@ -15,26 +15,39 @@
 //! The `Zedis` root view: sidebar, workspace tabs (one connection each),
 //! title bar, and the global action handlers. `main.rs` only launches it.
 
-use crate::connection::{DangerKind, clear_expired_cache, get_server, servers_toml_redacted};
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::servers_toml_redacted;
+use crate::connection::{DangerKind, clear_expired_cache, get_server};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{TRASH_RETENTION_MS, purge_all_trash};
 use crate::dialogs::*;
+use crate::helpers::channel;
 use crate::helpers::{
-    ConfigRecovery, CrashReport, DEFAULT_UI_FONT_SIZE, Delivery, DiagnosticsAction, DiagnosticsInput, EditorAction,
-    MemuAction, NavAction, UpdateInfo, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size,
-    download_and_verify, export_diagnostics, fetch_latest_release, get_or_create_config_dir, humanize_keystroke,
-    install_update, installer_requires_quit, is_app_store_build, unix_ts_millis,
+    ConfigRecovery, CrashReport, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction,
+    UpdateInfo, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, get_or_create_config_dir,
+    humanize_keystroke, is_app_store_build, unix_ts_millis,
+};
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{
+    Delivery, DiagnosticsInput, download_and_verify, export_diagnostics, fetch_latest_release, install_update,
+    installer_requires_quit, platform_info,
 };
 use crate::startup::{GIT_SHA, PKG_NAME, VERSION};
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, WindowPlacement, ZedisGlobalStore, i18n_common, i18n_sidebar, i18n_update,
-    save_app_state, update_app_state_and_save, update_app_state_and_save_quiet,
+    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, i18n_update, update_app_state_and_save,
+    update_app_state_and_save_quiet,
+};
+// The window placement is written to `zedis.toml`; a tab has no file (ADR 9).
+#[cfg(not(target_family = "wasm"))]
+use crate::states::{WindowPlacement, save_app_state};
+#[cfg(not(target_family = "wasm"))]
+use crate::views::{
+    ExportSource, ZedisMultiSearch, open_compare_window, open_migration_export_window, open_migration_import_window,
 };
 use crate::views::{
-    ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
-    ZedisSidebar, ZedisTitleBar, confirm_dangerous_command, open_compare_window, open_features_dialog,
-    open_migration_export_window, open_migration_import_window, open_settings_window, open_trash_dialog,
+    ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
+    confirm_dangerous_command, open_features_dialog, open_settings_window, open_trash_dialog,
 };
 use crate::window_setup::*;
 use gpui::{Action, Bounds, Entity, MouseButton, Pixels, Point, SharedString, Task, Window, div, prelude::*};
@@ -119,6 +132,7 @@ pub struct Zedis {
     pending_new_tab: Option<(String, usize)>,
     command_palette: Entity<ZedisCommandPalette>,
     recent_keys_palette: Entity<ZedisRecentKeysPalette>,
+    #[cfg(not(target_family = "wasm"))]
     multi_search: Entity<ZedisMultiSearch>,
     shortcuts_overlay: Entity<ZedisShortcutsOverlay>,
     title_bar: Option<Entity<ZedisTitleBar>>,
@@ -126,10 +140,13 @@ pub struct Zedis {
     _clear_expired_cache: Option<Task<()>>,
     /// A newer release found by a check, awaiting its prompt. Consumed in
     /// `render` (which has the `Window` needed to open the dialog).
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) pending_update: Option<UpdateInfo>,
     /// The in-flight update check, if any — guards against overlapping checks.
+    #[cfg(not(target_family = "wasm"))]
     update_task: Option<Task<()>>,
     /// The in-flight installer download, if any — guards against re-entry.
+    #[cfg(not(target_family = "wasm"))]
     download_task: Option<Task<()>>,
     /// The installer is open and this platform needs Zedis gone to finish the
     /// install — prompt to quit. Consumed in `render` (which has the `Window`).
@@ -143,6 +160,7 @@ pub struct Zedis {
     pub(crate) pending_config_recoveries: Vec<ConfigRecovery>,
     /// The crash report the previous run left behind, if it ended in a panic.
     /// Consumed in `render` (which has the `Window` needed for the dialog).
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) pending_crash: Option<CrashReport>,
 }
 
@@ -217,6 +235,7 @@ impl Zedis {
         let server_state = tabs[active_tab].content.read(cx).server_state();
         let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), window, cx));
         let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, window, cx));
+        #[cfg(not(target_family = "wasm"))]
         let multi_search = cx.new(|cx| ZedisMultiSearch::new(window, cx));
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
         let global_state = cx.global::<ZedisGlobalStore>().state();
@@ -352,6 +371,7 @@ impl Zedis {
             pending_new_tab: None,
             command_palette,
             recent_keys_palette,
+            #[cfg(not(target_family = "wasm"))]
             multi_search,
             shortcuts_overlay,
             pending_notification: None,
@@ -359,12 +379,16 @@ impl Zedis {
             theme_update_task: None,
             _clear_expired_cache: clear_expired_cache,
             last_bounds: Bounds::default(),
+            #[cfg(not(target_family = "wasm"))]
             pending_update: None,
+            #[cfg(not(target_family = "wasm"))]
             update_task: None,
+            #[cfg(not(target_family = "wasm"))]
             download_task: None,
             pending_install_quit: false,
             pending_welcome: false,
             pending_config_recoveries: Vec::new(),
+            #[cfg(not(target_family = "wasm"))]
             pending_crash: None,
         }
     }
@@ -379,34 +403,36 @@ impl Zedis {
     /// it. The summary is assembled here because only the root knows the
     /// active tab's connection.
     fn export_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let info = os_info::get();
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        let mut summary = format!(
-            "Zedis diagnostics\nversion: {VERSION} ({GIT_SHA})\nos: {}-{}\narch: {}\nconfig_dir: {}\nlocale: {}\ntheme: {:?} / {:?}\napp_store_build: {}\ntime: {}\n",
-            info.os_type(),
-            info.version(),
-            info.architecture().unwrap_or_default(),
-            get_or_create_config_dir()
-                .map(|d| d.display().to_string())
-                .unwrap_or_default(),
-            store.locale(),
-            store.theme(),
-            store.theme_name(),
-            is_app_store_build(),
-            chrono::Local::now().to_rfc3339(),
-        );
-        let app_config = store.redacted_toml().unwrap_or_else(|e| format!("<unavailable: {e}>"));
-        let locale = store.locale().to_string();
-        let state = self.active_content().read(cx).server_state();
-        let state = state.read(cx);
-        if !state.server_id().is_empty() {
-            let features = state.features();
-            let unusable: Vec<String> = features
-                .unusable()
-                .iter()
-                .map(|(c, s)| format!("{} ({s:?})", c.label()))
-                .collect();
-            summary.push_str(&format!(
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let info = platform_info();
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
+            let mut summary = format!(
+                "Zedis diagnostics\nversion: {VERSION} ({GIT_SHA})\nos: {}-{}\narch: {}\nconfig_dir: {}\nlocale: {}\ntheme: {:?} / {:?}\napp_store_build: {}\ntime: {}\n",
+                info.os_type,
+                info.version,
+                info.architecture,
+                get_or_create_config_dir()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default(),
+                store.locale(),
+                store.theme(),
+                store.theme_name(),
+                is_app_store_build(),
+                chrono::Local::now().to_rfc3339(),
+            );
+            let app_config = store.redacted_toml().unwrap_or_else(|e| format!("<unavailable: {e}>"));
+            let locale = store.locale().to_string();
+            let state = self.active_content().read(cx).server_state();
+            let state = state.read(cx);
+            if !state.server_id().is_empty() {
+                let features = state.features();
+                let unusable: Vec<String> = features
+                    .unusable()
+                    .iter()
+                    .map(|(c, s)| format!("{} ({s:?})", c.label()))
+                    .collect();
+                summary.push_str(&format!(
                 "\n[active connection]\nserver_id: {}\nredis_version: {}\nserver_type: {}\nflavor: {}\nreadonly: {}\nhealth: {:?}\nlast_error: {:?}\nfeatures_probed: {}\nunusable_commands: {}\n",
                 state.server_id(),
                 state.version(),
@@ -422,29 +448,37 @@ impl Zedis {
                     unusable.join(", ")
                 },
             ));
+            }
+            let servers_config = servers_toml_redacted().unwrap_or_else(|e| format!("<unavailable: {e}>"));
+            let input = DiagnosticsInput {
+                summary,
+                app_config,
+                servers_config,
+            };
+            match export_diagnostics(&input) {
+                Ok(path) => {
+                    info!(path = %path.display(), "diagnostics bundle written");
+                    let message = t!(
+                        "sidebar.diagnostics_saved",
+                        path = path.display().to_string(),
+                        locale = &locale
+                    );
+                    window.push_notification(Notification::success(message.to_string()), cx);
+                    cx.reveal_path(&path);
+                }
+                Err(e) => {
+                    error!(error = %e, "diagnostics bundle failed");
+                    let message = t!("sidebar.diagnostics_failed", error = e.to_string(), locale = &locale);
+                    window.push_notification(Notification::error(message.to_string()), cx);
+                }
+            }
         }
-        let servers_config = servers_toml_redacted().unwrap_or_else(|e| format!("<unavailable: {e}>"));
-        let input = DiagnosticsInput {
-            summary,
-            app_config,
-            servers_config,
-        };
-        match export_diagnostics(&input) {
-            Ok(path) => {
-                info!(path = %path.display(), "diagnostics bundle written");
-                let message = t!(
-                    "sidebar.diagnostics_saved",
-                    path = path.display().to_string(),
-                    locale = &locale
-                );
-                window.push_notification(Notification::success(message.to_string()), cx);
-                cx.reveal_path(&path);
-            }
-            Err(e) => {
-                error!(error = %e, "diagnostics bundle failed");
-                let message = t!("sidebar.diagnostics_failed", error = e.to_string(), locale = &locale);
-                window.push_notification(Notification::error(message.to_string()), cx);
-            }
+        #[cfg(target_family = "wasm")]
+        {
+            // The bundle is a zip of local files; a tab has neither the files nor
+            // a place to put it. The menu item that reaches this is not offered.
+            let _ = (window, cx);
+            tracing::warn!("the diagnostics bundle is not available in the browser build");
         }
     }
 
@@ -600,6 +634,7 @@ impl Zedis {
     /// reports its outcome (up-to-date / failure toast) and ignores a skipped
     /// version; the silent startup check stays quiet unless it finds a fresh,
     /// non-skipped update.
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn check_for_updates(&mut self, manual: bool, then_prompt: bool, cx: &mut Context<Self>) {
         // App Store builds are updated through the App Store; never self-check or
         // self-download (Apple forbids it). Guards every trigger at once.
@@ -684,6 +719,7 @@ impl Zedis {
     /// download + checksum-verify it in the background and hand it to the OS
     /// installer; without one (API fallback / missing asset) just open the
     /// release page. A failed download falls back to the page too.
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn start_download(&mut self, info: UpdateInfo, cx: &mut Context<Self>) {
         let Some(asset) = info.asset.clone() else {
             // No verified asset for this os/arch (manifest missing → API
@@ -725,7 +761,7 @@ impl Zedis {
         // through a channel as `(downloaded, total)` bytes; this foreground
         // drainer publishes it to the global store, which the update dialog
         // (progress bar) and the title-bar chip (percentage) both read.
-        let (tx, rx) = smol::channel::unbounded::<(u64, u64)>();
+        let (tx, rx) = channel::unbounded::<(u64, u64)>();
         cx.spawn(async move |_, cx| {
             while let Ok(progress) = rx.recv().await {
                 cx.update(|cx| {
@@ -830,6 +866,26 @@ impl Zedis {
         cx: &mut Context<Self>,
     ) {
         self.last_bounds = new_bounds;
+        // The browser sizes the page, and a tab has no file to write a
+        // placement to: the comparison above is all there is (ADR 9).
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (display, maximized, cx);
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        self.save_window_placement(new_bounds, display, maximized, cx);
+    }
+
+    /// Debounce, then write the placement into `zedis.toml`.
+    #[cfg(not(target_family = "wasm"))]
+    fn save_window_placement(
+        &mut self,
+        new_bounds: Bounds<Pixels>,
+        display: Option<(String, Point<Pixels>)>,
+        maximized: bool,
+        cx: &mut Context<Self>,
+    ) {
         let store = cx.global::<ZedisGlobalStore>().clone();
         // Anchor the placement to the current display (origin relative to it) so
         // it survives monitor rearrangement; absolute `bounds` stays as fallback.
@@ -889,6 +945,7 @@ impl Zedis {
 
     /// Toggle the multi-database search palette (⌘⇧F). Global handler so
     /// it works regardless of focus, matching the command palette.
+    #[cfg(not(target_family = "wasm"))]
     pub fn toggle_multi_search(&mut self, cx: &mut Context<Self>) {
         self.multi_search.update(cx, |palette, cx| palette.toggle(cx));
     }
@@ -1049,12 +1106,14 @@ impl Render for Zedis {
             };
             window.push_notification(notification, cx);
         }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(report) = self.pending_crash.take() {
             // Deferred for the same focus reason as the welcome card below.
             window.defer(cx, move |window, cx| open_crash_dialog(&report, window, cx));
         }
         // The installer is up and this platform needs Zedis closed to finish —
         // ask (the update dialog has already dismissed itself by now).
+        #[cfg(not(target_family = "wasm"))]
         if std::mem::take(&mut self.pending_install_quit) {
             open_install_quit_dialog(window, cx);
         }
@@ -1066,6 +1125,7 @@ impl Render for Zedis {
             // overlay. Deferring makes the dialog the last focus claimant.
             window.defer(cx, open_welcome_dialog);
         }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(info) = self.pending_update.take() {
             let weak = cx.entity().downgrade();
             open_update_dialog(info, weak, window, cx);
@@ -1163,11 +1223,14 @@ impl Render for Zedis {
             // when open; zero-footprint when closed).
             .child(self.command_palette.clone())
             // Recent-keys Quick Open (⌘P); same overlay model.
-            .child(self.recent_keys_palette.clone())
-            .child(self.multi_search.clone())
-            // Keyboard-shortcuts reference overlay (⌘/), same overlay
-            // model as the palette; rendered last so it stacks on top.
-            .child(self.shortcuts_overlay.clone());
+            .child(self.recent_keys_palette.clone());
+        // Multi-database search fans out to several servers at once, which
+        // is the bridge's side of the wire (ADR 9).
+        #[cfg(not(target_family = "wasm"))]
+        let content = content.child(self.multi_search.clone());
+        // Keyboard-shortcuts reference overlay (⌘/), same overlay
+        // model as the palette; rendered last so it stacks on top.
+        let content = content.child(self.shortcuts_overlay.clone());
         content
             .on_action(cx.listener(|_this, e: &ThemeAction, _window, cx| {
                 let action = *e;
@@ -1299,14 +1362,18 @@ impl Render for Zedis {
                     // Dump import into the active server / db (not a
                     // key-tree prefix). Opens a dedicated window.
                     ServerToolsAction::ImportKeys => {
-                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
-                        else {
-                            return;
-                        };
-                        let server_name: gpui::SharedString = get_server(&server_id)
-                            .map(|s| s.name.into())
-                            .unwrap_or_else(|_| server_id.clone().into());
-                        open_migration_import_window(server_id.into(), server_name, db, cx);
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            let Some((server_id, db)) =
+                                cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                            else {
+                                return;
+                            };
+                            let server_name: gpui::SharedString = get_server(&server_id)
+                                .map(|s| s.name.into())
+                                .unwrap_or_else(|_| server_id.clone().into());
+                            open_migration_import_window(server_id.into(), server_name, db, cx);
+                        }
                         return;
                     }
                     // Pub/Sub lives inside the editor suite (channel mode),
@@ -1323,40 +1390,55 @@ impl Render for Zedis {
                     // Compare a prefix of the active server / db with another
                     // server / db, in its own window.
                     ServerToolsAction::CompareKeys => {
-                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
-                        else {
-                            return;
-                        };
-                        let server_name: gpui::SharedString = get_server(&server_id)
-                            .map(|s| s.name.into())
-                            .unwrap_or_else(|_| server_id.clone().into());
-                        open_compare_window(server_id.into(), server_name, db, cx);
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            let Some((server_id, db)) =
+                                cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                            else {
+                                return;
+                            };
+                            let server_name: gpui::SharedString = get_server(&server_id)
+                                .map(|s| s.name.into())
+                                .unwrap_or_else(|_| server_id.clone().into());
+                            open_compare_window(server_id.into(), server_name, db, cx);
+                        }
                         return;
                     }
                     // Export every key loaded in the active tab's tree (a
                     // SCAN-limited subset, same coverage as the tree itself).
                     ServerToolsAction::ExportKeys => {
-                        let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
-                        else {
-                            return;
-                        };
-                        let server_name: gpui::SharedString = get_server(&server_id)
-                            .map(|s| s.name.into())
-                            .unwrap_or_else(|_| server_id.clone().into());
-                        let mut keys: Vec<gpui::SharedString> = _this
-                            .active_content()
-                            .read(cx)
-                            .server_state()
-                            .read(cx)
-                            .keys()
-                            .keys()
-                            .cloned()
-                            .collect();
-                        if keys.is_empty() {
-                            return;
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            let Some((server_id, db)) =
+                                cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned()
+                            else {
+                                return;
+                            };
+                            let server_name: gpui::SharedString = get_server(&server_id)
+                                .map(|s| s.name.into())
+                                .unwrap_or_else(|_| server_id.clone().into());
+                            let mut keys: Vec<gpui::SharedString> = _this
+                                .active_content()
+                                .read(cx)
+                                .server_state()
+                                .read(cx)
+                                .keys()
+                                .keys()
+                                .cloned()
+                                .collect();
+                            if keys.is_empty() {
+                                return;
+                            }
+                            keys.sort_unstable();
+                            open_migration_export_window(
+                                server_id.into(),
+                                server_name,
+                                db,
+                                keys,
+                                ExportSource::Loaded,
+                                cx,
+                            );
                         }
-                        keys.sort_unstable();
-                        open_migration_export_window(server_id.into(), server_name, db, keys, ExportSource::Loaded, cx);
                         return;
                     }
                 };

@@ -27,6 +27,8 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisValue, RedisValueStatus, RedisZsetValue, SortOrder},
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},

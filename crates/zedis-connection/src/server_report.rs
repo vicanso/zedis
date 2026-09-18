@@ -16,7 +16,9 @@
 //! DOCTOR` answer prose, `MEMORY STATS` the numbers behind the memory one.
 //! All three are read-only.
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Value, cmd};
 
@@ -75,9 +77,14 @@ pub async fn memory_stats(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<Vec
 /// connection answers the reply itself. The connection decides which —
 /// `MEMORY STATS` is a map on one RESP3 server too.
 fn per_node(conn: &RedisAsyncConn, reply: Value) -> Vec<(String, Value)> {
+    // Through the bridge the connection on the far side decides, and the
+    // reply already has whichever shape that connection produced.
+    #[cfg(not(target_family = "wasm"))]
     if matches!(conn, RedisAsyncConn::Single(_)) {
         return vec![(String::new(), reply)];
     }
+    #[cfg(target_family = "wasm")]
+    let _ = conn;
     node_replies(reply)
 }
 

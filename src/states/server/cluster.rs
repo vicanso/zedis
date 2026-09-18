@@ -43,7 +43,10 @@ use crate::connection::{
     cluster_migrate_slots, get_connection_manager, get_server, group_slot_ranges, open_node_connection,
     open_node_connection_cached, plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots,
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::helpers::channel;
 use crate::states::{ServerTask, ZedisServerState, i18n_common};
 use futures::future::try_join_all;
 use gpui::{SharedString, prelude::*};
@@ -451,10 +454,14 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let total: u32 = legs.iter().map(|leg| leg.slots.len() as u32).sum();
         let leg_count = legs.len();
+        // Captured here because the task below is a plain `move ||` closure
+        // with no context of its own, and smol's global executor has no
+        // browser backend (ADR 9).
+        let executor = cx.background_executor().clone();
 
         // The legacy path reports per slot; the atomic one finishes as soon
         // as the servers accepted the jobs, so it needs no bar.
-        let (progress_tx, progress_rx) = smol::channel::unbounded::<(u32, u32)>();
+        let (progress_tx, progress_rx) = channel::unbounded::<(u32, u32)>();
         if !atomic {
             self.set_reshard_progress(Some((0, total)), cx);
             cx.spawn(async move |handle, cx| {
@@ -494,17 +501,18 @@ impl ZedisServerState {
                         .collect();
                     // Each leg counts from zero, so offset its ticks by
                     // what earlier legs already moved.
-                    let (leg_tx, leg_rx) = smol::channel::unbounded::<(u32, u32)>();
+                    let (leg_tx, leg_rx) = channel::unbounded::<(u32, u32)>();
                     let outer = progress_tx.clone();
                     let done_before = moved;
-                    smol::spawn(async move {
-                        while let Ok((processed, _)) = leg_rx.recv().await {
-                            if outer.send((done_before + processed, total)).await.is_err() {
-                                break;
+                    executor
+                        .spawn(async move {
+                            while let Ok((processed, _)) = leg_rx.recv().await {
+                                if outer.send((done_before + processed, total)).await.is_err() {
+                                    break;
+                                }
                             }
-                        }
-                    })
-                    .detach();
+                        })
+                        .detach();
                     let result = reshard_slots(
                         server_id.as_ref(),
                         &leg.target_addr,
@@ -589,7 +597,7 @@ impl ZedisServerState {
         // after each slot; a foreground drainer mirrors it into
         // `reshard_progress` so the Topology panel can render a live bar
         // instead of a static "running…" line.
-        let (progress_tx, progress_rx) = smol::channel::unbounded::<(u32, u32)>();
+        let (progress_tx, progress_rx) = channel::unbounded::<(u32, u32)>();
         self.set_reshard_progress(Some((0, total)), cx);
         cx.spawn(async move |handle, cx| {
             while let Ok(progress) = progress_rx.recv().await {
@@ -792,7 +800,7 @@ async fn reshard_slots(
     target_id: &str,
     slots: &[u16],
     source_by_slot: &[(u16, String, String)],
-    progress: smol::channel::Sender<(u32, u32)>,
+    progress: channel::Sender<(u32, u32)>,
 ) -> Result<ClusterReshardResult, Error> {
     let password = get_server(server_id).ok().and_then(|s| s.password);
     let (target_host, target_port) = target_addr.rsplit_once(':').ok_or_else(|| Error::Invalid {

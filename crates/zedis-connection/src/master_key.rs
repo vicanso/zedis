@@ -36,6 +36,7 @@
 //! it under the current key (lazy migration — no bulk rewrite on upgrade).
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The key baked into every build before the keychain migration. Retained
 /// solely as a decryption fallback for configs those builds wrote.
@@ -48,6 +49,30 @@ static RESOLVED_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 /// The machine-local master key.
 pub(crate) fn master_key() -> &'static [u8; 32] {
     RESOLVED_KEY.get_or_init(resolve_master_key)
+}
+
+/// Set by [`disable_keychain`]: resolve from the key file, never the keychain.
+static KEYCHAIN_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Never consult the OS keychain for the master key: use the `0600`
+/// `master.key` file in the config directory, the store Linux always uses.
+///
+/// For a process with no user session to answer a prompt — the HTTP bridge.
+/// A server has no keychain worth the name, and on macOS an unsigned or
+/// freshly rebuilt binary is re-prompted for keychain access on every start,
+/// so a service that reached for it would either hang on a dialog nobody
+/// sees or ask for the login password each time it restarts (ADR 9).
+///
+/// Call it before the first `encrypt` / `decrypt`: the key is resolved once
+/// per process and cached, so a call after that changes nothing and is
+/// logged. A server list the desktop app wrote under its keychain key does
+/// not open under this one; re-saving an entry through the bridge rewrites
+/// its secrets under the file key.
+pub fn disable_keychain() {
+    KEYCHAIN_DISABLED.store(true, Ordering::Relaxed);
+    if RESOLVED_KEY.get().is_some() {
+        tracing::warn!("disable_keychain() after the master key was resolved: the keychain may already have been read");
+    }
 }
 
 /// Tests must never reach the real keychain or config dir — use a fixed key so
@@ -68,7 +93,11 @@ fn resolve_master_key() -> [u8; 32] {
 /// [`resolve_master_key`] returns a fixed key instead.
 #[cfg(not(test))]
 mod real {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    use super::KEYCHAIN_DISABLED;
     use super::LEGACY_MASTER_KEY;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    use std::sync::atomic::Ordering;
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use tracing::warn;
 
@@ -83,15 +112,21 @@ mod real {
     pub(super) fn resolve() -> [u8; 32] {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            // Skip the OS keychain and fall through to the key file when either:
+            // Skip the OS keychain and fall through to the key file when any of:
             //  - the config dir is isolated (unit tests via `override_config_dir`,
             //    CI smoke runs via `ZEDIS_CONFIG_DIR`) — `config_dir_override`
-            //    covers both; or
+            //    covers both;
             //  - this is a development run (`RUST_ENV=dev`): the dev binary is
             //    unsigned / ad-hoc-signed, so macOS re-prompts for keychain
             //    access on every rebuild. Dev already keeps everything under an
-            //    isolated `…/dev` config dir, so the key file lands there too.
-            if zedis_core::fs::config_dir_override().is_none() && !zedis_core::env::is_development() {
+            //    isolated `…/dev` config dir, so the key file lands there too;
+            //  - the process opted out (`disable_keychain`): the HTTP bridge,
+            //    which has no session to answer a keychain prompt in.
+            let keychain_disabled = KEYCHAIN_DISABLED.load(Ordering::Relaxed);
+            if zedis_core::fs::config_dir_override().is_none()
+                && !zedis_core::env::is_development()
+                && !keychain_disabled
+            {
                 match keyring_key() {
                     Ok(key) => return key,
                     Err(e) => warn!(error = %e, "keychain unavailable; falling back to key file"),
@@ -177,5 +212,17 @@ mod real {
             // per-user profile, so its inherited ACL restricts it to the user.
             std::fs::write(path, encoded.as_bytes())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabling_the_keychain_is_recorded_for_the_resolver() {
+        assert!(!KEYCHAIN_DISABLED.load(Ordering::Relaxed));
+        disable_keychain();
+        assert!(KEYCHAIN_DISABLED.load(Ordering::Relaxed));
     }
 }

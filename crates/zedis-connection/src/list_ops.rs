@@ -26,7 +26,9 @@
 //! then removing that marker once sidesteps renumbering entirely — no index
 //! is ever used after the list has shifted under it.
 
-use crate::async_connection::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgePipeline as _;
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::pipe;
 use uuid::Uuid;

@@ -33,24 +33,39 @@
 //! u32             CRC32 over every byte before the footer magic
 //! ```
 
-use super::async_connection::RedisAsyncConn;
+use super::conn::RedisAsyncConn;
 use super::manager::get_connection_manager;
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
 use futures::future::try_join_all;
 use redis::cmd;
 use serde::{Deserialize, Serialize};
+// The `.zdis` file format — its reader, writer and checksum — is desktop
+// only: there is no file in a browser tab. The commands behind it (`DUMP`,
+// `RESTORE`, `EXISTS`) are what copy-key runs, and those travel through the
+// bridge like any other (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 use std::io::{Read, Write};
+#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const MAGIC_HEADER: &[u8; 4] = b"ZDIS";
+#[cfg(not(target_family = "wasm"))]
 const MAGIC_FOOTER: &[u8; 4] = b"ZEND";
+#[cfg(not(target_family = "wasm"))]
 const FORMAT_VERSION: u16 = 1;
+#[cfg(not(target_family = "wasm"))]
 const MAX_HEADER_LEN: u32 = 64 * 1024;
+#[cfg(not(target_family = "wasm"))]
 const MAX_KEY_LEN: u32 = 64 * 1024;
+#[cfg(not(target_family = "wasm"))]
 const MAX_PAYLOAD_LEN: u32 = 512 * 1024 * 1024;
 
 /// Type hint stored alongside each entry. Display-only; restore does not depend on it.
@@ -67,6 +82,7 @@ pub enum TypeHint {
 }
 
 impl TypeHint {
+    #[cfg(not(target_family = "wasm"))]
     fn from_u8(v: u8) -> Self {
         match v {
             1 => Self::String,
@@ -92,6 +108,7 @@ impl TypeHint {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DumpHeader {
     pub format_version: u16,
@@ -148,6 +165,7 @@ pub enum RestoreStatus {
 // Inline so we avoid an extra dependency.
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_family = "wasm"))]
 static CRC32_TABLE: LazyLock<[u32; 256]> = LazyLock::new(|| {
     let mut table = [0u32; 256];
     let mut i: u32 = 0;
@@ -164,11 +182,13 @@ static CRC32_TABLE: LazyLock<[u32; 256]> = LazyLock::new(|| {
     table
 });
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Copy)]
 struct Crc32 {
     state: u32,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Crc32 {
     fn new() -> Self {
         Self { state: 0xFFFFFFFF }
@@ -192,11 +212,13 @@ impl Crc32 {
 // Writer
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_family = "wasm"))]
 pub struct DumpWriter<W: Write> {
     inner: W,
     crc: Crc32,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl<W: Write> DumpWriter<W> {
     pub fn new(inner: W, header: &DumpHeader) -> Result<Self> {
         let mut writer = Self {
@@ -265,6 +287,7 @@ impl<W: Write> DumpWriter<W> {
 // Reader
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_family = "wasm"))]
 pub struct DumpReader<R: Read> {
     inner: R,
     crc: Crc32,
@@ -272,6 +295,7 @@ pub struct DumpReader<R: Read> {
     finished: bool,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl<R: Read> DumpReader<R> {
     pub fn open(inner: R) -> Result<Self> {
         let mut reader = Self {
@@ -502,6 +526,7 @@ pub async fn keys_exist(conn: &mut RedisAsyncConn, keys: &[Vec<u8>]) -> Result<V
 /// Dry-run import conflict scan: read every key name from a dump file and
 /// check `EXISTS` on the destination. Does **not** write. `sample_limit`
 /// caps how many conflicting key names are retained for the UI list.
+#[cfg(not(target_family = "wasm"))]
 pub async fn preview_dump_conflicts(
     server_id: &str,
     db: usize,
@@ -659,7 +684,7 @@ pub async fn copy_key(
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use std::io::Cursor;

@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{
     Capability, PauseMode, RedisServer, floors, get_connection_manager, open_single_connection, pause_args,
 };
 use crate::error::Error;
+use crate::helpers::channel;
 use crate::helpers::{format_duration_units, get_mono_font_family};
 /// Redis Client Management viewer.
 ///
@@ -735,10 +738,12 @@ impl ZedisClientsManager {
         let server_state = self.server_state.clone();
         let table_state = self.table_state.clone();
 
-        let (tx, rx) = smol::channel::unbounded::<(SharedString, SharedString, RedisServer)>();
+        let (tx, rx) = channel::unbounded::<(SharedString, SharedString, RedisServer)>();
 
         self.kill.borrow_mut().callback = Some(Arc::new(move |id, addr, node| {
-            let _ = tx.send_blocking((id, addr, node));
+            // Unbounded, so this never blocks or fills — and a browser has no
+            // thread to block anyway.
+            let _ = tx.try_send((id, addr, node));
         }));
 
         self._kill_task = Some(cx.spawn(async move |handle, cx| {

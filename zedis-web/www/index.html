@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zedis</title>
+<style>
+  :root { color-scheme: light dark; --line: #8883; --bad: #cf222e; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1e1e1e; }
+  body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; color: #ddd; }
+  canvas { display: block; }
+  main { max-width: 22rem; margin: 18vh auto 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: .5rem; }
+  h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+  label { display: block; }
+  label + label { margin-top: .75rem; }
+  label span { display: block; margin-bottom: .25rem; font-size: .85rem; opacity: .8; }
+  label.check { display: flex; align-items: center; gap: .5rem; }
+  label.check input { width: auto; }
+  label.check span { margin: 0; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid var(--line);
+          border-radius: .375rem; background: transparent; color: inherit; font: inherit; }
+  button { margin-top: .75rem; padding: .5rem 1rem; border: 0; border-radius: .375rem; background: #1f6feb; color: #fff;
+           font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { margin-top: .75rem; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .85rem; }
+  .bad { color: var(--bad); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main id="login" hidden>
+  <h1>Zedis</h1>
+  <!-- A real form with named, autocomplete-tagged fields: that is what lets
+       the browser's own password manager offer to save the credential and
+       fill it in next time. The password is never kept by this page. -->
+  <form id="login-form" autocomplete="on">
+    <label>
+      <span>Username</span>
+      <input id="username" name="username" type="text" autocomplete="username" required />
+    </label>
+    <label>
+      <span>Password</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+    </label>
+    <label class="check">
+      <input id="remember" name="remember" type="checkbox" checked />
+      <span>Keep me signed in on this device (30 days)</span>
+    </label>
+    <button id="go" type="submit">Sign in</button>
+  </form>
+  <div class="msg bad" id="login-msg"></div>
+</main>
+<main id="loading" hidden><h1>Zedis</h1><div class="msg" id="loading-msg">Loading…</div></main>
+
+<script type="module">
+  // Same origin on purpose: the bridge serves this page, so the API is right
+  // here and the login cookie can stay SameSite=Strict. The wasm holds no
+  // password — it signs in here for a cookie and every fetch carries it.
+  const $ = (id) => document.getElementById(id);
+  const api = (path, init) => fetch(path, { credentials: "same-origin", ...init });
+
+  // An input method's keystrokes are not the application's. gpui-pre-web
+  // (through 0.3.5) decides that from `isComposing` alone, but the *first*
+  // key of a composition arrives before `compositionstart`: `isComposing` is
+  // still false and, in Chrome on macOS, `key` is the letter itself — so the
+  // letter is inserted as text and "你" comes out as "n你". `keyCode` 229 is
+  // what marks a key the IME took, on every browser, so those keydowns are
+  // stopped here, in the capture phase on `window`, before they reach the
+  // backend's listener. Not `preventDefault`: the IME still has to see them.
+  // The same check keeps Enter, Backspace and the arrows from also firing the
+  // application's bindings while they are choosing a candidate. Delete when
+  // upstream checks for 229 itself.
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.isComposing || event.keyCode === 229) event.stopImmediatePropagation();
+    },
+    true,
+  );
+
+  async function start() {
+    // The whole application, as the desktop builds it, compiled to wasm.
+    $("login").hidden = true;
+    $("loading").hidden = false;
+    try {
+      // The UI font rides in with the call: the web text system has no
+      // fonts of its own, and the first frame measures text.
+      const [mod, font] = await Promise.all([
+        import("./wasm/zedis_web.js"),
+        fetch("/fonts/IBMPlexSans.ttf").then((r) => {
+          if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
+          return r.arrayBuffer();
+        }),
+      ]);
+      await mod.default();
+      $("loading").hidden = true;
+      // The third argument: whether shortcuts are drawn as ⌘K or Ctrl+K. The
+      // module cannot know — it is the same bytes on every machine. Both
+      // spellings are bound regardless, so a wrong guess only mislabels.
+      // Case-insensitive on purpose: `userAgentData.platform` says "macOS",
+      // `navigator.platform` says "MacIntel". And `||`, not `??`: a browser
+      // that trims its client hints answers "" there, which is not nullish.
+      const appleKeyboard = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || "");
+      mod.run(window.location.origin, new Uint8Array(font), appleKeyboard);
+    } catch (e) {
+      $("loading-msg").textContent = `The application could not start: ${e}`;
+      $("loading-msg").className = "msg bad";
+    }
+  }
+
+  async function signedIn() {
+    const res = await api("/v1/servers");
+    return res.ok;
+  }
+
+  // The bridge signs people in by name (ZEDIS_BRIDGE_USERS); which entries
+  // they then see depends on who they are.
+  // Signed in once, a browser stays signed in: the bridge keeps the login on
+  // disk, so neither a reload nor a restart of the bridge asks again, and this
+  // form only comes back when /v1/servers answers 401 — the login lapsed, was
+  // closed, or the account's password changed.
+  const credentials = () => ({
+    username: $("username").value.trim(),
+    password: $("password").value,
+    remember: $("remember").checked,
+  });
+
+  $("login-form").onsubmit = async (event) => {
+    event.preventDefault();
+    $("go").disabled = true;
+    try {
+      const res = await api("/v1/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(credentials()),
+      });
+      if (!res.ok) {
+        $("login-msg").textContent = "Wrong username or password.";
+        return;
+      }
+      $("password").value = "";
+      await start();
+    } catch (e) {
+      $("login-msg").textContent = `Could not reach the bridge: ${e}`;
+    } finally {
+      $("go").disabled = false;
+    }
+  };
+  if (await signedIn()) {
+    await start();
+  } else {
+    $("login").hidden = false;
+    $("username").focus();
+  }
+</script>
+</body>
+</html>

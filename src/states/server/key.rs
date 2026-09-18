@@ -26,6 +26,8 @@ use super::{
     },
     zset::first_load_zset_value,
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{
     ExpireCondition, KeyOp, KeyOpOutcome, ServerCommand, floors, get_server_features, get_server_heat_probe, run_key_op,
 };

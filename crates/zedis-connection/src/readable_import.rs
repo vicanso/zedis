@@ -21,7 +21,7 @@
 //! human-scale data. The framed binary bundle (`dump_restore.rs`) stays
 //! the streaming, full-fidelity path for big migrations.
 
-use crate::async_connection::RedisAsyncConn;
+use crate::conn::RedisAsyncConn;
 use crate::dump_restore::{ConflictMode, ConflictPreview, keys_exist, preview_dump_conflicts};
 use crate::error::Error;
 use crate::manager::get_connection_manager;

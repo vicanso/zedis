@@ -17,15 +17,20 @@ use arc_swap::ArcSwap;
 use gpui::{Action, App, AppContext};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_family = "wasm"))]
 use smol::fs;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::{fmt, fs::read_to_string, path::PathBuf, sync::LazyLock};
+use std::sync::LazyLock;
+use std::{fmt, str};
+#[cfg(not(target_family = "wasm"))]
+use std::{fs::read_to_string, path::PathBuf};
 use tracing::{debug, error};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[cfg(not(target_family = "wasm"))]
 fn get_or_create_session_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
     let path = config_dir.join("redis-sessions.toml");
@@ -115,6 +120,7 @@ static SESSION_OPTION_MAP: LazyLock<ArcSwap<HashMap<String, SessionOption>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 fn get_session_options() -> Result<Arc<HashMap<String, SessionOption>>> {
+    #[cfg(not(target_family = "wasm"))]
     if SESSION_OPTION_MAP.load().is_empty() {
         let path = get_or_create_session_config()?;
         let value = read_to_string(path)?;
@@ -161,9 +167,14 @@ pub fn save_session_option(id: &str, mut option: SessionOption, cx: &App) {
             }
 
             SESSION_OPTION_MAP.store(Arc::new(new_options));
-            let path = get_or_create_session_config()?;
-            let value = toml::to_string(&SessionOptions { options })?;
-            fs::write(&path, value).await?;
+            // The cache above is what the UI reads; the file is only how it
+            // survives a restart, and a browser tab has neither.
+            #[cfg(not(target_family = "wasm"))]
+            {
+                let path = get_or_create_session_config()?;
+                let value = toml::to_string(&SessionOptions { options })?;
+                fs::write(&path, value).await?;
+            }
             Ok(())
         });
         let result: Result<()> = task.await;

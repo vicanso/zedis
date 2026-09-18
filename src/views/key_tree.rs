@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_family = "wasm"))]
+use crate::views::{ExportSource, open_migration_export_window};
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
@@ -31,9 +33,7 @@ use crate::{
         ZedisServerState, dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor,
         i18n_features, i18n_key_tag, i18n_key_tree, key_tree_no_scan_body, save_session_option,
     },
-    views::{
-        ExportSource, OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog, open_migration_export_window,
-    },
+    views::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
@@ -61,12 +61,9 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::{
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{str::FromStr, sync::Arc, time::Duration};
 use tracing::{info, warn};
+use web_time::Instant;
 use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
 
 // Constants for tree layout and behavior
@@ -709,7 +706,7 @@ impl ZedisKeyTree {
         self.key_tree_list_state.update(cx, move |_state, cx| {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     // Source switch: tag filter → local metadata union
                     // (covers tagged keys not yet in the SCAN page);
                     // otherwise the SCAN snapshot is the source (cloned out

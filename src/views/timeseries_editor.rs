@@ -28,6 +28,8 @@
 //! a multi-million-sample series never ships every point to the UI.
 
 use crate::assets::CustomIconName;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, ServerCommand};
 use crate::helpers::get_mono_font_family;
 use crate::{

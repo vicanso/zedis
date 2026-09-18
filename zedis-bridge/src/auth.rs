@@ -1,0 +1,632 @@
+// Copyright 2026 Tree xie.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Who may call the bridge: named accounts, and nothing else.
+//!
+//! `ZEDIS_BRIDGE_USERS="alice@secret,bob@hunter2"` is the whole configuration.
+//! There used to be a second mode — one generated bearer token shared by
+//! everyone — and it was removed when server entries became owned: a private
+//! entry needs an owner, and a caller who is "whoever holds the token" cannot
+//! be one (ADR 9). So the bridge does not start without accounts, rather than
+//! start open or start with a credential nobody chose.
+//!
+//! Every check here answers *who*, not merely *whether*: the routes need the
+//! name to decide which entries a caller sees.
+//!
+//! Browsers do not hold the password. They post it once to `/v1/login` and
+//! get back a cookie carrying a [`Logins`] id instead: `HttpOnly`, so no
+//! script on the page can read it, `SameSite=Strict`, so it does not ride
+//! along with a cross-site request, and revocable and expiring, which a copy
+//! of the password in `localStorage` would be neither. Scripts and the CLI
+//! send HTTP Basic.
+
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+use zedis_core::fs::write_file_atomic;
+
+/// The accounts: `ZEDIS_BRIDGE_USERS="alice@secret,bob@hunter2"`.
+pub const USERS_ENV: &str = "ZEDIS_BRIDGE_USERS";
+
+/// The accounts that may sign in, name → password.
+#[derive(Clone)]
+pub struct Accounts(HashMap<String, String>);
+
+impl Accounts {
+    /// From [`USERS_ENV`]. Unset, empty or malformed is an error that stops
+    /// the bridge: there is no other way in to fall back to, and an auth
+    /// setting that silently meant something else would be the worst kind of
+    /// misconfiguration to have.
+    pub fn load() -> Result<Self, String> {
+        match env::var(USERS_ENV) {
+            Ok(spec) => parse_users(&spec).map(Self).map_err(|e| format!("{USERS_ENV}: {e}")),
+            Err(env::VarError::NotPresent) => Err(format!(
+                "{USERS_ENV} is not set. The bridge signs callers in by name: \
+                 {USERS_ENV}=\"alice@secret,bob@hunter2\""
+            )),
+            Err(env::VarError::NotUnicode(_)) => Err(format!("{USERS_ENV} is not valid UTF-8")),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The account an `Authorization: Basic …` header signs in as, if its
+    /// password is right.
+    pub fn account_for_header(&self, header: Option<&str>) -> Option<String> {
+        let (name, password) = basic_credentials(header)?;
+        self.accepts_password(&name, &password).then_some(name)
+    }
+
+    /// A username and password, as the page posts them.
+    pub fn accepts_password(&self, name: &str, password: &str) -> bool {
+        self.0
+            .get(name)
+            .is_some_and(|expected| same(password.as_bytes(), expected.as_bytes()))
+    }
+
+    /// What ties a stored login to the password it was opened with: changing
+    /// an account's password changes this, and every login saved under the
+    /// old one stops being accepted — which is what changing a password is
+    /// for. Salted per file, so the stored value is not a bare hash of it.
+    fn credential_tag(&self, salt: &str, name: &str) -> Option<String> {
+        let password = self.0.get(name)?;
+        Some(hex(&Sha256::digest(format!("{salt}:{name}:{password}"))))
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `alice@secret,bob@hunter2` → the accounts.
+///
+/// An entry splits at its *first* `@`, so a password may contain one and a
+/// name may not; entries split at `,`, so a password may not contain that.
+/// Names may not contain `:` either — HTTP Basic splits `name:password` at
+/// the first one, and such a name could never be presented. Empty entries
+/// (a trailing comma) are skipped; anything else wrong is an error that
+/// names the entry by position, never by content, because the content is a
+/// password.
+pub fn parse_users(spec: &str) -> Result<HashMap<String, String>, String> {
+    let mut users = HashMap::new();
+    for (index, entry) in spec.split(',').map(str::trim).enumerate() {
+        if entry.is_empty() {
+            continue;
+        }
+        let position = index + 1;
+        let Some((name, password)) = entry.split_once('@') else {
+            return Err(format!("entry {position} is not user@password"));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!("entry {position} has an empty user name"));
+        }
+        if name.contains(':') {
+            return Err(format!("user \"{name}\" (entry {position}): a name cannot contain ':'"));
+        }
+        if password.is_empty() {
+            return Err(format!("user \"{name}\" (entry {position}) has an empty password"));
+        }
+        if users.insert(name.to_string(), password.to_string()).is_some() {
+            return Err(format!("user \"{name}\" is listed twice"));
+        }
+    }
+    if users.is_empty() {
+        return Err("no accounts (set it to user@password,…)".to_string());
+    }
+    Ok(users)
+}
+
+/// The `name:password` behind an `Authorization: Basic …` header.
+fn basic_credentials(header: Option<&str>) -> Option<(String, String)> {
+    let value = header?;
+    let encoded = value.strip_prefix("Basic ").or_else(|| value.strip_prefix("basic "))?;
+    let decoded = B64.decode(encoded.trim()).ok()?;
+    let pair = String::from_utf8(decoded).ok()?;
+    let (name, password) = pair.split_once(':')?;
+    Some((name.to_string(), password.to_string()))
+}
+
+/// Equality that does not short-circuit on the first differing byte, so the
+/// time it takes does not leak how much of a guess was right.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// One browser's login: who it is, under which password, and when it was
+/// last seen.
+#[derive(Serialize, Deserialize)]
+struct Login {
+    account: String,
+    /// `Accounts::credential_tag` at the time of signing in.
+    tag: String,
+    /// Unix seconds. Wall-clock, because it has to survive a restart.
+    last_used: u64,
+    /// "Keep me signed in": the long idle limit instead of the working day.
+    remember: bool,
+}
+
+/// What is kept on disk. The key of `logins` is the SHA-256 of a cookie id,
+/// never the id: the file then holds nothing a reader could present.
+#[derive(Serialize, Deserialize, Default)]
+struct LoginFile {
+    salt: String,
+    logins: HashMap<String, Login>,
+}
+
+struct LoginState {
+    file: LoginFile,
+    /// Where it is saved; `None` keeps it in memory (the tests).
+    path: Option<PathBuf>,
+    dirty: bool,
+}
+
+/// Browser logins: an opaque cookie id, and who is behind it.
+///
+/// Server-side because the point of the cookie is that the password never
+/// stays in the browser. Dropping an entry logs that browser out.
+///
+/// **On disk**, because they used to live in memory only, and then every
+/// restart of the bridge signed everybody out — the actual reason people were
+/// typing their password over and over. Keeping the login alive is the fix
+/// for that; keeping the *password* in the browser's `localStorage` would
+/// have traded a revocable, expiring id for a secret any script or passer-by
+/// with the devtools open can read (ADR 9).
+#[derive(Clone)]
+pub struct Logins(Arc<Mutex<LoginState>>);
+
+/// How long a login may sit unused. A working day, so a browser tab left open
+/// overnight asks for the password again in the morning.
+pub const LOGIN_IDLE_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
+
+/// The same for "keep me signed in on this device".
+pub const REMEMBERED_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// The cookie the browser gets. Named for the app so it cannot collide with
+/// another service sharing a host.
+pub const COOKIE_NAME: &str = "zedis_bridge";
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// How long a login of this kind may sit unused — also the cookie's lifetime.
+pub fn idle_timeout(remember: bool) -> Duration {
+    if remember {
+        REMEMBERED_IDLE_TIMEOUT
+    } else {
+        LOGIN_IDLE_TIMEOUT
+    }
+}
+
+impl Login {
+    fn live_at(&self, now: u64) -> bool {
+        now.saturating_sub(self.last_used) < idle_timeout(self.remember).as_secs()
+    }
+}
+
+impl Logins {
+    /// In memory only.
+    #[cfg(test)]
+    pub fn new() -> Self {
+        Self::with(LoginFile::default(), None)
+    }
+
+    fn with(mut file: LoginFile, path: Option<PathBuf>) -> Self {
+        if file.salt.is_empty() {
+            file.salt = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        }
+        Self(Arc::new(Mutex::new(LoginState {
+            file,
+            path,
+            dirty: true,
+        })))
+    }
+
+    /// The logins saved at `path`, minus every one that no longer stands: an
+    /// account that is gone, a password that has changed, an idle limit that
+    /// has passed. A file that cannot be read is an empty one — the worst
+    /// case is that people sign in again.
+    pub fn load(path: PathBuf, accounts: &Accounts) -> Self {
+        let mut file: LoginFile = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let (now, salt) = (now_secs(), file.salt.clone());
+        file.logins.retain(|_, login| {
+            login.live_at(now) && accounts.credential_tag(&salt, &login.account).as_deref() == Some(login.tag.as_str())
+        });
+        let logins = Self::with(file, Some(path));
+        logins.flush();
+        logins
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.lock().expect("logins").file.logins.len()
+    }
+
+    /// Mint an id for a browser that signed in as `account`, or `None` if
+    /// there is no such account.
+    pub fn open(&self, account: &str, accounts: &Accounts, remember: bool) -> Option<String> {
+        let id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        {
+            let mut state = self.0.lock().expect("logins");
+            let tag = accounts.credential_tag(&state.file.salt, account)?;
+            let login = Login {
+                account: account.to_string(),
+                tag,
+                last_used: now_secs(),
+                remember,
+            };
+            state.file.logins.insert(hex(&Sha256::digest(&id)), login);
+            state.dirty = true;
+        }
+        self.flush();
+        Some(id)
+    }
+
+    /// Whose live login `id` is, refreshing its idle clock.
+    pub fn account(&self, id: &str) -> Option<String> {
+        let key = hex(&Sha256::digest(id));
+        let mut state = self.0.lock().expect("logins");
+        let now = now_secs();
+        match state.file.logins.get_mut(&key) {
+            Some(login) if login.live_at(now) => {
+                // Saved by the sweep rather than on every request: a last-used
+                // time that is a minute stale on disk costs nothing.
+                if login.last_used != now {
+                    login.last_used = now;
+                    state.dirty = true;
+                }
+                Some(state.file.logins[&key].account.clone())
+            }
+            // Expired: drop it now rather than wait for the sweep.
+            Some(_) => {
+                state.file.logins.remove(&key);
+                state.dirty = true;
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Log `id` out, returning whose login it was.
+    pub fn close(&self, id: &str) -> Option<String> {
+        let account = {
+            let mut state = self.0.lock().expect("logins");
+            let removed = state.file.logins.remove(&hex(&Sha256::digest(id)));
+            state.dirty |= removed.is_some();
+            removed.map(|login| login.account)
+        };
+        self.flush();
+        account
+    }
+
+    /// Drop everything idle past its limit, returning how many.
+    pub fn sweep(&self) -> usize {
+        let mut state = self.0.lock().expect("logins");
+        let (now, before) = (now_secs(), state.file.logins.len());
+        state.file.logins.retain(|_, login| login.live_at(now));
+        let dropped = before - state.file.logins.len();
+        state.dirty |= dropped > 0;
+        dropped
+    }
+
+    /// Write the file if anything changed since the last write.
+    pub fn flush(&self) {
+        let mut state = self.0.lock().expect("logins");
+        let (true, Some(path)) = (state.dirty, state.path.clone()) else {
+            return;
+        };
+        match serde_json::to_vec(&state.file) {
+            Ok(bytes) => match write_file_atomic(&path, &bytes) {
+                Ok(()) => {
+                    restrict(&path);
+                    state.dirty = false;
+                }
+                Err(e) => tracing::warn!(error = %e, path = %path.display(), "could not save the logins"),
+            },
+            Err(e) => tracing::warn!(error = %e, "could not serialise the logins"),
+        }
+    }
+}
+
+/// Owner-only on unix: the file names who is signed in. On Windows it
+/// inherits the config directory's ACL, as `redis-servers.toml` does.
+#[cfg(unix)]
+fn restrict(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(error = %e, path = %path.display(), "could not restrict the logins file");
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path) {}
+
+/// The value of [`COOKIE_NAME`] in a `Cookie:` header.
+///
+/// Hand-rolled rather than adding a cookie crate: one name to find in a
+/// `a=b; c=d` list, and the parsing rules that matter here are that a value
+/// may contain `=` and that surrounding spaces are not part of it.
+pub fn cookie_value(header: Option<&str>) -> Option<&str> {
+    header?.split(';').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name.trim() == COOKIE_NAME).then(|| value.trim())
+    })
+}
+
+/// The `Set-Cookie` value that installs `id`.
+///
+/// `Secure` unless the operator opted out for a plain-http local run: a
+/// deployment that forgets to enable TLS then sees a login that visibly does
+/// not stick, rather than a credential travelling in the clear.
+pub fn set_cookie(id: &str, secure: bool, lifetime: Duration) -> String {
+    let mut cookie = format!(
+        "{COOKIE_NAME}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        lifetime.as_secs()
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// The `Set-Cookie` value that removes it.
+pub fn clear_cookie(secure: bool) -> String {
+    let mut cookie = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accounts(spec: &str) -> Accounts {
+        Accounts(parse_users(spec).expect("a valid spec"))
+    }
+
+    #[test]
+    fn a_cookie_is_found_among_its_neighbours() {
+        assert_eq!(cookie_value(Some("zedis_bridge=abc")), Some("abc"));
+        assert_eq!(cookie_value(Some("other=1; zedis_bridge=abc; more=2")), Some("abc"));
+        assert_eq!(cookie_value(Some(" zedis_bridge = abc ")), Some("abc"));
+        assert_eq!(
+            cookie_value(Some("zedis_bridge=a=b")),
+            Some("a=b"),
+            "a value may hold ="
+        );
+        assert_eq!(
+            cookie_value(Some("zedis_bridgex=abc")),
+            None,
+            "a prefix is a different cookie"
+        );
+        assert_eq!(cookie_value(Some("other=1")), None);
+        assert_eq!(cookie_value(None), None);
+    }
+
+    #[test]
+    fn a_login_answers_with_its_account_until_it_is_closed() {
+        let logins = Logins::new();
+        let accounts = accounts("alice@secret");
+        assert_eq!(
+            logins.open("carol", &accounts, false),
+            None,
+            "no such account, no login"
+        );
+        let id = logins.open("alice", &accounts, false).expect("login");
+        assert_eq!(logins.account(&id).as_deref(), Some("alice"));
+        assert_eq!(logins.account("not-an-id"), None);
+        assert_eq!(logins.close(&id).as_deref(), Some("alice"), "a logout says who left");
+        assert_eq!(logins.account(&id), None, "a closed login must not work again");
+        assert_eq!(logins.close(&id), None, "closing twice is not an error");
+    }
+
+    #[test]
+    fn two_logins_are_independent() {
+        let logins = Logins::new();
+        let accounts = accounts("alice@secret");
+        let a = logins.open("alice", &accounts, false).expect("login");
+        let b = logins.open("alice", &accounts, true).expect("login");
+        assert_ne!(a, b);
+        logins.close(&a);
+        assert_eq!(logins.account(&a), None);
+        assert_eq!(
+            logins.account(&b).as_deref(),
+            Some("alice"),
+            "closing one browser must not log the others out"
+        );
+    }
+
+    #[test]
+    fn the_cookie_is_not_readable_by_scripts_and_does_not_travel_cross_site() {
+        let cookie = set_cookie("abc", true, idle_timeout(false));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Secure"));
+        assert!(cookie.contains("Max-Age=28800"), "a working day: {cookie}");
+        assert!(
+            set_cookie("abc", true, idle_timeout(true)).contains("Max-Age=2592000"),
+            "thirty days"
+        );
+        assert!(!set_cookie("abc", false, idle_timeout(false)).contains("Secure"));
+        assert!(clear_cookie(true).contains("Max-Age=0"));
+    }
+
+    fn scratch_file(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zedis-logins-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir.join("bridge-logins.json")
+    }
+
+    #[test]
+    fn a_login_survives_a_restart_and_the_file_holds_nothing_presentable() {
+        let path = scratch_file("restart");
+        let accounts = accounts("alice@secret,bob@hunter2");
+        let id = Logins::load(path.clone(), &accounts)
+            .open("alice", &accounts, true)
+            .expect("login");
+
+        // "Restart": a new store, read from the same file.
+        let restarted = Logins::load(path.clone(), &accounts);
+        assert_eq!(restarted.account(&id).as_deref(), Some("alice"));
+        let on_disk = std::fs::read_to_string(&path).expect("file");
+        assert!(!on_disk.contains(&id), "the cookie id itself is never written");
+        assert!(!on_disk.contains("secret"), "nor the password");
+
+        // A logout is a logout after a restart too.
+        restarted.close(&id);
+        assert_eq!(Logins::load(path.clone(), &accounts).account(&id), None);
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn changing_a_password_or_removing_an_account_ends_its_saved_logins() {
+        let path = scratch_file("revoke");
+        let before = accounts("alice@secret,bob@hunter2");
+        let logins = Logins::load(path.clone(), &before);
+        let alice = logins.open("alice", &before, true).expect("login");
+        let bob = logins.open("bob", &before, true).expect("login");
+
+        let after = accounts("alice@a-new-password");
+        let restarted = Logins::load(path.clone(), &after);
+        assert_eq!(restarted.account(&alice), None, "the password changed");
+        assert_eq!(restarted.account(&bob), None, "the account is gone");
+        assert_eq!(restarted.len(), 0);
+
+        // Unchanged accounts keep theirs.
+        let kept = Logins::load(path.clone(), &before);
+        assert_eq!(kept.len(), 0, "and what was dropped stays dropped");
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_login_lapses_after_its_own_idle_limit() {
+        let login = |remember| Login {
+            account: "alice".to_string(),
+            tag: String::new(),
+            last_used: 1_000_000,
+            remember,
+        };
+        let (day, remembered) = (login(false), login(true));
+        let nine_hours = 1_000_000 + 9 * 3600;
+        assert!(!day.live_at(nine_hours), "a working day");
+        assert!(remembered.live_at(nine_hours));
+        assert!(remembered.live_at(1_000_000 + 29 * 86400));
+        assert!(!remembered.live_at(1_000_000 + 31 * 86400), "thirty days");
+    }
+
+    #[test]
+    fn accounts_are_read_from_the_environment_shape() {
+        let users = parse_users("alice@secret,bob@hunter2").expect("two accounts");
+        assert_eq!(users.len(), 2);
+        assert_eq!(users["alice"], "secret");
+        assert_eq!(users["bob"], "hunter2");
+
+        let users = parse_users(" alice@secret , bob@hunter2 , ").expect("spaces and a trailing comma");
+        assert_eq!(users.len(), 2, "empty entries are skipped");
+
+        let users = parse_users("alice@p@ss:w0rd").expect("a password may hold @ and :");
+        assert_eq!(users["alice"], "p@ss:w0rd", "the first @ is the separator");
+    }
+
+    #[test]
+    fn a_malformed_account_list_is_refused_without_echoing_a_password() {
+        let err = parse_users("alice@secret,bob").expect_err("no @");
+        assert!(err.contains("entry 2"), "{err}");
+        assert!(!err.contains("secret"), "{err}");
+
+        assert!(parse_users("@secret").expect_err("no name").contains("empty user name"));
+        assert!(
+            parse_users("alice@")
+                .expect_err("no password")
+                .contains("empty password")
+        );
+        let err = parse_users("alice@a,alice@hunter2").expect_err("twice");
+        assert!(err.contains("\"alice\" is listed twice"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(parse_users("a:b@x").expect_err("colon").contains("':'"));
+        assert!(parse_users("").expect_err("empty").contains("no accounts"));
+        assert!(parse_users(" , ").expect_err("only separators").contains("no accounts"));
+    }
+
+    #[test]
+    fn a_basic_header_signs_in_as_the_account_it_names() {
+        let accounts = accounts("alice@se:cret,bob@hunter2");
+        let basic = |pair: &str| format!("Basic {}", B64.encode(pair));
+        assert_eq!(
+            accounts.account_for_header(Some(&basic("alice:se:cret"))).as_deref(),
+            Some("alice"),
+            "the first : is the separator"
+        );
+        assert_eq!(
+            accounts.account_for_header(Some(&basic("bob:hunter2"))).as_deref(),
+            Some("bob")
+        );
+        let lowercase_scheme = format!("basic {}", B64.encode("alice:se:cret"));
+        assert_eq!(
+            accounts.account_for_header(Some(&lowercase_scheme)).as_deref(),
+            Some("alice"),
+            "the scheme is case-insensitive"
+        );
+        assert_eq!(accounts.account_for_header(Some(&basic("alice:wrong"))), None);
+        assert_eq!(
+            accounts.account_for_header(Some(&basic("carol:se:cret"))),
+            None,
+            "an unknown name"
+        );
+        assert_eq!(
+            accounts.account_for_header(Some(&basic("alice"))),
+            None,
+            "no password at all"
+        );
+        assert_eq!(
+            accounts.account_for_header(Some("Bearer se:cret")),
+            None,
+            "there is no bearer token any more"
+        );
+        assert_eq!(accounts.account_for_header(Some("Basic not-base64!")), None);
+        assert_eq!(accounts.account_for_header(None), None);
+    }
+
+    #[test]
+    fn a_password_is_checked_against_its_own_account_only() {
+        let accounts = accounts("alice@secret,bob@hunter2");
+        assert!(accounts.accepts_password("alice", "secret"));
+        assert!(!accounts.accepts_password("alice", "Secret"));
+        assert!(
+            !accounts.accepts_password("alice", "hunter2"),
+            "bob's password is not alice's"
+        );
+        assert!(!accounts.accepts_password("carol", "secret"));
+        assert_eq!(accounts.len(), 2);
+    }
+}

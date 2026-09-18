@@ -24,8 +24,8 @@
 //! or connects to something that never answers `OK`, and the new process
 //! becomes the instance.
 
+use crate::helpers::channel::{Receiver, Sender, unbounded};
 use serde::{Deserialize, Serialize};
-use smol::channel::{Receiver, Sender, unbounded};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};

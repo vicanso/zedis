@@ -16,15 +16,25 @@ rust-version.workspace = true
 
 [dependencies]
 dashmap = { workspace = true }
-prost-reflect = { workspace = true }
-protox = { workspace = true }
-redb = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 snafu = { workspace = true }
-tempfile = { workspace = true }
 tracing = { workspace = true }
+
+# The file half. redb is a file database, protox compiles `.proto` files off
+# disk and the script viewer writes a temp file for the interpreter it spawns
+# — none of which a browser tab has, so the web build drops those managers
+# and stores its rows in `mem_store` instead (ADR 9).
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+prost-reflect = { workspace = true }
+protox = { workspace = true }
+redb = { workspace = true }
+# The script viewer's argument parsing.
+regex = { workspace = true }
+tempfile = { workspace = true }
+# Only for `zedis_core::fs`: the config directory the database file lives in,
+# and the path resolution the proto manager does. A browser tab reaches
+# neither, so this crate does not need zedis-core there at all.
 zedis-core = { workspace = true }
 
 [lints.clippy]

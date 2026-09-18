@@ -14,6 +14,8 @@
 
 use super::element::KvElement;
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{HeatMetric, floors, get_connection_manager};
 use bytes::Bytes;
 use chrono::Local;
@@ -508,7 +510,9 @@ impl ViewMode {
             ViewMode::Hex => "Hex",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    /// Named `from_name`, not `from_str`: clippy's `should_implement_trait`
+    /// flags the latter in a library crate, and this crate became one.
+    pub fn from_name(s: &str) -> Self {
         match s {
             "Plain" => ViewMode::Plain,
             "Hex" => ViewMode::Hex,
@@ -1302,7 +1306,7 @@ impl ZedisServerState {
         let Some(value) = self.value.as_mut() else {
             return;
         };
-        let view_mode = ViewMode::from_str(view_mode.as_str());
+        let view_mode = ViewMode::from_name(view_mode.as_str());
         // Directly modify the data in place
         if let Some(RedisValueData::Bytes(bytes_value)) = &mut value.data {
             let bytes_value = Arc::make_mut(bytes_value);

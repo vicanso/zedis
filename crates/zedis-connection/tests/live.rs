@@ -195,6 +195,47 @@ async fn supports(id: &str, floor: Floor) -> bool {
 
 // ── standalone ───────────────────────────────────────────────────────────
 
+/// The same connection code works under a tokio runtime, which is what the
+/// HTTP bridge will run on (ADR 9).
+///
+/// redis is built with both runtime adapters and picks per connection: tokio
+/// when `Handle::try_current()` finds an ambient runtime, smol otherwise. Every
+/// other test in this file runs outside one and therefore only ever proves the
+/// smol half. This one proves the other, so the bridge's premise cannot rot
+/// silently — a regression here surfaces as "there is no reactor running",
+/// not as a subtly different code path.
+#[test]
+#[ignore]
+fn standalone_connects_from_inside_a_tokio_runtime() {
+    let (host, port) = skip_unless!("ZEDIS_IT_STANDALONE");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async {
+        let id = register(server("it-tokio-runtime", (host, port))).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("client built under tokio");
+        client.ping().await.expect("ping under tokio");
+
+        // A write and a read back, so this is a real round trip through the
+        // tokio socket and not just a handshake.
+        let key = unique("tokio-rt");
+        let mut c = conn(&id, 0).await;
+        cmd("SET")
+            .arg(&key)
+            .arg("through-tokio")
+            .exec_async(&mut c)
+            .await
+            .expect("set under tokio");
+        let value: String = cmd("GET").arg(&key).query_async(&mut c).await.expect("get under tokio");
+        assert_eq!(value, "through-tokio");
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("cleanup");
+    });
+}
+
 #[test]
 #[ignore]
 fn standalone_connect_reports_metadata() {
@@ -3037,7 +3078,7 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
 // ── sentinel ─────────────────────────────────────────────────────────────
 
 /// `SENTINEL GET-MASTER-ADDR-BY-NAME` straight from the sentinel.
-async fn sentinel_master_port(sentinel: &mut redis::aio::MultiplexedConnection, master_name: &str) -> u16 {
+async fn sentinel_master_port(sentinel: &mut RedisAsyncConn, master_name: &str) -> u16 {
     let (_, port): (String, String) = cmd("SENTINEL")
         .arg("GET-MASTER-ADDR-BY-NAME")
         .arg(master_name)

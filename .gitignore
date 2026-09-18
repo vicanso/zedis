@@ -37,3 +37,7 @@ screenshots/
 # integration topology state (scripts/it/up.sh)
 scripts/it/.run/
 scripts/it/.env
+
+# web bundle output (scripts/web-bundle.sh): the wasm and the kit's icons
+zedis-web/www/wasm/
+zedis-web/www/assets/

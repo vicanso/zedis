@@ -37,6 +37,7 @@
 //! Network + filesystem only; the dialog/toast orchestration lives in `main.rs`.
 
 use super::proxy::app_proxy;
+use super::update_info::{Delivery, UpdateAsset, UpdateInfo};
 use crate::error::Error;
 use crate::startup::{BUILD_TIMESTAMP, is_nightly_build};
 use semver::Version;
@@ -71,35 +72,6 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const USER_AGENT: &str = concat!("zedis/", env!("CARGO_PKG_VERSION"));
-
-/// The installer asset matching this machine's `os`/`arch`, with the checksum to
-/// verify it after download.
-#[derive(Debug, Clone)]
-pub struct UpdateAsset {
-    pub url: String,
-    pub sha256: String,
-    pub name: String,
-    pub size: u64,
-}
-
-/// A release that is newer than the one currently running.
-#[derive(Debug, Clone)]
-pub struct UpdateInfo {
-    /// Latest version, normalized without a leading `v` (e.g. `0.5.0`).
-    pub version: String,
-    /// The running version (e.g. `0.4.4`).
-    pub current: String,
-    /// Release page to open in a browser — used as the changelog link and as the
-    /// fallback "download" target when no verified asset is available.
-    pub page_url: String,
-    /// Changelog markdown. The manifest only carries a release-page URL, so
-    /// this is filled by a best-effort extra GitHub API call (see
-    /// `fetch_release_notes`); empty when that call fails.
-    pub notes: String,
-    /// The installer for this `os`/`arch`. `None` when the manifest is absent or
-    /// has no matching asset; the UI then falls back to opening `page_url`.
-    pub asset: Option<UpdateAsset>,
-}
 
 /// `latest.json` shape (see `.github/workflows/publish.yml`).
 #[derive(Debug, Deserialize)]
@@ -588,19 +560,6 @@ pub fn open_installer(path: &Path) -> Result<()> {
 }
 
 // ---- in-place install (macOS) ------------------------------------------
-
-/// What [`install_update`] did with the verified installer.
-pub enum Delivery {
-    /// The fresh bundle was copied over the running one — a relaunch
-    /// ([`relaunch`]) completes the update. Only the macOS in-place path
-    /// constructs this, so the variant (like its match arm) is compiled
-    /// out elsewhere.
-    #[cfg(target_os = "macos")]
-    Replaced,
-    /// The installer was handed to the OS (Finder drag window / msiexec /
-    /// desktop handler) — the user finishes the install.
-    HandedToOs,
-}
 
 /// Install the verified file. macOS installs in place when possible (see
 /// the module docs); every other outcome and platform degrades to

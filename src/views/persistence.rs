@@ -25,6 +25,8 @@
 //! servers get the escalated warning.
 
 use crate::assets::CustomIconName;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::helpers::{format_duration, format_unix_secs, get_mono_font_family, unix_ts};
 use crate::states::{

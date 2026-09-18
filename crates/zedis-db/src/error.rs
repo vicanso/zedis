@@ -14,6 +14,14 @@
 
 use snafu::Snafu;
 
+// The storage engine, whichever this target has: redb's file database on the
+// desktop, `mem_store`'s `BTreeMap` in a browser tab (ADR 9). Aliased rather
+// than named twice so every variant below reads the same on both.
+#[cfg(target_family = "wasm")]
+use crate::mem_store as store;
+#[cfg(not(target_family = "wasm"))]
+use redb as store;
+
 /// Errors of the local storage layer: the embedded redb database plus the
 /// proto-descriptor compilation the proto manager performs.
 #[derive(Debug, Snafu)]
@@ -24,22 +32,26 @@ pub enum Error {
     Io { source: std::io::Error },
     #[snafu(display("Serde json error: {source}"))]
     SerdeJson { source: serde_json::Error },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Redb error: {source}"))]
-    Redb { source: redb::Error },
+    Redb { source: store::Error },
     #[snafu(display("Redb database error: {source}"))]
-    RedbDatabase { source: redb::DatabaseError },
+    RedbDatabase { source: store::DatabaseError },
     #[snafu(display("Redb transaction error: {source}"))]
-    RedbTransaction { source: redb::TransactionError },
+    RedbTransaction { source: store::TransactionError },
     #[snafu(display("Redb table error: {source}"))]
-    RedbTable { source: redb::TableError },
+    RedbTable { source: store::TableError },
     #[snafu(display("Redb commit error: {source}"))]
-    RedbCommit { source: redb::CommitError },
+    RedbCommit { source: store::CommitError },
     #[snafu(display("Redb storage error: {source}"))]
-    RedbStorage { source: redb::StorageError },
+    RedbStorage { source: store::StorageError },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Protox error: {source}"))]
     Protox { source: protox::Error },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Prost reflect descriptor error: {source}"))]
     ProstReflectDescriptor { source: prost_reflect::DescriptorError },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Prost reflect decode error: {source}"))]
     ProstReflectDecode { source: prost_reflect::prost::DecodeError },
     /// The file carries a schema version this build doesn't know — it was
@@ -49,6 +61,7 @@ pub enum Error {
     SchemaTooNew { found: u32, supported: u32 },
 }
 
+/// `From` for the errors every target has.
 macro_rules! direct {
     ($($ty:ty => $variant:ident),+ $(,)?) => {$(
         impl From<$ty> for Error {
@@ -61,12 +74,16 @@ macro_rules! direct {
 direct!(
     std::io::Error => Io,
     serde_json::Error => SerdeJson,
-    redb::Error => Redb,
-    redb::DatabaseError => RedbDatabase,
-    redb::TransactionError => RedbTransaction,
-    redb::TableError => RedbTable,
-    redb::CommitError => RedbCommit,
-    redb::StorageError => RedbStorage,
+    store::DatabaseError => RedbDatabase,
+    store::TransactionError => RedbTransaction,
+    store::TableError => RedbTable,
+    store::CommitError => RedbCommit,
+    store::StorageError => RedbStorage,
+);
+
+#[cfg(not(target_family = "wasm"))]
+direct!(
+    store::Error => Redb,
     protox::Error => Protox,
     prost_reflect::DescriptorError => ProstReflectDescriptor,
     prost_reflect::prost::DecodeError => ProstReflectDecode,

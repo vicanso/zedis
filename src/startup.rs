@@ -16,6 +16,7 @@
 //! window, CLI argument parsing and the smoke-test gates.
 
 use crate::connection::{RedisServer, get_servers};
+#[cfg(not(target_family = "wasm"))]
 use crate::db::{DbOpenFailure, init_database, quarantine_database};
 use crate::states::{GlobalEvent, NotificationAction, Route, ServerView, ZedisAppState, ZedisGlobalStore};
 use crate::{init_caches, launch};
@@ -55,6 +56,7 @@ pub(crate) fn is_nightly_build() -> bool {
 /// "Back up & rebuild" moves the file aside as `zedis.redb.corrupt-<ts>` —
 /// nothing is deleted; tags, favorites, history and scripts live in it —
 /// creates a fresh one, and hands over to the normal startup (`launch`).
+#[cfg(not(target_family = "wasm"))]
 pub(crate) struct DatabaseErrorView {
     failure: DbOpenFailure,
     app_state: ZedisAppState,
@@ -62,6 +64,7 @@ pub(crate) struct DatabaseErrorView {
     rebuild_error: Option<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl DatabaseErrorView {
     pub(crate) fn new(failure: DbOpenFailure, app_state: ZedisAppState) -> Self {
         Self {
@@ -115,6 +118,7 @@ impl DatabaseErrorView {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Render for DatabaseErrorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (body_key, can_rebuild) = match &self.failure {

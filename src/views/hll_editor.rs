@@ -27,6 +27,8 @@
 //! user can watch the estimate move; that is the only mutation — the raw
 //! sketch bytes are never editable.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     connection::{Capability, get_connection_manager, pf_merge},

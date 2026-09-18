@@ -25,7 +25,9 @@
 //! operation" as data: the dialog is built from the op's fields and the
 //! outcome is rendered from its reply.
 
-use crate::async_connection::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Value, cmd};
 use zedis_core::json::JsonPathOp;

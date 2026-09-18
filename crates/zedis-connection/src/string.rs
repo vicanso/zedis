@@ -20,6 +20,7 @@
 //! - Base64 encoding/decoding for storage and transport
 
 use crate::error::Error;
+#[cfg(not(target_family = "wasm"))]
 use crate::master_key::{LEGACY_MASTER_KEY, master_key};
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -64,6 +65,10 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// - Each call generates a unique nonce for security
 /// - The nonce is prepended to the ciphertext for decryption
 /// - GCM mode provides both confidentiality and authenticity
+///
+/// Native only: the key it uses lives in the OS keychain or a local file,
+/// neither of which a browser has (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 pub fn encrypt(plain_text: &str) -> Result<String> {
     // Always encrypt under the current machine-local key (keychain / key file);
     // see `crate::master_key`.
@@ -114,6 +119,10 @@ fn encrypt_with_key(key: &[u8; 32], plain_text: &str) -> Result<String> {
 /// - GCM mode automatically verifies data authenticity
 /// - Returns error if ciphertext has been tampered with
 /// - Nonce is extracted from the first 12 bytes of decoded data
+///
+/// Native only: the key it uses lives in the OS keychain or a local file,
+/// neither of which a browser has (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 pub fn decrypt(cipher_text: &str) -> Result<String> {
     // Decode from Base64
     let data = BASE64

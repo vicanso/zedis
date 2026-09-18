@@ -20,6 +20,9 @@
 //! `states/server/stat.rs`.
 
 use super::{METRICS_HISTORY_TABLE, Result, get_database};
+#[cfg(target_family = "wasm")]
+use crate::mem_store::{ReadableDatabase, ReadableTable};
+#[cfg(not(target_family = "wasm"))]
 use redb::{ReadableDatabase, ReadableTable};
 
 /// Store one sample keyed by `(server_id, timestamp_ms)`.

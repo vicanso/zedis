@@ -29,8 +29,12 @@ pub enum Error {
     TomlDe { source: toml::de::Error },
     #[snafu(display("Toml serialize error: {source}"))]
     TomlSe { source: toml::ser::Error },
+    /// SSH tunnelling, which the browser build does not do — it reaches
+    /// Redis through the HTTP bridge, and `russh` is not compiled there.
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Ssh error: {source}"))]
     Ssh { source: russh::Error },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Key error: {source}"))]
     Key { source: russh::keys::Error },
 }
@@ -147,6 +151,7 @@ impl Error {
                 }
             }
             Error::Io { .. } => K::Network,
+            #[cfg(not(target_family = "wasm"))]
             Error::Ssh { .. } | Error::Key { .. } => K::Tunnel,
             _ => K::Unknown,
         }
@@ -210,12 +215,14 @@ impl From<toml::ser::Error> for Error {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl From<russh::Error> for Error {
     fn from(source: russh::Error) -> Self {
         Error::Ssh { source }
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl From<russh::keys::Error> for Error {
     fn from(source: russh::keys::Error) -> Self {
         Error::Key { source }

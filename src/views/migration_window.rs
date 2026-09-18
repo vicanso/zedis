@@ -17,10 +17,11 @@
 //! Import supports conflict strategy selection (Skip / Overwrite / Abort)
 //! and an optional dry-run preview (`EXISTS` on destination) before restore.
 
+use super::export::dirs_default_directory;
 use crate::connection::{
     ConflictMode, ConflictPreview, get_server, get_servers, preview_import_conflicts, preview_key_conflicts,
 };
-use crate::helpers::{get_download_dir, get_home_dir, with_app_identity};
+use crate::helpers::with_app_identity;
 use crate::states::{
     ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_copy,
     i18n_migration,
@@ -554,14 +555,6 @@ impl Focusable for ZedisMigrationWindow {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-pub(crate) fn dirs_default_directory() -> PathBuf {
-    // Prefer the platform's real Downloads dir (UserDirs), falling back to the
-    // home dir, then the current dir.
-    get_download_dir()
-        .or_else(get_home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn phase_label(phase: &MigrationPhase, cx: &App) -> SharedString {

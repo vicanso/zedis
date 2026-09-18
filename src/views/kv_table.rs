@@ -324,7 +324,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// * `cx` - GPUI context
     ///
     /// # Example
-    /// ```
+    ///
+    /// Illustrative, not runnable — it names a caller's own bindings. Now
+    /// that this crate has a library target its doc examples are compiled,
+    /// so the fence says so.
+    /// ```ignore
     /// // Create with default mode (ALL)
     /// let table = ZedisKvTable::new(columns, server_state, window, cx);
     ///
@@ -587,7 +591,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// of the provided mode.
     ///
     /// # Example
-    /// ```
+    ///
+    /// Illustrative, not runnable — see [`Self::new`].
+    /// ```ignore
     /// let table = ZedisKvTable::new(columns, server_state, window, cx)
     ///     .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER);
     /// ```

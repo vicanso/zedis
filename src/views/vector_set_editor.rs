@@ -32,6 +32,8 @@
 //! (remove) — `VADD` stays out: pasting a whole float vector by hand is
 //! the terminal's job.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     assets::CustomIconName,

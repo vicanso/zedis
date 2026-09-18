@@ -12,19 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, get_server};
+#[cfg(not(target_family = "wasm"))]
 use super::{
     async_connection::{
-        RedisAsyncConn, open_seed_connection, open_single_connection, query_async_masters,
-        query_async_masters_pipeline, remove_connection_from_pool, resolve_connection_timeout,
-        resolve_response_timeout,
+        open_multiplexed_connection, open_seed_connection, query_async_masters, query_async_masters_pipeline,
+        remove_connection_from_pool, resolve_connection_timeout, resolve_response_timeout,
     },
-    config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, get_server},
     ssh_cluster_connection::SshMultiplexedConnection,
 };
-use crate::{async_connection::configure_client_connection, error::Error};
+#[cfg(not(target_family = "wasm"))]
+use crate::async_connection::configure_client_connection;
+use crate::conn::RedisAsyncConn;
+use crate::error::Error;
 use futures::future::try_join_all;
 use rand::RngExt;
-use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, aio::MultiplexedConnection, cluster, cmd};
+use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, cmd};
+#[cfg(not(target_family = "wasm"))]
+use redis::{aio::MultiplexedConnection, cluster};
 use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -278,7 +283,11 @@ mod command_stats_tests {
     }
 }
 
-// Wrapper for the underlying Redis client
+/// Wrapper for the underlying Redis client.
+///
+/// Native only: it *is* the dialer. In the browser a client is handed a
+/// bridge connection that is already open (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone)]
 enum RClient {
     // Boxed: RedisServer has grown (per-server key-tree prefs) and would
@@ -404,10 +413,11 @@ pub const CLUSTER_HASH_SLOTS: u32 = 16384;
 
 /// Parses a Redis address string like "ip:port@cport" or just "ip:port".
 /// Establishes an asynchronous connection based on the client type.
+#[cfg(not(target_family = "wasm"))]
 async fn get_async_connection(client: &RClient, db: usize, use_cache: bool) -> Result<RedisAsyncConn> {
     match client {
         RClient::Single(config) => {
-            let conn = open_single_connection(config, db, use_cache).await?;
+            let conn = open_multiplexed_connection(config, db, use_cache).await?;
             Ok(RedisAsyncConn::Single(conn))
         }
         RClient::Cluster(client) => {
@@ -582,7 +592,9 @@ pub struct RedisClient {
     connection: RedisAsyncConn,
     /// What built `connection` — kept so a caller can open a *second*,
     /// uncached connection to the same server (`open_dedicated_connection`)
-    /// without re-running topology discovery.
+    /// without re-running topology discovery. Absent in the browser, where
+    /// nothing dials and a second connection is one more bridge request.
+    #[cfg(not(target_family = "wasm"))]
     client: RClient,
 }
 /// One node in the structured topology: address, role marker glyph, and an
@@ -631,6 +643,14 @@ pub struct RedisClientDescription {
     pub sentinel_master_names: Vec<String>,
 }
 
+/// The pooled clients, one per `(server, db)`.
+///
+/// The same type on both targets. What differs is only how a client is
+/// *reached* — a dial on the desktop, an HTTP request to `zedis-bridge` in a
+/// browser tab — and that difference is one function (ADR 9). Everything the
+/// pool does with a client afterwards (caching, eviction, the access-mode
+/// probe, the version and module questions) is identical, because those are
+/// ordinary commands.
 pub struct ConnectionManager {
     clients: TtlCache<u64, RedisClient>,
 }
@@ -647,18 +667,26 @@ pub fn clear_expired_clients() -> (usize, usize) {
 
 mod client;
 mod commandlog;
-mod pool;
 mod pubsub_channels;
 mod replication;
-mod sharded_pubsub;
-mod slot_migration;
 mod slots;
+
+mod pool;
+/// The pubsub modules hold a socket open and slot migration is generic over
+/// `ConnectionLike` — neither exists in the browser, and both are panels the
+/// web build drops (ADR 9).
+#[cfg(not(target_family = "wasm"))]
+mod sharded_pubsub;
+#[cfg(not(target_family = "wasm"))]
+mod slot_migration;
 
 pub use commandlog::CommandLogKind;
 pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
+#[cfg(not(target_family = "wasm"))]
 pub use sharded_pubsub::ShardedPubSub;
+#[cfg(not(target_family = "wasm"))]
 pub use slot_migration::{
     AtomicSlotMigration, cluster_cancel_slot_migrations, cluster_get_slot_migrations, cluster_migrate_slots,
 };

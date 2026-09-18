@@ -13,24 +13,34 @@
 // limitations under the License.
 
 use crate::error::Error;
+#[cfg(not(target_family = "wasm"))]
 use crate::string::{decrypt, encrypt};
 use arc_swap::ArcSwap;
 use indexmap::IndexMap;
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+#[cfg(not(target_family = "wasm"))]
 use redis::{ClientTlsConfig, TlsCertificates};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(not(target_family = "wasm"))]
 use smol::unblock;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+#[cfg(not(target_family = "wasm"))]
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::{path::PathBuf, sync::LazyLock};
+use std::sync::LazyLock;
+#[cfg(not(target_family = "wasm"))]
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::env::is_development;
+// The saved server list lives in a file. In the browser there is none: the
+// bridge holds the list and the page asks it over HTTP (ADR 9).
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::fs::{
     ConfigRecovery, get_or_create_config_dir, load_config_with_recovery, resolve_path, write_file_atomic_with_backup,
 };
@@ -221,6 +231,14 @@ pub struct RedisServer {
     pub sentinel_password: Option<String>,
     pub description: Option<String>,
     pub updated_at: Option<String>,
+    /// Whose entry this is on an HTTP bridge with accounts: a name, or `None`
+    /// for an entry every account sees. Only the bridge gives it meaning —
+    /// it lists an entry to its owner and to nobody else — and only the
+    /// bridge assigns it, from who is signed in, never from what a request
+    /// claims. The desktop app has no accounts: it never sets this and must
+    /// never drop it, or a private entry in a bridge's file would become
+    /// everyone's the first time the file was saved from a desktop (ADR 9).
+    pub owner: Option<String>,
     pub tls: Option<bool>,
     pub insecure: Option<bool>,
     /// Name the server's certificate is verified against and sent as SNI,
@@ -342,6 +360,13 @@ impl RedisServer {
             sentinel_password: get_str("sentinel_password"),
             description: get_str("description"),
             updated_at: None,
+            // Only the web form has a `shared` box, and it always says one
+            // thing or the other: ticked is everyone's, unticked is "private
+            // to me", which the bridge turns into the name of whoever is
+            // signed in. No box at all (the desktop form) says nothing — the
+            // desktop's save then carries over the owner the stored entry had.
+            owner: get_bool("shared")
+                .map(|shared| if shared { Self::OWNER_SHARED } else { Self::OWNER_SELF }.to_string()),
 
             tls_server_name: get_str("tls_server_name"),
             client_cert: get_str("client_cert"),
@@ -413,6 +438,65 @@ impl RedisServer {
     pub fn key_separator_override(&self) -> Option<&str> {
         self.key_separator.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
+    /// What a browser writes in `owner` to say "private to me". It does not
+    /// know the account's name and is not trusted to assign one: the bridge
+    /// reads this — or any other name — as *private* and stores the name of
+    /// the caller that is signed in.
+    pub const OWNER_SELF: &'static str = "@me";
+
+    /// What a browser writes in `owner` to say "everyone's". Spelled out
+    /// rather than left empty, because empty has to mean *nobody said*: an
+    /// entry that reaches the bridge with no owner came from somewhere with
+    /// no checkbox — an import, a `redis://` link — and the bridge then keeps
+    /// a new entry private and an edited one as it was. Reading empty as
+    /// "shared" published every imported entry, credentials and all, to
+    /// every account. Never stored: the bridge turns it into no owner.
+    pub const OWNER_SHARED: &'static str = "@shared";
+
+    /// The fields that are secrets, by their serialized names: what is
+    /// encrypted at rest, what a diagnostics bundle redacts, and what the
+    /// HTTP bridge never sends to a browser. One list, so a new secret is
+    /// added in one place (plus `secret_mut` below, which the compiler then
+    /// does not let drift: every name here must resolve there).
+    pub const SECRET_FIELDS: [&'static str; 7] = [
+        "password",
+        "sentinel_password",
+        "ssh_password",
+        "ssh_key",
+        "ssh_key_passphrase",
+        "client_key",
+        "client_key_passphrase",
+    ];
+
+    /// The secret field called `name`, or `None` for a name that is not one.
+    pub fn secret_mut(&mut self, name: &str) -> Option<&mut Option<String>> {
+        match name {
+            "password" => Some(&mut self.password),
+            "sentinel_password" => Some(&mut self.sentinel_password),
+            "ssh_password" => Some(&mut self.ssh_password),
+            "ssh_key" => Some(&mut self.ssh_key),
+            "ssh_key_passphrase" => Some(&mut self.ssh_key_passphrase),
+            "client_key" => Some(&mut self.client_key),
+            "client_key_passphrase" => Some(&mut self.client_key_passphrase),
+            _ => None,
+        }
+    }
+
+    /// Take every secret out, answering which of them held a value — what
+    /// the bridge lists for a browser: the settings, and *that* a password
+    /// is stored, never the password.
+    pub fn take_secrets(&mut self) -> Vec<&'static str> {
+        let mut set = Vec::new();
+        for name in Self::SECRET_FIELDS {
+            if let Some(field) = self.secret_mut(name)
+                && field.take().is_some_and(|value| !value.is_empty())
+            {
+                set.push(name);
+            }
+        }
+        set
+    }
+
     pub fn get_hash(&self, db: usize) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
@@ -923,11 +1007,17 @@ impl RedisServer {
     }
     /// The root certificate as PEM bytes — the field's content, or the
     /// file it names. `None` when unset.
+    ///
+    /// Native only: TLS material is for dialling, which the bridge does.
+    #[cfg(not(target_family = "wasm"))]
     pub fn root_cert_pem(&self) -> Result<Option<Vec<u8>>> {
         self.root_cert.as_deref().map(tls_material).transpose()
     }
 
     /// The client certificate as PEM bytes. `None` when unset.
+    ///
+    /// Native only: TLS material is for dialling, which the bridge does.
+    #[cfg(not(target_family = "wasm"))]
     pub fn client_cert_pem(&self) -> Result<Option<Vec<u8>>> {
         self.client_cert.as_deref().map(tls_material).transpose()
     }
@@ -935,6 +1025,10 @@ impl RedisServer {
     /// The client key as *unencrypted* PEM bytes: the field's content or the
     /// file it names, decrypted with `client_key_passphrase` when it is a
     /// PKCS#8 `ENCRYPTED PRIVATE KEY`. `None` when unset.
+    ///
+    /// Native only: it may have to decrypt the key, and the browser presents
+    /// no client certificate — the bridge dials (ADR 9).
+    #[cfg(not(target_family = "wasm"))]
     pub fn client_key_pem(&self) -> Result<Option<Vec<u8>>> {
         let Some(key) = self.client_key.as_deref() else {
             return Ok(None);
@@ -946,6 +1040,9 @@ impl RedisServer {
 
     /// The TLS material redis-rs needs, or `None` when TLS is off or every
     /// certificate field is empty (system roots, no client auth).
+    /// The TLS material redis-rs needs to dial. Native only: the browser
+    /// never opens a socket, so it never presents a certificate.
+    #[cfg(not(target_family = "wasm"))]
     pub fn tls_certificates(&self) -> Result<Option<TlsCertificates>> {
         if !self.tls.unwrap_or(false) {
             return Ok(None);
@@ -970,6 +1067,7 @@ impl RedisServer {
 /// A certificate field's bytes: pasted PEM is taken as is, anything else is
 /// a path (`~` expanded) to read. Empty fields never reach here — the
 /// callers filter them out.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn tls_material(value: &str) -> Result<Vec<u8>> {
     let trimmed = value.trim();
     if trimmed.starts_with("-----BEGIN ") {
@@ -985,6 +1083,7 @@ pub(crate) fn tls_material(value: &str) -> Result<Vec<u8>> {
 /// decrypted with `passphrase`; the legacy OpenSSL form (`Proc-Type:
 /// 4,ENCRYPTED` inside a `BEGIN RSA PRIVATE KEY` block) is refused with a
 /// pointer at `openssl pkcs8 -topk8`, which rewrites it as PKCS#8.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn decrypt_private_key_pem(pem: Vec<u8>, passphrase: &str) -> Result<Vec<u8>> {
     let text = String::from_utf8_lossy(&pem);
     if text.contains("Proc-Type: 4,ENCRYPTED") {
@@ -1026,6 +1125,7 @@ pub(crate) struct RedisServers {
 }
 
 /// Gets or creates the path to the server configuration file.
+#[cfg(not(target_family = "wasm"))]
 fn get_or_create_server_config() -> Result<PathBuf> {
     let config_dir = get_or_create_config_dir()?;
     let path = config_dir.join("redis-servers.toml");
@@ -1058,57 +1158,84 @@ fn server_sort_key(server: &RedisServer) -> (u8, String, i64, String) {
     (bucket, group_key, order, name_key)
 }
 
+/// The saved server list.
+///
+/// The in-memory map is the source both builds read. Behind it the desktop
+/// has `redis-servers.toml`; the browser has the bridge, which fills the map
+/// through [`set_servers_cache`] because it is the only process that may hold
+/// the credentials (ADR 9).
 pub fn get_servers() -> Result<Vec<RedisServer>> {
     if !SERVER_CONFIG_MAP.load().is_empty() {
         let mut servers: Vec<RedisServer> = SERVER_CONFIG_MAP.load().values().cloned().collect();
         servers.sort_by_key(server_sort_key);
         return Ok(servers);
     }
-    let path = get_or_create_server_config()?;
-    // A damaged file is quarantined and the `.bak` restored (or the list left
-    // empty) — never parsed-as-empty, which the next save would then write
-    // over the user's connections. The UI reports the recovery at startup.
-    let loaded = load_config_with_recovery(&path, |text| {
-        toml::from_str::<RedisServers>(text).map_err(|e| e.to_string())
-    })?;
-    match &loaded.recovery {
-        Some(ConfigRecovery::RestoredFromBackup { corrupt_path, .. }) => {
-            warn!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable; restored from backup")
+    // No file to fall back to, and an empty list is the honest answer until
+    // the bridge has answered.
+    #[cfg(target_family = "wasm")]
+    return Ok(Vec::new());
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = get_or_create_server_config()?;
+        // A damaged file is quarantined and the `.bak` restored (or the list left
+        // empty) — never parsed-as-empty, which the next save would then write
+        // over the user's connections. The UI reports the recovery at startup.
+        let loaded = load_config_with_recovery(&path, |text| {
+            toml::from_str::<RedisServers>(text).map_err(|e| e.to_string())
+        })?;
+        match &loaded.recovery {
+            Some(ConfigRecovery::RestoredFromBackup { corrupt_path, .. }) => {
+                warn!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable; restored from backup")
+            }
+            Some(ConfigRecovery::Reset { corrupt_path, .. }) => {
+                error!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable and no backup parsed; starting with no servers")
+            }
+            None => {}
         }
-        Some(ConfigRecovery::Reset { corrupt_path, .. }) => {
-            error!(corrupt = %corrupt_path.display(), "redis-servers.toml was unreadable and no backup parsed; starting with no servers")
+        let Some(configs) = loaded.value else {
+            return Ok(vec![]);
+        };
+        let mut servers = configs.servers;
+        let mut configs = HashMap::new();
+        for server in servers.iter_mut() {
+            if let Some(password) = &server.password {
+                server.password = Some(decrypt(password).unwrap_or(password.clone()));
+            }
+            if let Some(password) = &server.sentinel_password {
+                server.sentinel_password = Some(decrypt(password).unwrap_or(password.clone()));
+            }
+            if let Some(ssh_password) = &server.ssh_password {
+                server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
+            }
+            if let Some(ssh_key) = &server.ssh_key {
+                server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
+            }
+            if let Some(passphrase) = &server.ssh_key_passphrase {
+                server.ssh_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
+            }
+            if let Some(passphrase) = &server.client_key_passphrase {
+                server.client_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
+            }
+            configs.insert(server.id.clone(), server.clone());
         }
-        None => {}
+        SERVER_CONFIG_MAP.store(Arc::new(configs));
+        servers.sort_by_key(server_sort_key);
+        Ok(servers)
     }
-    let Some(configs) = loaded.value else {
-        return Ok(vec![]);
-    };
-    let mut servers = configs.servers;
-    let mut configs = HashMap::new();
-    for server in servers.iter_mut() {
-        if let Some(password) = &server.password {
-            server.password = Some(decrypt(password).unwrap_or(password.clone()));
-        }
-        if let Some(password) = &server.sentinel_password {
-            server.sentinel_password = Some(decrypt(password).unwrap_or(password.clone()));
-        }
-        if let Some(ssh_password) = &server.ssh_password {
-            server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
-        }
-        if let Some(ssh_key) = &server.ssh_key {
-            server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
-        }
-        if let Some(passphrase) = &server.ssh_key_passphrase {
-            server.ssh_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
-        }
-        if let Some(passphrase) = &server.client_key_passphrase {
-            server.client_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
-        }
-        configs.insert(server.id.clone(), server.clone());
-    }
+}
+
+/// Replace the in-memory list, for the browser build.
+///
+/// What the bridge answered to `GET /v1/servers`: ids and display names, and
+/// deliberately no hosts and no secrets. Everything the UI does afterwards
+/// names a server by id, and the bridge resolves it.
+#[cfg(target_family = "wasm")]
+pub fn set_servers_cache(servers: Vec<RedisServer>) {
+    let configs = servers
+        .into_iter()
+        .map(|server| (server.id.clone(), server))
+        .collect::<HashMap<_, _>>();
     SERVER_CONFIG_MAP.store(Arc::new(configs));
-    servers.sort_by_key(server_sort_key);
-    Ok(servers)
 }
 
 /// Returns the distinct, trimmed, non-empty group labels currently in
@@ -1132,7 +1259,29 @@ pub fn get_server_groups() -> Vec<String> {
     groups
 }
 
+/// Saves the server list through the bridge.
+///
+/// The encryption and the file both live on the other side, so this only
+/// updates what the UI reads and hands the list over. Without an installed
+/// store it fails loudly rather than appearing to save (ADR 9).
+#[cfg(target_family = "wasm")]
+pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
+    let store = crate::bridge::bridge_server_store().ok_or_else(|| Error::Invalid {
+        message: "no bridge server store is installed; the server list is read-only".to_string(),
+    })?;
+    // The bridge's answer, not this side's list: a new entry comes back with
+    // the id the bridge stamped, and the browser's copies of the rest carry
+    // no credentials to be trusted as the record.
+    let saved = store
+        .save(servers)
+        .await
+        .map_err(|e| Error::Invalid { message: e.to_string() })?;
+    set_servers_cache(saved);
+    Ok(())
+}
+
 /// Saves the server configuration to the file.
+#[cfg(not(target_family = "wasm"))]
 pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     let mut configs = HashMap::new();
     for server in servers.iter_mut() {
@@ -1190,22 +1339,17 @@ pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
 /// The saved server list with every secret (passwords, SSH key and
 /// passphrase, client key) replaced by `<redacted>` — what the diagnostics
 /// bundle ships instead of `redis-servers.toml` itself.
+#[cfg(not(target_family = "wasm"))]
 pub fn servers_toml_redacted() -> Result<String> {
     redact_servers(get_servers()?)
 }
 
 fn redact_servers(mut servers: Vec<RedisServer>) -> Result<String> {
     for server in servers.iter_mut() {
-        for secret in [
-            &mut server.password,
-            &mut server.sentinel_password,
-            &mut server.ssh_password,
-            &mut server.ssh_key,
-            &mut server.ssh_key_passphrase,
-            &mut server.client_key,
-            &mut server.client_key_passphrase,
-        ] {
-            if secret.is_some() {
+        for name in RedisServer::SECRET_FIELDS {
+            if let Some(secret) = server.secret_mut(name)
+                && secret.is_some()
+            {
                 *secret = Some("<redacted>".to_string());
             }
         }
@@ -1311,6 +1455,26 @@ mod upgrade_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_listed_secret_is_a_field_and_taking_them_leaves_none() {
+        let mut server = RedisServer::default();
+        for name in RedisServer::SECRET_FIELDS {
+            let field = server
+                .secret_mut(name)
+                .expect("a listed secret must resolve to a field");
+            *field = Some(format!("value-of-{name}"));
+        }
+        assert!(server.secret_mut("host").is_none(), "a setting is not a secret");
+        // An empty string is what a cleared form field leaves: not "set".
+        server.ssh_password = Some(String::new());
+
+        let set = server.take_secrets();
+        assert_eq!(set.len(), RedisServer::SECRET_FIELDS.len() - 1);
+        assert!(!set.contains(&"ssh_password"));
+        let json = serde_json::to_string(&server).expect("json");
+        assert!(!json.contains("value-of-"), "no secret survives take_secrets: {json}");
+    }
 
     #[test]
     fn ipv6_hosts_are_bracketed_in_urls_and_stripped_on_import() {

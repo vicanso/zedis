@@ -15,10 +15,20 @@
 //! Shared "export bytes to a file" flow, reused by every export action
 //! (value file export, key-tree CSV, Slow Log CSV/JSON, value-search CSV).
 
-use super::dirs_default_directory;
+use crate::helpers::{get_download_dir, get_home_dir};
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
 use chrono::Local;
 use gpui::{App, Context, Entity, SharedString, prelude::*};
+use std::path::PathBuf;
+
+/// Where a save dialog opens: the platform's Downloads directory, else home,
+/// else wherever the process is. In a browser both lookups answer `None` and
+/// the dialog itself is the platform's business.
+pub(crate) fn dirs_default_directory() -> PathBuf {
+    get_download_dir()
+        .or_else(get_home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
 
 /// Prompt for a save path, write `bytes` to it off the UI thread, and emit
 /// a success / error notification through the server state.

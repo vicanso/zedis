@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::Assets;
+use crate::helpers::platform_info;
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use chrono::{Datelike, Local};
 use gpui::{
@@ -70,7 +71,7 @@ fn get_basic_gpu_info() -> String {
 }
 
 fn collect_system_info(window: &Window) -> String {
-    let os = os_info::get();
+    let os = platform_info();
     let scale_factor = window.scale_factor();
     let locale = sys_locale::get_locale().unwrap_or_else(|| "unknown".into());
     let theme = window.appearance();
@@ -78,8 +79,8 @@ fn collect_system_info(window: &Window) -> String {
     let mut lines = vec![
         format!("Version: {VERSION}"),
         format!("Git SHA: {GIT_SHA}"),
-        format!("OS: {} {}", os.os_type(), os.version()),
-        format!("Arch: {}", os.architecture().unwrap_or("unknown")),
+        format!("OS: {} {}", os.os_type, os.version),
+        format!("Arch: {}", os.architecture),
         format!("Locale: {locale}"),
         format!("Scale Factor: {scale_factor}"),
         format!("Theme: {theme:?}"),

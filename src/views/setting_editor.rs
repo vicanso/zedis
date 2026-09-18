@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::is_valid_proxy_setting;
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{export_local_data_file, import_local_data_file};
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{
         DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, apply_fonts, date_format_sample, ensure_keybindings_file,
-        export_local_data_file, get_or_create_config_dir, import_local_data_file, is_app_store_build,
-        is_valid_proxy_setting, parse_duration, set_datetime_prefs,
+        get_or_create_config_dir, is_app_store_build, parse_duration, set_datetime_prefs,
     },
     states::{
         ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
@@ -453,7 +456,15 @@ impl ZedisSettingEditor {
             cx.subscribe_in(&http_proxy_state, window, |_view, state, event, window, cx| {
                 if let InputEvent::Blur = event {
                     let text = state.read(cx).value().trim().to_string();
-                    if is_valid_proxy_setting(&text) {
+                    // The proxy is for this process's own HTTP (updater, AI),
+                    // which the browser build has none of: a page's requests
+                    // go through the browser's proxy, not a setting here. Only
+                    // clearing the field is accepted there.
+                    #[cfg(not(target_family = "wasm"))]
+                    let valid = is_valid_proxy_setting(&text);
+                    #[cfg(target_family = "wasm")]
+                    let valid = text.is_empty();
+                    if valid {
                         update_app_state_and_save_quiet(cx, "save_http_proxy", move |state, _| {
                             state.set_http_proxy(text);
                         });
@@ -954,24 +965,28 @@ impl Render for ZedisSettingEditor {
                     "section_local_data",
                     "section_local_data_desc",
                 ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "local_data_export",
-                    Button::new("export-local-data")
-                        .small()
-                        .outline()
-                        .label(i18n_settings(cx, "local_data_export_button"))
-                        .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "local_data_import",
-                    Button::new("import-local-data")
-                        .small()
-                        .outline()
-                        .label(i18n_settings(cx, "local_data_import_button"))
-                        .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
-                )),
+                // The backup is a file the user picks or is handed; a tab has
+                // neither a picker nor a Downloads folder (ADR 9).
+                .when(cfg!(not(target_family = "wasm")), |this| {
+                    this.child(Self::render_setting_row(
+                        cx,
+                        "local_data_export",
+                        Button::new("export-local-data")
+                            .small()
+                            .outline()
+                            .label(i18n_settings(cx, "local_data_export_button"))
+                            .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
+                    ))
+                    .child(Self::render_setting_row(
+                        cx,
+                        "local_data_import",
+                        Button::new("import-local-data")
+                            .small()
+                            .outline()
+                            .label(i18n_settings(cx, "local_data_import_button"))
+                            .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
+                    ))
+                }),
         )
     }
 }
@@ -1022,6 +1037,13 @@ impl ZedisSettingEditor {
         .detach();
     }
 
+    #[cfg(target_family = "wasm")]
+    fn export_local_data(_window: &mut Window, _cx: &mut App) {}
+
+    #[cfg(target_family = "wasm")]
+    fn import_local_data(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    #[cfg(not(target_family = "wasm"))]
     fn export_local_data(window: &mut Window, cx: &mut App) {
         match export_local_data_file() {
             Ok(path) => {
@@ -1045,6 +1067,7 @@ impl ZedisSettingEditor {
     /// Pick a backup file and merge it into the store. The picker is
     /// async; the merge itself is a few redb writes and runs on the
     /// foreground so the managers' caches stay coherent.
+    #[cfg(not(target_family = "wasm"))]
     fn import_local_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,

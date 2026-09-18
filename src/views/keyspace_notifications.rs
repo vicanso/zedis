@@ -24,8 +24,11 @@
 //! 3. Config banner + Enable presets for `notify-keyspace-events`.
 //! 4. Pause (drop inbound), export filtered rows as CSV, rate hint.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, get_connection_manager, get_server};
 use crate::error::Error;
+use crate::helpers::channel;
 use crate::helpers::{build_csv, get_mono_font_family, now_clock};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
@@ -444,7 +447,7 @@ impl ZedisKeyspaceNotifications {
                 return;
             }
 
-            let (tx, rx) = smol::channel::unbounded::<NotificationRow>();
+            let (tx, rx) = channel::unbounded::<NotificationRow>();
             let reader = cx.background_spawn(async move {
                 let mut stream = pubsub.on_message();
                 while let Some(msg) = stream.next().await {
