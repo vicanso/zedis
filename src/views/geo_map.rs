@@ -28,6 +28,8 @@
 //! non-geo members are listed separately. Capped at [`GEO_CAP`] points.
 
 use crate::assets::CustomIconName;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     connection::{Capability, ServerCommand, geo_add, geo_dist, get_connection_manager},

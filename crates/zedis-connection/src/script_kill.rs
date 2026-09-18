@@ -27,15 +27,26 @@
 //! (`UNKILLABLE`): only `SHUTDOWN NOSAVE` ends it, and that is left to the
 //! operator on purpose.
 
+// Reaching a `BUSY` server means dialling around the stuck pool, and the
+// browser dials nothing; what it keeps are the names the buttons use.
+#[cfg(not(target_family = "wasm"))]
 use crate::async_connection::open_multiplexed_connection;
+#[cfg(not(target_family = "wasm"))]
 use crate::config::{RedisServer, SERVER_TYPE_SENTINEL};
+#[cfg(not(target_family = "wasm"))]
 use crate::error::Error;
+#[cfg(not(target_family = "wasm"))]
 use crate::manager::get_connection_manager;
+#[cfg(not(target_family = "wasm"))]
 use crate::sentinel::sentinel_masters;
+#[cfg(not(target_family = "wasm"))]
 use futures::future::join_all;
+#[cfg(not(target_family = "wasm"))]
 use redis::cmd;
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::string::format_host_port;
 
+#[cfg(not(target_family = "wasm"))]
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Which engine's running code to stop.
@@ -78,6 +89,7 @@ pub struct KillReply {
 }
 
 /// Send the kill to every data node of `server` and report per node.
+#[cfg(not(target_family = "wasm"))]
 pub async fn kill_running(server: &RedisServer, target: KillTarget) -> Result<Vec<KillReply>> {
     let nodes = kill_targets(server).await?;
     let runs = nodes.iter().map(|node| async move {
@@ -101,6 +113,7 @@ pub async fn kill_running(server: &RedisServer, target: KillTarget) -> Result<Ve
 /// dial needed for that), else what the entry itself can name — the
 /// standalone address, the masters a sentinel announces, or a cluster
 /// entry's seeds.
+#[cfg(not(target_family = "wasm"))]
 async fn kill_targets(server: &RedisServer) -> Result<Vec<RedisServer>> {
     if let Some(masters) = get_connection_manager().cached_master_servers(&server.id, 0) {
         return Ok(masters);
@@ -132,6 +145,7 @@ async fn kill_targets(server: &RedisServer) -> Result<Vec<RedisServer>> {
 }
 
 /// The server's reply as an outcome; the error prefixes are Redis's own.
+#[cfg(not(target_family = "wasm"))]
 pub fn classify_reply(reply: std::result::Result<String, redis::RedisError>) -> KillOutcome {
     match reply {
         Ok(_) => KillOutcome::Killed,
@@ -149,7 +163,7 @@ pub fn classify_reply(reply: std::result::Result<String, redis::RedisError>) -> 
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use redis::{ErrorKind, RedisError};

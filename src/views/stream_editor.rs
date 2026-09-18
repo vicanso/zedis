@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::channel;
 use crate::{
     assets::CustomIconName,
     components::ZedisKvFetcher,
@@ -550,7 +551,7 @@ impl ZedisStreamEditor {
         };
         let key = key.to_string();
         let entity = cx.entity().downgrade();
-        let (tx, rx) = smol::channel::unbounded::<Vec<RedisStreamEntry>>();
+        let (tx, rx) = channel::unbounded::<Vec<RedisStreamEntry>>();
 
         let task = cx.spawn(async move |_handle, cx| {
             let Ok(server) = get_server(&server_id) else {

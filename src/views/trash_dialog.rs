@@ -22,6 +22,8 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::get_connection_manager;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
 use crate::helpers::{format_unix_millis_with, get_mono_font_family, unix_ts_millis};

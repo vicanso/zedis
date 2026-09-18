@@ -13,6 +13,9 @@
 // limitations under the License.
 
 use super::value::{DataFormat, RedisBytesValue, detect_format};
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
+#[cfg(not(target_family = "wasm"))]
 use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::decompress_zstd;
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
@@ -261,14 +264,8 @@ impl RedisBytesValue {
         // value that also happens to be gzip / zstd / snappy / an image is
         // decoded natively and the configured viewer never runs. A viewer whose
         // decode/execute fails falls through to native handling.
-        let result = if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
-            && let Ok(decoded) = ProtoManager::decode_data(&id, data)
-        {
-            Some((DataFormat::Protobuf, SharedString::from(decoded)))
-        } else if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
-            && let Some(output) = run_script_viewer(&id, key, data)
-        {
-            Some((DataFormat::Script, SharedString::from(output)))
+        let result = if let Some(viewer) = configured_viewer(server_id, key, data) {
+            Some(viewer)
         } else {
             match initial_format {
                 DataFormat::MessagePack => rmp_serde::from_slice::<serde_json::Value>(data)
@@ -370,6 +367,31 @@ pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) 
 /// back to native format handling, which is the right behaviour but is
 /// otherwise indistinguishable from "no viewer matched this key" — so it is
 /// logged rather than dropped.
+/// The proto / script viewer the user configured for this key, if any: a
+/// protobuf descriptor decodes the bytes, or a viewer program is run over
+/// them. Both live on disk and the second is a process, so the browser has
+/// neither and every key goes straight to the native format handling.
+#[cfg(not(target_family = "wasm"))]
+fn configured_viewer(server_id: &str, key: &str, data: &[u8]) -> Option<(DataFormat, SharedString)> {
+    if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
+        && let Ok(decoded) = ProtoManager::decode_data(&id, data)
+    {
+        return Some((DataFormat::Protobuf, SharedString::from(decoded)));
+    }
+    if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
+        && let Some(output) = run_script_viewer(&id, key, data)
+    {
+        return Some((DataFormat::Script, SharedString::from(output)));
+    }
+    None
+}
+
+#[cfg(target_family = "wasm")]
+fn configured_viewer(_server_id: &str, _key: &str, _data: &[u8]) -> Option<(DataFormat, SharedString)> {
+    None
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn run_script_viewer(id: &str, key: &str, data: &[u8]) -> Option<String> {
     match ScriptManager::execute(id, key, data) {
         Ok(output) => Some(output),

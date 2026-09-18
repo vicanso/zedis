@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{RedisServer, get_servers};
+use crate::helpers::channel;
 use crate::states::Route;
 use crate::states::{GlobalEvent, RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
 use gpui::{App, BorrowAppContext, Context, Subscription};
@@ -236,7 +237,7 @@ pub fn init_tray(cx: &mut App) {
             refresh_tray_menu(&state, &tray, cx);
 
             // Channel for sending actions from blocking thread to async handler
-            let (action_tx, action_rx) = smol::channel::unbounded::<TrayAction>();
+            let (action_tx, action_rx) = channel::unbounded::<TrayAction>();
 
             // Task 1: Blocking event listener on a dedicated thread (zero CPU when idle)
             std::thread::spawn(move || {

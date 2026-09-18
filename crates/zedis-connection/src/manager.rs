@@ -21,9 +21,9 @@ use super::{
     },
     ssh_cluster_connection::SshMultiplexedConnection,
 };
-use crate::conn::RedisAsyncConn;
 #[cfg(not(target_family = "wasm"))]
 use crate::async_connection::configure_client_connection;
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use futures::future::try_join_all;
 use rand::RngExt;
@@ -80,7 +80,6 @@ mod ignorable_error_tests {
 }
 
 // Global singleton for ConnectionManager
-#[cfg(not(target_family = "wasm"))]
 static CONNECTION_MANAGER: LazyLock<ConnectionManager> = LazyLock::new(ConnectionManager::new);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -644,20 +643,24 @@ pub struct RedisClientDescription {
     pub sentinel_master_names: Vec<String>,
 }
 
-/// Native only: it hands out *dialled* clients.
-#[cfg(not(target_family = "wasm"))]
+/// The pooled clients, one per `(server, db)`.
+///
+/// The same type on both targets. What differs is only how a client is
+/// *reached* — a dial on the desktop, an HTTP request to `zedis-bridge` in a
+/// browser tab — and that difference is one function (ADR 9). Everything the
+/// pool does with a client afterwards (caching, eviction, the access-mode
+/// probe, the version and module questions) is identical, because those are
+/// ordinary commands.
 pub struct ConnectionManager {
     clients: TtlCache<u64, RedisClient>,
 }
 
 /// Global accessor for the connection manager.
-#[cfg(not(target_family = "wasm"))]
 pub fn get_connection_manager() -> &'static ConnectionManager {
     &CONNECTION_MANAGER
 }
 
 /// Clears expired clients from the connection manager.
-#[cfg(not(target_family = "wasm"))]
 pub fn clear_expired_clients() -> (usize, usize) {
     CONNECTION_MANAGER.clients.clear_expired()
 }
@@ -668,11 +671,10 @@ mod pubsub_channels;
 mod replication;
 mod slots;
 
-/// The pool dials, the pubsub modules hold sockets open and slot migration is
-/// generic over `ConnectionLike` — none of which exists in the browser, where
-/// the bridge does the connecting (ADR 9).
-#[cfg(not(target_family = "wasm"))]
 mod pool;
+/// The pubsub modules hold a socket open and slot migration is generic over
+/// `ConnectionLike` — neither exists in the browser, and both are panels the
+/// web build drops (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 mod sharded_pubsub;
 #[cfg(not(target_family = "wasm"))]

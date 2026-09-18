@@ -19,6 +19,8 @@ use super::{
         StreamIdmpInfo, StreamInfoData, StreamPendingEntry, StreamRefPolicy, StreamSummary, StreamTrim,
     },
 };
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_stream_editor;
 use crate::{

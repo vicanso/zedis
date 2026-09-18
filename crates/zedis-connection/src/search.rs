@@ -26,6 +26,8 @@
 //! since module upgrades shouldn't break the GUI.
 
 use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Cmd, Value, cmd};
 

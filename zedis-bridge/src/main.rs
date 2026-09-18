@@ -23,6 +23,11 @@
 //! Deliberately not a subcommand of the desktop binary: that one links a
 //! window system, wgpu and the whole asset bundle, none of which belongs on
 //! a server.
+//!
+//! One thing it does differently from the desktop on purpose: the master key
+//! for the secrets in `redis-servers.toml` comes from the `master.key` file,
+//! never the OS keychain (`disable_keychain`). A service has no session to
+//! answer a keychain prompt in.
 
 mod api;
 mod auth;
@@ -31,10 +36,12 @@ mod resp;
 mod session;
 mod static_files;
 
+use auth::{Accounts, USERS_ENV};
 use session::Sessions;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
-use zedis_connection::install_crypto_provider;
+use zedis_connection::{disable_keychain, install_crypto_provider};
+use zedis_core::fs::get_or_create_config_dir;
 
 /// Loopback by default. Binding every interface is opting in to handing the
 /// network a door into every configured Redis instance, so it has to be typed.
@@ -62,8 +69,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         println!("zedis-bridge [--listen {DEFAULT_LISTEN}] [--static <dir>] [--insecure-cookie]");
         println!();
-        println!("Forwards RESP frames to the Redis servers in redis-servers.toml.");
-        println!("The bearer token is read from, or created in, the config directory.");
+        println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
+        println!("frames to the Redis servers in redis-servers.toml. --static <dir> serves that");
+        println!("directory as the page instead.");
+        println!("Callers sign in by name: {USERS_ENV}=\"alice@secret,bob@hunter2\" is required.");
+        println!("The page asks for the username and password, scripts send HTTP Basic. A server");
+        println!("entry is private to the account that added it unless it is marked shared.");
+        println!("Secrets are encrypted with the master.key file there, never the OS keychain.");
         return Ok(());
     }
 
@@ -72,14 +84,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // install must still happen before anything dials TLS.
     install_crypto_provider();
 
-    let token = auth::load_or_create()?;
-    tracing::info!(path = %auth::token_path()?.display(), "bearer token ready");
+    // The key that opens the secrets in `redis-servers.toml` is the `master.key`
+    // file in the config directory, never the OS keychain: a server has no
+    // session to answer a keychain prompt in, and on macOS an unsigned or
+    // rebuilt binary is asked for the login password on every restart. Before
+    // anything reads the server list, because the key is resolved once.
+    disable_keychain();
+
+    let accounts = Accounts::load()?;
+    tracing::info!(accounts = accounts.len(), env = USERS_ENV, "accounts loaded");
 
     // A plain-http local run has to say so: the login cookie is `Secure` by
     // default, so a deployment that forgets TLS sees a login that visibly
     // does not stick instead of a credential sent in the clear.
     let secure_cookie = !std::env::args().any(|a| a == "--insecure-cookie");
-    let logins = auth::Logins::new();
+    // Saved, so that restarting the bridge does not sign everybody out —
+    // which, while they lived in memory, it did, every time.
+    let logins_path = get_or_create_config_dir()?.join("bridge-logins.json");
+    let logins = auth::Logins::load(logins_path, &accounts);
+    tracing::info!(live = logins.len(), "saved logins restored");
 
     let sessions = Sessions::new();
     let sweeper = sessions.clone();
@@ -89,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tick.tick().await;
             let expired = login_sweeper.sweep();
+            login_sweeper.flush();
             if expired > 0 {
                 tracing::info!(expired, "swept idle logins");
             }
@@ -104,16 +128,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Serving the web build from here is what makes the page same-origin with
     // the API: no CORS to configure, and the login cookie can stay
-    // `SameSite=Strict`.
+    // `SameSite=Strict`. The page is compiled in; `--static <dir>` serves a
+    // directory instead (a rebuilt bundle without recompiling the bridge).
     let web_root = flag("--static").map(std::path::PathBuf::from);
-    if let Some(root) = &web_root {
-        match root.canonicalize() {
-            Ok(path) => tracing::info!(path = %path.display(), "serving the web build"),
+    match &web_root {
+        Some(root) => match root.canonicalize() {
+            Ok(path) => tracing::info!(path = %path.display(), "serving the web build from a directory"),
             Err(e) => {
                 tracing::error!(error = %e, path = %root.display(), "--static is not a readable directory");
                 return Err(e.into());
             }
-        }
+        },
+        // rust-embed reads the directory from disk in a debug build (no
+        // `debug-embed` here), so the same binary path means two things.
+        None => tracing::info!("serving the web build (compiled in; a debug build reads zedis-web/www from disk)"),
     }
 
     let listen = flag("--listen").unwrap_or_else(|| DEFAULT_LISTEN.to_string());
@@ -121,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(addr = %listener.local_addr()?, "zedis-bridge listening");
 
     let app = api::router(api::AppState {
-        token,
+        accounts,
         sessions,
         logins,
         secure_cookie,

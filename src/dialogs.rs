@@ -15,10 +15,12 @@
 //! App-level dialogs opened from the root: crash report, first-run
 //! welcome, SSH host-key confirmation, update / install prompts.
 
+#[cfg(not(target_family = "wasm"))]
 use crate::connection::{HostKeyPrompt, set_host_key_approver};
-use crate::helpers::{
-    ConfigRecovery, CrashReport, UpdateInfo, focus_installer_ui, get_mono_font_family, humanize_keystroke, logs_dir,
-};
+use crate::helpers::channel;
+use crate::helpers::{ConfigRecovery, humanize_keystroke};
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{CrashReport, UpdateInfo, focus_installer_ui, get_mono_font_family, logs_dir};
 use crate::root::Zedis;
 use crate::states::{
     ZedisGlobalStore, i18n_crash, i18n_hints, i18n_servers, i18n_update, update_app_state_and_save_quiet,
@@ -77,6 +79,7 @@ pub(crate) fn config_recovery_message(recovery: &ConfigRecovery, cx: &App) -> Sh
 /// "Zedis closed unexpectedly last time": the panic message and where the full
 /// report (with backtrace) was written, plus a one-click way to the folder so it
 /// can be attached to an issue.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn open_crash_dialog(report: &CrashReport, window: &mut Window, cx: &mut App) {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
     let body = i18n_crash(cx, "body");
@@ -142,12 +145,13 @@ pub(crate) fn open_welcome_dialog(window: &mut Window, cx: &mut App) {
 /// and the answer travels back. No window to ask in, or no answer within
 /// two minutes, declines — the connect fails with a message that says so
 /// and can simply be retried.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn install_host_key_prompt(cx: &mut App) {
-    let (tx, rx) = smol::channel::unbounded::<(HostKeyPrompt, smol::channel::Sender<bool>)>();
+    let (tx, rx) = channel::unbounded::<(HostKeyPrompt, channel::Sender<bool>)>();
     set_host_key_approver(Arc::new(move |prompt| {
         let tx = tx.clone();
         Box::pin(async move {
-            let (answer_tx, answer_rx) = smol::channel::bounded::<bool>(1);
+            let (answer_tx, answer_rx) = channel::bounded::<bool>(1);
             if tx.send((prompt, answer_tx)).await.is_err() {
                 return false;
             }
@@ -181,9 +185,10 @@ pub(crate) fn install_host_key_prompt(cx: &mut App) {
     .detach();
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn open_host_key_dialog(
     prompt: HostKeyPrompt,
-    answer: smol::channel::Sender<bool>,
+    answer: channel::Sender<bool>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -216,6 +221,7 @@ pub(crate) fn open_host_key_dialog(
         .open(window, cx);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
     ZedisDialog::new(i18n_update(cx, "quit_to_install_title"))
         .icon(IconName::Info)
@@ -236,6 +242,7 @@ pub(crate) fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
         .open(window, cx);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
     // The notes area scrolls, so this cap only guards layout work against a
     // pathologically long release body.

@@ -13,18 +13,29 @@
 // limitations under the License.
 
 use crate::error::Error;
+// The storage engine. redb is a file database and a browser tab has no file,
+// so there it is `mem_store`'s `BTreeMap` behind the same names (ADR 9) and
+// every manager below keeps its code unchanged.
+#[cfg(target_family = "wasm")]
+use crate::mem_store::{Database, ReadableTable, TableDefinition, WriteTransaction};
 #[cfg(test)]
 use redb::ReadableDatabase;
+#[cfg(not(target_family = "wasm"))]
 use redb::{Database, DatabaseError, ReadableTable, StorageError, TableDefinition, WriteTransaction};
+#[cfg(not(target_family = "wasm"))]
 use std::io::ErrorKind;
+#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 use std::sync::OnceLock;
+#[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::fs::get_or_create_config_dir;
 
 pub mod error;
 
+#[cfg(not(target_family = "wasm"))]
 mod backup;
 
 mod cmd_history_manager;
@@ -32,27 +43,40 @@ mod favorites_manager;
 mod history_manager;
 mod key_metadata_manager;
 mod lua_scripts;
+/// The browser's stand-in for redb (ADR 9). Also compiled for `cargo test`
+/// on the desktop, because the ordering rules it has to reproduce — a
+/// timestamp range, one server's slice of a two-part key — are exactly the
+/// kind of thing that is easier to get wrong than to notice.
+#[cfg(any(target_family = "wasm", test))]
+mod mem_store;
 mod metrics_history;
+#[cfg(not(target_family = "wasm"))]
 mod protos;
 mod recent_keys_manager;
+#[cfg(not(target_family = "wasm"))]
 mod scripts;
 mod search_history_manager;
 mod trash;
 
+#[cfg(not(target_family = "wasm"))]
 pub use backup::*;
 pub use cmd_history_manager::*;
 pub use favorites_manager::*;
 pub use key_metadata_manager::*;
 pub use lua_scripts::*;
 pub use metrics_history::*;
+#[cfg(not(target_family = "wasm"))]
 pub use protos::*;
 pub use recent_keys_manager::*;
+#[cfg(not(target_family = "wasm"))]
 pub use scripts::*;
 pub use search_history_manager::*;
 pub use trash::*;
 
 const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
+#[cfg(not(target_family = "wasm"))]
 const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
+#[cfg(not(target_family = "wasm"))]
 const SCRIPT_VIEWER_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("script_viewer");
 const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
 const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
@@ -99,12 +123,18 @@ fn get_database() -> Result<&'static Database> {
 /// `<config_dir>/zedis.redb`. Same file name in both environments — a
 /// development run is isolated by its own config *directory*
 /// (`<config_dir>/dev`), not by a `-dev` file suffix.
+#[cfg(not(target_family = "wasm"))]
 pub fn database_path() -> Result<PathBuf> {
     Ok(get_or_create_config_dir()?.join("zedis.redb"))
 }
 
 pub fn init_database() -> Result<()> {
+    // The browser has no path to open: the store is in memory and the name
+    // is only what turns up in a log line.
+    #[cfg(not(target_family = "wasm"))]
     let db_path = database_path()?;
+    #[cfg(target_family = "wasm")]
+    let db_path = std::path::Path::new("zedis.redb");
     debug!(path = db_path.display().to_string(), "create database");
     let db = Database::create(&db_path)?;
     ensure_schema(&db)?;
@@ -143,8 +173,11 @@ fn ensure_schema(db: &Database) -> Result<()> {
     }
     {
         write_txn.open_table(SEARCH_HISTORY_TABLE)?;
-        write_txn.open_table(PROTO_TABLE)?;
-        write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
+        #[cfg(not(target_family = "wasm"))]
+        {
+            write_txn.open_table(PROTO_TABLE)?;
+            write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
+        }
         write_txn.open_table(CMD_HISTORY_TABLE)?;
         write_txn.open_table(FAVORITY_TABLE)?;
         write_txn.open_table(RECENT_KEYS_TABLE)?;
@@ -171,6 +204,7 @@ fn migrate_step(_txn: &WriteTransaction, from: u32) -> Result<()> {
 }
 
 /// Why [`init_database`] failed, reduced to what the UI can act on.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbOpenFailure {
     /// Another process (usually a second Zedis) holds the exclusive lock.
@@ -186,6 +220,7 @@ pub enum DbOpenFailure {
 }
 
 /// Classifies an [`init_database`] error for the recovery window.
+#[cfg(not(target_family = "wasm"))]
 pub fn open_failure_kind(error: &Error) -> DbOpenFailure {
     match error {
         Error::SchemaTooNew { found, supported } => DbOpenFailure::SchemaTooNew {
@@ -210,6 +245,7 @@ pub fn open_failure_kind(error: &Error) -> DbOpenFailure {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 /// Moves the database file aside as `zedis.redb.corrupt-<unix-secs>` so a
 /// following [`init_database`] starts from a fresh file. Nothing is deleted:
 /// the old file stays next to the new one for manual salvage. Only valid
@@ -258,6 +294,7 @@ fn add_normalize_history(history: &mut Vec<String>, keyword: String, max: usize)
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[cfg(test)]
 mod schema_tests {
     use super::*;

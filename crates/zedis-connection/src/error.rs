@@ -151,6 +151,7 @@ impl Error {
                 }
             }
             Error::Io { .. } => K::Network,
+            #[cfg(not(target_family = "wasm"))]
             Error::Ssh { .. } | Error::Key { .. } => K::Tunnel,
             _ => K::Unknown,
         }

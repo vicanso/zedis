@@ -21,6 +21,8 @@
 //! Grouped in one module because they share a shape: a small typed request
 //! from a dialog, one command, and a reply the panel reports.
 
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Value, cmd};

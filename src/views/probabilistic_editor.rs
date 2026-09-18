@@ -27,6 +27,8 @@
 //! adds min / max / p50 / p90 / p99 (`TDIGEST.MIN` / `MAX` /
 //! `QUANTILE`). The viewer is read-only.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     connection::{Capability, get_connection_manager},

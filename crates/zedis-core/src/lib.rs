@@ -23,9 +23,16 @@ pub mod csv;
 pub mod diff;
 pub mod env;
 pub mod features;
-/// Config, cache and download directories. Native only: see the
-/// target-gated dependencies in this crate's manifest.
+/// Config, cache and download directories.
+///
+/// Two implementations of one surface: the real one, and `fs_web.rs` for a
+/// build with no file system, which answers `NotFound` / `Unsupported` rather
+/// than disappearing — gating the module instead would mean gating every call
+/// site and every function above it (ADR 9).
 #[cfg(not(target_family = "wasm"))]
+pub mod fs;
+#[cfg(target_family = "wasm")]
+#[path = "fs_web.rs"]
 pub mod fs;
 pub mod fuzzy;
 pub mod hex;

@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::assets::CustomIconName;
+use crate::connection::ServerCommand;
+use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
+use crate::error::Error;
 /// Redis Pub/Sub editor view.
 ///
 /// Provides a UI for subscribing to Redis channels via pattern-based subscriptions
@@ -19,10 +23,7 @@
 /// with timestamp, channel, and message columns, exportable as CSV / JSON. The
 /// Channels button opens the channel browser (`PUBSUB CHANNELS`), so a channel
 /// can be picked instead of typed.
-use crate::assets::CustomIconName;
-use crate::connection::ServerCommand;
-use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
-use crate::error::Error;
+use crate::helpers::channel;
 use crate::helpers::{build_csv, format_duration, get_mono_font_family, now_datetime, unix_ts};
 use crate::states::{ZedisGlobalStore, ZedisServerState, detect_and_decode, i18n_common, i18n_pubsub_editor};
 use crate::views::{ChannelPick, export_to_file, open_pubsub_channels_dialog, unavailable_chip};
@@ -74,9 +75,9 @@ enum SubscribeConn {
 /// Decode one incoming message and ferry it to the drainer. `Err` means
 /// the receiver (the view) is gone, so the reader loop should stop.
 async fn forward_message(
-    tx: &smol::channel::Sender<PubsubMessage>,
+    tx: &channel::Sender<PubsubMessage>,
     msg: &redis::Msg,
-) -> Result<(), smol::channel::SendError<PubsubMessage>> {
+) -> Result<(), channel::SendError<PubsubMessage>> {
     let channel: String = msg.get_channel_name().to_string();
     let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
     let timestamp = now_datetime();
@@ -259,7 +260,7 @@ impl ZedisPubsubEditor {
 
         let entity = cx.entity().downgrade();
         let channel_clone = channel.clone();
-        let (tx, rx) = smol::channel::unbounded::<PubsubMessage>();
+        let (tx, rx) = channel::unbounded::<PubsubMessage>();
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             // Establish a dedicated Pub/Sub connection on a background thread

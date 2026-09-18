@@ -26,12 +26,14 @@
 //! afterwards so a proxy that drops the link on an unknown command can't
 //! poison the shared pool.
 
-use crate::async_connection::open_multiplexed_connection;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::config::get_server;
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::manager::HeatProbe;
 use futures::future::join_all;
-use redis::{Cmd, RedisError, Value, aio::MultiplexedConnection, cmd};
+use redis::{Cmd, RedisError, Value, cmd};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use tracing::{debug, info, warn};
@@ -117,12 +119,23 @@ pub fn note_server_command_error(
 }
 
 /// Probes `server_id` (through database `db`) and caches the result.
+///
+/// The connection is a *dedicated* one on both targets — a dialled one on the
+/// desktop, a bridge session in the browser — because a proxy that drops the
+/// link on an unknown command must not poison the shared pool, and that is as
+/// true through the bridge as it is over a socket.
 pub async fn probe_server_features(server_id: &str, db: usize) -> Result<Arc<ServerFeatures>> {
-    let server = get_server(server_id)?;
-    let conn = open_multiplexed_connection(&server, db, false).await?;
+    // Confirms the entry exists before any work is done.
+    let _ = get_server(server_id)?;
+    let manager = crate::manager::get_connection_manager();
+    let conn = manager.open_dedicated_connection(server_id, db).await?;
     let features = run_probe(conn.clone(), || {
-        let server = server.clone();
-        async move { open_multiplexed_connection(&server, db, false).await }
+        let server_id = server_id.to_string();
+        async move {
+            crate::manager::get_connection_manager()
+                .open_dedicated_connection(&server_id, db)
+                .await
+        }
     })
     .await;
     // Which of OBJECT FREQ / IDLETIME is meaningful here — one more read-only
@@ -149,7 +162,7 @@ pub async fn probe_server_features(server_id: &str, db: usize) -> Result<Arc<Ser
 
 /// `CONFIG GET maxmemory-policy`, or an empty string when the server will
 /// not answer — `HeatProbe::from_policy` reads that as "no heat metric".
-async fn read_maxmemory_policy(mut conn: MultiplexedConnection) -> String {
+async fn read_maxmemory_policy(mut conn: RedisAsyncConn) -> String {
     let reply: std::result::Result<HashMap<String, String>, RedisError> = cmd("CONFIG")
         .arg("GET")
         .arg("maxmemory-policy")
@@ -163,10 +176,10 @@ async fn read_maxmemory_policy(mut conn: MultiplexedConnection) -> String {
 
 /// The probe proper, parameterised over a connection factory so the proxy
 /// fallback (fresh connection per command) is testable.
-async fn run_probe<F, Fut>(conn: MultiplexedConnection, reconnect: F) -> ServerFeatures
+async fn run_probe<F, Fut>(conn: RedisAsyncConn, reconnect: F) -> ServerFeatures
 where
     F: Fn() -> Fut,
-    Fut: Future<Output = Result<MultiplexedConnection>>,
+    Fut: Future<Output = Result<RedisAsyncConn>>,
 {
     let mut features = ServerFeatures::probed_empty();
 
@@ -231,14 +244,10 @@ where
     features
 }
 
-async fn reconnect_if<F, Fut>(
-    dropped: bool,
-    conn: &MultiplexedConnection,
-    reconnect: &F,
-) -> Option<MultiplexedConnection>
+async fn reconnect_if<F, Fut>(dropped: bool, conn: &RedisAsyncConn, reconnect: &F) -> Option<RedisAsyncConn>
 where
     F: Fn() -> Fut,
-    Fut: Future<Output = Result<MultiplexedConnection>>,
+    Fut: Future<Output = Result<RedisAsyncConn>>,
 {
     if !dropped {
         return Some(conn.clone());
@@ -250,7 +259,7 @@ where
 /// heard of that top-level word. Subcommands are judged by their container
 /// (`COMMAND INFO config|set` only works on 7+, and a renamed-away container
 /// takes its subcommands with it anyway).
-async fn probe_existence(conn: &mut MultiplexedConnection, commands: &[ServerCommand], features: &mut ServerFeatures) {
+async fn probe_existence(conn: &mut RedisAsyncConn, commands: &[ServerCommand], features: &mut ServerFeatures) {
     let mut request = cmd("COMMAND");
     request.arg("INFO");
     for c in commands {
@@ -276,11 +285,7 @@ async fn probe_existence(conn: &mut MultiplexedConnection, commands: &[ServerCom
 /// string* is the denial message. An error reply means DRYRUN itself is
 /// unavailable (Redis < 7, proxies, or an ACL that hides it) — leave the
 /// existence verdict alone.
-async fn probe_permissions(
-    conn: &mut MultiplexedConnection,
-    commands: &[ServerCommand],
-    features: &mut ServerFeatures,
-) {
+async fn probe_permissions(conn: &mut RedisAsyncConn, commands: &[ServerCommand], features: &mut ServerFeatures) {
     let user: String = match cmd("ACL").arg("WHOAMI").query_async(conn).await {
         Ok(user) => user,
         Err(e) => {
@@ -571,10 +576,10 @@ mod tests {
         let url = std::env::var("ZEDIS_PROBE_URL").expect("ZEDIS_PROBE_URL");
         let client = redis::Client::open(url).expect("client");
         let features = smol::block_on(async {
-            let conn = client.get_multiplexed_async_connection().await.expect("connect");
+            let conn = RedisAsyncConn::Single(client.get_multiplexed_async_connection().await.expect("connect"));
             run_probe(conn, || {
                 let client = client.clone();
-                async move { Ok(client.get_multiplexed_async_connection().await?) }
+                async move { Ok(RedisAsyncConn::Single(client.get_multiplexed_async_connection().await?)) }
             })
             .await
         });

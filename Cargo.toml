@@ -28,6 +28,12 @@ readme = "./README.md"
 build = "build.rs"
 rust-version.workspace = true
 
+[lib]
+# The application as a library, so the browser build can reach the views.
+# A `[[bin]]`-only crate cannot be depended on (ADR 9).
+name = "zedis_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "zedis"
 path = "src/main.rs"
@@ -62,24 +68,24 @@ rust-version = "1.96.0"
 ahash = "0.8.12"
 anyhow = "1.0.104"
 arc-swap = { workspace = true }
+# What `smol::channel` re-exports, named directly. smol itself reaches
+# `async-io` → `rustix` → `errno` and has no wasm port; the channel does
+# (ADR 9).
+async-channel = "2.5.0"
+# Likewise `smol::lock`, which is this crate re-exported. The terminal's
+# dedicated connection is behind one of these.
+async-lock = "3.4.2"
 base64 = { workspace = true }
 bitflags = "2.13.1"
 bytes = "1.12.1"
 chrono = { workspace = true }
 dashmap = {workspace = true}
-directories = { workspace = true }
 flate2 = "1.1.9"
 futures = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
-# `tree-sitter` is asked for here, not in `[workspace.dependencies]`, so it
-# reaches only this binary. Two reasons: `zedis-ui` is a widget crate that
-# needs none of it, and gpui-component drops the tree-sitter *dependency* on
-# wasm while still compiling the code behind the *feature* — leaving it on
-# workspace-wide makes any wasm build of any member fail (ADR 9).
-gpui-kit = { workspace = true, features = ["tree-sitter"] }
+gpui-kit = { workspace = true }
 gpui_macros = { workspace = true }
-home = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 humansize = "2.1.3"
 humantime = {workspace = true}
@@ -102,18 +108,10 @@ lz4_flex = { version = "0.14.0", default-features = false, features = [
     "safe-decode",
     "checked-decode",
 ] }
-mimalloc = { version = "0.1.52", optional = true }
-os_info = "3.15.0"
 parking_lot = "0.12.5"
 pretty-hex = "0.4.2"
-redis = { workspace = true }
-# Provides the `ring` crypto backend for rustls 0.23+ (used transitively by redis TLS)
-rustls = { workspace = true }
 regex = { workspace = true }
 rmp-serde = "1.3.1"
-rust-embed = { version = "8.12.0", default-features = false, features = [
-    "compression",
-] }
 rust-i18n = "4.2.1"
 ruzstd = "0.9.0"
 schemars = "1.2.2"
@@ -124,26 +122,16 @@ serde_json = { workspace = true }
 # Pinned to gpui-component's transitive version so the `CompletionProvider`
 # trait's `lsp_types` types unify (used by the JSONPath autocomplete).
 lsp-types = "=0.97.0"
-smol = { workspace = true }
 snap = "1.1.2"
 substring = "1.4.5"
 sys-locale = "0.3.2"
-tempfile = { workspace = true }
 time = "0.3.55"
-# Single-language tree-sitter wiring for the Functions / EVAL editor.
-# We deliberately avoid gpui-component's `tree-sitter-languages` feature
-# (which pulls 30+ parsers) and instead register Lua at startup via the
-# public `LanguageRegistry::register` API. Total cost ≈ one ~500KB
-# parser instead of the bundle's 8-15MB.
-tree-sitter = "0.26"
-tree-sitter-lua = "0.5.0"
-tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
-tracing-appender = "0.2.5"
 url = { workspace = true }
 uuid = { workspace = true }
+web-time = { workspace = true }
 zedis-connection = { workspace = true }
 zedis-core = { workspace = true }
 zedis-db = { workspace = true }
@@ -152,6 +140,44 @@ indexmap = { workspace = true }
 snafu = { workspace = true }
 simdutf8 = "0.1.5"
 shlex = { workspace = true }
+
+# An OS allow-list, which is exactly the shape that misfires on wasm: a
+# browser is "not linux", so this used to follow the build into the page
+# (ADR 9). The family gate is the outer one.
+[target.'cfg(all(not(target_family = "wasm"), not(target_os = "linux")))'.dependencies]
+tray-icon = "0.24.1"
+# The desktop half of the application. Everything here is either unreachable
+# from a browser tab or has no wasm port at all, and keeping it out of the
+# shared list is what lets `zedis-gui` be compiled for `wasm32-unknown-unknown`
+# as a library (ADR 9). Gating the *manifest* changes nothing about the desktop
+# build — cargo resolves this block for every non-wasm target — so this file
+# stays the single description of what `zedis` links.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The full Redis client: runtimes, TLS, cluster routing. In the browser the
+# same crate is a codec and nothing more (see the wasm block below), because
+# the dialling happens in `zedis-bridge`.
+redis = { workspace = true }
+# Provides the `ring` crypto backend for rustls 0.23+ (used transitively by redis TLS)
+rustls = { workspace = true }
+# `tree-sitter` is asked for here, not in `[workspace.dependencies]`, so it
+# reaches only this binary. Two reasons: `zedis-ui` is a widget crate that
+# needs none of it, and gpui-component drops the tree-sitter *dependency* on
+# wasm while still compiling the code behind the *feature* — asking for the
+# feature on a wasm build fails it with 37 errors (ADR 9).
+gpui-kit = { workspace = true, features = ["tree-sitter"] }
+# Single-language tree-sitter wiring for the Functions / EVAL editor.
+# We deliberately avoid gpui-component's `tree-sitter-languages` feature
+# (which pulls 30+ parsers) and instead register Lua at startup via the
+# public `LanguageRegistry::register` API. Total cost ≈ one ~500KB
+# parser instead of the bundle's 8-15MB.
+tree-sitter = "0.26"
+tree-sitter-lua = "0.5.0"
+# The async runtime pieces that are not just a channel or a lock: `unblock`
+# for the migration job's file work, `fs`, `Timer`. smol reaches `async-io` →
+# `rustix` → `errno`, which has no wasm target at all (ADR 9).
+smol = { workspace = true }
+# The rolling file logger. A tab logs to the browser console.
+tracing-appender = "0.2.5"
 # Minimal blocking HTTP client for the OpenAI-compatible AI analysis
 # request. `rustls` keeps parity with the rest of the TLS stack and
 # avoids pulling a native (OpenSSL) dependency.
@@ -163,9 +189,62 @@ ureq = { version = "3", default-features = false, features = [
     # value every request then fails on.
     "socks-proxy",
 ] }
+# The OS name in the About page and the diagnostics bundle.
+os_info = "3.15.0"
+# Opt-in allocator for release builds; there is one allocator in a tab and it
+# is not ours to choose.
+mimalloc = { version = "0.1.52", optional = true }
+# No call site in `src/`: these four are here so the desktop dependency graph
+# resolves exactly as it did before the split. Removing them is a separate
+# question from making the browser build work, and doing both at once would
+# make a regression impossible to attribute.
+directories = { workspace = true }
+home = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
 
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-tray-icon = "0.24.1"
+# Embedded assets, compressed at build time and inflated on first use. The
+# inflater behind `compression` is the C zstd (`include-flate` → `zstd-sys`),
+# which has no wasm objects and fails the browser link with `undefined
+# symbol: ZSTD_*` — so only the desktop compresses; see the wasm block.
+rust-embed = { version = "8.12.0", default-features = false, features = [
+    "compression",
+    # In a debug build rust-embed reads the files from disk at run time rather
+    # than embedding them. A page has no disk, so the browser build has to
+    # embed either way — and a desktop debug build embedding them too costs
+    # only build time.
+    "debug-embed",
+    # `assets.rs` and `i18n_loader.rs` both use `#[include = "..."]`, which is
+    # behind this feature. The native build only ever got it because another
+    # crate in the graph turned it on — the same feature-unification trap that
+    # hid `zedis-connection`'s missing `getrandom` backend (ADR 9).
+    "include-exclude",
+] }
+
+# In the browser redis is a codec and a set of traits: `Cmd` packs a command
+# and `parse_redis_value` reads a reply. The same split `zedis-connection`
+# makes, for the same reason — no runtime, no TLS, no cluster routing, because
+# the bridge does all of that on the other side.
+[target.'cfg(target_family = "wasm")'.dependencies]
+# `get_locale()` reads `navigator.languages` only behind this feature; without
+# it the call answers `None` in a browser and every visitor starts in English
+# whatever their browser says. The desktop backends need no feature.
+sys-locale = { version = "0.3.2", features = ["js"] }
+# Raw, uncompressed embedding: the compressing variant needs the C zstd (see
+# the desktop block). A few megabytes more in the wasm, which the HTTP layer
+# compresses on the wire anyway.
+rust-embed = { version = "8.12.0", default-features = false, features = [
+    "debug-embed",
+    "include-exclude",
+] }
+redis = { version = "1.6.0", default-features = false, features = [
+    "num-bigint",
+    "acl",
+    "streams",
+    "geospatial",
+    "script",
+] }
+
 
 [dev-dependencies]
 # `TestAppContext` (headless fake platform) for state/route logic tests —
@@ -267,6 +346,13 @@ url = "2.5.8"
 # happens to turn the feature on — so `cargo test -p zedis-connection`,
 # which drags in no GUI stack, failed to build on its own.
 uuid = { version = "1.24.1", features = ["v7"] }
+# `std::time` for the browser too. `Instant::now()` and `SystemTime::now()`
+# panic on `wasm32-unknown-unknown` ("time not implemented on this platform"),
+# and on every other target this crate *is* std's own types, so a file that
+# compiles for both imports `Instant` / `SystemTime` from here rather than from
+# `std::time` (ADR 9). `Duration` stays std: it is arithmetic, the same type
+# everywhere. Native-only files (the updater, the file logger) keep std.
+web-time = "1.1.0"
 webpki-roots = "1.0.9"
 # GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
 # too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
@@ -274,14 +360,20 @@ webpki-roots = "1.0.9"
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.3", features = [
+gpui = { package = "gpui-pre", version = "0.3.5" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.5", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.3" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.5" }
+# The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
+# `single_threaded_web()` builds a `WebPlatform` with the default font
+# fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
+# new in 0.3.4) means constructing the platform directly. Same family, same
+# version, or two GPUIs end up in the tree.
+gpui_web = { package = "gpui-pre-web", version = "0.3.5" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
@@ -307,6 +399,31 @@ codegen-units = 1
 lto = true
 strip = true
 panic = "abort"
+
+# The browser bundle has the desktop's two forms, `make dev` / `make release`
+# (ADR 9). `web` is the iteration build (`make web-bundle`): release's
+# settings, but thin LTO over 16 units — a fraction of the build time — and
+# `opt-level = "s"`, the size a download cares about. Release strips; this
+# keeps the wasm's name section so a panic's stack shows Rust function names
+# in the browser console instead of addresses. That section is 20 MB of a
+# 47 MB bundle, which is why it is not the shipped form.
+[profile.web]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+opt-level = "s"
+strip = "none"
+
+# `make web-release`: the desktop release profile as it is — fat LTO on one
+# codegen unit, `panic = "abort"`, `strip = true`, which for a wasm is the
+# name section — with `opt-level = "s"` throughout rather than only on the
+# cold decoders, because every byte here is downloaded. What the strip loses
+# is a named stack in the console; the panic message and its file:line
+# survive it, the same trade the desktop release makes. wasm-opt runs after
+# (`scripts/web-bundle.sh --release`), not here: cargo has no such step.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
 
 # Cold, one-shot decoder crates get size-optimized codegen: they run rarely
 # (decoding an image value when one is viewed, parsing/rasterizing an SVG icon

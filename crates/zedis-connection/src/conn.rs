@@ -58,6 +58,29 @@ pub enum RedisAsyncConn {
     Bridge(BridgeConn),
 }
 
+impl RedisAsyncConn {
+    /// The HTTP bridge behind this connection, when it is one.
+    ///
+    /// An accessor rather than an inline `if let`, because in the browser
+    /// `Bridge` is the *only* variant and a pattern that cannot fail is a
+    /// warning there. The callers have a genuine choice to make on the host,
+    /// so the code that expresses it should compile on both targets.
+    pub(crate) fn as_bridge(&self) -> Option<&BridgeConn> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            match self {
+                RedisAsyncConn::Bridge(conn) => Some(conn),
+                _ => None,
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let RedisAsyncConn::Bridge(conn) = self;
+            Some(conn)
+        }
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 impl ConnectionLike for RedisAsyncConn {
     #[inline]

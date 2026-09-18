@@ -1,0 +1,16 @@
+# Build output and generated bundles: the image builds its own.
+target
+zedis-web/www/wasm
+zedis-web/www/assets
+
+# Nothing the build reads.
+screenshots
+design-ref
+docs
+.github
+.claude
+scripts/it/.run
+scripts/it/.env
+
+# `.git` stays in the context on purpose: build.rs stamps the commit into the
+# page's About dialog, and a CI checkout is shallow, so it is small there.

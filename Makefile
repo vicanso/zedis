@@ -2,6 +2,57 @@ lint:
 	typos
 	cargo clippy --all-targets --all -- --deny=warnings
 
+# The browser half of the build (ADR 9). `make lint` cannot see it: clippy
+# there is native-only, so a native-only API leaking into shared code compiles
+# clean locally and only fails when someone builds the page. Run from
+# zedis-web/, whose rust-toolchain.toml selects the nightly GPUI's web backend
+# needs; `rustup target add wasm32-unknown-unknown` once.
+#
+# Compile-only, not `--deny=warnings`: `zedis-web` does not yet depend on
+# `zedis-gui`, so the app's unused items are warnings that say "not wired in
+# yet", not "this is wrong". Tighten it to clippy once it does.
+check-web:
+	cd zedis-web && cargo check --target wasm32-unknown-unknown \
+		-p zedis-core -p zedis-ui -p zedis-connection -p zedis-db -p zedis-gui -p zedis-web
+
+# The browser bundle (ADR 9): the kit's icons copied beside the page and the
+# wasm built by wasm-pack (`cargo install wasm-pack` once). `web-bundle` is
+# the iteration build (`--profile web`: name section kept, no wasm-opt);
+# `web-release` is the shipped form, `release`'s counterpart — `--profile
+# web-release` (fat LTO, one codegen unit, stripped) then `wasm-opt -Oz`,
+# which needs binaryen (`brew install binaryen` / `cargo install wasm-opt`).
+# Both write the same `zedis-web/www/`, which the bridge compiles into itself
+# in a release build and reads from disk in a debug one — so `web-serve`, a
+# debug run, serves whichever bundle was built last with no rebuild of the
+# bridge. It serves the page and the API from one origin; open
+# http://127.0.0.1:7379/ and sign in as dev / dev — the bridge needs accounts
+# to start, so this target supplies one unless `ZEDIS_BRIDGE_USERS` is set.
+#
+# `RUST_ENV=dev`, the same as `bacon.toml` sets for `make dev`: the bridge
+# then keeps everything under `<config_dir>/dev` — the server list it serves
+# (and rewrites on save) and its key file — and never touches the installed
+# app's list. A bridge without it *is* the production deployment.
+# `ZEDIS_BRIDGE_USERS=alice@a,bob@b make web-serve` to try two accounts and
+# see that each one's private entries are its own.
+web-bundle:
+	scripts/web-bundle.sh
+
+web-release:
+	scripts/web-bundle.sh --release
+
+# The deployment package: `zedis-bridge` in release form with the release web
+# bundle compiled into it, as `zedis-web-<version>-<host>.tar.gz` under
+# `web-dist/` in cargo's target directory (the script prints the path), with
+# a `.sha256` beside it. It rebuilds the bundle in release form first, so a
+# dev bundle sitting in `www/wasm/` is never what ships — and `build.rs`
+# refuses a release bridge whose `www/wasm` is missing. The binary is the
+# host's; build on the platform being deployed to.
+web-dist:
+	scripts/web-dist.sh
+
+web-serve:
+	RUST_ENV=dev ZEDIS_BRIDGE_USERS="$${ZEDIS_BRIDGE_USERS:-dev@dev}" cargo run -p zedis-bridge -- --insecure-cookie
+
 # Dependency gate (advisories / licenses / bans / sources); the config is
 # deny.toml. `cargo install cargo-deny --locked` once.
 deny:

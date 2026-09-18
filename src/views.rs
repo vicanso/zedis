@@ -20,9 +20,11 @@ mod change_log_dialog;
 mod client_dialogs;
 mod clients_manager;
 mod command_palette;
+#[cfg(not(target_family = "wasm"))]
 mod compare_window;
 mod config_doc;
 mod config_editor;
+#[cfg(not(target_family = "wasm"))]
 mod connection_diagnostics;
 mod content;
 mod copy_key_dialog;
@@ -42,25 +44,33 @@ mod jsonpath_completion;
 mod key_op_dialog;
 mod key_tag_dialog;
 mod key_tree;
+#[cfg(not(target_family = "wasm"))]
 mod keyspace_notifications;
 mod kv_table;
 mod list_editor;
 mod lua_script_library;
 mod memory_analysis;
 mod metrics;
+#[cfg(not(target_family = "wasm"))]
 mod migration_window;
+#[cfg(not(target_family = "wasm"))]
 mod monitor;
+#[cfg(not(target_family = "wasm"))]
 mod multi_search;
 mod persistence;
 mod probabilistic_editor;
+#[cfg(not(target_family = "wasm"))]
 mod proto_editor;
 mod pubsub_channels_dialog;
+#[cfg(not(target_family = "wasm"))]
 mod pubsub_editor;
 mod recent_keys_palette;
 mod score_filter_dialog;
+#[cfg(not(target_family = "wasm"))]
 mod script_editor;
 mod search_manager;
 mod secondary_window;
+#[cfg(not(target_family = "wasm"))]
 mod sentinel_dialogs;
 mod server_info;
 mod server_load;
@@ -77,6 +87,7 @@ mod terminal;
 mod timeseries_editor;
 mod timeseries_explorer;
 mod title_bar;
+#[cfg(not(target_family = "wasm"))]
 mod topology;
 mod trash_dialog;
 mod unsupported_panel;
@@ -96,6 +107,7 @@ pub use client_dialogs::{KillFilterSupport, ZedisClientKillFilterDialog, ZedisCl
 pub use clients_manager::ZedisClientsManager;
 pub use command_palette::ZedisCommandPalette;
 pub use config_editor::ZedisConfigEditor;
+#[cfg(not(target_family = "wasm"))]
 pub use connection_diagnostics::open_connection_diagnostics;
 pub use content::ZedisContent;
 pub use copy_key_dialog::ZedisCopyKeyDialog;
@@ -118,34 +130,42 @@ pub use key_op_dialog::{
 };
 pub use key_tag_dialog::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog};
 pub use key_tree::ZedisKeyTree;
+#[cfg(not(target_family = "wasm"))]
 pub use keyspace_notifications::ZedisKeyspaceNotifications;
 pub use kv_table::ZedisKvTable;
 pub use list_editor::ZedisListEditor;
 pub use lua_script_library::ZedisLuaScriptLibrary;
 pub use memory_analysis::ZedisMemoryAnalysis;
 pub use score_filter_dialog::open_score_filter_dialog;
+#[cfg(not(target_family = "wasm"))]
 pub use sentinel_dialogs::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
 pub use server_report_dialog::{ServerReport, open_server_report_dialog};
 pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 // Chart helpers re-exported so other diagnostic panels (e.g.
 // memory_analysis) can reuse the metrics view's canvas primitives
 // without each one re-implementing axis / tick rendering.
+#[cfg(not(target_family = "wasm"))]
 pub use compare_window::open_compare_window;
 pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
-pub(crate) use migration_window::dirs_default_directory;
+#[cfg(not(target_family = "wasm"))]
 pub use migration_window::{
     CopyPreset, ExportSource, open_migration_copy_window, open_migration_export_window, open_migration_import_window,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use monitor::ZedisMonitor;
+#[cfg(not(target_family = "wasm"))]
 pub use multi_search::ZedisMultiSearch;
 pub use persistence::ZedisPersistence;
 pub use probabilistic_editor::ZedisProbabilisticEditor;
+#[cfg(not(target_family = "wasm"))]
 pub use proto_editor::ZedisProtoEditor;
 pub use pubsub_channels_dialog::{ChannelPick, open_pubsub_channels_dialog};
+#[cfg(not(target_family = "wasm"))]
 pub use pubsub_editor::ZedisPubsubEditor;
 pub use recent_keys_palette::ZedisRecentKeysPalette;
+#[cfg(not(target_family = "wasm"))]
 pub use script_editor::ZedisScriptEditor;
 pub use search_manager::ZedisSearchManager;
 pub use server_info::ZedisServerInfo;
@@ -161,6 +181,7 @@ pub use stream_editor::ZedisStreamEditor;
 pub use terminal::ZedisTerminal;
 pub use timeseries_editor::ZedisTimeSeriesEditor;
 pub use title_bar::ZedisTitleBar;
+#[cfg(not(target_family = "wasm"))]
 pub use topology::ZedisTopology;
 pub use trash_dialog::open_trash_dialog;
 pub use unsupported_panel::ZedisUnsupportedPanel;

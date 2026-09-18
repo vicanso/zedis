@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_family = "wasm"))]
+use crate::views::ZedisPubsubEditor;
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
@@ -31,9 +33,9 @@ use crate::{
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
         ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
-        ZedisPubsubEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
-        ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, export_to_file, json_invalid_message, key_op_title_key,
-        looks_like_bitmap, looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
+        ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
+        ZedisZsetEditor, bitmap_eligible, export_to_file, json_invalid_message, key_op_title_key, looks_like_bitmap,
+        looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
     },
 };
 use bytes::Bytes;
@@ -51,8 +53,9 @@ use gpui_kit::component::{
 };
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, info};
+use web_time::Instant;
 use zedis_core::json::check_json;
 use zedis_ui::ZedisDialog;
 
@@ -74,7 +77,7 @@ const MAX_IMPORT_VALUE_BYTES: usize = 512 * 1024 * 1024;
 /// because the diff view re-renders them via the same formatting paths
 /// the editor uses, so binary-safe round-trips work for non-UTF8 keys.
 #[derive(Clone, Debug)]
-pub(crate) struct DiffSession {
+pub struct DiffSession {
     /// History index used to look up the reference version. Kept so the
     /// view can render the same "vN (3 min ago)" label the toolbar
     /// dropdown shows.
@@ -132,6 +135,7 @@ pub struct ZedisEditor {
     geo_probe_task: Option<Task<()>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
     stream_editor: Option<Entity<ZedisStreamEditor>>,
+    #[cfg(not(target_family = "wasm"))]
     pubsub_editor: Option<Entity<ZedisPubsubEditor>>,
     timeseries_editor: Option<Entity<ZedisTimeSeriesEditor>>,
     probabilistic_editor: Option<Entity<ZedisProbabilisticEditor>>,
@@ -413,6 +417,7 @@ impl ZedisEditor {
             geo_probe_task: None,
             hash_editor: None,
             stream_editor: None,
+            #[cfg(not(target_family = "wasm"))]
             pubsub_editor: None,
             timeseries_editor: None,
             probabilistic_editor: None,
@@ -844,6 +849,7 @@ impl ZedisEditor {
             let _ = self.stream_editor.take();
         }
         if key_type != KeyType::Channel {
+            #[cfg(not(target_family = "wasm"))]
             let _ = self.pubsub_editor.take();
         }
         if key_type != KeyType::TimeSeries {

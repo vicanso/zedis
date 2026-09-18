@@ -13,48 +13,70 @@
 // limitations under the License.
 
 mod action;
+#[cfg(not(target_family = "wasm"))]
 mod ai;
 mod app_identity;
+/// `async-channel`, the background loops' batch pipe (see the module doc
+/// for why it is not `smol::channel`).
+pub mod channel;
 mod color;
 mod common;
 mod crash;
 mod datetime;
+#[cfg(not(target_family = "wasm"))]
 mod diagnostics;
 mod font;
 mod keybindings;
+#[cfg(not(target_family = "wasm"))]
 mod local_data;
+#[cfg(not(target_family = "wasm"))]
 mod logger;
+mod platform;
+#[cfg(not(target_family = "wasm"))]
 mod proxy;
+#[cfg(not(target_family = "wasm"))]
 mod single_instance;
+#[cfg(not(target_family = "wasm"))]
 mod syntax;
 mod tag;
+mod update_info;
+#[cfg(not(target_family = "wasm"))]
 mod updater;
 mod zip;
 
 pub use action::*;
+#[cfg(not(target_family = "wasm"))]
 pub use ai::{AiEndpoint, analyze_report, suggest_command};
 pub use app_identity::with_app_identity;
 pub use color::card_background;
 pub use common::*;
 pub use crash::{CrashContext, CrashReport, install_panic_hook, take_pending_crash};
 pub use datetime::*;
+#[cfg(not(target_family = "wasm"))]
 pub use diagnostics::{DiagnosticsInput, export_diagnostics};
 pub use font::*;
 pub use keybindings::{ensure_keybindings_file, keybinding_overrides, load_keybinding_overrides};
+#[cfg(not(target_family = "wasm"))]
 pub use local_data::{export_local_data_file, import_local_data_file};
+#[cfg(not(target_family = "wasm"))]
 pub use logger::{init_logger, logs_dir};
+pub use platform::{PlatformInfo, platform_info};
+#[cfg(not(target_family = "wasm"))]
 pub use proxy::{is_valid_proxy_setting, set_configured_proxy};
+#[cfg(not(target_family = "wasm"))]
 pub use single_instance::{
     InstanceMessage, InstanceRole, claim_instance, instance_messages, post_instance_message, release_instance,
     take_instance_server,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use syntax::{register_editing_rules, register_extra_languages};
 pub use tag::{resolve_tag_chip, resolve_tag_color, theme_color_for_tag};
-#[cfg(target_os = "macos")]
+pub use update_info::{Delivery, UpdateAsset, UpdateInfo};
+#[cfg(all(not(target_family = "wasm"), target_os = "macos"))]
 pub use updater::relaunch;
+#[cfg(not(target_family = "wasm"))]
 pub use updater::{
-    Delivery, UpdateInfo, download_and_verify, fetch_latest_release, focus_installer_ui, install_update,
-    installer_requires_quit,
+    download_and_verify, fetch_latest_release, focus_installer_ui, install_update, installer_requires_quit,
 };
 // Pure logic lives in `zedis-core`, fs/crypto/time in `zedis-connection`;
 // re-exported here so call sites keep using `crate::helpers::*` unchanged.

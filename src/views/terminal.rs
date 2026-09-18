@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{AiEndpoint, suggest_command};
 use crate::{
     connection::{
         DangerKind, RedisAsyncConn, ReplyFormat, classify_dangerous_line, command_doc_url, format_exec, format_reply,
@@ -21,12 +25,13 @@ use crate::{
     db::get_cmd_history_manager,
     error::{ConnectionErrorKind, Error},
     helpers::{
-        AiEndpoint, TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
-        starts_with_ignore_ascii_case, suggest_command, write_file_atomic,
+        TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
+        starts_with_ignore_ascii_case, write_file_atomic,
     },
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, update_app_state_and_save_quiet},
     views::confirm_dangerous_command,
 };
+use async_lock::Mutex;
 use chrono::Local;
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -43,12 +48,11 @@ use gpui_kit::component::{
     v_flex,
 };
 use redis::{Value, cmd};
-use smol::lock::Mutex;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 use tracing::{error, info, warn};
+use web_time::Instant;
 use zedis_ui::stable_gutter_padding;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -887,77 +891,89 @@ impl ZedisTerminal {
     /// Privacy: only the question plus server *metadata* (version,
     /// deployment type, modules, current db) are sent — never key values.
     fn ask_ai(&mut self, question: String, cx: &mut Context<Self>) {
-        if question.is_empty() {
-            return;
-        }
-        let store = cx.global::<ZedisGlobalStore>().read(cx);
-        if !store.ai_configured() {
-            self.push_entry(TranscriptEntry::Text(format!(
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if question.is_empty() {
+                return;
+            }
+            let store = cx.global::<ZedisGlobalStore>().read(cx);
+            if !store.ai_configured() {
+                self.push_entry(TranscriptEntry::Text(format!(
                 "? {question}\nAI endpoint is not configured. Set the base URL in Settings first (an API key only if the endpoint needs one)."
             )));
-            cx.notify();
-            return;
-        }
-        let endpoint = AiEndpoint {
-            base_url: store.ai_base_url(),
-            api_key: store.ai_api_key(),
-            model: store.ai_model(),
-        };
-        let locale = store.locale().to_string();
-
-        let state = self.server_state.read(cx);
-        let description = state.nodes_description();
-        let server_context = format!(
-            "Redis version {}; deployment: {}; modules: [{}]; current db: {}",
-            state.version(),
-            description.server_type.as_str(),
-            description.modules,
-            self.terminal_db.unwrap_or(state.db()),
-        );
-
-        // A second `?` while one is pending replaces the task (its
-        // completion never runs) — clear the previous placeholder so it
-        // can't linger in the scrollback forever.
-        self.transcript
-            .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
-        self.push_entry(TranscriptEntry::Text(format!("? {question}")));
-        self.push_entry(TranscriptEntry::AiPending);
-        cx.notify();
-
-        self.ai_task = Some(cx.spawn(async move |handle, cx| {
-            // Blocking ureq call — keep it on the background pool.
-            let result = cx
-                .background_spawn(async move { suggest_command(&endpoint, &question, &server_context, &locale) })
-                .await;
-            let _ = handle.update(cx, |this, cx| {
-                // The reply (or error) replaces the waiting placeholder.
-                this.transcript
-                    .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
-                match result {
-                    Ok(reply) => {
-                        for command in &reply.commands {
-                            this.push_entry(TranscriptEntry::Text(format!("AI> {command}")));
-                        }
-                        if !reply.explanation.is_empty() {
-                            this.push_entry(TranscriptEntry::Text(reply.explanation.clone()));
-                        }
-                        // Single command goes straight to the input box for
-                        // review; a multi-command answer stays in the output
-                        // (the REPL input is one line — use Batch to run all).
-                        if let Some(first) = reply.commands.first()
-                            && reply.commands.len() == 1
-                        {
-                            this.pending_ai_fill = Some(first.clone().into());
-                        }
-                    }
-                    Err(e) => {
-                        this.push_entry(TranscriptEntry::Text(format!("AI error: {e}")));
-                    }
-                }
-                this.cmd_output_dirty = true;
                 cx.notify();
-            });
-        }));
+                return;
+            }
+            let endpoint = AiEndpoint {
+                base_url: store.ai_base_url(),
+                api_key: store.ai_api_key(),
+                model: store.ai_model(),
+            };
+            let locale = store.locale().to_string();
+
+            let state = self.server_state.read(cx);
+            let description = state.nodes_description();
+            let server_context = format!(
+                "Redis version {}; deployment: {}; modules: [{}]; current db: {}",
+                state.version(),
+                description.server_type.as_str(),
+                description.modules,
+                self.terminal_db.unwrap_or(state.db()),
+            );
+
+            // A second `?` while one is pending replaces the task (its
+            // completion never runs) — clear the previous placeholder so it
+            // can't linger in the scrollback forever.
+            self.transcript
+                .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
+            self.push_entry(TranscriptEntry::Text(format!("? {question}")));
+            self.push_entry(TranscriptEntry::AiPending);
+            cx.notify();
+
+            self.ai_task = Some(cx.spawn(async move |handle, cx| {
+                // Blocking ureq call — keep it on the background pool.
+                let result = cx
+                    .background_spawn(async move { suggest_command(&endpoint, &question, &server_context, &locale) })
+                    .await;
+                let _ = handle.update(cx, |this, cx| {
+                    // The reply (or error) replaces the waiting placeholder.
+                    this.transcript
+                        .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
+                    match result {
+                        Ok(reply) => {
+                            for command in &reply.commands {
+                                this.push_entry(TranscriptEntry::Text(format!("AI> {command}")));
+                            }
+                            if !reply.explanation.is_empty() {
+                                this.push_entry(TranscriptEntry::Text(reply.explanation.clone()));
+                            }
+                            // Single command goes straight to the input box for
+                            // review; a multi-command answer stays in the output
+                            // (the REPL input is one line — use Batch to run all).
+                            if let Some(first) = reply.commands.first()
+                                && reply.commands.len() == 1
+                            {
+                                this.pending_ai_fill = Some(first.clone().into());
+                            }
+                        }
+                        Err(e) => {
+                            this.push_entry(TranscriptEntry::Text(format!("AI error: {e}")));
+                        }
+                    }
+                    this.cmd_output_dirty = true;
+                    cx.notify();
+                });
+            }));
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            // The assistant is a blocking HTTP call to a configured endpoint,
+            // and the browser build carries no HTTP client of its own (ADR 9).
+            self.push_entry(TranscriptEntry::Text(format!(
+                "? {question}\nThe AI assistant is not available in the browser build."
+            )));
+            cx.notify();
+        }
     }
 
     fn run_command_lines(&mut self, command: SharedString, cx: &mut Context<Self>) {

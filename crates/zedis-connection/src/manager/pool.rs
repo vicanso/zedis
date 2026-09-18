@@ -16,9 +16,16 @@
 //! count) and the pooled `ConnectionManager`.
 
 use super::*;
+#[cfg(not(target_family = "wasm"))]
 use crate::async_connection::open_single_client;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgeQuery as _, bridge_transport};
 use tracing::warn;
 use uuid::Uuid;
+#[cfg(target_family = "wasm")]
+use zedis_core::string::split_host_port_or;
 
 /// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
 /// This function checks the role of the Redis server and returns the server type.
@@ -26,12 +33,19 @@ use uuid::Uuid;
 /// * `client` - The Redis client to check the server type.
 /// # Returns
 /// * `ServerType` - The type of the Redis server.
-async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerType> {
+#[cfg(not(target_family = "wasm"))]
+async fn detect_server_type(conn: MultiplexedConnection) -> Result<ServerType> {
+    detect_server_type_over(&mut RedisAsyncConn::Single(conn)).await
+}
+
+/// The detection itself: two commands and no dialling, so the browser runs
+/// exactly this over the bridge.
+async fn detect_server_type_over(conn: &mut RedisAsyncConn) -> Result<ServerType> {
     // Check if it's a Sentinel. `ROLE` is missing on some managed / old servers
     // (e.g. Upstash, which answers "command not available"). Treat that as
     // "not a sentinel" and fall through to the INFO check rather than failing
     // detection outright — only a genuine error is propagated.
-    match cmd("ROLE").query_async::<Role>(&mut conn).await {
+    match cmd("ROLE").query_async::<Role>(conn).await {
         Ok(Role::Sentinel { .. }) => return Ok(ServerType::Sentinel),
         Ok(_) => {}
         Err(e) if is_ignorable_server_error(&e.to_string()) => {
@@ -43,14 +57,33 @@ async fn detect_server_type(mut conn: MultiplexedConnection) -> Result<ServerTyp
     }
 
     // Check if Cluster mode is enabled via INFO command
-    let info: InfoDict = cmd("INFO").arg("cluster").query_async(&mut conn).await?;
-    let cluster_enabled = info.get("cluster_enabled").unwrap_or(0i64);
-
-    if cluster_enabled == 1 {
+    let reply: Value = cmd("INFO").arg("cluster").query_async(conn).await?;
+    if cluster_enabled(reply)? {
         Ok(ServerType::Cluster)
     } else {
         Ok(ServerType::Standalone)
     }
+}
+
+/// `cluster_enabled` out of an `INFO cluster` reply, in either shape it comes.
+///
+/// The desktop asks over a single connection to the seed and gets the text.
+/// The browser asks over the bridge, whose pooled connection for an entry it
+/// already knows to be a cluster is redis-rs's *cluster-routed* one — and that
+/// sends a keyless `INFO` to every node and answers a map of node → text
+/// (`ResponsePolicy::Special`). Reading only the first shape made the browser
+/// call every cluster "standalone", after which `INFO server` took the
+/// non-cluster branch, met the same map, and failed the whole selection. Any
+/// node's answer settles it: they are all members of the one cluster.
+fn cluster_enabled(reply: Value) -> Result<bool> {
+    let text = match reply {
+        Value::Map(nodes) => nodes.into_iter().next().map(|(_node, text)| text).unwrap_or(Value::Nil),
+        text => text,
+    };
+    // The same conversion `query_async::<InfoDict>` makes, so a reply that is
+    // neither shape is the error it always was.
+    let info = InfoDict::from_redis_value(text).map_err(redis::RedisError::from)?;
+    Ok(info.get("cluster_enabled").unwrap_or(0i64) == 1)
 }
 
 /// What a permission probe learned about the connected ACL user's right to
@@ -257,6 +290,55 @@ async fn get_databases(mut conn: RedisAsyncConn, is_cluster: bool) -> Result<usi
     // 1 — the user can still set an explicit count in the server config.
     Ok(1)
 }
+/// A server that has been reached, before anything is asked of it.
+///
+/// The one thing that genuinely differs between the two builds. Splitting it
+/// out is what keeps `get_client_without_cache` single: everything past this
+/// point is commands, and commands travel the same way on both (ADR 9).
+struct Reached {
+    connection: RedisAsyncConn,
+    server_type: ServerType,
+    nodes: Vec<RedisNode>,
+    master_nodes: Vec<RedisNode>,
+    sentinel_master_names: Vec<String>,
+    /// What built the connection, so a second one can be opened without
+    /// re-running discovery. Nothing builds connections in the browser.
+    #[cfg(not(target_family = "wasm"))]
+    rclient: RClient,
+}
+
+/// The cluster's masters, as the labels the bridge answers a fan-out with.
+///
+/// A `PING` is the cheapest command that reaches every master, and the reply
+/// is thrown away — only the `nodes` list beside it is wanted.
+#[cfg(target_family = "wasm")]
+async fn bridge_master_nodes(connection: &RedisAsyncConn) -> Vec<RedisNode> {
+    let Some(conn) = connection.as_bridge() else {
+        return Vec::new();
+    };
+    match conn.fanout_masters(vec![cmd("PING").get_packed_command()]).await {
+        Ok((labels, _)) => labels
+            .iter()
+            .map(|label| {
+                let (host, port) = split_host_port_or(label, 0);
+                RedisNode {
+                    server: RedisServer {
+                        name: label.clone(),
+                        host: host.to_string(),
+                        port,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .collect(),
+        Err(e) => {
+            warn!(error = %e, "the bridge could not list the masters");
+            Vec::new()
+        }
+    }
+}
+
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
@@ -266,6 +348,7 @@ impl ConnectionManager {
     /// Discovers Redis nodes and server type based on initial configuration.
     /// `pub(super)` so the sharded Pub/Sub sibling module can build its
     /// dedicated connection from the same node discovery.
+    #[cfg(not(target_family = "wasm"))]
     pub(super) async fn get_redis_nodes(&self, name: &str) -> Result<NodeDiscovery> {
         let config = get_server(name)?;
         let (mut conn, server_type) = {
@@ -415,8 +498,13 @@ impl ConnectionManager {
         };
         let key = config.get_hash(db);
         self.clients.remove(&key);
+        #[cfg(not(target_family = "wasm"))]
         remove_connection_from_pool(&config, db);
     }
+    /// A long-lived push stream, which the bridge's request/response protocol
+    /// has no shape for — the web build drops the panels that subscribe
+    /// (ADR 9).
+    #[cfg(not(target_family = "wasm"))]
     pub async fn get_pubsub_connection(&self, server_id: &str) -> Result<redis::aio::PubSub> {
         let config = get_server(server_id)?;
         // The shared builder, so a subscription gets the same TLS handling
@@ -426,8 +514,108 @@ impl ConnectionManager {
         Ok(pubsub)
     }
     /// Retrieves or creates a RedisClient for the given configuration name without caching.
+    ///
+    /// Everything after [`Reached`] is the same on both targets, because it is
+    /// all ordinary commands: the access-mode probe, `MODULE LIST`, the
+    /// database count, `INFO server`. Only *getting there* differs (ADR 9).
     pub async fn get_client_without_cache(&self, server_id: &str, db: usize) -> Result<RedisClient> {
         let config = get_server(server_id)?;
+        // The desktop reads the entry again inside discovery; the browser has
+        // nothing to discover and reads it here.
+        #[cfg(not(target_family = "wasm"))]
+        let reached = self.reach(server_id, db).await?;
+        #[cfg(target_family = "wasm")]
+        let reached = self.reach(server_id, &config, db).await?;
+        let Reached {
+            connection,
+            server_type,
+            nodes,
+            master_nodes,
+            sentinel_master_names,
+            #[cfg(not(target_family = "wasm"))]
+            rclient,
+        } = reached;
+        let access_mode = if safe_check_user_readonly(connection.clone()).await {
+            AccessMode::StrictReadOnly
+        } else if config.readonly.unwrap_or(false) {
+            AccessMode::SafeMode
+        } else {
+            AccessMode::ReadWrite
+        };
+        // `MODULE LIST` is denied on most managed clouds; module panels
+        // then stay hidden, which is right — but the reason belongs in the log.
+        let modules = get_modules(connection.clone()).await.unwrap_or_else(|e| {
+            debug!(error = %e, "MODULE LIST unavailable, assuming no modules");
+            Vec::new()
+        });
+        // Prefer the user-configured count — it works on managed clouds that
+        // block `CONFIG` (ElastiCache) and on Valkey cluster (multi-db). Only
+        // probe `CONFIG GET databases` when the server config leaves it unset.
+        let databases = match config.databases {
+            Some(n) => n,
+            None => get_databases(connection.clone(), server_type == ServerType::Cluster)
+                .await
+                .unwrap_or(1),
+        };
+        let mut client = RedisClient {
+            db,
+            databases,
+            modules,
+            access_mode,
+            server_type: server_type.clone(),
+            nodes,
+            master_nodes,
+            sentinel_master_names,
+            version: Version::new(0, 0, 0),
+            is_valkey: false,
+            connection,
+            #[cfg(not(target_family = "wasm"))]
+            client: rclient,
+        };
+        let mut conn = client.connection.clone();
+        let get_version = |info: InfoDict| -> (bool, Option<Version>) {
+            if let Some(v) = info.get::<String>("valkey_version") {
+                return (true, Version::parse(&v).ok());
+            }
+            if let Some(v) = info.get::<String>("redis_version") {
+                return (false, Version::parse(&v).ok());
+            }
+            (false, None)
+        };
+
+        (client.is_valkey, client.version) = match server_type {
+            ServerType::Cluster => {
+                let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
+                let mut version = None;
+                let mut is_valkey = false;
+                if let redis::Value::Map(items) = info {
+                    for (_, node_info_val) in items {
+                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
+                            && let (valkey, Some(v)) = get_version(info)
+                        {
+                            version = Some(v);
+                            is_valkey = valkey;
+                            break;
+                        }
+                    }
+                }
+                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
+            }
+            _ => {
+                let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
+                let (is_valkey, version) = get_version(info);
+                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
+            }
+        };
+
+        debug!(server_id, version = client.version(), modules = ?client.modules, db, access_mode = ?client.access_mode(), "create redis client success");
+        Ok(client)
+    }
+
+    /// Reach the server the desktop way: discover the topology, build the
+    /// redis-rs client for it, and open a connection.
+    #[cfg(not(target_family = "wasm"))]
+    async fn reach(&self, server_id: &str, db: usize) -> Result<Reached> {
         let NodeDiscovery {
             nodes,
             server_type,
@@ -486,81 +674,61 @@ impl ConnectionManager {
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();
         info!(master_nodes = ?master_nodes_description, "server master nodes");
         let connection = get_async_connection(&rclient, db, false).await?;
-        let access_mode = if safe_check_user_readonly(connection.clone()).await {
-            AccessMode::StrictReadOnly
-        } else if config.readonly.unwrap_or(false) {
-            AccessMode::SafeMode
-        } else {
-            AccessMode::ReadWrite
-        };
-        // `MODULE LIST` is denied on most managed clouds; module panels
-        // then stay hidden, which is right — but the reason belongs in the log.
-        let modules = get_modules(connection.clone()).await.unwrap_or_else(|e| {
-            debug!(error = %e, "MODULE LIST unavailable, assuming no modules");
-            Vec::new()
-        });
-        // Prefer the user-configured count — it works on managed clouds that
-        // block `CONFIG` (ElastiCache) and on Valkey cluster (multi-db). Only
-        // probe `CONFIG GET databases` when the server config leaves it unset.
-        let databases = match config.databases {
-            Some(n) => n,
-            None => get_databases(connection.clone(), server_type == ServerType::Cluster)
-                .await
-                .unwrap_or(1),
-        };
-        let mut client = RedisClient {
-            db,
-            databases,
-            modules,
-            access_mode,
-            server_type: server_type.clone(),
+        Ok(Reached {
+            connection,
+            server_type,
             nodes,
             master_nodes,
             sentinel_master_names,
-            version: Version::new(0, 0, 0),
-            is_valkey: false,
-            connection,
-            client: rclient,
-        };
-        let mut conn = client.connection.clone();
-        let get_version = |info: InfoDict| -> (bool, Option<Version>) {
-            if let Some(v) = info.get::<String>("valkey_version") {
-                return (true, Version::parse(&v).ok());
-            }
-            if let Some(v) = info.get::<String>("redis_version") {
-                return (false, Version::parse(&v).ok());
-            }
-            (false, None)
-        };
-
-        (client.is_valkey, client.version) = match server_type {
-            ServerType::Cluster => {
-                let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                let mut version = None;
-                let mut is_valkey = false;
-                if let redis::Value::Map(items) = info {
-                    for (_, node_info_val) in items {
-                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
-                            && let (valkey, Some(v)) = get_version(info)
-                        {
-                            version = Some(v);
-                            is_valkey = valkey;
-                            break;
-                        }
-                    }
-                }
-                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
-            }
-            _ => {
-                let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                let (is_valkey, version) = get_version(info);
-                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
-            }
-        };
-
-        debug!(server_id, version = client.version(), modules = ?client.modules, db, access_mode = ?client.access_mode(), "create redis client success");
-        Ok(client)
+            rclient,
+        })
     }
+
+    /// Reach the server the browser way: there is nothing to dial, so the
+    /// connection is a bridge request and the questions that follow are the
+    /// commands `get_client_without_cache` was going to ask anyway.
+    #[cfg(target_family = "wasm")]
+    async fn reach(&self, server_id: &str, config: &RedisServer, _db: usize) -> Result<Reached> {
+        let transport = bridge_transport().ok_or_else(|| Error::Invalid {
+            message: "no bridge transport is installed".to_string(),
+        })?;
+        let mut connection = RedisAsyncConn::Bridge(BridgeConn::new(transport, server_id, _db));
+        // What kind of server the bridge reached is still answered by
+        // commands, so this is the desktop's own detection, unchanged.
+        let server_type = match config.server_type {
+            Some(pinned) if pinned != SERVER_TYPE_AUTO => pinned.into(),
+            _ => detect_server_type_over(&mut connection).await.unwrap_or_else(|e| {
+                info!("server type detection unsupported, using standalone mode: {e:?}");
+                ServerType::Standalone
+            }),
+        };
+        // Masters as *labels*, learned from the bridge's own fan-out rather
+        // than from `CLUSTER NODES` — for every topology, not only a cluster. A
+        // label is all `query_async_masters_with_option` aligns replies on, and
+        // the browser's copy of the entry has no host to build one from: the
+        // bridge's list gives ids and names, because handing the browser a
+        // dialable address is precisely what the bridge exists to avoid
+        // (ADR 9). A standalone answers with its one label the same way.
+        let mut master_nodes = bridge_master_nodes(&connection).await;
+        if master_nodes.is_empty() {
+            // The fan-out did not answer; keep the entry itself so the client
+            // still has a node to count, even if it cannot aim a scan.
+            master_nodes.push(RedisNode {
+                server: config.clone(),
+                ..Default::default()
+            });
+        }
+        Ok(Reached {
+            connection,
+            server_type,
+            nodes: master_nodes.clone(),
+            master_nodes,
+            // Sentinel administration dials the sentinels themselves, which
+            // is server-side work the web build does not offer.
+            sentinel_master_names: Vec::new(),
+        })
+    }
+
     /// Retrieves or creates a RedisClient for the given configuration name.
     pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
         let config = get_server(server_id)?;
@@ -599,7 +767,33 @@ impl ConnectionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{WriteVerdict, classify_denial, probe_key};
+    use super::{WriteVerdict, classify_denial, cluster_enabled, probe_key};
+    use redis::Value;
+
+    fn text(info: &str) -> Value {
+        Value::BulkString(info.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn cluster_mode_is_read_from_a_single_reply_and_from_a_per_node_map() {
+        // A single connection to the seed: what the desktop's detection sees.
+        assert!(cluster_enabled(text("# Cluster\r\ncluster_enabled:1\r\n")).expect("text"));
+        assert!(!cluster_enabled(text("# Cluster\r\ncluster_enabled:0\r\n")).expect("text"));
+        assert!(!cluster_enabled(text("# Cluster\r\n")).expect("absent means no"));
+
+        // redis-rs's cluster-routed connection: what the bridge hands the
+        // browser for an entry it knows to be a cluster. Read as text only,
+        // this was an error, the browser fell back to "standalone", and the
+        // selection then failed on the same map from `INFO server`.
+        let per_node = Value::Map(vec![
+            (text("10.51.168.20:31545"), text("# Cluster\r\ncluster_enabled:1\r\n")),
+            (text("10.51.135.55:30505"), text("# Cluster\r\ncluster_enabled:1\r\n")),
+        ]);
+        assert!(cluster_enabled(per_node).expect("map"));
+        // No node answered: an error, which the caller logs — not a quiet
+        // "not a cluster".
+        assert!(cluster_enabled(Value::Map(Vec::new())).is_err());
+    }
 
     #[test]
     fn denial_texts_of_every_supported_server_are_classified() {

@@ -35,7 +35,7 @@ pub mod pickle;
 pub mod url;
 
 use serde_json::{Map, Number, Value};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 /// A tagged single-field object, the shape MongoDB's extended JSON uses
 /// for values plain JSON has no type for (`{"$oid": …}`, `{"$date": …}`).
@@ -68,11 +68,22 @@ fn rfc3339_millis(millis: i64) -> Option<String> {
     Some(humantime::format_rfc3339_seconds(time).to_string())
 }
 
+/// Seconds since the Unix epoch, now.
+///
+/// Spelled through `web_time`, which is std on the desktop and the browser's
+/// clock on wasm, where `std::time::SystemTime::now()` panics — the only call
+/// std cannot make there. The epoch arithmetic above stays on std's type
+/// because that is what `humantime` formats (ADR 9).
+fn unix_now_secs() -> Option<i64> {
+    let since_epoch = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).ok()?;
+    Some(since_epoch.as_secs() as i64)
+}
+
 /// `rfc3339_millis` plus how far from now: `2026-09-04T08:00:00Z (in 2h 5m)`
 /// or `… (3d 4h ago)`, to the minute.
 fn describe_instant(seconds: i64) -> Option<String> {
     let stamp = rfc3339_millis(seconds.checked_mul(1000)?)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let now = unix_now_secs()?;
     let delta = seconds - now;
     let rounded = Duration::from_secs(delta.unsigned_abs() - delta.unsigned_abs() % 60);
     let relative = if rounded.is_zero() {

@@ -21,16 +21,37 @@ crate-type = ["cdylib", "rlib"]
 # No `tree-sitter`: gpui-component drops that dependency on wasm but still
 # compiles the code behind the feature, so enabling it here is 37 errors.
 gpui = { workspace = true }
-gpui-kit = { workspace = true }
+# The application itself, as a library: the views, the states, the assets.
+# What this crate adds is only the browser's way in (ADR 9).
+zedis-gui = { path = "..", version = "0.11.0" }
 zedis-connection = { workspace = true }
 zedis-core = { workspace = true }
-zedis-ui = { workspace = true }
 
 base64 = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# Only the browser entry point uses the kit: `web_init`, the single-threaded
+# app and the asset source. A native check of this crate builds the transport
+# and its tests, and needs none of it.
+gpui-kit = { workspace = true }
+# `WebPlatform` itself, to pick its canvas font fallback (CJK); see the
+# workspace manifest.
+gpui_web = { workspace = true }
 console_error_panic_hook = "0.1.7"
 wasm-bindgen = "0.2.104"
+# `tracing` has nowhere to go in a page without a writer for the console.
+tracing-subscriber = "0.3.23"
+tracing-web = "0.1.3"
+web-sys = { version = "0.3.105", features = ["Window", "Location"] }
+
+[dev-dependencies]
+# `FakeHttpClient` for the transport's tests. Asked for here rather than
+# inherited: a `cargo test -p zedis-web` on its own does not get the feature
+# unification that the workspace-wide run happens to provide, so the tests
+# only built from the root — the same trap as `getrandom` and
+# `rust-embed/include-exclude` (ADR 9).
+gpui = { workspace = true, features = ["test-support"] }

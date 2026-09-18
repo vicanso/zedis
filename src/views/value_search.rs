@@ -54,7 +54,8 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
-use std::{mem::take, sync::Arc, time::Instant};
+use std::{mem::take, sync::Arc};
+use web_time::Instant;
 
 // The scan cap, time budget and match cap are user-tunable (Settings →
 // Key Behavior; `ZedisAppState::value_search_*`, clamped there). The

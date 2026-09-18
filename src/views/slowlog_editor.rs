@@ -15,6 +15,8 @@
 use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 /// Redis Slow Log viewer.
 ///
 /// Displays a table of slow-query log entries fetched from the server's

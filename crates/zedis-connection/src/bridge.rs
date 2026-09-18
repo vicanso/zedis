@@ -27,17 +27,19 @@
 //! `HttpClient`, which is the native client on the desktop and the browser's
 //! `fetch` under wasm, so one implementation serves both.
 
+#[cfg(target_family = "wasm")]
+use crate::conn::RedisAsyncConn;
 use futures::future::BoxFuture;
-use redis::{Cmd, ErrorKind, Pipeline, RedisError, Value};
 #[cfg(target_family = "wasm")]
 use redis::FromRedisValue;
+use redis::{Cmd, ErrorKind, Pipeline, RedisError, Value};
 // `aio` is what carries `ConnectionLike` and `Cmd::query_async`, and it cannot
 // be built for `wasm32-unknown-unknown` — it insists on a socket runtime. The
 // browser gets the same call sites from the traits at the bottom of this file
 // instead (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 use redis::{RedisFuture, aio::ConnectionLike};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Why a bridge call failed, in terms the UI can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +167,77 @@ pub struct BridgeReply {
 /// becomes a dependency here.
 pub trait BridgeTransport: Send + Sync + 'static {
     fn send(&self, request: BridgeRequest) -> BoxFuture<'static, Result<BridgeReply, BridgeError>>;
+
+    /// Ask for a backend connection of this caller's own, and get its token.
+    ///
+    /// Required rather than optional, because the thing it protects is not a
+    /// nicety: `SELECT`, `AUTH`, `CLIENT SETNAME` and `MULTI` are *connection*
+    /// state (ADR 4), so a terminal running them on a pooled connection moves
+    /// the key tree to another database or scatters a transaction. A transport
+    /// that cannot pin a connection has to say so here, not hand back a shared
+    /// one that looks dedicated.
+    fn open_session(&self, server_id: String, db: usize) -> BoxFuture<'static, Result<String, BridgeError>>;
+
+    /// Release it. The bridge also sweeps idle sessions, which is what covers
+    /// a tab that closes mid-transaction and never sends this.
+    fn close_session(&self, session: String) -> BoxFuture<'static, Result<(), BridgeError>>;
+}
+
+/// The transport every bridge connection in this process uses.
+///
+/// A process-wide slot rather than a parameter threaded through
+/// `ConnectionManager`, for the same reason `init_commands_json` is one: this
+/// crate cannot construct the transport (it has no HTTP client and no gpui by
+/// design), so whoever can has to hand one over, and there is exactly one per
+/// process. The web entry point installs it before the first frame.
+static TRANSPORT: OnceLock<Arc<dyn BridgeTransport>> = OnceLock::new();
+
+/// Install the transport. The first call wins; a second is ignored and says
+/// so, because two transports would mean two bridges and a connection would
+/// silently belong to whichever installed first.
+pub fn set_bridge_transport(transport: Arc<dyn BridgeTransport>) {
+    if TRANSPORT.set(transport).is_err() {
+        tracing::warn!("the bridge transport was already installed; keeping the first");
+    }
+}
+
+/// The installed transport, or `None` before [`set_bridge_transport`].
+pub fn bridge_transport() -> Option<Arc<dyn BridgeTransport>> {
+    TRANSPORT.get().cloned()
+}
+
+/// How the browser persists the server list.
+///
+/// `redis-servers.toml` belongs to the bridge, which is also the only process
+/// allowed to hold the credentials in it (ADR 9) — so saving from a tab is an
+/// HTTP request, and this crate cannot make one. The web entry point installs
+/// a sink; without one the list is readable and not writable, which is an
+/// error the UI can report rather than a save that quietly goes nowhere.
+pub trait BridgeServerStore: Send + Sync + 'static {
+    /// Persist `servers` and answer with the list as the bridge now holds it.
+    ///
+    /// The answer matters: a new entry leaves the browser without an id and
+    /// comes back with the one the bridge stamped, and the browser's copies of
+    /// existing entries carry no credentials — so what the UI caches afterwards
+    /// has to be the far side's list, never its own.
+    fn save(
+        &self,
+        servers: Vec<crate::config::RedisServer>,
+    ) -> BoxFuture<'static, Result<Vec<crate::config::RedisServer>, BridgeError>>;
+}
+
+static SERVER_STORE: OnceLock<Arc<dyn BridgeServerStore>> = OnceLock::new();
+
+/// Install the server-list sink. The first call wins, as with the transport.
+pub fn set_bridge_server_store(store: Arc<dyn BridgeServerStore>) {
+    if SERVER_STORE.set(store).is_err() {
+        tracing::warn!("the bridge server store was already installed; keeping the first");
+    }
+}
+
+/// The installed sink, or `None` before [`set_bridge_server_store`].
+pub fn bridge_server_store() -> Option<Arc<dyn BridgeServerStore>> {
+    SERVER_STORE.get().cloned()
 }
 
 /// A Redis connection whose transport is the bridge.
@@ -207,6 +280,16 @@ impl BridgeConn {
 
     pub fn session(&self) -> Option<&str> {
         self.session.as_deref()
+    }
+
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// The transport behind this connection, for opening a second one to the
+    /// same bridge without threading it through the caller.
+    pub fn transport(&self) -> Arc<dyn BridgeTransport> {
+        Arc::clone(&self.transport)
     }
 
     fn request(&self, commands: Vec<Vec<u8>>, pipeline: Option<PipelineSpec>) -> BridgeRequest {
@@ -362,18 +445,20 @@ impl ConnectionLike for BridgeConn {
 /// sites are therefore identical on both targets — only the `use` differs.
 #[cfg(target_family = "wasm")]
 pub trait BridgeQuery {
-    fn query_async<T: FromRedisValue>(&self, conn: &mut BridgeConn) -> impl Future<Output = Result<T, RedisError>>;
-    fn exec_async(&self, conn: &mut BridgeConn) -> impl Future<Output = Result<(), RedisError>>;
+    fn query_async<T: FromRedisValue>(&self, conn: &mut RedisAsyncConn) -> impl Future<Output = Result<T, RedisError>>;
+    fn exec_async(&self, conn: &mut RedisAsyncConn) -> impl Future<Output = Result<(), RedisError>>;
 }
 
 #[cfg(target_family = "wasm")]
 impl BridgeQuery for Cmd {
-    async fn query_async<T: FromRedisValue>(&self, conn: &mut BridgeConn) -> Result<T, RedisError> {
+    async fn query_async<T: FromRedisValue>(&self, conn: &mut RedisAsyncConn) -> Result<T, RedisError> {
+        let RedisAsyncConn::Bridge(conn) = conn;
         let value = conn.send_command(self).await?;
         T::from_redis_value(value).map_err(RedisError::from)
     }
 
-    async fn exec_async(&self, conn: &mut BridgeConn) -> Result<(), RedisError> {
+    async fn exec_async(&self, conn: &mut RedisAsyncConn) -> Result<(), RedisError> {
+        let RedisAsyncConn::Bridge(conn) = conn;
         conn.send_command(self).await?;
         Ok(())
     }
@@ -382,25 +467,26 @@ impl BridgeQuery for Cmd {
 /// The same for a pipeline.
 #[cfg(target_family = "wasm")]
 pub trait BridgePipeline {
-    fn query_async<T: FromRedisValue>(&self, conn: &mut BridgeConn) -> impl Future<Output = Result<T, RedisError>>;
-    fn exec_async(&self, conn: &mut BridgeConn) -> impl Future<Output = Result<(), RedisError>>;
+    fn query_async<T: FromRedisValue>(&self, conn: &mut RedisAsyncConn) -> impl Future<Output = Result<T, RedisError>>;
+    fn exec_async(&self, conn: &mut RedisAsyncConn) -> impl Future<Output = Result<(), RedisError>>;
 }
 
 #[cfg(target_family = "wasm")]
 impl BridgePipeline for Pipeline {
-    async fn query_async<T: FromRedisValue>(&self, conn: &mut BridgeConn) -> Result<T, RedisError> {
+    async fn query_async<T: FromRedisValue>(&self, conn: &mut RedisAsyncConn) -> Result<T, RedisError> {
+        let RedisAsyncConn::Bridge(conn) = conn;
         let count = self.len();
         let values = conn.send_pipeline(self, 0, count).await?;
         T::from_redis_value(Value::Array(values)).map_err(RedisError::from)
     }
 
-    async fn exec_async(&self, conn: &mut BridgeConn) -> Result<(), RedisError> {
+    async fn exec_async(&self, conn: &mut RedisAsyncConn) -> Result<(), RedisError> {
+        let RedisAsyncConn::Bridge(conn) = conn;
         let count = self.len();
         conn.send_pipeline(self, 0, count).await?;
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -418,6 +504,16 @@ mod tests {
             self.seen.lock().expect("lock").push(request);
             let reply = self.reply.clone();
             Box::pin(async move { reply })
+        }
+
+        /// These tests are about what crosses the wire for a command, not
+        /// about sessions; a fixed token keeps them out of the way.
+        fn open_session(&self, _server_id: String, _db: usize) -> BoxFuture<'static, Result<String, BridgeError>> {
+            Box::pin(async { Ok("test-session".to_string()) })
+        }
+
+        fn close_session(&self, _session: String) -> BoxFuture<'static, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
         }
     }
 

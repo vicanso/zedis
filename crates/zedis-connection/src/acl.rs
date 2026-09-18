@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Value, cmd};
 

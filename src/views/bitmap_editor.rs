@@ -27,6 +27,8 @@
 //! / `BITPOS`, and a thin `BITFIELD` box runs raw sub-commands. The grid
 //! is capped at [`CAP_BITS`]; `BITCOUNT` / `BITPOS` stay whole-key.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     connection::{BitOpKind, Capability, bit_op, get_connection_manager},

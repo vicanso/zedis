@@ -27,6 +27,8 @@ use super::{ConnectionManager, NodeDiscovery, ServerType};
 use crate::async_connection::{
     keepalive_tcp_settings, resolve_connection_timeout, resolve_response_timeout, with_keepalive,
 };
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
 use crate::ssh_cluster_connection::SshMultiplexedConnection;
 use crate::ssh_tunnel::open_single_ssh_tunnel_push_connection;

@@ -19,6 +19,8 @@
 //! raw bytes — no decompression or format detection, so the file shows
 //! exactly what is stored.
 
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{cmd, pipe};

@@ -348,6 +348,7 @@ impl ZedisEditor {
                 });
                 editor.clone().into_any_element()
             }
+            #[cfg(not(target_family = "wasm"))]
             KeyType::Channel => {
                 self.reset_editors(KeyType::Channel);
                 let editor = self.pubsub_editor.get_or_insert_with(|| {
@@ -355,6 +356,18 @@ impl ZedisEditor {
                     cx.new(|cx| ZedisPubsubEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
+            }
+            // A subscription holds a socket open for as long as the panel is
+            // up; the browser has no socket to hold (ADR 9).
+            #[cfg(target_family = "wasm")]
+            KeyType::Channel => {
+                use rust_i18n::t;
+                self.reset_editors(KeyType::Channel);
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                div()
+                    .p_4()
+                    .child(t!("features.panel_unavailable_title", panel = "Pub/Sub", locale = &locale).to_string())
+                    .into_any_element()
             }
             KeyType::TimeSeries => {
                 self.reset_editors(KeyType::TimeSeries);

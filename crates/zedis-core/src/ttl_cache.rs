@@ -14,13 +14,13 @@
 
 use dashmap::DashMap;
 use std::hash::Hash;
-use std::time::Instant;
 use std::{
     fmt::Debug,
     sync::LazyLock,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+use web_time::Instant;
 
 static APP_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 

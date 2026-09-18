@@ -18,6 +18,15 @@ on:
         type: choice
         options: ["none", "test-signing"]
         default: "none"
+      targets:
+        # `docker` is the cheap way to try the Dockerfile from any branch: it
+        # skips the three desktop jobs — and with them the macOS signing and
+        # notarization — and, off main and off a tag, the image is built on
+        # both architectures without being pushed.
+        description: "What to build: everything, or only the web image (skips the desktop jobs and their signing)"
+        type: choice
+        options: ["all", "docker"]
+        default: "all"
 
 env:
   # Baked into the binaries (startup::BUILD_CHANNEL): the rolling build from
@@ -27,6 +36,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.98.1
   APP_NAME: Zedis
+  # The web build's image on Docker Hub: `zedis-bridge` with the browser bundle
+  # compiled in (the `docker` / `docker_manifest` jobs, ./Dockerfile). Not the
+  # desktop app, hence not plain `zedis`.
+  IMAGE_NAME: vicanso/zedis-web
 
 jobs:
   prepare_vars:
@@ -110,7 +123,7 @@ jobs:
           fi
   macos:
     needs: prepare_vars
-    if: needs.prepare_vars.outputs.should_build == 'true'
+    if: needs.prepare_vars.outputs.should_build == 'true' && github.event.inputs.targets != 'docker'
     name: macos-${{ matrix.dmg_suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -281,7 +294,7 @@ jobs:
 
   windows:
     needs: prepare_vars
-    if: needs.prepare_vars.outputs.should_build == 'true'
+    if: needs.prepare_vars.outputs.should_build == 'true' && github.event.inputs.targets != 'docker'
     runs-on: windows-latest
     # A `permissions:` block REPLACES the default token's permissions, it does
     # not add to them — so every scope this job needs must be listed here.
@@ -540,7 +553,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   linux:
     needs: prepare_vars
-    if: needs.prepare_vars.outputs.should_build == 'true'
+    if: needs.prepare_vars.outputs.should_build == 'true' && github.event.inputs.targets != 'docker'
     name: linux-${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -719,3 +732,138 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./SHA256SUMS "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh ./latest.json "$GITHUB_TOKEN"
+
+  # The web build as a multi-arch image: one native build per architecture
+  # (no QEMU — emulating a fat-LTO Rust build takes hours), pushed under a
+  # per-architecture tag, then joined into one manifest by `docker_manifest`.
+  #
+  #   tag push `v1.2.3` -> vicanso/zedis-web:1.2.3 and :latest
+  #   main (nightly)    -> vicanso/zedis-web:nightly
+  #   anything else     -> built, not pushed (a dry run of the Dockerfile)
+  #
+  # The on-switch is the DOCKER_HUB_USERNAME / DOCKER_HUB_ACCESS_TOKEN secrets,
+  # the way SIGNPATH_ORGANIZATION_ID is for Windows signing: without them the
+  # image is still built — so a broken Dockerfile still fails the run — and
+  # only the push is skipped, with a warning, instead of failing a release
+  # over an account that has not been set up.
+  docker:
+    needs: prepare_vars
+    if: needs.prepare_vars.outputs.should_build == 'true'
+    name: docker-${{ matrix.platform.tag }}
+    # The Dockerfile compiles the wasm with fat LTO and then the bridge; an
+    # hour is generous, and a hung build must not hold a runner for six.
+    timeout-minutes: 120
+    runs-on: ${{ matrix.platform.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { arch: "linux/amd64", tag: "amd64", runs-on: "ubuntu-22.04" }
+          - { arch: "linux/arm64", tag: "arm64", runs-on: "ubuntu-22.04-arm" }
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      push: ${{ steps.plan.outputs.push }}
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        # Two toolchains, the gpui dependency graph for wasm and a release
+        # build of the bridge: more than a stock runner's free disk.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+      - name: Add swap
+        # Fat LTO over one codegen unit links the whole page in one go; the
+        # peak is what kills a 16 GB runner, not the average.
+        run: |
+          export SWAP_FILE=/swapfile-docker
+          sudo fallocate -l 16G $SWAP_FILE
+          sudo chmod 600 $SWAP_FILE
+          sudo mkswap $SWAP_FILE
+          sudo swapon $SWAP_FILE
+          free -h
+          df -lh /
+      - uses: actions/checkout@v7
+      - name: plan
+        # Which tag this run publishes under, and whether it publishes at all.
+        id: plan
+        shell: bash
+        env:
+          HAS_DOCKER_HUB: ${{ secrets.DOCKER_HUB_USERNAME != '' && secrets.DOCKER_HUB_ACCESS_TOKEN != '' }}
+        run: |
+          channel=""
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            channel="${GITHUB_REF_NAME#v}"
+          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            channel="nightly"
+          fi
+          push=false
+          if [ -n "$channel" ]; then
+            if [ "$HAS_DOCKER_HUB" = "true" ]; then
+              push=true
+            else
+              echo "::warning::DOCKER_HUB_USERNAME / DOCKER_HUB_ACCESS_TOKEN are not set — building the image without pushing it"
+            fi
+          fi
+          echo "channel=${channel:-dry-run}" >> "$GITHUB_OUTPUT"
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+          echo "channel: ${channel:-<none, dry run>}  push: $push"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Login to Docker Hub
+        if: steps.plan.outputs.push == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform.arch }}
+          # Per-architecture and per-channel, so a nightly and a release
+          # running at the same time never overwrite each other's halves.
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.plan.outputs.channel }}-${{ matrix.platform.tag }}
+          push: ${{ steps.plan.outputs.push == 'true' }}
+          # Without the attestation each push is a plain image, which is what
+          # `imagetools create` joins below; with it each push is already a
+          # manifest list, and the joined tag lists "unknown/unknown" entries.
+          provenance: false
+          # No `cache-from` / `cache-to` on purpose: the layer that costs the
+          # time is the compile, which every source change invalidates, and
+          # storing it would evict the desktop jobs' rust caches from the
+          # repository's 10 GB cache quota.
+      - name: Image digest
+        run: echo "${{ steps.docker_build.outputs.digest }}"
+
+  docker_manifest:
+    # Both architectures under one tag, so `docker pull` picks the right one.
+    needs: docker
+    if: needs.docker.outputs.push == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Create and push the multi-arch manifest
+        env:
+          CHANNEL: ${{ needs.docker.outputs.channel }}
+        run: |
+          # A release is also `latest`; the nightly is only ever `nightly`.
+          TAGS="-t $IMAGE_NAME:$CHANNEL"
+          if [ "$CHANNEL" != "nightly" ]; then
+            TAGS="$TAGS -t $IMAGE_NAME:latest"
+          fi
+          docker buildx imagetools create $TAGS \
+            "$IMAGE_NAME:$CHANNEL-amd64" \
+            "$IMAGE_NAME:$CHANNEL-arm64"
+          docker buildx imagetools inspect "$IMAGE_NAME:$CHANNEL"

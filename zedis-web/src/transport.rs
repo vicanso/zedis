@@ -25,41 +25,52 @@ use futures::AsyncReadExt as _;
 use futures::future::BoxFuture;
 use gpui::http_client::{AsyncBody, HttpClient, http::Request};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
-use zedis_connection::{BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeTransport};
+use zedis_connection::{
+    BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport, RedisServer,
+    get_servers,
+};
 
 /// Talks to one `zedis-bridge`.
 pub struct HttpBridgeTransport {
     client: Arc<dyn HttpClient>,
     /// No trailing slash.
     base_url: String,
-    token: String,
 }
 
 impl HttpBridgeTransport {
-    pub fn new(client: Arc<dyn HttpClient>, base_url: impl Into<String>, token: impl Into<String>) -> Self {
+    /// No credential: the page signed in for a cookie before it started the
+    /// application, and a same-origin fetch carries that on its own. (There
+    /// used to be a bearer token here for the bridge's token mode, which is
+    /// gone — ADR 9.)
+    pub fn new(client: Arc<dyn HttpClient>, base_url: impl Into<String>) -> Self {
         Self {
             client,
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            token: token.into(),
         }
     }
 
-    /// POST `body` to `path` and hand back the status and the raw response.
+    /// POST `body` to `url` and hand back the status and the raw response.
+    async fn post(client: Arc<dyn HttpClient>, url: String, body: String) -> Result<(u16, Vec<u8>), BridgeError> {
+        Self::call(client, "POST", url, body).await
+    }
+
+    /// Send one request and hand back the status and the raw response.
     ///
     /// Both are needed: the status says which kind of failure this is, and
     /// the body carries the detail the confirm dialog needs.
-    async fn post(
+    async fn call(
         client: Arc<dyn HttpClient>,
+        method: &'static str,
         url: String,
-        token: String,
         body: String,
     ) -> Result<(u16, Vec<u8>), BridgeError> {
-        let request = Request::builder()
-            .method("POST")
+        let builder = Request::builder()
+            .method(method)
             .uri(&url)
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json");
+        let request = builder
             .body(AsyncBody::from(body))
             .map_err(|e| BridgeError::transport(format!("could not build the request: {e}")))?;
         let mut response = client
@@ -73,31 +84,93 @@ impl HttpBridgeTransport {
             .read_to_end(&mut bytes)
             .await
             .map_err(|e| BridgeError::transport(format!("the bridge's reply could not be read: {e}")))?;
+        if status == 401 {
+            sign_in_again();
+        }
         Ok((status, bytes))
     }
 
-    /// Ask the bridge for a connection of this caller's own.
-    pub async fn open_session(&self, server_id: &str, db: usize) -> Result<String, BridgeError> {
-        let body = serde_json::json!({ "server": server_id, "db": db }).to_string();
-        let (status, bytes) = Self::post(
-            self.client.clone(),
-            format!("{}/v1/session", self.base_url),
-            self.token.clone(),
-            body,
-        )
-        .await?;
+    /// The entries this account may see, as the bridge holds them: settings
+    /// and owner, never a secret.
+    pub fn fetch_servers(&self) -> BoxFuture<'static, Result<Vec<RedisServer>, BridgeError>> {
+        let (client, base_url) = (self.client.clone(), self.base_url.clone());
+        Box::pin(Self::list(client, base_url))
+    }
+
+    async fn list(client: Arc<dyn HttpClient>, base_url: String) -> Result<Vec<RedisServer>, BridgeError> {
+        let (status, bytes) = Self::call(client, "GET", format!("{base_url}/v1/servers"), String::new()).await?;
         if status != 200 {
             return Err(failure(status, &bytes));
         }
         #[derive(Deserialize)]
-        struct Body {
-            session: String,
+        struct Entry {
+            #[serde(flatten)]
+            server: RedisServer,
+            #[serde(default)]
+            secrets_set: Vec<String>,
         }
-        serde_json::from_slice::<Body>(&bytes)
-            .map(|b| b.session)
-            .map_err(|e| BridgeError::transport(format!("the bridge's session reply is not JSON: {e}")))
+        let list = serde_json::from_slice::<Vec<Entry>>(&bytes)
+            .map_err(|e| BridgeError::transport(format!("the bridge's server list is not JSON: {e}")))?;
+        Ok(list
+            .into_iter()
+            .map(|entry| show_stored_secrets(entry.server, &entry.secrets_set))
+            .collect())
     }
 }
+
+/// What a secret field holds in the browser when the bridge has a value for
+/// it: the bridge sends an entry's settings and the *names* of the secrets
+/// that are set, never the secrets (ADR 9), so the form needs something to
+/// show in their place. Eight bullets read as "a hidden value" in a masked
+/// field and a plain one alike, in every locale, which is why it is not a
+/// translated sentence. The three things a user can then do map onto the
+/// three things an edit can mean: leave it (keep what is stored), empty it
+/// (remove the secret), type over it (replace it). It never crosses the
+/// wire — [`split_stored_secrets`] turns it back into a name on the way out.
+const STORED_SECRET: &str = "••••••••";
+
+/// `server` as the form should see it: each secret the bridge holds shown as
+/// the placeholder.
+fn show_stored_secrets(mut server: RedisServer, secrets_set: &[String]) -> RedisServer {
+    for name in secrets_set {
+        if let Some(field) = server.secret_mut(name) {
+            *field = Some(STORED_SECRET.to_string());
+        }
+    }
+    server
+}
+
+/// `server` as the bridge should get it: every field still holding the
+/// placeholder blanked, and named, so the bridge keeps what it has stored.
+fn split_stored_secrets(mut server: RedisServer) -> (RedisServer, Vec<&'static str>) {
+    let mut keep = Vec::new();
+    for name in RedisServer::SECRET_FIELDS {
+        if let Some(field) = server.secret_mut(name)
+            && field.as_deref() == Some(STORED_SECRET)
+        {
+            *field = None;
+            keep.push(name);
+        }
+    }
+    (server, keep)
+}
+
+/// The login is gone — it lapsed, it was closed, or the account's password
+/// changed — and the application is still running on it. Reloading is the way
+/// back: the page asks `/v1/servers` before it starts anything, gets the same
+/// 401, and shows the sign-in form. No loop in that, because the form is
+/// plain HTML and nothing here runs until someone has signed in.
+#[cfg(target_family = "wasm")]
+fn sign_in_again() {
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().reload();
+    }
+}
+
+/// Off the browser there is no page to send anyone back to; the caller gets
+/// the `Unauthorized` error like any other.
+#[cfg(not(target_family = "wasm"))]
+fn sign_in_again() {}
 
 /// The `/v1/exec` body.
 ///
@@ -169,12 +242,11 @@ impl BridgeTransport for HttpBridgeTransport {
     fn send(&self, request: BridgeRequest) -> BoxFuture<'static, Result<BridgeReply, BridgeError>> {
         let client = self.client.clone();
         let url = format!("{}/v1/exec", self.base_url);
-        let token = self.token.clone();
 
         let payload = exec_payload(&request);
 
         Box::pin(async move {
-            let (status, bytes) = Self::post(client, url, token, payload.to_string()).await?;
+            let (status, bytes) = Self::post(client, url, payload.to_string()).await?;
             if status != 200 {
                 return Err(failure(status, &bytes));
             }
@@ -201,12 +273,160 @@ impl BridgeTransport for HttpBridgeTransport {
             })
         })
     }
+
+    /// Ask the bridge for a connection of this caller's own — what the
+    /// terminal needs so a `SELECT` typed there does not move the key tree
+    /// (ADR 4).
+    fn open_session(&self, server_id: String, db: usize) -> BoxFuture<'static, Result<String, BridgeError>> {
+        let client = self.client.clone();
+        let url = format!("{}/v1/session", self.base_url);
+        Box::pin(async move {
+            let body = serde_json::json!({ "server": server_id, "db": db }).to_string();
+            let (status, bytes) = Self::post(client, url, body).await?;
+            if status != 200 {
+                return Err(failure(status, &bytes));
+            }
+            #[derive(Deserialize)]
+            struct Body {
+                session: String,
+            }
+            serde_json::from_slice::<Body>(&bytes)
+                .map(|b| b.session)
+                .map_err(|e| BridgeError::transport(format!("the bridge's session reply is not JSON: {e}")))
+        })
+    }
+
+    fn close_session(&self, session: String) -> BoxFuture<'static, Result<(), BridgeError>> {
+        let client = self.client.clone();
+        let url = format!("{}/v1/session/{session}", self.base_url);
+        Box::pin(async move {
+            let (status, bytes) = Self::call(client, "DELETE", url, String::new()).await?;
+            // 204 is the success; the bridge also treats closing an expired
+            // session as one, so a late release is never an error here.
+            if status != 204 && status != 200 {
+                return Err(failure(status, &bytes));
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Saving the list from a browser is a diff, not a write.
+///
+/// The desktop writes `redis-servers.toml` whole. A tab cannot: its copy of
+/// an existing entry carries settings but no secrets (the bridge's list names
+/// the secrets that are set and sends none of them), so sending the whole
+/// list back would strip every saved password. Instead each entry goes its
+/// own way: one the bridge does not have is posted whole, credentials and
+/// all, for the bridge to stamp and dial; one that differs from the copy the
+/// bridge last answered is put as an edit, its untouched secrets named
+/// rather than sent ([`split_stored_secrets`]); one the list no longer names
+/// is deleted; the rest are left alone. The bridge dials an edit before it
+/// keeps it, so a change that breaks the connection comes back as the
+/// driver's error and the stored entry is unchanged.
+impl BridgeServerStore for HttpBridgeTransport {
+    fn save(&self, servers: Vec<RedisServer>) -> BoxFuture<'static, Result<Vec<RedisServer>, BridgeError>> {
+        let (client, base_url) = (self.client.clone(), self.base_url.clone());
+        Box::pin(async move {
+            // What the bridge last answered, which is what the form was
+            // opened on: an entry that still equals its copy here was not
+            // edited, and only the ones that differ are sent.
+            let before: HashMap<String, RedisServer> = get_servers()
+                .map(|list| list.into_iter().map(|s| (s.id.clone(), s)).collect())
+                .unwrap_or_default();
+            let after: Vec<&str> = servers.iter().map(|s| s.id.as_str()).collect();
+            for server in &servers {
+                let (method, url, body) = match before.get(&server.id) {
+                    Some(cached) if cached == server => continue,
+                    // An edit. The placeholders go back as names: the bridge
+                    // keeps those secrets, and clears or replaces the rest.
+                    Some(_) => {
+                        let (edited, keep_secrets) = split_stored_secrets(server.clone());
+                        let body = serde_json::json!({ "server": edited, "keep_secrets": keep_secrets });
+                        ("PUT", format!("{base_url}/v1/servers/{}", server.id), body)
+                    }
+                    // A new entry, whole, for the bridge to stamp an id on and
+                    // dial. A placeholder here came from duplicating an entry
+                    // whose secret this side never had, so it is dropped — the
+                    // dial then says what is missing instead of a stored
+                    // password of eight bullets failing later.
+                    None => {
+                        let (created, _) = split_stored_secrets(server.clone());
+                        let body = serde_json::json!({ "server": created });
+                        ("POST", format!("{base_url}/v1/servers"), body)
+                    }
+                };
+                let (status, bytes) = Self::call(client.clone(), method, url, body.to_string()).await?;
+                if status != 200 {
+                    return Err(failure(status, &bytes));
+                }
+            }
+            for id in before.keys().filter(|id| !after.contains(&id.as_str())) {
+                let (status, bytes) = Self::call(
+                    client.clone(),
+                    "DELETE",
+                    format!("{base_url}/v1/servers/{id}"),
+                    String::new(),
+                )
+                .await?;
+                if status != 204 && status != 200 {
+                    return Err(failure(status, &bytes));
+                }
+            }
+            Self::list(client, base_url).await
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::http_client::FakeHttpClient;
+
+    #[test]
+    fn a_stored_secret_is_shown_as_a_placeholder_and_sent_back_as_a_name() {
+        let listed = RedisServer {
+            id: "srv".to_string(),
+            host: "10.0.0.5".to_string(),
+            ..Default::default()
+        };
+        let shown = show_stored_secrets(listed, &["password".to_string(), "ssh_key".to_string()]);
+        assert_eq!(shown.password.as_deref(), Some(STORED_SECRET));
+        assert_eq!(shown.ssh_key.as_deref(), Some(STORED_SECRET));
+        assert_eq!(
+            shown.sentinel_password, None,
+            "not set on the bridge, so nothing to show"
+        );
+
+        // Untouched: both go back as names, and no placeholder crosses the wire.
+        let (sent, keep) = split_stored_secrets(shown.clone());
+        assert_eq!(keep, vec!["password", "ssh_key"]);
+        assert_eq!((sent.password, sent.ssh_key), (None, None));
+        assert_eq!(sent.host, "10.0.0.5");
+    }
+
+    #[test]
+    fn typing_over_a_placeholder_replaces_the_secret_and_emptying_it_clears_it() {
+        let shown = show_stored_secrets(
+            RedisServer::default(),
+            &["password".to_string(), "ssh_password".to_string()],
+        );
+        let edited = RedisServer {
+            password: Some("a-new-password".to_string()),
+            ssh_password: None,
+            ..shown
+        };
+        let (sent, keep) = split_stored_secrets(edited);
+        assert!(keep.is_empty(), "neither is kept: one is replaced, one is cleared");
+        assert_eq!(sent.password.as_deref(), Some("a-new-password"));
+        assert_eq!(sent.ssh_password, None);
+    }
+
+    #[test]
+    fn a_name_the_bridge_sends_that_is_not_a_secret_is_ignored() {
+        let shown = show_stored_secrets(RedisServer::default(), &["host".to_string()]);
+        assert_eq!(shown, RedisServer::default());
+    }
     use std::sync::Mutex;
 
     use zedis_connection::PipelineSpec;
@@ -278,7 +498,7 @@ mod tests {
                     .body(AsyncBody::from(body.to_string()))?)
             }
         });
-        (HttpBridgeTransport::new(client, "http://bridge:7379/", "tok"), seen)
+        (HttpBridgeTransport::new(client, "http://bridge:7379/"), seen)
     }
 
     #[test]

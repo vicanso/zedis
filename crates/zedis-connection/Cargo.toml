@@ -24,8 +24,12 @@ futures = { workspace = true }
 humantime = { workspace = true }
 indexmap = { workspace = true }
 percent-encoding = { workspace = true }
-shlex = { workspace = true }
+# Jitter for the retry backoff, the master key, and the sampling ratio in the
+# memory analysis — that last one runs in the browser too, which is why this
+# is not native-only. The wasm block below asks `getrandom` for the page's
+# crypto, which is what lets it build there at all.
 rand = { workspace = true }
+shlex = { workspace = true }
 regex = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
@@ -59,11 +63,24 @@ webpki-roots = { workspace = true }
 # the bridge does all of that on the other side.
 [target.'cfg(target_family = "wasm")'.dependencies]
 redis = { version = "1.6.0", default-features = false, features = [
+    # Same set redis enables by default, minus the runtimes: `num-bigint` in
+    # particular keeps `Value::BigNumber` the same type on both targets, so
+    # the reply formatter needs no cfg of its own.
+    "num-bigint",
     "acl",
     "streams",
     "geospatial",
     "script",
 ] }
+# Randomness. Neither of these is reached by name — they are here to turn on
+# the browser backend of a transitive crate, which nothing else in this tree
+# does: `uuid` mints v7 ids and `argon2` (the share-token KDF) pulls
+# `getrandom`, and on wasm both refuse to build until the page's crypto is
+# asked for by feature. Without them the crate only compiles when something
+# *else* in the graph happens to enable it, which is how it silently worked
+# through gpui-kit and would have broken the moment it was checked alone.
+uuid = { workspace = true, features = ["js"] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 # Native OS keychain for the config-encryption key (macOS Keychain / Windows
 # Credential Manager). Deliberately absent on Linux — there `master_key.rs`

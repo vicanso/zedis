@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::SentinelMaster;
 use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
-    AccessMode, Capability, CommandStatus, RedisClientDescription, SentinelMaster, ServerCommand, ServerFeatures,
-    SlowLogEntry, get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
+    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerFeatures, SlowLogEntry,
+    get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
     note_server_command_error, probe_server_features,
 };
 use crate::db::get_search_history_manager;
@@ -38,12 +40,13 @@ use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
+use web_time::Instant;
 use zedis_core::change_log::ChangeEntry;
 
+#[cfg(not(target_family = "wasm"))]
 pub mod cluster;
 pub mod element;
 pub mod event;
@@ -55,6 +58,7 @@ pub mod list;
 pub mod persistence;
 pub mod replication;
 pub mod script_kill;
+#[cfg(not(target_family = "wasm"))]
 pub mod sentinel;
 pub mod set;
 pub mod stat;
@@ -271,6 +275,7 @@ pub struct ZedisServerState {
     nodes_description: Arc<RedisClientDescription>,
     /// Sentinel only: the monitored masters as the sentinels describe them
     /// (quorum, timing, down flags) — see `server/sentinel.rs`.
+    #[cfg(not(target_family = "wasm"))]
     sentinel_masters: Vec<SentinelMaster>,
 
     /// Redis server version string
@@ -446,6 +451,7 @@ impl ZedisServerState {
         self.histories.clear();
         self.key_tree_id = SharedString::default();
         self.nodes_description = Arc::new(RedisClientDescription::default());
+        #[cfg(not(target_family = "wasm"))]
         self.sentinel_masters.clear();
         self.dbsize = None;
         self.key = None;
@@ -1336,6 +1342,7 @@ impl ZedisServerState {
                             this.dbsize = Some(dbsize);
                             this.nodes = nodes;
                             this.nodes_description = Arc::new(nodes_description);
+                            #[cfg(not(target_family = "wasm"))]
                             this.note_sentinel_master_choice(cx);
                             this.version = version.into();
                             // Stamp the connection for the server list's

@@ -22,7 +22,6 @@ pub mod clients;
 pub mod error;
 pub mod floors;
 pub mod reply_format;
-#[cfg(not(target_family = "wasm"))]
 pub mod script_kill;
 #[cfg(not(target_family = "wasm"))]
 pub mod sentinel;
@@ -53,7 +52,6 @@ mod compare;
 mod config;
 mod conn;
 mod danger;
-#[cfg(not(target_family = "wasm"))]
 mod dump_restore;
 mod functions;
 mod hash_fields;
@@ -67,7 +65,6 @@ mod manager;
 mod module_ops;
 #[cfg(not(target_family = "wasm"))]
 mod multi_search;
-#[cfg(not(target_family = "wasm"))]
 mod probe;
 mod readable_export;
 mod search;
@@ -83,17 +80,32 @@ pub use async_connection::{
     client_name, open_monitor_connection, open_node_connection, open_node_connection_cached, open_seed_connection,
     open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
-pub use bridge::{BridgeConn, BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeTransport, PipelineSpec};
+pub use bridge::{
+    BridgeConn, BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport,
+    PipelineSpec, bridge_server_store, bridge_transport, set_bridge_server_store, set_bridge_transport,
+};
+/// What stands in for redis-rs's `Cmd::query_async` / `Pipeline::query_async`
+/// in the browser, where the `aio` feature that provides them cannot be built.
+/// A file that sends commands imports these and changes nothing else — inherent
+/// methods win over trait methods, so on the desktop they are never in scope
+/// and never consulted (ADR 9).
+#[cfg(target_family = "wasm")]
+pub use bridge::{BridgePipeline, BridgeQuery};
 pub use clients::{KillFilter, PauseMode, kill_filter_commands, kill_filter_summary, pause_args};
 #[cfg(not(target_family = "wasm"))]
 pub use compare::{
     CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, DifferingKey, KeyDifference,
     compare_prefix, prefix_pattern, values_equal,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use config::servers_toml_redacted;
+#[cfg(target_family = "wasm")]
+pub use config::set_servers_cache;
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
-    TAG_ENV_LABELS, get_server, get_server_groups, get_servers, save_servers, servers_toml_redacted, tag_color_index,
+    TAG_ENV_LABELS, get_server_groups, tag_color_index,
 };
+pub use config::{get_server, get_servers, save_servers};
 pub use conn::RedisAsyncConn;
 pub use danger::{
     ConfirmStrictness, DangerKind, classify_dangerous, classify_dangerous_line, confirm_strictness, is_write_command,
@@ -104,11 +116,13 @@ pub use diagnostics::{
     DiagHint, DiagOutcome, DiagStage, DiagStatus, diag_stages, diag_timeout, dial_endpoint, probe_dns, probe_redis,
     probe_ssh_auth, probe_ssh_tunnel, probe_tcp,
 };
-#[cfg(not(target_family = "wasm"))]
 pub use dump_restore::{
-    ConflictMode, ConflictPreview, DumpEntry, DumpHeader, DumpReader, DumpWriter, RestoreStatus, copy_key,
-    dump_keys_chunk, preview_dump_conflicts, preview_key_conflicts, restore_keys_chunk,
+    ConflictMode, ConflictPreview, DumpEntry, RestoreStatus, copy_key, dump_keys_chunk, preview_key_conflicts,
+    restore_keys_chunk,
 };
+/// The `.zdis` file itself: desktop only, there being no file in a tab.
+#[cfg(not(target_family = "wasm"))]
+pub use dump_restore::{DumpHeader, DumpReader, DumpWriter, preview_dump_conflicts};
 pub use functions::{
     FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, LibraryValidateError, LibraryValidation,
     function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
@@ -122,13 +136,14 @@ pub use latency::{
 };
 pub use list_ops::remove_list_indexes;
 pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
+#[cfg(not(target_family = "wasm"))]
+pub use master_key::disable_keychain;
 pub use module_ops::{
     BitOpKind, TS_AGGREGATORS, TsAlter, TsMRange, TsSeries, bit_op, geo_add, geo_dist, has_positive_matcher, pf_merge,
     ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
-#[cfg(not(target_family = "wasm"))]
 pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
@@ -144,7 +159,8 @@ pub use readable_import::{
 };
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
 #[cfg(not(target_family = "wasm"))]
-pub use script_kill::{KillOutcome, KillReply, KillTarget, kill_running};
+pub use script_kill::kill_running;
+pub use script_kill::{KillOutcome, KillReply, KillTarget};
 #[cfg(not(target_family = "wasm"))]
 pub use sentinel::{
     SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,
@@ -155,16 +171,46 @@ pub use slot_stats::{SlotStatMetric, SlotStatRow};
 #[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
 
-#[cfg(not(target_family = "wasm"))]
-pub use manager::{
-    AtomicSlotMigration, ShardedPubSub, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
-    cluster_migrate_slots, get_connection_manager,
-};
+/// A connection of the caller's own, through the bridge.
+///
+/// The desktop dials a second socket; the browser asks for a bridge session,
+/// which is the same promise — one backend connection, this caller's alone —
+/// so `SELECT`, `MULTI` and `CLIENT SETNAME` stay where they were typed
+/// (ADR 4). Same signature as the native dialer, so the terminal, the live
+/// tail and the client list keep their call sites.
+#[cfg(target_family = "wasm")]
+pub async fn open_single_connection(
+    config: &config::RedisServer,
+    db: usize,
+    _use_cache: bool,
+) -> Result<conn::RedisAsyncConn, error::Error> {
+    manager::get_connection_manager()
+        .open_dedicated_connection(&config.id, db)
+        .await
+}
+
+/// Nothing to install: the browser build links no rustls, because every TLS
+/// handshake Zedis makes on the web is made by the bridge (ADR 9). Kept as a
+/// no-op so `run()` reads the same on both targets — the call is a promise
+/// that no connection happens before a provider is chosen, and that promise
+/// is trivially true here.
+#[cfg(target_family = "wasm")]
+pub fn install_crypto_provider() {}
+
+pub use manager::get_connection_manager;
 pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
     HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
     REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound,
     group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots, slots_in_ranges, unassigned_slot_ranges,
+};
+/// Slot migration and sharded Pub/Sub are cluster surgery and a held socket
+/// — server-side work either way, and both are panels the web build drops
+/// (ADR 9).
+#[cfg(not(target_family = "wasm"))]
+pub use manager::{
+    AtomicSlotMigration, ShardedPubSub, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
+    cluster_migrate_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
@@ -177,26 +223,28 @@ pub use search::{
 pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
-/// Native only: the caches it sweeps belong to the pool and the SSH session
-/// store, neither of which exists in the browser.
-#[cfg(not(target_family = "wasm"))]
+/// Sweep what has gone stale. The client cache is swept on both targets; the
+/// socket pool and the SSH session store exist only where there are sockets.
 pub fn clear_expired_cache() {
-    let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
-    if removed_count > 0 {
-        info!(removed_count, total_count, "clear expired redis connection")
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let (removed_count, total_count) = async_connection::clear_expired_connection_pool();
+        if removed_count > 0 {
+            info!(removed_count, total_count, "clear expired redis connection")
+        }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     let (removed_count, total_count) = manager::clear_expired_clients();
-    #[cfg(target_family = "wasm")]
-    let (removed_count, total_count) = (0usize, 0usize);
     if removed_count > 0 {
         info!(removed_count, total_count, "clear expired redis client")
     }
 
-    let (removed_count, total_count) = ssh_tunnel::clear_expired_ssh_sessions();
-    if removed_count > 0 {
-        info!(removed_count, total_count, "clear expired ssh session")
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let (removed_count, total_count) = ssh_tunnel::clear_expired_ssh_sessions();
+        if removed_count > 0 {
+            info!(removed_count, total_count, "clear expired ssh session")
+        }
     }
 }
 pub use command::*;

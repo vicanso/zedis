@@ -17,6 +17,8 @@ use gpui::Action;
 use gpui::KeyBinding;
 use schemars::JsonSchema;
 use serde::Deserialize;
+#[cfg(target_family = "wasm")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum MemuAction {
@@ -290,78 +292,64 @@ pub enum MemoryAnalysisAction {
     ExportKeysCsv,
 }
 
+/// Whether the command key here is ⌘ (and the other modifiers are drawn as
+/// ⌃ ⌥ ⇧) rather than Ctrl.
+///
+/// A compile-time fact on the desktop. Not in a browser: one wasm module runs
+/// on a Mac and on a Windows laptop alike, and `cfg!(target_os = "macos")` is
+/// false in both, which is why the page used to say Ctrl+K to someone whose
+/// hands say ⌘K. There the page tells the entry which keyboard it is on
+/// ([`set_web_command_key`]).
+pub fn uses_command_key() -> bool {
+    #[cfg(target_family = "wasm")]
+    {
+        WEB_COMMAND_KEY.load(Ordering::Relaxed)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        cfg!(target_os = "macos")
+    }
+}
+
+#[cfg(target_family = "wasm")]
+static WEB_COMMAND_KEY: AtomicBool = AtomicBool::new(false);
+
+/// The browser is on an Apple keyboard. Set by the web entry before
+/// `launch`, from the page's `navigator`; it only decides how shortcuts are
+/// *drawn* — both spellings are bound either way ([`web_twin`]).
+#[cfg(target_family = "wasm")]
+pub fn set_web_command_key(apple_keyboard: bool) {
+    WEB_COMMAND_KEY.store(apple_keyboard, Ordering::Relaxed);
+}
+
 pub fn humanize_keystroke(keystroke: &str) -> String {
-    let parts = keystroke.split('-');
+    let mac = uses_command_key();
+    let separator = if mac { "" } else { "+" };
     let mut display_text = String::new();
 
-    #[cfg(target_os = "macos")]
-    let separator = "";
-    #[cfg(not(target_os = "macos"))]
-    let separator = "+";
-
-    for (i, part) in parts.enumerate() {
+    for (i, part) in keystroke.split('-').enumerate() {
         if i > 0 {
             display_text.push_str(separator);
         }
 
-        let symbol = match part {
+        let symbol = match (part, mac) {
             // `secondary` and `cmd` both render as the platform command key:
             // ⌘ on macOS, Ctrl elsewhere. Bindings use `secondary` (so they map
             // to Ctrl on Linux/Windows); display strings may use either.
-            "cmd" | "secondary" => {
-                #[cfg(target_os = "macos")]
-                {
-                    "⌘"
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    "Ctrl"
-                }
-            }
-            "ctrl" => {
-                #[cfg(target_os = "macos")]
-                {
-                    "⌃"
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    "Ctrl"
-                }
-            }
-            "alt" => {
-                #[cfg(target_os = "macos")]
-                {
-                    "⌥"
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    "Alt"
-                }
-            }
-            "shift" => {
-                #[cfg(target_os = "macos")]
-                {
-                    "⇧"
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    "Shift"
-                }
-            }
-            "enter" => "Enter",
-            "space" => "Space",
-            "escape" => "Esc",
-            "backspace" => {
-                #[cfg(target_os = "macos")]
-                {
-                    "⌫"
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    "Backspace"
-                }
-            }
-            c => {
+            ("cmd" | "secondary", true) => "⌘",
+            ("cmd" | "secondary", false) => "Ctrl",
+            ("ctrl", true) => "⌃",
+            ("ctrl", false) => "Ctrl",
+            ("alt", true) => "⌥",
+            ("alt", false) => "Alt",
+            ("shift", true) => "⇧",
+            ("shift", false) => "Shift",
+            ("enter", _) => "Enter",
+            ("space", _) => "Space",
+            ("escape", _) => "Esc",
+            ("backspace", true) => "⌫",
+            ("backspace", false) => "Backspace",
+            (c, _) => {
                 display_text.push_str(&c.to_uppercase());
                 continue;
             }
@@ -370,6 +358,43 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     }
 
     display_text
+}
+
+/// The ⌘ spelling of a `secondary-…` keystroke, for the browser only.
+///
+/// GPUI resolves `secondary` when it *parses* a keystroke, with
+/// `cfg!(target_os = "macos")` — so in a wasm module it is always Ctrl, on
+/// every machine, and every ⌘ shortcut a Mac user reaches for is dead. The
+/// module cannot be recompiled per visitor, so the browser build binds both:
+/// the `secondary` spelling (Ctrl) and this twin. On a keyboard without a
+/// command key the twin is the Windows / Super key, which the OS keeps for
+/// itself, so it costs nothing there.
+///
+/// What no spelling can fix: a page never sees the combinations the browser
+/// reserves for its own windows and tabs — ⌘N ⌘T ⌘W ⌘Q on a Mac, the Ctrl
+/// forms on Windows and Linux. Those shortcuts work in the desktop app only.
+fn web_twin(keystroke: &str) -> Option<String> {
+    cfg!(target_family = "wasm")
+        .then(|| command_key_spelling(keystroke))
+        .flatten()
+}
+
+/// `secondary-shift-k` → `cmd-shift-k`; `None` for a keystroke that has no
+/// `secondary` in it and so needs no twin.
+fn command_key_spelling(keystroke: &str) -> Option<String> {
+    let mut twinned = false;
+    let twin: Vec<&str> = keystroke
+        .split('-')
+        .map(|part| {
+            if part == "secondary" {
+                twinned = true;
+                "cmd"
+            } else {
+                part
+            }
+        })
+        .collect();
+    twinned.then(|| twin.join("-"))
 }
 
 /// One user-configurable shortcut. `id` is the key in `keybindings.toml`
@@ -584,13 +609,25 @@ pub fn shortcut_reference() -> Vec<ShortcutGroup> {
 }
 
 pub fn new_hot_keys() -> Vec<KeyBinding> {
-    let mut keys: Vec<KeyBinding> = HOT_KEYS
-        .iter()
-        .map(|hot_key| (hot_key.bind)(hot_key.effective()))
-        .collect();
+    let mut keys: Vec<KeyBinding> = Vec::new();
+    // The twin goes in *first*. A menu draws the last keystroke bound to its
+    // action, and gpui-component draws the command key for the platform it
+    // was compiled for — "Win+K" in a browser, on a Mac too. With the
+    // `secondary` spelling last, the menu says Ctrl+K, which is at least a
+    // key that works there.
+    for hot_key in HOT_KEYS {
+        let keystroke = hot_key.effective();
+        if let Some(twin) = web_twin(keystroke) {
+            keys.push((hot_key.bind)(&twin));
+        }
+        keys.push((hot_key.bind)(keystroke));
+    }
     // `=` is the unshifted `+` key on every layout that has one, so both
     // spellings zoom in — unless the user moved zoom-in elsewhere.
     if !keybinding_overrides().contains_key("zoom_in") {
+        if let Some(twin) = web_twin("secondary-shift-=") {
+            keys.push(KeyBinding::new(&twin, ZoomAction::In, None));
+        }
         keys.push(KeyBinding::new("secondary-shift-=", ZoomAction::In, None));
     }
     keys.extend([
@@ -614,23 +651,51 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // the handler propagates when no completion menu is open, so
         // normal focus movement still works.
         KeyBinding::new("tab", JsonPathAction::AcceptCompletion, Some("JsonPathBar")),
-        // Workspace tabs: ⌘1–⌘8 / Ctrl+1–8 → activate that tab (1-based
-        // key, 0-based index). Cap matches `MAX_TABS` (8) in `main.rs`.
-        KeyBinding::new("secondary-1", WorkspaceTabAction::Select(0), None),
-        KeyBinding::new("secondary-2", WorkspaceTabAction::Select(1), None),
-        KeyBinding::new("secondary-3", WorkspaceTabAction::Select(2), None),
-        KeyBinding::new("secondary-4", WorkspaceTabAction::Select(3), None),
-        KeyBinding::new("secondary-5", WorkspaceTabAction::Select(4), None),
-        KeyBinding::new("secondary-6", WorkspaceTabAction::Select(5), None),
-        KeyBinding::new("secondary-7", WorkspaceTabAction::Select(6), None),
-        KeyBinding::new("secondary-8", WorkspaceTabAction::Select(7), None),
     ]);
+    // Workspace tabs: ⌘1–⌘8 / Ctrl+1–8 → activate that tab (1-based key,
+    // 0-based index). Cap matches `MAX_TABS` (8) in `main.rs`.
+    for index in 0..8 {
+        let keystroke = format!("secondary-{}", index + 1);
+        if let Some(twin) = web_twin(&keystroke) {
+            keys.push(KeyBinding::new(&twin, WorkspaceTabAction::Select(index), None));
+        }
+        keys.push(KeyBinding::new(&keystroke, WorkspaceTabAction::Select(index), None));
+    }
     keys
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_keystroke_is_drawn_for_the_keyboard_it_is_on() {
+        let drawn = humanize_keystroke("secondary-shift-k");
+        if uses_command_key() {
+            assert_eq!(drawn, "⌘⇧K");
+        } else {
+            assert_eq!(drawn, "Ctrl+Shift+K");
+        }
+        assert_eq!(humanize_keystroke("cmd-k"), humanize_keystroke("secondary-k"));
+    }
+
+    #[test]
+    fn a_secondary_keystroke_has_a_command_key_spelling_and_only_the_browser_binds_it() {
+        assert_eq!(command_key_spelling("secondary-k").as_deref(), Some("cmd-k"));
+        assert_eq!(
+            command_key_spelling("secondary-shift-=").as_deref(),
+            Some("cmd-shift-=")
+        );
+        assert_eq!(command_key_spelling("escape"), None, "nothing to twin");
+        assert_eq!(
+            command_key_spelling("ctrl-k"),
+            None,
+            "an explicit ctrl stays what the user wrote"
+        );
+        // On the desktop `secondary` already *is* ⌘ on a Mac, so a twin would
+        // bind the same keystroke twice.
+        assert_eq!(web_twin("secondary-k"), None);
+    }
 
     #[test]
     fn hot_key_ids_are_unique_and_every_reference_group_exists() {

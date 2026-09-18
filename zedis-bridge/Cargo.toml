@@ -27,6 +27,16 @@ zedis-connection = { workspace = true }
 zedis-core = { workspace = true }
 axum = "0.8.9"
 base64 = { workspace = true }
+# The web build, compiled into the binary (`static_files::WebBuild`) so a
+# deployment is one file. Declared here rather than inherited because the
+# feature set is deliberately not the desktop's: no `compression` — the
+# compressing variant inflates the 20 MB module on every `get`, while a raw
+# embed serves it straight from the binary's read-only pages — and no
+# `debug-embed`, so a debug bridge reads `zedis-web/www` from disk and
+# `make web-bundle` refreshes the page without a rebuild. In a whole-workspace
+# build cargo unifies the desktop's features onto this derive anyway; that
+# only changes per-request cost, and `make web-dist` builds the bridge alone.
+rust-embed = { version = "8.12.0", default-features = false, features = ["include-exclude"] }
 redis = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -39,3 +49,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # `v4` for tokens: the workspace default is `v7`, whose leading bits are a
 # timestamp, and a bearer token should not carry a predictable prefix.
 uuid = { workspace = true, features = ["v4"] }
+sha2 = "0.11.0"
+flate2 = "1.1.10"

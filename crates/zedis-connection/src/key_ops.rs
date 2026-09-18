@@ -25,6 +25,8 @@
 //! operation" as data: the dialog is built from the op's fields and the
 //! outcome is rendered from its reply.
 
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use redis::{Value, cmd};

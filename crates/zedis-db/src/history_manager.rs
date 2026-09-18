@@ -14,8 +14,14 @@
 
 use super::{add_normalize_history, get_database};
 use crate::error::Error;
+#[cfg(target_family = "wasm")]
+use crate::mem_store::TableDefinition;
+#[cfg(target_family = "wasm")]
+use crate::mem_store::{ReadableDatabase, ReadableTable};
 use dashmap::DashMap;
+#[cfg(not(target_family = "wasm"))]
 use redb::TableDefinition;
+#[cfg(not(target_family = "wasm"))]
 use redb::{ReadableDatabase, ReadableTable};
 
 type Result<T, E = Error> = std::result::Result<T, E>;

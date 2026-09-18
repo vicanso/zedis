@@ -22,6 +22,8 @@
 //! empty so users don't think the panel is broken.
 
 use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use redis::{Value, cmd};
 

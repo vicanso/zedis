@@ -15,6 +15,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, RedisServer, get_connection_manager, get_server, open_monitor_connection};
 use crate::error::Error;
+use crate::helpers::channel;
 use crate::helpers::{MonitorAction, build_csv, format_clock, get_mono_font_family};
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
@@ -382,7 +383,7 @@ impl ZedisMonitor {
         let table_state = self.table_state.clone();
         let keyword_state = self.keyword_state.clone();
         let entity = cx.entity().downgrade();
-        let (tx, rx) = smol::channel::unbounded::<MonitorEntry>();
+        let (tx, rx) = channel::unbounded::<MonitorEntry>();
 
         let task = cx.spawn(async move |_handle, cx| {
             // Get master node addresses

@@ -964,17 +964,19 @@ impl ZedisLuaScriptLibrary {
                                 .on_click(cx.listener(|this, _, w, cx| this.confirm_flush(w, cx))),
                         )
                     })
-                    .child(
-                        Button::new("lua-kill")
-                            .ghost()
-                            .small()
-                            .label(i18n_common(cx, "kill_script_button"))
-                            .tooltip(i18n_common(cx, "kill_script_tooltip"))
-                            .on_click(cx.listener(|this, _, _w, cx| {
-                                this.server_state
-                                    .update(cx, |state, cx| state.kill_running_script(KillTarget::Script, cx));
-                            })),
-                    )
+                    .when(cfg!(not(target_family = "wasm")), |this| {
+                        this.child(
+                            Button::new("lua-kill")
+                                .ghost()
+                                .small()
+                                .label(i18n_common(cx, "kill_script_button"))
+                                .tooltip(i18n_common(cx, "kill_script_tooltip"))
+                                .on_click(cx.listener(|this, _, _w, cx| {
+                                    this.server_state
+                                        .update(cx, |state, cx| state.kill_running_script(KillTarget::Script, cx));
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("lua-new")
                             .outline()

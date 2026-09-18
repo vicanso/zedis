@@ -23,6 +23,8 @@
 //! possible through `HSETEX KEEPTTL`.
 
 use super::conn::RedisAsyncConn;
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgePipeline as _;
 use crate::error::Error;
 use redis::{Cmd, Pipeline, Value, cmd, pipe};
 

@@ -13,9 +13,13 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::open_seed_connection;
+#[cfg(target_family = "wasm")]
+use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{
     ImportError, RedisServer, SERVER_TYPE_SENTINEL, TAG_ENV_LABELS, get_server_groups, get_servers,
-    open_seed_connection, open_single_connection, tag_color_index,
+    open_single_connection, tag_color_index,
 };
 use crate::error::Error;
 use crate::helpers::{
@@ -26,7 +30,9 @@ use crate::states::{
     GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
     escalate_dangerous_body, get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
 };
-use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_connection_diagnostics};
+#[cfg(not(target_family = "wasm"))]
+use crate::views::open_connection_diagnostics;
+use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global};
 use gpui::{
     Action, Anchor, App, ClipboardItem, Entity, ExternalPaths, FocusHandle, Focusable, SharedString, Subscription,
     Window, div, prelude::*, px,
@@ -683,6 +689,23 @@ impl ZedisServers {
                 .tab_index(4)
                 .field_type(ZedisFormFieldType::RadioGroup),
         ];
+        // Only a bridge has accounts, so only the browser's form asks who an
+        // entry is for. Unticked — the default for a new entry, because an
+        // entry carries credentials — it is private to whoever is signed in;
+        // the bridge, not this form, decides whose name that is (ADR 9).
+        #[cfg(target_family = "wasm")]
+        let fields = {
+            let mut fields = fields;
+            let shared = !is_new && redis_server.owner.is_none();
+            fields.push(
+                ZedisFormField::new("shared", i18n_servers(cx, "shared"))
+                    .default_value(shared.to_string())
+                    .placeholder(i18n_servers(cx, "shared_check_label"))
+                    .tab_index(0)
+                    .field_type(ZedisFormFieldType::Checkbox),
+            );
+            fields
+        };
         let title = if is_new {
             i18n_servers(cx, "add_server_title")
         } else {
@@ -731,6 +754,7 @@ impl ZedisServers {
                             .into_any_element(),
                     );
                 }
+                #[cfg(not(target_family = "wasm"))]
                 items.push(
                     Button::new("test-connection")
                         .label(test_label)
@@ -813,6 +837,7 @@ impl ZedisServers {
                         }))
                         .into_any_element(),
                 );
+                #[cfg(not(target_family = "wasm"))]
                 items.push(
                     Button::new("diagnose-connection")
                         .label(diagnose_label)
