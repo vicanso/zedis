@@ -216,7 +216,7 @@ A server entry belongs to the account that added it and nobody else sees it, unl
 
 ### What the web version leaves out
 
-Everything that is a request and a reply works: the key tree, every value editor, the terminal, metrics, slow log, config, clients, topology, memory analysis, value search. Not available in the browser: the streaming panels (`MONITOR`, Pub/Sub, keyspace events, stream live tail), file import / export, and the shortcuts a browser keeps for itself (⌘N / ⌘T / ⌘W). The desktop app remains the complete client.
+Everything that is a request and a reply works: the key tree, every value editor, the terminal, metrics, slow log, config, clients, memory analysis, value search. Not available in the browser: the streaming panels (`MONITOR`, Pub/Sub, keyspace events), Topology and Sentinel administration, the Lua script library and the Protobuf schema editor, multi-database key search, migration (file import / export) and cross-server compare, connection diagnostics, and the shortcuts a browser keeps for itself (⌘N / ⌘T / ⌘W). A panel that is left out says so instead of failing. The desktop app remains the complete client.
 
 Without Docker, `make web-dist` builds the same thing as a single self-contained binary.
 
