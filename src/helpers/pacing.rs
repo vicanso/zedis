@@ -67,6 +67,66 @@ pub const LATENCY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_family = "wasm")]
 pub const LATENCY_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
+/// The Server Load panel's `INFO commandstats` sample, while it is open (a
+/// payload that grows with the number of distinct commands). Seconds, because
+/// the panel prints it ("sampled Ns ago · every Ns").
+#[cfg(not(target_family = "wasm"))]
+pub const SERVER_LOAD_POLL_SECS: u64 = 3;
+#[cfg(target_family = "wasm")]
+pub const SERVER_LOAD_POLL_SECS: u64 = 10;
+
+/// The Hot Keys panel's report, while it is open (seconds).
+#[cfg(not(target_family = "wasm"))]
+pub const HOTKEYS_POLL_SECS: u64 = 2;
+#[cfg(target_family = "wasm")]
+pub const HOTKEYS_POLL_SECS: u64 = 10;
+
+/// Those two panels sleep in slices so that their Refresh button is answered
+/// within one: five wake-ups a second on the desktop, one in the browser,
+/// where a page that never goes idle is a page the browser cannot rest.
+#[cfg(not(target_family = "wasm"))]
+pub const PANEL_WAKE_MS: u64 = 200;
+#[cfg(target_family = "wasm")]
+pub const PANEL_WAKE_MS: u64 = 1000;
+
+/// The root's housekeeping tick: expired connection caches on every one, and
+/// once an hour the idle key histories and the recycle bin. The browser has
+/// no SSH sessions, no socket pool and no bin, so only the hourly part means
+/// anything there — it ticks once an hour and sweeps on every tick.
+#[cfg(not(target_family = "wasm"))]
+pub const HOUSEKEEPING_TICK: Duration = Duration::from_secs(30);
+#[cfg(target_family = "wasm")]
+pub const HOUSEKEEPING_TICK: Duration = Duration::from_secs(3600);
+/// How many housekeeping ticks make the hourly sweep.
+#[cfg(not(target_family = "wasm"))]
+pub const HOUSEKEEPING_HOURLY_TICKS: u64 = 120;
+#[cfg(target_family = "wasm")]
+pub const HOUSEKEEPING_HOURLY_TICKS: u64 = 1;
+
+/// Whether the page is one nobody is looking at — a browser tab in the
+/// background, a minimised window. A desktop window has no such state worth
+/// acting on (its inactive *workspace tabs* are already relaxed), so there it
+/// is a constant and everything that asks compiles to what it was. In the
+/// browser a page is routinely left open for days, and every beat of it is
+/// the bridge's and the Redis server's work: hidden, it polls like a
+/// background workspace tab. The page tells us through `zedis-web`'s
+/// `set_page_visible` (a `visibilitychange` listener in `index.html`).
+#[cfg(not(target_family = "wasm"))]
+pub const fn page_hidden() -> bool {
+    false
+}
+#[cfg(target_family = "wasm")]
+pub fn page_hidden() -> bool {
+    PAGE_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[cfg(target_family = "wasm")]
+static PAGE_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Browser only: the page's `visibilitychange`.
+#[cfg(target_family = "wasm")]
+pub fn set_page_hidden(hidden: bool) {
+    PAGE_HIDDEN.store(hidden, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +142,11 @@ mod tests {
         assert_eq!(DBSIZE_REFRESH_SECS, 60);
         assert_eq!(SLOW_LOG_CHECK_SECS, 60);
         assert_eq!(LATENCY_POLL_INTERVAL, Duration::from_secs(5));
+        assert_eq!(SERVER_LOAD_POLL_SECS, 3);
+        assert_eq!(HOTKEYS_POLL_SECS, 2);
+        assert_eq!(PANEL_WAKE_MS, 200);
+        assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));
+        assert_eq!(HOUSEKEEPING_HOURLY_TICKS, 120);
+        assert!(!page_hidden(), "a desktop window is never \"hidden\" to the pacing");
     }
 }

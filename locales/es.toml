@@ -2473,6 +2473,7 @@ welcome_step_browse = "2. Explora las claves en el árbol: los valores se decodi
 welcome_step_palette = "3. Abre la paleta de comandos: todas las herramientas están ahí"
 welcome_ok = "Comenzar"
 first_connect = "¡Conectado! %{palette} abre la paleta de comandos; %{search} busca en todas las bases de datos."
+first_connect_web = "¡Conectado! %{palette} abre la paleta de comandos. En el navegador, las etiquetas, notas, favoritos y scripts guardados solo se conservan en esta página: al recargarla se borran."
 topology_banner = "Primera visita: este panel muestra la topología del despliegue — salud de los nodos, enlaces de replicación y cobertura de slots. Haz clic en un nodo para ver detalles."
 memory_banner = "Primera visita: el analizador muestrea claves con SCAN, agrega la memoria por patrón de clave y sugiere optimizaciones."
 

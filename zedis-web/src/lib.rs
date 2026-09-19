@@ -51,6 +51,8 @@ use transport::HttpBridgeTransport;
 #[cfg(target_family = "wasm")]
 use zedis_connection::{set_bridge_server_store, set_bridge_transport, set_servers_cache};
 #[cfg(target_family = "wasm")]
+use zedis_gui::helpers::pacing::set_page_hidden;
+#[cfg(target_family = "wasm")]
 use zedis_gui::helpers::set_web_command_key;
 #[cfg(target_family = "wasm")]
 use zedis_gui::states::{GlobalEvent, ZedisAppState, ZedisGlobalStore};
@@ -110,7 +112,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
     // The kit fetches its icons from `{origin}/assets/icons/…`: it needs an
     // absolute base, not a relative one.
     let web_assets = assets::WebAssets::new(&origin);
-    let awaited_icons = web_assets.awaited();
+    let icon_watch = web_assets.take_watch();
     let app = app.with_assets(web_assets);
     // `run_embedded`, not `run`. On the desktop `Platform::run` blocks for the
     // life of the app and `Application::run`'s stack frame owns the app state.
@@ -125,7 +127,9 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
         }
         gpui_kit::component::init(cx);
         // The kit fetches its icons and tells nobody when they arrive.
-        assets::repaint_when_icons_land(awaited_icons, cx);
+        if let Some(icon_watch) = icon_watch {
+            assets::repaint_when_icons_land(icon_watch, cx);
+        }
 
         // The bridge is both where commands go and where the server list
         // lives. One transport serves both roles; no credential, because the page
@@ -174,6 +178,18 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
     Ok(())
+}
+
+/// The page's `visibilitychange`, from `index.html`. A hidden page polls the
+/// bridge at the pace of a background workspace tab instead of the heartbeat
+/// (`zedis_gui::helpers::pacing`): a browser tab is left open for days in a
+/// way a desktop window is not, and each of its beats is work for a bridge
+/// and a Redis that everybody shares. Nothing is kicked when the page comes
+/// back — the next heartbeat tick, at most one interval away, goes through.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn set_page_visible(visible: bool) {
+    set_page_hidden(!visible);
 }
 
 // The page is the process: it lives until the tab closes, and so does this.

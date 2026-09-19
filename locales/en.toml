@@ -2476,6 +2476,7 @@ welcome_step_browse = "2. Browse keys in the tree — values are decoded automat
 welcome_step_palette = "3. Open the command palette — every tool lives there"
 welcome_ok = "Get Started"
 first_connect = "Connected! %{palette} opens the command palette; %{search} searches across databases."
+first_connect_web = "Connected! %{palette} opens the command palette. In the browser, tags, notes, favorites and saved scripts are kept in this page only — reloading it clears them."
 topology_banner = "First time here: this panel maps your deployment's topology — node health, replication links and slot coverage. Click a node for details."
 memory_banner = "First time here: the analyzer samples keys with SCAN, aggregates memory by key pattern, and suggests optimizations."
 

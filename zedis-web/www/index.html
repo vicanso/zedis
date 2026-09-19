@@ -113,6 +113,12 @@
       // `root`, not the origin: the module builds `/v1/…` and the icon URLs
       // on it, so they follow the page under a base path.
       mod.run(root, new Uint8Array(font), appleKeyboard);
+      // A page nobody is looking at polls the bridge far less often. Browsers
+      // throttle a hidden tab's timers but never stop them, and a tab left
+      // open for the weekend would otherwise keep its heartbeat going.
+      const reportVisibility = () => mod.set_page_visible(!document.hidden);
+      document.addEventListener("visibilitychange", reportVisibility);
+      reportVisibility();
     } catch (e) {
       $("loading-msg").textContent = `The application could not start: ${e}`;
       $("loading-msg").className = "msg bad";

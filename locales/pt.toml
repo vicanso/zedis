@@ -2473,6 +2473,7 @@ welcome_step_browse = "2. Navegue pelas chaves na árvore — os valores são de
 welcome_step_palette = "3. Abra a paleta de comandos — todas as ferramentas estão lá"
 welcome_ok = "Começar"
 first_connect = "Conectado! %{palette} abre a paleta de comandos; %{search} pesquisa em todos os bancos."
+first_connect_web = "Conectado! %{palette} abre a paleta de comandos. No navegador, tags, notas, favoritos e scripts salvos ficam apenas nesta página — recarregá-la apaga tudo."
 topology_banner = "Primeira visita: este painel mapeia a topologia da implantação — saúde dos nós, links de replicação e cobertura de slots. Clique em um nó para ver detalhes."
 memory_banner = "Primeira visita: o analisador amostra chaves via SCAN, agrega a memória por padrão de chave e sugere otimizações."
 

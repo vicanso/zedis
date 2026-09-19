@@ -30,7 +30,15 @@
 //! source remembers what it was asked for and could not give, and
 //! [`repaint_when_icons_land`] watches that list and refreshes the windows
 //! when an entry starts answering.
+//!
+//! The watcher sleeps on a channel while nothing is awaited, and `load`
+//! wakes it when it lists a path. It used to poll every 500ms instead, for
+//! as long as the page was open — a timer that never stops is a page the
+//! browser can never let rest, and icons are all in within a second of a
+//! panel's first paint.
 
+use futures::StreamExt;
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use gpui::{App, AssetSource, Result, SharedString};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -41,9 +49,16 @@ use std::time::Duration;
 /// looked at since.
 pub type Awaited = Arc<Mutex<HashMap<String, u32>>>;
 
-/// How often the watcher looks while something is awaited, and while nothing is.
+/// How often the watcher looks while something is awaited. While nothing is,
+/// it does not look at all: it waits to be woken.
 const WATCH_BUSY: Duration = Duration::from_millis(60);
-const WATCH_IDLE: Duration = Duration::from_millis(500);
+
+/// What [`repaint_when_icons_land`] needs: the list, and the channel `load`
+/// wakes it through.
+pub struct IconWatch {
+    awaited: Awaited,
+    wake: UnboundedReceiver<()>,
+}
 
 /// After this many looks an icon is given up on. Looking is not free — the
 /// kit's source *starts a fetch* whenever it is asked for something it has
@@ -55,32 +70,49 @@ pub struct WebAssets {
     app: zedis_gui::assets::Assets,
     kit: gpui_kit::assets::Assets,
     awaited: Awaited,
+    /// Pokes the watcher when a path joins an empty-or-not list. Unbounded
+    /// and never awaited: `load` runs inside a paint.
+    wake: UnboundedSender<()>,
+    /// Handed to the watcher once ([`Self::take_watch`]).
+    watch: Mutex<Option<UnboundedReceiver<()>>>,
 }
 
 impl WebAssets {
     /// `endpoint` is the origin the kit fetches from; empty means this one.
     pub fn new(endpoint: &str) -> Self {
+        let (wake, watch) = unbounded();
         Self {
             app: zedis_gui::assets::Assets,
             kit: gpui_kit::assets::Assets::new(endpoint.to_string()),
             awaited: Awaited::default(),
+            wake,
+            watch: Mutex::new(Some(watch)),
         }
     }
 
-    /// The list [`repaint_when_icons_land`] watches.
-    pub fn awaited(&self) -> Awaited {
-        self.awaited.clone()
+    /// The watcher's half, for [`repaint_when_icons_land`]. `None` the second
+    /// time: there is one watcher.
+    pub fn take_watch(&self) -> Option<IconWatch> {
+        let wake = self.watch.lock().ok()?.take()?;
+        Some(IconWatch {
+            awaited: self.awaited.clone(),
+            wake,
+        })
     }
 }
 
 /// Refresh every window when an icon that was asked for arrives.
-pub fn repaint_when_icons_land(awaited: Awaited, cx: &mut App) {
+pub fn repaint_when_icons_land(watch: IconWatch, cx: &mut App) {
+    let IconWatch { awaited, mut wake } = watch;
     cx.spawn(async move |cx| {
         loop {
             let busy = awaited.lock().map(|list| !list.is_empty()).unwrap_or(false);
-            cx.background_executor()
-                .timer(if busy { WATCH_BUSY } else { WATCH_IDLE })
-                .await;
+            if !busy && wake.next().await.is_none() {
+                // The asset source is gone, and with it everything that
+                // could ask for an icon.
+                return;
+            }
+            cx.background_executor().timer(WATCH_BUSY).await;
             let paths: Vec<String> = match awaited.lock() {
                 Ok(list) => list.keys().cloned().collect(),
                 Err(_) => return,
@@ -126,8 +158,11 @@ impl AssetSource for WebAssets {
                 let answer = self.kit.load(path);
                 if !matches!(answer, Ok(Some(_)))
                     && let Ok(mut list) = self.awaited.lock()
+                    && !list.contains_key(path)
                 {
-                    list.entry(path.to_string()).or_insert(0);
+                    list.insert(path.to_string(), 0);
+                    // A send to a dropped watcher is nothing to report.
+                    let _ = self.wake.unbounded_send(());
                 }
                 // The kit answers an icon it is still fetching with an
                 // *error* ("Wasm assets loading, will be available soon..."),

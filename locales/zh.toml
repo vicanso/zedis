@@ -2475,6 +2475,7 @@ welcome_step_browse = "2. 在键树中浏览——值会自动解码（JSON、Pr
 welcome_step_palette = "3. 打开命令面板，所有工具都在这里"
 welcome_ok = "开始使用"
 first_connect = "连接成功！%{palette} 打开命令面板，%{search} 跨库搜索。"
+first_connect_web = "已连接！%{palette} 打开命令面板。浏览器版中，标签、备注、收藏和保存的脚本只保存在当前页面，刷新后会清空。"
 topology_banner = "初次使用提示：此面板展示部署拓扑——节点健康、复制关系与槽位覆盖，点击节点可查看详情。"
 memory_banner = "初次使用提示：分析器通过 SCAN 采样键，按键模式聚合内存占用并给出优化建议。"
 

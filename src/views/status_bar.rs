@@ -13,6 +13,9 @@
 // limitations under the License.
 
 use crate::states::{command_status_label, i18n_features};
+// The recycle bin's menu entry is the desktop's: the browser keeps no bin.
+#[cfg(not(target_family = "wasm"))]
+use crate::states::i18n_trash;
 use crate::{
     assets::CustomIconName,
     connection::{KillTarget, RedisClientDescription, ServerFeatures, get_server},
@@ -22,7 +25,7 @@ use crate::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
         i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar,
-        i18n_timeseries, i18n_topology, i18n_trash, i18n_value_search, save_session_option,
+        i18n_timeseries, i18n_topology, i18n_value_search, save_session_option,
     },
 };
 use gpui::{
@@ -873,12 +876,16 @@ impl ZedisStatusBar {
         // and always available since the bin lives client-side. The menu
         // uses the descriptive `menu` label ("Deleted Keys (Trash)"): a bare
         // "Trash" next to entries like "Keyspace Notifications" reads as a
-        // mystery; the dialog itself keeps the short `title`.
-        menu = menu.menu_element_with_icon(
-            Icon::new(CustomIconName::FileXCorner),
-            Box::new(ServerToolsAction::Trash),
-            move |_window, cx| Label::new(i18n_trash(cx, "menu")),
-        );
+        // mystery; the dialog itself keeps the short `title`. Not in the
+        // browser, which keeps no bin (`ZedisAppState::soft_delete`).
+        #[cfg(not(target_family = "wasm"))]
+        {
+            menu = menu.menu_element_with_icon(
+                Icon::new(CustomIconName::FileXCorner),
+                Box::new(ServerToolsAction::Trash),
+                move |_window, cx| Label::new(i18n_trash(cx, "menu")),
+            );
+        }
         // Import framed dump into the current server / db. Needs write
         // (RESTORE); keep visible when readonly so users know where it lives.
         let import_label: SharedString = if readonly {

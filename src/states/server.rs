@@ -23,7 +23,7 @@ use crate::connection::{
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
-use crate::helpers::unix_ts;
+use crate::helpers::{pacing, unix_ts};
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{KeyHistories, ValueHistoryEntry};
 use crate::states::server::stat::{RedisInfo, get_metrics_cache};
@@ -387,8 +387,11 @@ impl ZedisServerState {
     /// Whether this state belongs to an inactive (background) workspace tab.
     /// View-owned poll loops (e.g. the command-stats sampler) read this to
     /// pause their own traffic while the tab is hidden.
+    ///
+    /// Also true while the whole *page* is hidden — browser only
+    /// (`pacing::page_hidden`, a constant `false` on the desktop).
     pub fn is_background(&self) -> bool {
-        self.background
+        self.background || pacing::page_hidden()
     }
 
     /// Reset all scan-related state (clears keys, cursors, etc.)

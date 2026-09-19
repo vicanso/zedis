@@ -2473,6 +2473,7 @@ welcome_step_browse = "2. Schlüssel im Baum durchsuchen — Werte werden automa
 welcome_step_palette = "3. Befehlspalette öffnen — dort findet sich jedes Werkzeug"
 welcome_ok = "Loslegen"
 first_connect = "Verbunden! %{palette} öffnet die Befehlspalette; %{search} durchsucht alle Datenbanken."
+first_connect_web = "Verbunden! %{palette} öffnet die Befehlspalette. Im Browser werden Tags, Notizen, Favoriten und gespeicherte Skripte nur in dieser Seite gehalten – ein Neuladen löscht sie."
 topology_banner = "Zum ersten Mal hier: Dieses Panel zeigt die Topologie des Deployments — Knotenzustand, Replikationsverbindungen und Slot-Abdeckung. Für Details auf einen Knoten klicken."
 memory_banner = "Zum ersten Mal hier: Der Analyzer sampelt Schlüssel per SCAN, aggregiert Speicher nach Schlüsselmuster und schlägt Optimierungen vor."
 

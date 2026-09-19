@@ -12,16 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The multi-database search entry is the desktop's (the browser build has no
+// handler for it), and it is the only user of these two.
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::MultiSearchAction;
 use crate::helpers::{
-    DiagnosticsAction, MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction,
-    get_mono_font_family, is_app_store_build,
+    DiagnosticsAction, MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
+    is_app_store_build,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::states::i18n_shortcuts;
 use crate::{
     assets::CustomIconName,
     connection::get_server,
     states::{
         GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_shortcuts, i18n_sidebar, i18n_status_bar,
+        i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{
@@ -193,82 +199,83 @@ impl ZedisTitleBar {
                 },
             );
 
-        this.separator()
-            // App actions, shown with their shortcuts (Zed-style flat items).
-            .menu_with_icon(
-                i18n_sidebar(cx, "command_palette"),
-                Icon::new(CustomIconName::Command),
-                Box::new(PaletteAction::Toggle),
+        // App actions, shown with their shortcuts (Zed-style flat items).
+        let this = this.separator().menu_with_icon(
+            i18n_sidebar(cx, "command_palette"),
+            Icon::new(CustomIconName::Command),
+            Box::new(PaletteAction::Toggle),
+        );
+        // Multi-database search (⌘⇧F): the only global overlay without a
+        // click entry — surfaced here beside the palette for parity and
+        // discoverability. Label reuses the shortcuts-panel string. A
+        // desktop feature: the browser build has no handler for the action.
+        #[cfg(not(target_family = "wasm"))]
+        let this = this.menu_with_icon(
+            i18n_shortcuts(cx, "multi_search"),
+            Icon::new(IconName::Search),
+            Box::new(MultiSearchAction::Toggle),
+        );
+        this.menu_with_icon(
+            i18n_sidebar(cx, "keyboard_shortcuts"),
+            Icon::new(CustomIconName::Keyboard),
+            Box::new(ShortcutsAction::Toggle),
+        )
+        .separator()
+        // Settings: the configuration sub-views, grouped into one submenu so
+        // the top-level menu stays short.
+        .submenu_with_icon(
+            Some(Icon::new(IconName::Settings2)),
+            i18n_sidebar(cx, "settings"),
+            window,
+            cx,
+            |submenu, _window, _cx| {
+                submenu
+                    .menu_element_with_icon(
+                        Icon::new(CustomIconName::SwatchBook),
+                        Box::new(SettingsAction::Protos),
+                        move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
+                    )
+                    .menu_element_with_icon(
+                        Icon::new(CustomIconName::Binary),
+                        Box::new(SettingsAction::Scripts),
+                        move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
+                    )
+                    .menu_element_with_icon(
+                        Icon::new(IconName::Settings2),
+                        Box::new(SettingsAction::Editor),
+                        move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+                    )
+            },
+        )
+        // App Store builds update via the App Store — hide the manual check.
+        .when(!is_app_store_build(), |this| {
+            this.menu_with_icon(
+                i18n_sidebar(cx, "check_updates"),
+                Icon::new(CustomIconName::RefreshCw),
+                Box::new(UpdateAction::Check),
             )
-            // Multi-database search (⌘⇧F): the only global overlay without a
-            // click entry — surfaced here beside the palette for parity and
-            // discoverability. Label reuses the shortcuts-panel string.
-            .menu_with_icon(
-                i18n_shortcuts(cx, "multi_search"),
-                Icon::new(IconName::Search),
-                Box::new(MultiSearchAction::Toggle),
-            )
-            .menu_with_icon(
-                i18n_sidebar(cx, "keyboard_shortcuts"),
-                Icon::new(CustomIconName::Keyboard),
-                Box::new(ShortcutsAction::Toggle),
-            )
-            .separator()
-            // Settings: the configuration sub-views, grouped into one submenu so
-            // the top-level menu stays short.
-            .submenu_with_icon(
-                Some(Icon::new(IconName::Settings2)),
-                i18n_sidebar(cx, "settings"),
-                window,
-                cx,
-                |submenu, _window, _cx| {
-                    submenu
-                        .menu_element_with_icon(
-                            Icon::new(CustomIconName::SwatchBook),
-                            Box::new(SettingsAction::Protos),
-                            move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
-                        )
-                        .menu_element_with_icon(
-                            Icon::new(CustomIconName::Binary),
-                            Box::new(SettingsAction::Scripts),
-                            move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
-                        )
-                        .menu_element_with_icon(
-                            Icon::new(IconName::Settings2),
-                            Box::new(SettingsAction::Editor),
-                            move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
-                        )
-                },
-            )
-            // App Store builds update via the App Store — hide the manual check.
-            .when(!is_app_store_build(), |this| {
-                this.menu_with_icon(
-                    i18n_sidebar(cx, "check_updates"),
-                    Icon::new(CustomIconName::RefreshCw),
-                    Box::new(UpdateAction::Check),
-                )
-            })
-            .menu_with_icon(
-                i18n_sidebar(cx, "open_logs"),
-                Icon::new(CustomIconName::HardDrive),
-                Box::new(MemuAction::OpenLogs),
-            )
-            .menu_with_icon(
-                i18n_sidebar(cx, "export_diagnostics"),
-                Icon::new(CustomIconName::Download),
-                Box::new(DiagnosticsAction::Export),
-            )
-            .menu_with_icon(
-                i18n_sidebar(cx, "about"),
-                Icon::new(IconName::Info),
-                Box::new(MemuAction::About),
-            )
-            .separator()
-            .menu_with_icon(
-                i18n_sidebar(cx, "quit"),
-                Icon::new(CustomIconName::Power),
-                Box::new(MemuAction::Quit),
-            )
+        })
+        .menu_with_icon(
+            i18n_sidebar(cx, "open_logs"),
+            Icon::new(CustomIconName::HardDrive),
+            Box::new(MemuAction::OpenLogs),
+        )
+        .menu_with_icon(
+            i18n_sidebar(cx, "export_diagnostics"),
+            Icon::new(CustomIconName::Download),
+            Box::new(DiagnosticsAction::Export),
+        )
+        .menu_with_icon(
+            i18n_sidebar(cx, "about"),
+            Icon::new(IconName::Info),
+            Box::new(MemuAction::About),
+        )
+        .separator()
+        .menu_with_icon(
+            i18n_sidebar(cx, "quit"),
+            Icon::new(CustomIconName::Power),
+            Box::new(MemuAction::Quit),
+        )
     }
 }
 

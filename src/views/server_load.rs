@@ -26,7 +26,7 @@ use crate::assets::CustomIconName;
 use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, CommandStat, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{get_mono_font_family, pacing};
 use crate::states::{
     ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_server_load,
@@ -50,7 +50,7 @@ use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-const POLL_SECS: u64 = 3;
+const POLL_SECS: u64 = pacing::SERVER_LOAD_POLL_SECS;
 const NUM_COL: f32 = 96.0;
 const PCT_COL: f32 = 72.0;
 const DEFAULT_TOP_N: usize = 50;
@@ -169,8 +169,10 @@ impl ZedisServerLoad {
                 // Responsive Refresh: wake every 200ms to check force_tick.
                 let mut waited = 0u64;
                 while waited < POLL_SECS * 1000 {
-                    cx.background_executor().timer(Duration::from_millis(200)).await;
-                    waited += 200;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(pacing::PANEL_WAKE_MS))
+                        .await;
+                    waited += pacing::PANEL_WAKE_MS;
                     let force = this.update(cx, |this, _| this.force_tick).unwrap_or(false);
                     if force {
                         break;

@@ -379,6 +379,31 @@ fn web_twin(keystroke: &str) -> Option<String> {
         .flatten()
 }
 
+/// Whether the ⌘/ reference may list this shortcut. On the desktop, always.
+#[cfg(not(target_family = "wasm"))]
+const fn listed_in_reference(_hot_key: &HotKey) -> bool {
+    true
+}
+/// In the browser, not the ones that cannot work there: a feature the web
+/// build leaves out (multi-database search), and a chord the browser keeps
+/// for itself — listing ⌘N as "New key" teaches people to open a browser
+/// window.
+#[cfg(target_family = "wasm")]
+fn listed_in_reference(hot_key: &HotKey) -> bool {
+    hot_key.id != "multi_search" && !browser_keeps(hot_key.effective())
+}
+
+/// A chord a page never receives: ⌘N ⌘T ⌘W ⌘Q on a Mac, the Ctrl forms
+/// elsewhere — new window, new tab, close tab, quit. Only the bare chord:
+/// with Shift or Alt it is the page's again.
+#[cfg(any(test, target_family = "wasm"))]
+fn browser_keeps(keystroke: &str) -> bool {
+    ["secondary-", "cmd-", "ctrl-"]
+        .iter()
+        .filter_map(|modifier| keystroke.strip_prefix(modifier))
+        .any(|key| matches!(key, "n" | "t" | "w" | "q"))
+}
+
 /// `secondary-shift-k` → `cmd-shift-k`; `None` for a keystroke that has no
 /// `secondary` in it and so needs no twin.
 fn command_key_spelling(keystroke: &str) -> Option<String> {
@@ -594,6 +619,9 @@ pub fn shortcut_reference() -> Vec<ShortcutGroup> {
         let Some((group, desc_key)) = hot_key.reference else {
             continue;
         };
+        if !listed_in_reference(hot_key) {
+            continue;
+        }
         if let Some(group) = groups.iter_mut().find(|candidate| candidate.title_key == group) {
             group.items.push((hot_key.effective().to_string(), desc_key));
         }
@@ -667,6 +695,32 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chords_a_browser_keeps_are_the_bare_window_and_tab_ones() {
+        for kept in [
+            "secondary-n",
+            "secondary-t",
+            "secondary-w",
+            "secondary-q",
+            "cmd-n",
+            "ctrl-w",
+        ] {
+            assert!(browser_keeps(kept), "{kept} never reaches a page");
+        }
+        // With Shift or Alt the chord is the page's again, and so is every
+        // other letter.
+        for free in [
+            "secondary-shift-n",
+            "secondary-alt-t",
+            "secondary-k",
+            "secondary-r",
+            "shift-n",
+            "n",
+        ] {
+            assert!(!browser_keeps(free), "{free} does reach a page");
+        }
+    }
 
     #[test]
     fn a_keystroke_is_drawn_for_the_keyboard_it_is_on() {

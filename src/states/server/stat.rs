@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{ReplicationInfo, get_connection_manager, get_server};
-use crate::db::{insert_metrics_sample, list_metrics_samples, prune_metrics_history};
+use crate::db::list_metrics_samples;
 use crate::helpers::{pacing, unix_ts, unix_ts_millis};
 use crate::states::{
     ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState, i18n_status_bar,
@@ -28,6 +28,12 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use web_time::Instant;
+
+// Writing the Metrics history — see the module for why the browser has none.
+#[cfg(not(target_family = "wasm"))]
+mod persist;
+#[cfg(not(target_family = "wasm"))]
+use persist::maybe_persist_metrics;
 
 #[derive(Debug, Default, Clone)]
 pub struct RedisKeySpaceStats {
@@ -159,55 +165,6 @@ static METRICS_CACHE: LazyLock<MetricsCache> = LazyLock::new(|| MetricsCache::ne
 
 pub fn get_metrics_cache() -> &'static MetricsCache {
     &METRICS_CACHE
-}
-
-/// Persist at most one sample per minute per server — the in-memory cache
-/// keeps the 2s-resolution live window, disk only needs trend resolution.
-const METRICS_PERSIST_INTERVAL_MS: i64 = 60_000;
-/// Keep 7 days of samples (~10k rows per server at the 1/min cadence).
-const METRICS_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
-/// Per-server timestamp of the last persisted sample (this process).
-static METRICS_LAST_PERSISTED: LazyLock<RwLock<HashMap<String, i64>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
-
-/// Throttled write-behind of one metrics sample: skips unless a minute has
-/// passed since the server's last persisted sample, serializes on the
-/// caller, and hands the (blocking) redb write to the background executor.
-/// The first persist of a session also prunes samples past retention.
-/// Failures only warn — history is best-effort and must never break the
-/// heartbeat.
-fn maybe_persist_metrics(server_id: &str, metrics: RedisMetrics, cx: &mut Context<ZedisServerState>) {
-    let timestamp_ms = metrics.timestamp_ms;
-    let first_this_session;
-    {
-        let mut last = METRICS_LAST_PERSISTED.write();
-        let prev = last.get(server_id).copied();
-        if let Some(prev) = prev
-            && timestamp_ms - prev < METRICS_PERSIST_INTERVAL_MS
-        {
-            return;
-        }
-        first_this_session = prev.is_none();
-        last.insert(server_id.to_string(), timestamp_ms);
-    }
-    let Ok(payload) = serde_json::to_vec(&metrics) else {
-        return;
-    };
-    let server_id = server_id.to_string();
-    cx.background_executor()
-        .spawn(async move {
-            if first_this_session {
-                match prune_metrics_history(&server_id, timestamp_ms - METRICS_RETENTION_MS) {
-                    Ok(removed) if removed > 0 => debug!(server_id, removed, "pruned metrics history"),
-                    Ok(_) => {}
-                    Err(e) => warn!(error = %e, "prune metrics history failed"),
-                }
-            }
-            if let Err(e) = insert_metrics_sample(&server_id, timestamp_ms, &payload) {
-                warn!(error = %e, "persist metrics sample failed");
-            }
-        })
-        .detach();
 }
 
 /// Load persisted history for the trailing `duration_ms`, decimated to at
@@ -728,7 +685,7 @@ impl ZedisServerState {
         // Inactive workspace tabs poll at a relaxed cadence: the 2s status-bar
         // heartbeat keeps firing, but only one refresh per interval gets
         // through. Re-activating the tab resets the window (`set_background`).
-        if self.background {
+        if self.is_background() {
             let now = unix_ts();
             if now - self.last_background_refresh < pacing::BACKGROUND_REFRESH_SECS {
                 return;
@@ -843,6 +800,7 @@ impl ZedisServerState {
                             }
                         }
                         METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
+                        #[cfg(not(target_family = "wasm"))]
                         maybe_persist_metrics(&server_id_clone, info.metrics, cx);
                         if refresh_dbsize {
                             // Attempted, whether or not it answered — a denied

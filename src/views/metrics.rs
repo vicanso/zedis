@@ -142,6 +142,17 @@ impl MetricsRange {
         MetricsRange::LastDay,
         MetricsRange::LastWeek,
     ];
+    /// Whether the panel offers this window. All of them on the desktop.
+    #[cfg(not(target_family = "wasm"))]
+    const fn offered(self) -> bool {
+        true
+    }
+    /// Only `Live` in the browser: the history windows read samples the
+    /// browser build never writes (`states/server/stat/persist.rs`).
+    #[cfg(target_family = "wasm")]
+    fn offered(self) -> bool {
+        self == MetricsRange::Live
+    }
     fn button_id(self) -> &'static str {
         match self {
             MetricsRange::Live => "metrics-range-live",
@@ -1203,16 +1214,23 @@ impl Render for ZedisMetrics {
                                             .tooltip(i18n_metrics(cx, "export_tooltip"))
                                             .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
                                     )
-                                    .child(h_flex().gap_1().children(MetricsRange::ALL.map(|range| {
-                                        let selected = self.range == range;
-                                        let button = Button::new(range.button_id())
-                                            .xsmall()
-                                            .label(i18n_metrics(cx, range.label_key()));
-                                        let button = if selected { button.primary() } else { button.ghost() };
-                                        button.on_click(
-                                            cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
-                                        )
-                                    }))),
+                                    .child(
+                                        h_flex().gap_1().children(
+                                            MetricsRange::ALL.into_iter().filter(|range| range.offered()).map(
+                                                |range| {
+                                                    let selected = self.range == range;
+                                                    let button = Button::new(range.button_id())
+                                                        .xsmall()
+                                                        .label(i18n_metrics(cx, range.label_key()));
+                                                    let button =
+                                                        if selected { button.primary() } else { button.ghost() };
+                                                    button.on_click(cx.listener(move |this, _, _window, cx| {
+                                                        this.set_range(range, cx)
+                                                    }))
+                                                },
+                                            ),
+                                        ),
+                                    ),
                             ),
                     )
                     .child(self.render_stat_cards(columns, cx))

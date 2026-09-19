@@ -28,8 +28,8 @@ use crate::{
     },
 };
 use gpui::{
-    App, Bounds, Entity, FontWeight, PathPromptOptions, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, prelude::*, px, size,
+    AnyElement, App, Bounds, Entity, FontWeight, PathPromptOptions, Subscription, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, prelude::*, px, size,
 };
 use gpui_kit::component::{
     ActiveTheme, Sizable, WindowExt,
@@ -663,6 +663,26 @@ impl ZedisSettingEditor {
         });
     }
 
+    /// The recycle-bin switch — a row the browser build does not have (see
+    /// `ZedisAppState::soft_delete`).
+    #[cfg(not(target_family = "wasm"))]
+    fn render_soft_delete_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let switch = Switch::new("soft-delete")
+            .checked(self.soft_delete)
+            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                this.soft_delete = *checked;
+                let enabled = *checked;
+                update_app_state_and_save(cx, "save_soft_delete", move |state, _| {
+                    state.set_soft_delete(enabled);
+                });
+            }));
+        Some(Self::render_setting_row(cx, "soft_delete", switch).into_any_element())
+    }
+    #[cfg(target_family = "wasm")]
+    fn render_soft_delete_row(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        None
+    }
+
     fn render_setting_row(cx: &Context<Self>, label_key: &str, input_element: impl IntoElement) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let desc_key = format!("{label_key}_desc");
@@ -801,19 +821,7 @@ impl Render for ZedisSettingEditor {
                             });
                         })),
                 ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "soft_delete",
-                    Switch::new("soft-delete")
-                        .checked(self.soft_delete)
-                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                            this.soft_delete = *checked;
-                            let enabled = *checked;
-                            update_app_state_and_save(cx, "save_soft_delete", move |state, _| {
-                                state.set_soft_delete(enabled);
-                            });
-                        })),
-                ))
+                .children(self.render_soft_delete_row(cx))
                 .child(Self::render_setting_row(
                     cx,
                     "max_truncate_length",

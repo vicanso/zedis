@@ -49,12 +49,28 @@ pub fn i18n_hints<'a>(cx: &'a App, key: &'a str) -> SharedString {
 
 /// Toast body for the one-time first-connection hint, with the two global
 /// shortcuts resolved for the current platform (⌘ on macOS, Ctrl elsewhere).
+#[cfg(not(target_family = "wasm"))]
 pub fn first_connect_hint(cx: &App) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(
         "hints.first_connect",
         palette = humanize_keystroke("secondary-k"),
         search = humanize_keystroke("secondary-shift-f"),
+        locale = locale
+    )
+    .into()
+}
+/// The browser's first-connect toast. Not the desktop's: that one points at
+/// multi-database search, which the web build does not have — and this one
+/// has something of its own to say once: tags, notes, favorites and saved
+/// scripts live in the page's memory there until the bridge stores them, so
+/// a reload empties them, and nothing else in the UI says so.
+#[cfg(target_family = "wasm")]
+pub fn first_connect_hint(cx: &App) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(
+        "hints.first_connect_web",
+        palette = humanize_keystroke("secondary-k"),
         locale = locale
     )
     .into()

@@ -18,6 +18,17 @@
 
 use super::*;
 
+/// The "New key" button's shortcut hint. The desktop's ⌘N; nothing in the
+/// browser, where that chord opens a browser window and never reaches a page.
+#[cfg(not(target_family = "wasm"))]
+fn new_key_chord() -> Option<String> {
+    Some(humanize_keystroke("cmd-n"))
+}
+#[cfg(target_family = "wasm")]
+fn new_key_chord() -> Option<String> {
+    None
+}
+
 impl ZedisEditor {
     /// Render the appropriate editor based on the key type
     /// Inline error panel shown when a value load failed (the key stays
@@ -475,14 +486,30 @@ impl ZedisEditor {
         // Only actions that work with nothing selected — key-bound ones
         // (save / TTL / rename / delete) would be misleading here. Two
         // columns: find/browse on the left, act on the right.
+        #[cfg(not(target_family = "wasm"))]
         const FIND_HINTS: [(&str, &str); 4] = [
             ("cmd-f", "search"),
             ("cmd-k", "command_palette"),
             ("cmd-p", "recent_keys"),
             ("cmd-shift-f", "multi_search"),
         ];
+        #[cfg(not(target_family = "wasm"))]
         const ACT_HINTS: [(&str, &str); 4] = [
             ("cmd-n", "new_key"),
+            ("cmd-r", "reload_keys"),
+            ("cmd-j", "terminal"),
+            ("cmd-/", "keyboard_shortcuts"),
+        ];
+        // The browser build has no multi-database search, and ⌘N never
+        // reaches a page — it opens a browser window.
+        #[cfg(target_family = "wasm")]
+        const FIND_HINTS: [(&str, &str); 3] = [
+            ("cmd-f", "search"),
+            ("cmd-k", "command_palette"),
+            ("cmd-p", "recent_keys"),
+        ];
+        #[cfg(target_family = "wasm")]
+        const ACT_HINTS: [(&str, &str); 3] = [
             ("cmd-r", "reload_keys"),
             ("cmd-j", "terminal"),
             ("cmd-/", "keyboard_shortcuts"),
@@ -552,7 +579,7 @@ impl ZedisEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(i18n_shortcuts(cx, "new_key"))
-                    .tooltip(humanize_keystroke("cmd-n"))
+                    .when_some(new_key_chord(), |button, chord| button.tooltip(chord))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state
                             .update(cx, |state, cx| state.emit_editor_action(EditorAction::Create, cx));
@@ -579,18 +606,22 @@ impl ZedisEditor {
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state.update(cx, |state, cx| state.toggle_terminal(cx));
                     })),
-            )
-            .child(
-                Button::new("empty-multi-search")
-                    .outline()
-                    .small()
-                    .icon(IconName::Globe)
-                    .label(i18n_shortcuts(cx, "multi_search"))
-                    .tooltip(humanize_keystroke("cmd-shift-f"))
-                    .on_click(cx.listener(|_this, _, window, cx| {
-                        window.dispatch_action(Box::new(MultiSearchAction::Toggle), cx);
-                    })),
             );
+        // Multi-database search is a desktop feature: in the browser the
+        // action has no handler, and a button that does nothing is worse
+        // than no button.
+        #[cfg(not(target_family = "wasm"))]
+        let quick_actions = quick_actions.child(
+            Button::new("empty-multi-search")
+                .outline()
+                .small()
+                .icon(IconName::Globe)
+                .label(i18n_shortcuts(cx, "multi_search"))
+                .tooltip(humanize_keystroke("cmd-shift-f"))
+                .on_click(cx.listener(|_this, _, window, cx| {
+                    window.dispatch_action(Box::new(MultiSearchAction::Toggle), cx);
+                })),
+        );
 
         // One card for discoverability blocks — shared width, border, and
         // hairline dividers keep hierarchy without floating sections.

@@ -22,6 +22,7 @@ use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{TRASH_RETENTION_MS, purge_all_trash};
 use crate::dialogs::*;
 use crate::helpers::channel;
+use crate::helpers::pacing;
 use crate::helpers::{
     ConfigRecovery, CrashReport, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction,
     UpdateInfo, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, get_or_create_config_dir,
@@ -65,7 +66,6 @@ use gpui_kit::component::{
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tracing::{error, info};
 
 /// The Settings slider's range, which ⌘+ / ⌘- step within.
@@ -328,10 +328,12 @@ impl Zedis {
             // session's expired entries don't linger), then hourly — this
             // keeps the 24h retention honest even for a Zedis left running
             // for days. Off-thread: it's a full-table redb scan.
-            const TRASH_SWEEP_EVERY_TICKS: u64 = 120;
+            // The tick and the hourly count are paced per target
+            // (`helpers::pacing`): 30s × 120 on the desktop.
+            const TRASH_SWEEP_EVERY_TICKS: u64 = pacing::HOUSEKEEPING_HOURLY_TICKS;
             let mut tick: u64 = 0;
             loop {
-                cx.background_executor().timer(Duration::from_secs(30)).await;
+                cx.background_executor().timer(pacing::HOUSEKEEPING_TICK).await;
                 clear_expired_cache();
                 if tick.is_multiple_of(TRASH_SWEEP_EVERY_TICKS) {
                     // A week-long expiry needs no finer check than hourly.

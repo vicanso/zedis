@@ -995,8 +995,20 @@ impl ZedisAppState {
     pub fn set_sidebar_click_new_tab(&mut self, enabled: bool) {
         self.sidebar_click_new_tab = Some(enabled);
     }
+    #[cfg(not(target_family = "wasm"))]
     pub fn soft_delete(&self) -> bool {
         self.soft_delete.unwrap_or(true)
+    }
+    /// The browser has no recycle bin. A stash is `MEMORY USAGE` + `DUMP` +
+    /// `PTTL` — three more requests through the bridge and the whole value
+    /// shipped to the page — kept in page memory, where a reload empties it:
+    /// a bin that promises 24 hours and is gone with the tab is worse than
+    /// none. Off whatever the stored preference says (the desktop may share
+    /// nothing with this file, but an imported one could carry `true`); the
+    /// switch and the menu entry are not rendered either.
+    #[cfg(target_family = "wasm")]
+    pub fn soft_delete(&self) -> bool {
+        false
     }
     pub fn set_soft_delete(&mut self, enabled: bool) {
         self.soft_delete = Some(enabled);

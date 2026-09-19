@@ -24,7 +24,7 @@
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, HotkeyEntry, HotkeysReport, get_connection_manager};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{get_mono_font_family, pacing};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_hotkeys};
 use crate::views::unavailable_chip;
 use gpui::{ClipboardItem, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
@@ -43,7 +43,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// `HOTKEYS GET` is a tiny reply; poll fast enough that the duration and
 /// the filling top lists feel live while a collection runs.
-const POLL_SECS: u64 = 2;
+const POLL_SECS: u64 = pacing::HOTKEYS_POLL_SECS;
 const NUM_COL: f32 = 96.0;
 const PCT_COL: f32 = 64.0;
 const BAR_COL: f32 = 80.0;
@@ -120,8 +120,10 @@ impl ZedisHotkeys {
                 // Responsive refresh: wake every 200ms to check force_tick.
                 let mut waited = 0u64;
                 while waited < POLL_SECS * 1000 {
-                    cx.background_executor().timer(Duration::from_millis(200)).await;
-                    waited += 200;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(pacing::PANEL_WAKE_MS))
+                        .await;
+                    waited += pacing::PANEL_WAKE_MS;
                     let force = this.update(cx, |this, _| this.force_tick).unwrap_or(false);
                     if force {
                         break;

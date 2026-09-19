@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The empty state's multi-database search button is the desktop's.
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::MultiSearchAction;
 #[cfg(not(target_family = "wasm"))]
 use crate::views::ZedisPubsubEditor;
 use crate::{
@@ -22,8 +25,8 @@ use crate::{
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{
-        EditorAction, KeyOpAction, MultiSearchAction, card_background, format_duration, format_duration_units,
-        format_unix_secs, get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl,
+        EditorAction, KeyOpAction, card_background, format_duration, format_duration_units, format_unix_secs,
+        get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl,
     },
     states::{
         DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
