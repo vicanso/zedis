@@ -129,7 +129,16 @@ impl AssetSource for WebAssets {
                 {
                     list.entry(path.to_string()).or_insert(0);
                 }
-                answer
+                // The kit answers an icon it is still fetching with an
+                // *error* ("Wasm assets loading, will be available soon..."),
+                // and GPUI's `Svg::paint` ends in `.log_err()`: one ERROR
+                // line per pending icon per frame, on every page load, for
+                // something that is not a failure. "Not there" is `Ok(None)`
+                // — GPUI paints nothing and asks again on the next paint (no
+                // atlas caches a `None`), and the watcher above supplies that
+                // paint. A fetch that really fails is still reported, once,
+                // by the kit's own `warn!` with the path and the status.
+                answer.or(Ok(None))
             }
         }
     }

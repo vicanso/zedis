@@ -76,7 +76,13 @@ jobs:
         # picked a week-old draft, uploaded onto it, then couldn't
         # publish it because the tag was already owned (`already_exists`
         # on tag_name).
-        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
+        #
+        # Not on a `targets: docker` run: that one builds no desktop asset,
+        # so sweeping here left the nightly release *empty* — and re-created
+        # the tag at HEAD, which made the next scheduled run see "main
+        # unchanged since last nightly" and skip. Two image-only dispatches
+        # on 2026-09-18/19 took the desktop nightly offline that way.
+        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true' && github.event.inputs.targets != 'docker'
         run: |
           ids="$(
             gh api --paginate "repos/${{ github.repository }}/releases" \
@@ -91,7 +97,7 @@ jobs:
         # softprops/action-gh-release for the nightly, and two finishing
         # close together could both try to create it. Creating it here,
         # before any platform job runs, pins the release they all update.
-        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true'
+        if: github.ref == 'refs/heads/main' && steps.gate.outputs.should_build == 'true' && github.event.inputs.targets != 'docker'
         run: |
           gh release create nightly --prerelease --title "Development Build (Nightly)" \
             --notes "Rolling build from the latest main branch — assets uploading…" || true
