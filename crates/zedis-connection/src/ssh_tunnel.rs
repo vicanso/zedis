@@ -18,7 +18,8 @@ use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
 use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
 use russh::client::AuthResult;
-use russh::client::{Handle, Handler};
+use russh::Channel;
+use russh::client::{Handle, Handler, Msg};
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 use zedis_core::ssh_config::{expand_identity_file, lookup as ssh_config_lookup};
 use zedis_core::string::{split_host_port_or, strip_ipv6_brackets};
@@ -601,9 +602,7 @@ pub(crate) async fn new_ssh_session(target: &SshTarget) -> Result<SshSession> {
                     .await
                     .map_err(host_key_error)?;
             authenticate(&mut jump_session, jump).await?;
-            let channel = jump_session
-                .channel_open_direct_tcpip(&target.host, target.port as u32, "127.0.0.1", 0)
-                .await?;
+            let channel = open_forward_channel(&jump_session, &jump.cache_id(), &target.host, target.port).await?;
             debug!(
                 jump = jump.addr,
                 host = target.host,
@@ -621,6 +620,25 @@ pub(crate) async fn new_ssh_session(target: &SshTarget) -> Result<SshSession> {
         handle: session,
         _jump: jump,
     })
+}
+
+/// A `direct-tcpip` channel from `handle`'s server to `host:port`. A refusal
+/// comes back as [`Error::SshForward`], which names both ends: the address
+/// is resolved and dialed *by the SSH server*, so "which address, from
+/// where" is the whole diagnosis.
+pub(crate) async fn open_forward_channel(
+    handle: &SshHandle,
+    via: &str,
+    host: &str,
+    port: u16,
+) -> Result<Channel<Msg>> {
+    handle
+        .channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0)
+        .await
+        .map_err(|source| Error::SshForward {
+            route: format!("{via} could not open a connection to {host}:{port}").into(),
+            source,
+        })
 }
 
 /// russh reports a host key the handler refused — a known_hosts mismatch,
@@ -1089,10 +1107,7 @@ async fn open_single_ssh_tunnel_connection_inner(
 
     run_in_tokio(async move {
         let session = get_or_init_ssh_session(&target).await?;
-        let channel = session
-            .handle
-            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
-            .await?;
+        let channel = open_forward_channel(&session.handle, &target.cache_id(), &host, port).await?;
         debug!(ssh = target.cache_id(), host, port, "open direct tcpip success");
         let ssh_stream = SshRedisStream::new(channel.into_stream());
         let mut info = RedisConnectionInfo::default();

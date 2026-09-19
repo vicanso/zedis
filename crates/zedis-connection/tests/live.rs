@@ -3075,6 +3075,59 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
     });
 }
 
+/// TLS *inside* the tunnel: the forwarded stream carries the handshake, so
+/// the certificate is checked against the endpoint the sshd dials, not the
+/// sshd. Its own test (and the RSA port, so its own `user@addr`) because
+/// neither the `tls` nor the `ssh` test ever combined the two.
+#[test]
+#[ignore]
+fn ssh_tunnel_carries_a_tls_connection() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_TLS");
+        let Ok(ssh_addr) = env::var("ZEDIS_IT_SSH_RSA") else {
+            eprintln!("skipped: ZEDIS_IT_SSH_RSA not set");
+            return;
+        };
+        let ca = std::fs::read_to_string(env::var("ZEDIS_IT_TLS_CA").expect("ZEDIS_IT_TLS_CA")).expect("read ca");
+
+        let mut tunnelled = server("it-ssh-tls", addr);
+        tunnelled.tls = Some(true);
+        tunnelled.root_cert = Some(ca);
+        tunnelled.ssh_tunnel = Some(true);
+        tunnelled.ssh_addr = Some(ssh_addr);
+        tunnelled.ssh_username = Some(env::var("ZEDIS_IT_SSH_USER").expect("ZEDIS_IT_SSH_USER"));
+        tunnelled.ssh_key = Some(env::var("ZEDIS_IT_SSH_KEY").expect("ZEDIS_IT_SSH_KEY"));
+        let mut unreachable = tunnelled.clone();
+        let id = register(tunnelled).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("tls client through the tunnel");
+        client.ping().await.expect("ping over tls through the tunnel");
+
+        // An endpoint the sshd cannot reach: the session is fine and the
+        // forward is refused, so the error has to say *which* address the
+        // SSH server was asked for — `ConnectFailed` alone names nothing. A
+        // port that was just bound and released is closed.
+        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+            .port();
+        unreachable.id = "it-ssh-tls-unreachable".to_string();
+        unreachable.name = unreachable.id.clone();
+        unreachable.port = closed_port;
+        let id = register(unreachable).await;
+        let Err(e) = get_connection_manager().get_client(&id, 0).await else {
+            panic!("a closed port answered through the tunnel");
+        };
+        let message = e.to_string();
+        assert!(
+            message.contains(&format!("127.0.0.1:{closed_port}")),
+            "the refused forward does not name its destination: {message}"
+        );
+    });
+}
+
 // ── sentinel ─────────────────────────────────────────────────────────────
 
 /// `SENTINEL GET-MASTER-ADDR-BY-NAME` straight from the sentinel.

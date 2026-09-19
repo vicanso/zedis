@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Zedis</title>
+<!-- Relative, like every address on this page: see `root` below. -->
+<link rel="icon" type="image/png" href="./assets/icon.png" />
 <style>
   :root { color-scheme: light dark; --line: #8883; --bad: #cf222e; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1e1e1e; }
@@ -57,7 +59,14 @@
   // here and the login cookie can stay SameSite=Strict. The wasm holds no
   // password — it signs in here for a cookie and every fetch carries it.
   const $ = (id) => document.getElementById(id);
-  const api = (path, init) => fetch(path, { credentials: "same-origin", ...init });
+  // Where this page was served from, without the trailing slash: the origin,
+  // or the origin plus the bridge's `--base-path` when it shares a host name
+  // with other applications (`https://tools.example.com/zedis`). Everything
+  // below is addressed from here and never from `/` — the site root belongs
+  // to the neighbours. The bridge is not asked for its prefix: the address
+  // bar already knows it, and it stays right behind a proxy that rewrites it.
+  const root = new URL(".", window.location.href).href.replace(/\/$/, "");
+  const api = (path, init) => fetch(root + path, { credentials: "same-origin", ...init });
 
   // An input method's keystrokes are not the application's. gpui-pre-web
   // (through 0.3.5) decides that from `isComposing` alone, but the *first*
@@ -87,7 +96,7 @@
       // fonts of its own, and the first frame measures text.
       const [mod, font] = await Promise.all([
         import("./wasm/zedis_web.js"),
-        fetch("/fonts/IBMPlexSans.ttf").then((r) => {
+        fetch(`${root}/fonts/IBMPlexSans.ttf`).then((r) => {
           if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
           return r.arrayBuffer();
         }),
@@ -101,7 +110,9 @@
       // `navigator.platform` says "MacIntel". And `||`, not `??`: a browser
       // that trims its client hints answers "" there, which is not nullish.
       const appleKeyboard = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform || navigator.platform || "");
-      mod.run(window.location.origin, new Uint8Array(font), appleKeyboard);
+      // `root`, not the origin: the module builds `/v1/…` and the icon URLs
+      // on it, so they follow the page under a base path.
+      mod.run(root, new Uint8Array(font), appleKeyboard);
     } catch (e) {
       $("loading-msg").textContent = `The application could not start: ${e}`;
       $("loading-msg").className = "msg bad";
@@ -139,6 +150,17 @@
         return;
       }
       $("password").value = "";
+      // A 200 only says the password was right. The login is the cookie, and
+      // a browser silently drops a `Secure` cookie that arrives over plain
+      // http from anything but localhost — the app would then start and meet
+      // a 401 on its first request with nothing to explain it. Ask once, the
+      // way the app is about to, and say what happened instead.
+      if (!(await signedIn())) {
+        $("login-msg").textContent = window.location.protocol === "http:"
+          ? "Signed in, but this browser did not keep the login cookie: the page is on plain http and the cookie is Secure. Serve the bridge over https, or start it with --insecure-cookie."
+          : "Signed in, but this browser did not keep the login cookie. Check that cookies are allowed for this site.";
+        return;
+      }
       await start();
     } catch (e) {
       $("login-msg").textContent = `Could not reach the bridge: ${e}`;

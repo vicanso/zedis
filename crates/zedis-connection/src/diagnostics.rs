@@ -24,7 +24,8 @@
 use super::async_connection::{open_multiplexed_connection, resolve_connection_timeout};
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL};
 use super::ssh_tunnel::{
-    SshSession, new_ssh_session, resolve_ssh_target, resolve_ssh_target_with, run_in_tokio, user_ssh_config,
+    SshSession, new_ssh_session, open_forward_channel, resolve_ssh_target, resolve_ssh_target_with, run_in_tokio,
+    user_ssh_config,
 };
 use crate::error::Error;
 use redis::{ErrorKind, cmd};
@@ -260,15 +261,13 @@ pub async fn probe_ssh_auth(server: &RedisServer) -> (DiagOutcome, Option<SshSes
 /// SSH server*, which is the leg a local TCP probe cannot see.
 pub async fn probe_ssh_tunnel(session: SshSession, server: &RedisServer) -> DiagOutcome {
     let (host, port) = server.primary_endpoint();
+    let via = resolve_ssh_target(server).cache_id();
     let start = Instant::now();
     let result = run_in_tokio(async move {
-        let channel = session
-            .handle
-            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
-            .await?;
+        let channel = open_forward_channel(&session.handle, &via, &host, port).await?;
         let _ = channel.close().await;
         // The session is dropped here, closing the probe connection.
-        Ok::<(), russh::Error>(())
+        Ok::<(), Error>(())
     })
     .await;
     let elapsed = start.elapsed();

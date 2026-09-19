@@ -48,6 +48,10 @@ kit_dir=$(dirname "$kit_manifest")
 mkdir -p zedis-web/www/assets/icons
 cp "$kit_dir"/assets/icons/*.svg zedis-web/www/assets/icons/
 echo "icons: $(ls zedis-web/www/assets/icons | wc -l | tr -d ' ') from $kit_dir"
+# The tab icon. Declared by the page, because a page that names none makes
+# the browser ask for `/favicon.ico` — the site root, which under a base path
+# (`--base-path`) is another application's.
+cp assets/icon.png zedis-web/www/assets/icon.png
 
 profile=web
 if [ "$mode" = release ]; then

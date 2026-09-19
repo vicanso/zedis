@@ -24,8 +24,8 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -41,25 +41,87 @@ pub struct AppState {
     pub accounts: auth::Accounts,
     pub sessions: Sessions,
     pub logins: auth::Logins,
-    /// Mark the login cookie `Secure`. Off only for a plain-http local run.
-    pub secure_cookie: bool,
+    /// The login cookie's `Secure` and `Path`, fixed at startup.
+    pub cookie: auth::CookiePolicy,
+    /// `--base-path`: where the bridge is mounted, as [`normalize_base_path`]
+    /// leaves it — empty for the root, else `/prefix`.
+    pub base_path: String,
     /// `--static <dir>`: serve the web build from this directory instead of
     /// the one compiled in.
     pub web_root: Option<std::path::PathBuf>,
 }
 
+/// The page and the API, under `state.base_path` when there is one.
+///
+/// A bridge that shares a host name with other applications gets a path of
+/// its own there (`https://tools.example.com/zedis/`). Everything moves
+/// under it — the page, its files and `/v1/…` alike — and nothing outside
+/// it answers, so the reverse proxy in front forwards the prefix as it is
+/// and the neighbours' paths stay theirs. The page needs no telling: it
+/// addresses everything relative to where it was loaded from.
+///
+/// The routes are registered at their full paths rather than through
+/// `Router::nest`: axum 0.8's nest hands `/zedis` to the inner router but
+/// not `/zedis/`, which is the one address the page lives at.
 pub fn router(state: AppState) -> Router {
+    let at = |path: &str| format!("{}{path}", state.base_path);
     Router::new()
-        .route("/v1/health", get(health))
-        .route("/v1/login", post(login))
-        .route("/v1/logout", post(logout))
-        .route("/v1/servers", get(servers).post(add_server))
-        .route("/v1/servers/{id}", delete(delete_server).put(update_server))
-        .route("/v1/exec", post(exec))
-        .route("/v1/session", post(open_session))
-        .route("/v1/session/{token}", delete(close_session))
+        .route(&at("/v1/health"), get(health))
+        .route(&at("/v1/login"), post(login))
+        .route(&at("/v1/logout"), post(logout))
+        .route(&at("/v1/servers"), get(servers).post(add_server))
+        .route(&at("/v1/servers/{id}"), delete(delete_server).put(update_server))
+        .route(&at("/v1/exec"), post(exec))
+        .route(&at("/v1/session"), post(open_session))
+        .route(&at("/v1/session/{token}"), delete(close_session))
         .fallback(web_asset)
         .with_state(state)
+}
+
+/// What a request path names below `base_path`.
+#[derive(Debug, PartialEq, Eq)]
+enum Mounted<'a> {
+    /// A path of the web build, prefix removed (`/`, `/wasm/zedis_web.js`).
+    File(&'a str),
+    /// The base path without its trailing slash. Only `/zedis/` is a
+    /// directory to the browser: from `/zedis` the page's `./wasm/…` and
+    /// `v1/…` would resolve against the site root — the neighbours' paths.
+    NeedsSlash,
+    /// Not under the base path: someone else's, and not confirmed to exist.
+    Outside,
+}
+
+fn mounted<'a>(base_path: &str, request_path: &'a str) -> Mounted<'a> {
+    if base_path.is_empty() {
+        return Mounted::File(request_path);
+    }
+    match request_path.strip_prefix(base_path) {
+        Some("") => Mounted::NeedsSlash,
+        // `/zedisx` also starts with `/zedis`: the rest has to be a path.
+        Some(rest) if rest.starts_with('/') => Mounted::File(rest),
+        _ => Mounted::Outside,
+    }
+}
+
+/// `--base-path` / `ZEDIS_BRIDGE_BASE_PATH` as the router and the cookie
+/// want it: empty for the root (`""`, `/`), else `/prefix` with a leading
+/// slash and no trailing one. Refused rather than repaired when it could
+/// not be a plain path: it ends up in a route pattern and in a `Set-Cookie`
+/// header, where `{`, `;` or a space would each mean something else.
+pub fn normalize_base_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~');
+    for segment in trimmed.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." || !segment.chars().all(plain) {
+            return Err(format!(
+                "base path {raw:?}: each segment may hold letters, digits and - _ . ~ only"
+            ));
+        }
+    }
+    Ok(format!("/{trimmed}"))
 }
 
 /// Every failure a caller can see. The wording is deliberately thin: an
@@ -200,10 +262,7 @@ async fn login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> 
         .ok_or(ApiError::Unauthorized)?;
     tracing::info!(account, remember = req.remember, "login");
     Ok((
-        [(
-            "set-cookie",
-            auth::set_cookie(&id, state.secure_cookie, auth::idle_timeout(req.remember)),
-        )],
+        [("set-cookie", state.cookie.set(&id, auth::idle_timeout(req.remember)))],
         Json(serde_json::json!({ "status": "ok" })),
     )
         .into_response())
@@ -216,11 +275,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(account) = auth::cookie_value(cookie).and_then(|id| state.logins.close(id)) {
         tracing::info!(account, "logout");
     }
-    (
-        [("set-cookie", auth::clear_cookie(state.secure_cookie))],
-        StatusCode::NO_CONTENT,
-    )
-        .into_response()
+    ([("set-cookie", state.cookie.clear())], StatusCode::NO_CONTENT).into_response()
 }
 
 /// A file of the web build as it is about to be sent.
@@ -248,10 +303,18 @@ struct StoredFile {
 /// "revalidate", so that a rebuilt bundle is picked up on the next load, and
 /// a validator is what lets that revalidation be a `304` with no body rather
 /// than the whole module again on every reload.
-async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: axum::http::Uri) -> Response {
+async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let Some(key) = static_files::request_key(uri.path()) else {
+    let file_path = match mounted(&state.base_path, uri.path()) {
+        Mounted::File(path) => path,
+        Mounted::NeedsSlash => {
+            let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+            return Redirect::temporary(&format!("{}/{query}", state.base_path)).into_response();
+        }
+        Mounted::Outside => return not_found(),
+    };
+    let Some(key) = static_files::request_key(file_path) else {
         return not_found();
     };
     let accept_encoding = header("accept-encoding").unwrap_or_default();
@@ -845,6 +908,52 @@ async fn exec(
         replies,
         nodes: Vec::new(),
     }))
+}
+
+#[cfg(test)]
+mod base_path_tests {
+    use super::{Mounted, mounted, normalize_base_path};
+
+    #[test]
+    fn a_request_is_a_file_below_the_base_path_or_it_is_not_ours() {
+        // At the root every path is a file of the build, as before.
+        assert_eq!(mounted("", "/"), Mounted::File("/"));
+        assert_eq!(mounted("", "/wasm/zedis_web.js"), Mounted::File("/wasm/zedis_web.js"));
+
+        assert_eq!(mounted("/zedis", "/zedis/"), Mounted::File("/"));
+        assert_eq!(mounted("/zedis", "/zedis/fonts/a.ttf"), Mounted::File("/fonts/a.ttf"));
+        assert_eq!(mounted("/zedis", "/zedis"), Mounted::NeedsSlash);
+        // A neighbour whose name merely starts the same way, and the site
+        // root, are not this bridge's to answer.
+        assert_eq!(mounted("/zedis", "/zedisx/"), Mounted::Outside);
+        assert_eq!(mounted("/zedis", "/"), Mounted::Outside);
+        assert_eq!(mounted("/zedis", "/v1/health"), Mounted::Outside);
+    }
+
+    #[test]
+    fn a_base_path_is_a_leading_slash_and_no_trailing_one() {
+        for root in ["", "/", "  ", "///"] {
+            assert_eq!(normalize_base_path(root), Ok(String::new()), "{root:?} is the root");
+        }
+        for spelling in ["zedis", "/zedis", "zedis/", "/zedis/", " /zedis/ "] {
+            assert_eq!(normalize_base_path(spelling), Ok("/zedis".to_string()), "{spelling:?}");
+        }
+        assert_eq!(
+            normalize_base_path("/tools/zedis-web_1.0~x"),
+            Ok("/tools/zedis-web_1.0~x".to_string())
+        );
+    }
+
+    #[test]
+    fn a_base_path_that_means_something_else_in_a_route_or_a_cookie_is_refused() {
+        // `{id}` is a capture to the router; `;` and a space end the cookie's
+        // `Path` attribute; `..` and an empty segment are not a place.
+        for bad in [
+            "/{id}", "/a;b", "/a b", "/a/../b", "/a//b", "/./a", "/a?b", "/a#b", "/中",
+        ] {
+            assert!(normalize_base_path(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
 }
 
 #[cfg(test)]

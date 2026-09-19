@@ -381,29 +381,52 @@ pub fn cookie_value(header: Option<&str>) -> Option<&str> {
     })
 }
 
-/// The `Set-Cookie` value that installs `id`.
-///
-/// `Secure` unless the operator opted out for a plain-http local run: a
-/// deployment that forgets to enable TLS then sees a login that visibly does
-/// not stick, rather than a credential travelling in the clear.
-pub fn set_cookie(id: &str, secure: bool, lifetime: Duration) -> String {
-    let mut cookie = format!(
-        "{COOKIE_NAME}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
-        lifetime.as_secs()
-    );
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie
+/// The attributes every login cookie of this bridge carries — decided once,
+/// at startup, so the cookie that is cleared is the cookie that was set (a
+/// browser only drops the one whose `Path` matches).
+#[derive(Clone, Debug)]
+pub struct CookiePolicy {
+    /// `Secure` unless the operator opted out for a plain-http local run: a
+    /// deployment that forgets to enable TLS then sees a login that visibly
+    /// does not stick, rather than a credential travelling in the clear.
+    secure: bool,
+    /// Where the bridge is mounted, with its trailing slash: `/`, or
+    /// `/zedis/` under `--base-path /zedis`. A bridge that shares its host
+    /// name with other applications must not hand them its login: with
+    /// `Path=/` the browser sends the cookie to every one of them.
+    path: String,
 }
 
-/// The `Set-Cookie` value that removes it.
-pub fn clear_cookie(secure: bool) -> String {
-    let mut cookie = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
-    if secure {
-        cookie.push_str("; Secure");
+impl CookiePolicy {
+    /// `base_path` as [`crate::api::normalize_base_path`] leaves it: empty
+    /// for the root, else `/prefix` with no trailing slash.
+    pub fn new(secure: bool, base_path: &str) -> Self {
+        Self {
+            secure,
+            path: format!("{base_path}/"),
+        }
     }
-    cookie
+
+    /// The `Set-Cookie` value that installs `id`.
+    pub fn set(&self, id: &str, lifetime: Duration) -> String {
+        self.header(id, lifetime.as_secs())
+    }
+
+    /// The `Set-Cookie` value that removes it.
+    pub fn clear(&self) -> String {
+        self.header("", 0)
+    }
+
+    fn header(&self, id: &str, max_age: u64) -> String {
+        let mut cookie = format!(
+            "{COOKIE_NAME}={id}; HttpOnly; SameSite=Strict; Path={}; Max-Age={max_age}",
+            self.path
+        );
+        if self.secure {
+            cookie.push_str("; Secure");
+        }
+        cookie
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +454,27 @@ mod tests {
         );
         assert_eq!(cookie_value(Some("other=1")), None);
         assert_eq!(cookie_value(None), None);
+    }
+
+    #[test]
+    fn the_cookie_is_scoped_to_where_the_bridge_is_mounted() {
+        let lifetime = Duration::from_secs(60);
+        let root = CookiePolicy::new(true, "");
+        assert_eq!(
+            root.set("abc", lifetime),
+            "zedis_bridge=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=60; Secure"
+        );
+        // Under a prefix the neighbours on the same host never see it, and
+        // the clearing cookie names the same path or it clears nothing.
+        let nested = CookiePolicy::new(false, "/tools/zedis");
+        assert_eq!(
+            nested.set("abc", lifetime),
+            "zedis_bridge=abc; HttpOnly; SameSite=Strict; Path=/tools/zedis/; Max-Age=60"
+        );
+        assert_eq!(
+            nested.clear(),
+            "zedis_bridge=; HttpOnly; SameSite=Strict; Path=/tools/zedis/; Max-Age=0"
+        );
     }
 
     #[test]
@@ -468,17 +512,22 @@ mod tests {
 
     #[test]
     fn the_cookie_is_not_readable_by_scripts_and_does_not_travel_cross_site() {
-        let cookie = set_cookie("abc", true, idle_timeout(false));
+        let secure = CookiePolicy::new(true, "");
+        let cookie = secure.set("abc", idle_timeout(false));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Strict"));
         assert!(cookie.contains("Secure"));
         assert!(cookie.contains("Max-Age=28800"), "a working day: {cookie}");
         assert!(
-            set_cookie("abc", true, idle_timeout(true)).contains("Max-Age=2592000"),
+            secure.set("abc", idle_timeout(true)).contains("Max-Age=2592000"),
             "thirty days"
         );
-        assert!(!set_cookie("abc", false, idle_timeout(false)).contains("Secure"));
-        assert!(clear_cookie(true).contains("Max-Age=0"));
+        assert!(
+            !CookiePolicy::new(false, "")
+                .set("abc", idle_timeout(false))
+                .contains("Secure")
+        );
+        assert!(secure.clear().contains("Max-Age=0"));
     }
 
     fn scratch_file(name: &str) -> PathBuf {

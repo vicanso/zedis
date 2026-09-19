@@ -33,6 +33,7 @@
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥用每机唯一密钥加密存储、破坏性操作对生产环境升级确认措辞。
 - 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、从 Redis Insight / ARDM / Tiny RDM 导入，以及 8 种界面语言。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、表格 / JSON 回复视图 + AI 命令助手、Batch 模式、跨服务器复制/对比。
+- 🕸️ **浏览器里也能用** —— 同一套代码编译成 WebAssembly，一个约 26 MB 的 Docker 镜像即可自托管（见 [Web 版](#-web-版自托管)）。
 
 > ### 🔄 已经在用 Redis Insight?
 > **粘贴它导出的数据库配置,所有连接一次迁入** —— 不用一个个重填地址、端口和密码。花大约一分钟,就能拿你真实的连接试试 Zedis,快不快自己判断。
@@ -138,6 +139,83 @@ cargo install --locked zedis-gui
 # 最新版：直接从 GitHub 源码编译（会解析 git 依赖）
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
+
+---
+
+## 🌐 Web 版（自托管）
+
+Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 canvas 渲染。浏览器无法直接建立 TCP 连接，所以由一个很小的 HTTP 服务 —— `zedis-bridge` —— 同时提供页面，并代替浏览器与 Redis 通信。在 Redis 旁边部署一次，整个团队打开浏览器就能用，无需安装任何东西。Redis 的密码只保存在 bridge 上（加密存储），不会发送给浏览器。
+
+> **早期预览。** 目前只发布了 `:nightly` 镜像（linux/amd64 与 linux/arm64，约 26 MB）。
+
+### 快速试用
+
+```bash
+docker run -d --name zedis-web -p 7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="admin@change-me" \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly --listen 0.0.0.0:7379 --insecure-cookie
+```
+
+打开 <http://localhost:7379>，用 `admin` / `change-me` 登录。
+
+- **`ZEDIS_BRIDGE_USERS` 必填** —— 格式为 `用户名@密码,用户名2@密码2`，未设置则 bridge 拒绝启动。每一项按第一个 `@` 切分，因此用户名不能包含 `@` 或 `:`，密码不能包含逗号。脚本可以用 HTTP Basic（`curl -u admin:change-me …/v1/servers`）。
+- **`/data`** 保存服务器列表（其中的密码由同目录的 `master.key` 加密）和已保存的登录状态。请保留这个卷，否则每次重启都是空的。
+- **`--insecure-cookie` 仅用于纯 http 的试用。** 登录 cookie 默认带 `Secure`，而浏览器会静默丢弃通过纯 http 收到的 `Secure` cookie —— 只有 `localhost` 例外（部分浏览器连 `localhost` 也不例外）。不加这个参数时，现象是登录成功、紧接着的请求返回 `401`。
+- **Redis 跑在 Docker 宿主机上**时，容器内的 `127.0.0.1` 指的是容器自己。请使用 `host.docker.internal`（Linux 上需加 `--add-host=host.docker.internal:host-gateway`）或 `--network host`。
+
+### 正式部署
+
+纯 http 下，账号密码以及从 Redis 读到的所有数据都是明文传输。除试用外，请去掉 `--insecure-cookie`，端口只发布到回环地址，并在前面放一个 HTTPS 反向代理：
+
+```bash
+docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly
+```
+
+```caddyfile
+zedis.example.com {
+    reverse_proxy 127.0.0.1:7379
+}
+```
+
+账号密码可以被猜测：如果 bridge 能从内网之外访问，请在代理层加上限流。
+
+### 与其它项目共用域名
+
+如果域名不是 Zedis 独占的，可以用 `ZEDIS_BRIDGE_BASE_PATH`（或 `--base-path`）给 bridge 指定一个专属路径。页面、静态资源和 API 会全部移到这个前缀之下，前缀之外的路径一律不响应；登录 cookie 的作用范围也限定在这个前缀内 —— 同域名下的其它项目不会收到它。
+
+```bash
+docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
+  -e ZEDIS_BRIDGE_BASE_PATH=/zedis \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly
+```
+
+```caddyfile
+tools.example.com {
+    # 用 `handle` 而不是 `handle_path`：前缀要原样转发，不能剥掉。
+    handle /zedis* {
+        reverse_proxy 127.0.0.1:7379
+    }
+    # … 其它项目
+}
+```
+
+访问 `https://tools.example.com/zedis/`。nginx 的等价写法是 `location /zedis { proxy_pass http://127.0.0.1:7379; }` —— `proxy_pass` 末尾不要加斜杠，否则前缀会被剥掉。健康检查地址也随之变为 `/zedis/v1/health`。
+
+### 账号与共享
+
+服务器条目属于添加它的账号，其他人看不到；勾选 **Shared** 后则对所有账号可见。没有角色之分：任何账号都可以编辑或删除共享条目。
+
+### Web 版不包含的功能
+
+所有"一问一答"式的功能都可用：key 树、各类型的值编辑器、终端、指标、慢日志、配置、客户端、拓扑、内存分析、按值搜索。浏览器中不可用的有：流式面板（`MONITOR`、Pub/Sub、键空间事件、Stream 实时 tail）、文件导入 / 导出，以及被浏览器自己占用的快捷键（⌘N / ⌘T / ⌘W）。桌面版仍是功能完整的客户端。
+
+不使用 Docker 的话，`make web-dist` 可以把同样的内容构建成一个自包含的单文件二进制。
 
 ---
 

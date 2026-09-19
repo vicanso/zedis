@@ -77,6 +77,12 @@ login cookie is Secure by default, so over plain http the login visibly
 does not stick — --insecure-cookie lifts that for a local plain-http run
 and nothing else.
 
+--base-path /zedis (or ZEDIS_BRIDGE_BASE_PATH) mounts the page and the API
+under that path, for a host name shared with other applications: open
+https://host/zedis/ and have the reverse proxy forward /zedis with the
+prefix kept. Nothing outside it answers, and the login cookie is scoped to
+it, so the neighbours never receive it.
+
 The server list is redis-servers.toml in the config directory. Its secrets
 are encrypted with the master.key file beside it, never the OS keychain.
 RUST_ENV=dev keeps everything under <config directory>/dev instead.

@@ -33,6 +33,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, table/JSON replies + AI command assistant, batch mode, and cross-server copy/diff.
+- 🕸️ **In the browser too** — the same app compiled to WebAssembly, self-hosted from one ~26 MB Docker image ([Web version](#-web-version-self-hosted)).
 
 > ### 🔄 Already using Redis Insight?
 > **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
@@ -141,6 +142,83 @@ cargo install --locked zedis-gui
 # Latest: build straight from GitHub (resolves the git dependencies)
 cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 ```
+
+---
+
+## 🌐 Web version (self-hosted)
+
+Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn on a canvas. A browser cannot open a TCP socket, so a small HTTP server — `zedis-bridge` — serves the page and talks to Redis on the browser's behalf. Host it once next to your Redis servers and the whole team reaches them from a browser tab, with nothing to install. Redis passwords stay on the bridge, encrypted at rest; the browser never receives them.
+
+> **Early preview.** Only the `:nightly` image is published so far (linux/amd64 and linux/arm64, ~26 MB).
+
+### Try it
+
+```bash
+docker run -d --name zedis-web -p 7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="admin@change-me" \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly --listen 0.0.0.0:7379 --insecure-cookie
+```
+
+Open <http://localhost:7379> and sign in as `admin` / `change-me`.
+
+- **`ZEDIS_BRIDGE_USERS` is required** — `name@password,name2@password2`. The bridge does not start without it. Each entry is split at its first `@`, so a name cannot contain `@` or `:`, and a password cannot contain a comma. Scripts can use HTTP Basic (`curl -u admin:change-me …/v1/servers`).
+- **`/data`** holds the server list (secrets encrypted with the `master.key` file beside it) and the saved logins. Keep the volume, or every restart starts empty.
+- **`--insecure-cookie` is for a plain-http trial only.** The login cookie is `Secure` by default, and a browser silently drops a `Secure` cookie that arrives over plain http from anything but `localhost` (and some browsers drop it even there). Without the flag the sign-in succeeds and the very next request answers `401`.
+- **A Redis on the Docker host** is not `127.0.0.1` from inside the container. Use `host.docker.internal` (on Linux, add `--add-host=host.docker.internal:host-gateway`) or `--network host`.
+
+### Deploy it
+
+Over plain http the account password and everything read from Redis cross the network in the clear. For anything beyond a trial, drop `--insecure-cookie`, publish the port to loopback only, and put an HTTPS reverse proxy in front:
+
+```bash
+docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly
+```
+
+```caddyfile
+zedis.example.com {
+    reverse_proxy 127.0.0.1:7379
+}
+```
+
+Account passwords are guessable: add a rate limit at the proxy if the bridge is reachable from outside your own network.
+
+### Sharing a host name with other applications
+
+When the host name is not Zedis's alone, give the bridge a path of its own with `ZEDIS_BRIDGE_BASE_PATH` (or `--base-path`). The page, its files and the API all move under it, nothing outside it answers, and the login cookie is scoped to it — so the other applications on that host never receive it.
+
+```bash
+docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
+  -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
+  -e ZEDIS_BRIDGE_BASE_PATH=/zedis \
+  -v zedis-data:/data \
+  vicanso/zedis-web:nightly
+```
+
+```caddyfile
+tools.example.com {
+    # `handle`, not `handle_path`: the prefix is forwarded, not stripped.
+    handle /zedis* {
+        reverse_proxy 127.0.0.1:7379
+    }
+    # … the other applications
+}
+```
+
+Open `https://tools.example.com/zedis/`. For nginx the equivalent is `location /zedis { proxy_pass http://127.0.0.1:7379; }` — no trailing slash on `proxy_pass`, which would strip the prefix. The health check moves too: `/zedis/v1/health`.
+
+### Accounts and sharing
+
+A server entry belongs to the account that added it and nobody else sees it, unless its **Shared** box is ticked — then it is everyone's. There are no roles: any account may edit or delete a shared entry.
+
+### What the web version leaves out
+
+Everything that is a request and a reply works: the key tree, every value editor, the terminal, metrics, slow log, config, clients, topology, memory analysis, value search. Not available in the browser: the streaming panels (`MONITOR`, Pub/Sub, keyspace events, stream live tail), file import / export, and the shortcuts a browser keeps for itself (⌘N / ⌘T / ⌘W). The desktop app remains the complete client.
+
+Without Docker, `make web-dist` builds the same thing as a single self-contained binary.
 
 ---
 

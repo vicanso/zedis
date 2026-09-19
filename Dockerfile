@@ -102,5 +102,8 @@ EXPOSE 7379
 # published, and to whom, is `docker run -p`'s decision. `ZEDIS_BRIDGE_USERS`
 # is required — the bridge does not start without accounts. Behind plain http
 # add `--insecure-cookie`, or the login cookie (Secure by default) is dropped.
+# `ZEDIS_BRIDGE_BASE_PATH=/zedis` mounts everything under that path, for a host
+# name shared with other applications — an environment variable because
+# arguments to `docker run` replace this whole CMD.
 ENTRYPOINT ["/usr/local/bin/zedis-bridge"]
 CMD ["--listen", "0.0.0.0:7379"]

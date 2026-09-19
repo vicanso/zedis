@@ -47,6 +47,9 @@ use zedis_core::fs::get_or_create_config_dir;
 /// network a door into every configured Redis instance, so it has to be typed.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7379";
 
+/// `--base-path` for a deployment that is configured by its environment.
+const BASE_PATH_ENV: &str = "ZEDIS_BRIDGE_BASE_PATH";
+
 fn flag(name: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -67,11 +70,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     if std::env::args().any(|a| a == "--help" || a == "-h") {
-        println!("zedis-bridge [--listen {DEFAULT_LISTEN}] [--static <dir>] [--insecure-cookie]");
+        println!("zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] [--insecure-cookie]");
         println!();
         println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
         println!("frames to the Redis servers in redis-servers.toml. --static <dir> serves that");
         println!("directory as the page instead.");
+        println!("--base-path /zedis (or {BASE_PATH_ENV}) mounts the page and the API under that");
+        println!("path, for a host name shared with other applications; the reverse proxy then");
+        println!("forwards /zedis/ with the prefix kept.");
         println!("Callers sign in by name: {USERS_ENV}=\"alice@secret,bob@hunter2\" is required.");
         println!("The page asks for the username and password, scripts send HTTP Basic. A server");
         println!("entry is private to the account that added it unless it is marked shared.");
@@ -98,6 +104,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // default, so a deployment that forgets TLS sees a login that visibly
     // does not stick instead of a credential sent in the clear.
     let secure_cookie = !std::env::args().any(|a| a == "--insecure-cookie");
+    // The flag first, then the environment — the one a container sets, since
+    // arguments there replace the image's whole command line.
+    let base_path = flag("--base-path")
+        .or_else(|| std::env::var(BASE_PATH_ENV).ok())
+        .map(|raw| api::normalize_base_path(&raw))
+        .transpose()?
+        .unwrap_or_default();
     // Saved, so that restarting the bridge does not sign everybody out —
     // which, while they lived in memory, it did, every time.
     let logins_path = get_or_create_config_dir()?.join("bridge-logins.json");
@@ -146,13 +159,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listen = flag("--listen").unwrap_or_else(|| DEFAULT_LISTEN.to_string());
     let listener = tokio::net::TcpListener::bind(&listen).await?;
-    tracing::info!(addr = %listener.local_addr()?, "zedis-bridge listening");
+    tracing::info!(addr = %listener.local_addr()?, base_path = %format!("{base_path}/"), "zedis-bridge listening");
 
     let app = api::router(api::AppState {
         accounts,
         sessions,
         logins,
-        secure_cookie,
+        cookie: auth::CookiePolicy::new(secure_cookie, &base_path),
+        base_path,
         web_root,
     });
     axum::serve(listener, app).await?;

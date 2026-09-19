@@ -34,6 +34,17 @@ pub enum Error {
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Ssh error: {source}"))]
     Ssh { source: russh::Error },
+    /// The session is up, but the SSH server could not open the forwarded
+    /// channel — the one tunnel failure whose cause is the *destination*, as
+    /// seen from the SSH host. It names that destination because after
+    /// discovery it may be an address the server reported (a Sentinel's
+    /// master, a cluster node) rather than the one in the form, and a bare
+    /// `ConnectFailed` says nothing about which. Both ends travel as one
+    /// boxed string so the variant stays as small as `Ssh` (clippy's
+    /// `result_large_err`).
+    #[cfg(not(target_family = "wasm"))]
+    #[snafu(display("Ssh error: {source}: {route}"))]
+    SshForward { route: Box<str>, source: russh::Error },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Key error: {source}"))]
     Key { source: russh::keys::Error },
@@ -152,7 +163,7 @@ impl Error {
             }
             Error::Io { .. } => K::Network,
             #[cfg(not(target_family = "wasm"))]
-            Error::Ssh { .. } | Error::Key { .. } => K::Tunnel,
+            Error::Ssh { .. } | Error::SshForward { .. } | Error::Key { .. } => K::Tunnel,
             _ => K::Unknown,
         }
     }
