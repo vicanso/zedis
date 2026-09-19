@@ -17,7 +17,7 @@
 //! both — the prose the server answers, plus a metric table when there is
 //! one — because what a GUI adds here is the button, not the analysis.
 
-use crate::connection::{NodeReply, get_connection_manager, latency_doctor, memory_doctor, memory_stats};
+use crate::connection::{NodeReply, ServerDb, latency_doctor, memory_doctor, memory_stats};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisServerState, dialog_button_props, i18n_common, i18n_metrics, i18n_slowlog_editor};
@@ -261,11 +261,11 @@ pub fn open_server_report_dialog(
     cx.spawn(async move |cx| {
         let result: Result<ReportContent, Error> = cx
             .background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let at = ServerDb::new(&*server_id, db);
                 Ok(match report {
                     ServerReport::Memory => {
-                        let doctor = memory_doctor(&mut conn).await?;
-                        let mut stats = memory_stats(&mut conn).await?;
+                        let doctor = memory_doctor(&at).await?;
+                        let mut stats = memory_stats(&at).await?;
                         doctor
                             .into_iter()
                             .map(|NodeReply { node, value: text }| {
@@ -280,7 +280,7 @@ pub fn open_server_report_dialog(
                             })
                             .collect()
                     }
-                    ServerReport::Latency => latency_doctor(&mut conn)
+                    ServerReport::Latency => latency_doctor(&at)
                         .await?
                         .into_iter()
                         .map(|NodeReply { node, value: text }| NodeReport {

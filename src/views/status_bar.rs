@@ -20,7 +20,7 @@ use crate::{
     assets::CustomIconName,
     connection::{KillTarget, RedisClientDescription, ServerFeatures, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{get_mono_font_family, group_thousands, humanize_keystroke, pacing, resolve_tag_chip},
+    helpers::{format_lag_bytes, get_mono_font_family, group_thousands, humanize_keystroke, pacing, resolve_tag_chip},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
@@ -103,15 +103,6 @@ fn status_text_color(is_dark: bool) -> Hsla {
     } else {
         rgb(0x686d76).into()
     }
-}
-
-/// Compact human form for replication lag in bytes.
-/// Drops the unit when zero so healthy replicas don't carry "0 B" noise.
-fn format_lag_bytes(bytes: i64) -> String {
-    if bytes <= 0 {
-        return "0".into();
-    }
-    humansize::format_size(bytes as u64, humansize::FormatSizeOptions::default().decimal_places(1))
 }
 
 /// Build the multi-line tooltip body. `replicas` is the dynamic per-replica

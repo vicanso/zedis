@@ -65,10 +65,7 @@ impl ZedisSlowlogEditor {
         cx.notify();
         self._commandlog_task = Some(cx.spawn(async move |handle, cx| {
             let result: Result<Vec<SlowLogEntry>, Error> = cx
-                .background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server_id, db).await?;
-                    Ok(client.get_command_logs(kind).await?)
-                })
+                .background_spawn(async move { Ok(command_logs(&ServerDb::new(server_id, db), kind).await?) })
                 .await;
             let _ = handle.update(cx, |this, cx| {
                 this.commandlog_loading = false;

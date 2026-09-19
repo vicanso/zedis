@@ -38,6 +38,7 @@ use super::manager::get_connection_manager;
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use futures::future::try_join_all;
 use redis::cmd;
 use serde::{Deserialize, Serialize};
@@ -180,6 +181,19 @@ async fn dump_single_key(conn: &mut RedisAsyncConn, key: String) -> Result<Optio
         type_hint: TypeHint::from_redis_type(&ty),
         payload,
     }))
+}
+
+/// `RESTORE key ttl payload` — put one dumped key back. No `REPLACE`: a key
+/// that exists again is a `BUSYKEY` error for the caller to show, never an
+/// overwrite. `pttl_ms` is what `PTTL` said when the key was dumped; a key
+/// without a TTL reported -1 there, which `RESTORE` spells 0.
+pub async fn restore_key(at: &ServerDb, key: &str, pttl_ms: i64, payload: &[u8]) -> Result<()> {
+    Ok(cmd("RESTORE")
+        .arg(key)
+        .arg(pttl_ms.max(0))
+        .arg(payload)
+        .query_async(&mut at.connection().await?)
+        .await?)
 }
 
 /// Restores a slice of entries. Concurrency is bounded by the slice length.

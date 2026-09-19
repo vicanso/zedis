@@ -14,7 +14,9 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{CommandStatus, ServerCommand};
-use crate::connection::{HeatMetric, HeatProbe, KeyMemoryUsage, get_connection_manager};
+use crate::connection::{
+    HeatMetric, HeatProbe, KeyMemoryUsage, ServerDb, key_size_distributions, maxmemory_policy, sample_memory_usage,
+};
 use crate::error::Error;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{AiEndpoint, analyze_report};
@@ -599,11 +601,7 @@ impl ZedisMemoryAnalysis {
         self.keysizes_task = Some(cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server_id, db).await?;
-                    if !client.supports_info_keysizes() {
-                        return Ok(Vec::new());
-                    }
-                    Ok::<Vec<KeysizesDist>, Error>(client.info_keysizes().await?)
+                    Ok::<Vec<KeysizesDist>, Error>(key_size_distributions(&ServerDb::new(&*server_id, db)).await?)
                 })
                 .await;
             let _ = handle.update(cx, |this, cx| {
@@ -869,8 +867,7 @@ impl ZedisMemoryAnalysis {
                 .background_spawn({
                     let server_id = server_id.clone();
                     async move {
-                        let client = get_connection_manager().get_client(&server_id, db).await?;
-                        let p = client.maxmemory_policy().await?;
+                        let p = maxmemory_policy(&ServerDb::new(&*server_id, db)).await?;
                         Ok::<String, Error>(p)
                     }
                 })
@@ -917,10 +914,9 @@ impl ZedisMemoryAnalysis {
                     let executor = executor.clone();
                     async move {
                         let start = Instant::now();
-                        let client = get_connection_manager().get_client(&server_id, db).await?;
-                        let (count, new_cursors, keys_memory_usage) = client
-                            .sample_scan_memory_usage(ratio, scan_count, cursors_clone, heat, with_encoding)
-                            .await?;
+                        let at = ServerDb::new(&*server_id, db);
+                        let (count, new_cursors, keys_memory_usage) =
+                            sample_memory_usage(&at, ratio, scan_count, cursors_clone, heat, with_encoding).await?;
                         let base_sleep = start.elapsed().mul_f64(redis_process_ratio);
                         let sleep_duration = base_sleep.clamp(min_sleep, max_sleep);
                         executor.timer(sleep_duration).await;

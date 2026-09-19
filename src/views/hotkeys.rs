@@ -22,12 +22,15 @@
 //! itself is a read.
 
 use crate::assets::CustomIconName;
-use crate::connection::{Capability, HotkeyEntry, HotkeysReport, get_connection_manager};
+use crate::connection::{
+    Capability, HotkeyEntry, HotkeysReport, ServerDb, hotkeys_report, hotkeys_reset, hotkeys_start, hotkeys_stop,
+};
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, pacing};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_hotkeys};
+use crate::views::panel_poll::{PanelPoll, summary_chip};
 use crate::views::unavailable_chip;
-use gpui::{ClipboardItem, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -59,8 +62,7 @@ pub struct ZedisHotkeys {
     top_k: u64,
     /// A start/stop/reset round-trip is in flight — controls stay inert.
     busy: bool,
-    poll_task: Option<Task<()>>,
-    force_tick: bool,
+    poll: Option<PanelPoll>,
     pending_notification: Option<Notification>,
     scroll: ScrollHandle,
 }
@@ -75,8 +77,7 @@ impl ZedisHotkeys {
             track_net: true,
             top_k: TOP_K_CHOICES[0],
             busy: false,
-            poll_task: None,
-            force_tick: false,
+            poll: None,
             pending_notification: None,
             scroll: ScrollHandle::new(),
         };
@@ -84,53 +85,30 @@ impl ZedisHotkeys {
         this
     }
 
+    /// Sample now rather than at the end of the interval.
+    fn refresh_now(&self) {
+        if let Some(poll) = &self.poll {
+            poll.refresh_now();
+        }
+    }
+
     fn start_polling(&mut self, cx: &mut Context<Self>) {
-        self.poll_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let conn = match this.update(cx, |this, cx| {
-                    let s = this.server_state.read(cx);
-                    // Backgrounded tab: skip the fetch, keep the loop.
-                    if s.is_background() {
-                        return None;
+        self.poll = Some(PanelPoll::start(
+            cx,
+            self.server_state.clone(),
+            Duration::from_secs(POLL_SECS),
+            fetch_report,
+            |this, result, cx| {
+                match result {
+                    Ok(report) => {
+                        this.report = Some(report);
+                        this.error = None;
                     }
-                    Some((s.server_id().to_string(), s.db()))
-                }) {
-                    Ok(c) => c,
-                    Err(_) => break,
-                };
-                if let Some((server_id, db)) = conn.filter(|c| !c.0.is_empty()) {
-                    let result = fetch_report(server_id, db).await;
-                    if this
-                        .update(cx, |this, cx| {
-                            this.force_tick = false;
-                            match result {
-                                Ok(report) => {
-                                    this.report = Some(report);
-                                    this.error = None;
-                                }
-                                Err(e) => this.error = Some(e.to_string().into()),
-                            }
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
+                    Err(e) => this.error = Some(e.to_string().into()),
                 }
-                // Responsive refresh: wake every 200ms to check force_tick.
-                let mut waited = 0u64;
-                while waited < POLL_SECS * 1000 {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(pacing::PANEL_WAKE_MS))
-                        .await;
-                    waited += pacing::PANEL_WAKE_MS;
-                    let force = this.update(cx, |this, _| this.force_tick).unwrap_or(false);
-                    if force {
-                        break;
-                    }
-                }
-            }
-        }));
+                cx.notify();
+            },
+        ));
     }
 
     fn tracking_active(&self) -> bool {
@@ -150,11 +128,11 @@ impl ZedisHotkeys {
         let entity = cx.entity().downgrade();
         cx.spawn(async move |_handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let at = ServerDb::new(&*server_id, db);
                 match action {
-                    ControlAction::Start => client.hotkeys_start(cpu, net, top_k).await,
-                    ControlAction::Stop => client.hotkeys_stop().await,
-                    ControlAction::Reset => client.hotkeys_reset().await,
+                    ControlAction::Start => hotkeys_start(&at, cpu, net, top_k).await,
+                    ControlAction::Stop => hotkeys_stop(&at).await,
+                    ControlAction::Reset => hotkeys_reset(&at).await,
                 }
             });
             let result = task.await;
@@ -171,7 +149,7 @@ impl ZedisHotkeys {
                         if action == ControlAction::Reset {
                             this.report = Some(HotkeysReport::default());
                         }
-                        this.force_tick = true;
+                        this.refresh_now();
                     }
                     Err(e) => {
                         this.pending_notification = Some(Notification::error(e.to_string()));
@@ -365,7 +343,7 @@ impl ZedisHotkeys {
                     .icon(Icon::new(CustomIconName::RotateCw))
                     .tooltip(i18n_hotkeys(cx, "refresh_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| {
-                        this.force_tick = true;
+                        this.refresh_now();
                         cx.notify();
                     })),
             );
@@ -526,23 +504,6 @@ enum ControlAction {
     Reset,
 }
 
-fn summary_chip(
-    label: SharedString,
-    value: impl Into<SharedString>,
-    value_color: gpui::Hsla,
-    muted: gpui::Hsla,
-) -> impl IntoElement {
-    v_flex()
-        .gap_0p5()
-        .child(Label::new(label).text_xs().text_color(muted))
-        .child(
-            Label::new(value.into())
-                .text_sm()
-                .font_semibold()
-                .text_color(value_color),
-        )
-}
-
 impl Render for ZedisHotkeys {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
@@ -599,6 +560,5 @@ impl Render for ZedisHotkeys {
 }
 
 async fn fetch_report(server_id: String, db: usize) -> Result<HotkeysReport> {
-    let client = get_connection_manager().get_client(&server_id, db).await?;
-    Ok(client.hotkeys_report().await?)
+    Ok(hotkeys_report(&ServerDb::new(server_id, db)).await?)
 }

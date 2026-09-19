@@ -48,14 +48,14 @@ impl ZedisSlowlogEditor {
         self.latency_loading = true;
         self._latency_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let listing = latency_latest(&mut conn).await?;
+                let at = ServerDb::new(server_id, db);
+                let listing = latency_latest(&at).await?;
                 let threshold = if listing.unsupported {
                     0
                 } else {
                     // Best-effort — CONFIG GET may be ACL-restricted;
                     // we treat any failure as "unknown" = 0.
-                    latency_monitor_threshold(&mut conn).await.unwrap_or(0)
+                    latency_monitor_threshold(&at).await.unwrap_or(0)
                 };
                 Ok::<_, Error>((listing, threshold))
             });
@@ -174,15 +174,9 @@ impl ZedisSlowlogEditor {
         }
         self._latency_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 // 100ms — the same default Redis docs suggest. Users
                 // can dial it down via CLI/Config panel later.
-                redis::cmd("CONFIG")
-                    .arg("SET")
-                    .arg("latency-monitor-threshold")
-                    .arg("100")
-                    .query_async::<()>(&mut conn)
-                    .await?;
+                config_set(&ServerDb::new(server_id, db), "latency-monitor-threshold", "100").await?;
                 Ok::<_, Error>(())
             });
             let _ = task.await;
@@ -204,10 +198,7 @@ impl ZedisSlowlogEditor {
             return;
         }
         self._latency_task = Some(cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                latency_reset(&mut conn, &[]).await
-            });
+            let task = cx.background_spawn(async move { latency_reset(&ServerDb::new(server_id, db), &[]).await });
             let _ = task.await;
             let _ = handle.update(cx, |this, cx| {
                 this.latency_events.clear();

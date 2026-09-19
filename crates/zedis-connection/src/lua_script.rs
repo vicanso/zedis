@@ -21,10 +21,10 @@
 //! here, do a single `SCRIPT LOAD + EVAL`, and tell the caller via
 //! `was_hit=false` so it can update its hit-rate counter.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -48,13 +48,14 @@ pub struct ScriptRunOutcome {
 /// `readonly` spells it `EVALSHA_RO` (Redis 7.0+): the server then refuses
 /// any write the script attempts.
 pub async fn run_script(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     code: &str,
     sha: &str,
     keys: &[String],
     args: &[String],
     readonly: bool,
 ) -> Result<ScriptRunOutcome> {
+    let conn = &mut at.connection().await?;
     let res: redis::RedisResult<Value> = build_evalsha(sha, keys, args, readonly).query_async(conn).await;
     match res {
         Ok(v) => Ok(ScriptRunOutcome {
@@ -97,15 +98,23 @@ fn build_evalsha(sha: &str, keys: &[String], args: &[String], readonly: bool) ->
     c
 }
 
+/// The SHA1 `SCRIPT LOAD` would answer for `code` — computed here, so a
+/// script's identity can be shown and compared without asking the server.
+pub fn script_sha1(code: &str) -> String {
+    redis::Script::new(code).get_hash().to_string()
+}
+
 /// `SCRIPT LOAD` — warm the server cache without executing. Returns
 /// the SHA Redis computed (should match the locally stored digest).
-pub async fn script_load(conn: &mut RedisAsyncConn, code: &str) -> Result<String> {
+pub async fn script_load(at: &ServerDb, code: &str) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let sha: String = cmd("SCRIPT").arg("LOAD").arg(code).query_async(conn).await?;
     Ok(sha)
 }
 
 /// `SCRIPT EXISTS sha [sha …]` — one bool per digest, same order.
-pub async fn script_exists(conn: &mut RedisAsyncConn, shas: &[String]) -> Result<Vec<bool>> {
+pub async fn script_exists(at: &ServerDb, shas: &[String]) -> Result<Vec<bool>> {
+    let conn = &mut at.connection().await?;
     if shas.is_empty() {
         return Ok(Vec::new());
     }
@@ -119,7 +128,8 @@ pub async fn script_exists(conn: &mut RedisAsyncConn, shas: &[String]) -> Result
 }
 
 /// `SCRIPT FLUSH [SYNC|ASYNC]` — wipe the entire Lua script cache.
-pub async fn script_flush(conn: &mut RedisAsyncConn, async_mode: bool) -> Result<()> {
+pub async fn script_flush(at: &ServerDb, async_mode: bool) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("SCRIPT");
     c.arg("FLUSH");
     c.arg(if async_mode { "ASYNC" } else { "SYNC" });

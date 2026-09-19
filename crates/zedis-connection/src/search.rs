@@ -25,10 +25,11 @@
 //! and silently ignore unknown keys rather than fail the whole call,
 //! since module upgrades shouldn't break the GUI.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::reply;
+use crate::server_db::ServerDb;
 use redis::{Cmd, Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -284,7 +285,8 @@ pub struct CreateFieldSpec {
 /// `DD` suffix — `true` removes the indexed documents from Redis along
 /// with the index definition, `false` (the safer default) only removes
 /// the index leaving raw key data intact.
-pub async fn ft_dropindex(conn: &mut RedisAsyncConn, index: &str, delete_documents: bool) -> Result<()> {
+pub async fn ft_dropindex(at: &ServerDb, index: &str, delete_documents: bool) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FT.DROPINDEX");
     c.arg(index);
     if delete_documents {
@@ -300,7 +302,8 @@ pub async fn ft_dropindex(conn: &mut RedisAsyncConn, index: &str, delete_documen
 /// back-indexed against the new field, which is typically fast but
 /// blocks proportional to dataset size; the indexer runs in the
 /// background after the command returns.
-pub async fn ft_alter_add(conn: &mut RedisAsyncConn, index: &str, field: &CreateFieldSpec) -> Result<()> {
+pub async fn ft_alter_add(at: &ServerDb, index: &str, field: &CreateFieldSpec) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FT.ALTER");
     c.arg(index).arg("SCHEMA").arg("ADD");
     c.arg(field.name.as_str()).arg(field.field_type.as_str());
@@ -317,7 +320,8 @@ pub async fn ft_alter_add(conn: &mut RedisAsyncConn, index: &str, field: &Create
     Ok(())
 }
 
-pub async fn ft_create(conn: &mut RedisAsyncConn, opts: &CreateIndexOptions) -> Result<()> {
+pub async fn ft_create(at: &ServerDb, opts: &CreateIndexOptions) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FT.CREATE");
     c.arg(opts.index.as_str());
     c.arg("ON").arg(if opts.on_json { "JSON" } else { "HASH" });
@@ -379,14 +383,15 @@ pub struct IndexListing {
     pub unsupported: bool,
 }
 
-pub async fn ft_list(conn: &mut RedisAsyncConn) -> Result<IndexListing> {
+pub async fn ft_list(at: &ServerDb) -> Result<IndexListing> {
+    let conn = &mut at.connection().await?;
     let res: redis::RedisResult<Vec<String>> = cmd("FT._LIST").query_async(conn).await;
     match res {
         Ok(names) => Ok(IndexListing {
             names: names.into_iter().collect(),
             unsupported: false,
         }),
-        Err(e) if is_unsupported(&e) => Ok(IndexListing {
+        Err(e) if reply::is_unsupported(&e) => Ok(IndexListing {
             unsupported: true,
             ..Default::default()
         }),
@@ -394,7 +399,8 @@ pub async fn ft_list(conn: &mut RedisAsyncConn) -> Result<IndexListing> {
     }
 }
 
-pub async fn ft_info(conn: &mut RedisAsyncConn, index: &str) -> Result<IndexInfo> {
+pub async fn ft_info(at: &ServerDb, index: &str) -> Result<IndexInfo> {
+    let conn = &mut at.connection().await?;
     let value: Value = cmd("FT.INFO").arg(index).query_async(conn).await?;
     parse_info(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.INFO {index} returned unexpected shape"),
@@ -434,14 +440,15 @@ fn explain_cmd(index: &str, query: &str, params: &[(String, Vec<u8>)], dialect: 
 }
 
 pub async fn ft_explain(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     index: &str,
     query: &str,
     params: &[(String, Vec<u8>)],
     dialect: Option<u32>,
 ) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let value: Value = explain_cmd(index, query, params, dialect).query_async(conn).await?;
-    parse_simple_string(&value).ok_or_else(|| Error::Invalid {
+    reply::text(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.EXPLAIN {index} returned unexpected shape"),
     })
 }
@@ -464,13 +471,14 @@ fn profile_cmd(index: &str, aggregate: bool, query: &str, params: &[(String, Vec
 /// committing to a schema the raw tree is pretty-printed — robust the same
 /// way the other parsers here are.
 pub async fn ft_profile(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     index: &str,
     aggregate: bool,
     query: &str,
     params: &[(String, Vec<u8>)],
     dialect: Option<u32>,
 ) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let value: Value = profile_cmd(index, aggregate, query, params, dialect)
         .query_async(conn)
         .await?;
@@ -522,12 +530,8 @@ fn search_cmd(index: &str, query: &str, opts: &SearchOptions) -> Cmd {
     c
 }
 
-pub async fn ft_search(
-    conn: &mut RedisAsyncConn,
-    index: &str,
-    query: &str,
-    opts: &SearchOptions,
-) -> Result<SearchResult> {
+pub async fn ft_search(at: &ServerDb, index: &str, query: &str, opts: &SearchOptions) -> Result<SearchResult> {
+    let conn = &mut at.connection().await?;
     let value: Value = search_cmd(index, query, opts).query_async(conn).await?;
     parse_search(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.SEARCH {index} returned unexpected shape"),
@@ -570,12 +574,8 @@ fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions) -> Cmd {
     c
 }
 
-pub async fn ft_aggregate(
-    conn: &mut RedisAsyncConn,
-    index: &str,
-    query: &str,
-    opts: &AggregateOptions,
-) -> Result<AggregateResult> {
+pub async fn ft_aggregate(at: &ServerDb, index: &str, query: &str, opts: &AggregateOptions) -> Result<AggregateResult> {
+    let conn = &mut at.connection().await?;
     let value: Value = aggregate_cmd(index, query, opts).query_async(conn).await?;
     parse_aggregate(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.AGGREGATE {index} returned unexpected shape"),
@@ -588,76 +588,21 @@ fn is_numeric_literal(s: &str) -> bool {
     s.trim().parse::<f64>().is_ok()
 }
 
-fn is_unsupported(err: &redis::RedisError) -> bool {
-    let msg = err.to_string();
-    msg.contains("unknown command")
-        || msg.contains("ERR unknown")
-        || msg.contains("not available")
-        || msg.contains("ERR Unknown")
-}
-
-fn parse_simple_string(v: &Value) -> Option<String> {
-    match v {
-        Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
-        Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Value::Int(n) => Some(n.to_string()),
-        Value::Double(n) => Some(format!("{n}")),
-        _ => None,
-    }
-}
-
-fn extract_pairs(v: &Value) -> Option<Vec<(String, Value)>> {
-    match v {
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len() / 2);
-            for pair in items.chunks(2) {
-                if pair.len() != 2 {
-                    return None;
-                }
-                let key = parse_simple_string(&pair[0])?;
-                out.push((key, pair[1].clone()));
-            }
-            Some(out)
-        }
-        Value::Map(items) => Some(
-            items
-                .iter()
-                .filter_map(|(k, val)| Some((parse_simple_string(k)?, val.clone())))
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
-fn parse_int(v: &Value) -> Option<i64> {
-    match v {
-        Value::Int(n) => Some(*n),
-        _ => parse_simple_string(v).and_then(|s| s.parse().ok()),
-    }
-}
-
-fn parse_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Int(n) => Some(*n as f64),
-        Value::Double(n) => Some(*n),
-        _ => parse_simple_string(v).and_then(|s| s.parse().ok()),
-    }
-}
-
 /// FT.INFO's `*_mb` sizes are mebibytes (`bytes / 1024²`), as a decimal
 /// string on RESP2 and a double on RESP3.
 fn mib_to_bytes(v: &Value) -> Option<u64> {
-    parse_f64(v)
+    reply::float(v)
         .filter(|mib| mib.is_finite() && *mib >= 0.)
         .map(|mib| (mib * 1_048_576.).round() as u64)
 }
 
 /// `FT.TAGVALS index field` — every distinct value of a TAG field. Not
 /// paginated by the server, so the caller decides how many to show.
-pub async fn ft_tagvals(conn: &mut RedisAsyncConn, index: &str, field: &str) -> Result<Vec<String>> {
+pub async fn ft_tagvals(at: &ServerDb, index: &str, field: &str) -> Result<Vec<String>> {
+    let conn = &mut at.connection().await?;
     let value: Value = cmd("FT.TAGVALS").arg(index).arg(field).query_async(conn).await?;
     Ok(match value {
-        Value::Array(items) | Value::Set(items) => items.iter().filter_map(parse_simple_string).collect(),
+        Value::Array(items) | Value::Set(items) => items.iter().filter_map(reply::text).collect(),
         _ => Vec::new(),
     })
 }
@@ -678,11 +623,12 @@ pub fn escape_tag_value(value: &str) -> String {
 /// `FT.SPELLCHECK index query [DIALECT n]` — for each term the index
 /// does not know, the closest terms it does, best first.
 pub async fn ft_spellcheck(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     index: &str,
     query: &str,
     dialect: Option<u32>,
 ) -> Result<Vec<SpellingSuggestion>> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FT.SPELLCHECK");
     c.arg(index).arg(query);
     push_dialect(&mut c, dialect);
@@ -702,10 +648,10 @@ fn parse_spellcheck(v: &Value) -> Vec<SpellingSuggestion> {
                 let [tag, term, suggestions] = parts.as_slice() else {
                     continue;
                 };
-                if !parse_simple_string(tag).is_some_and(|tag| tag.eq_ignore_ascii_case("TERM")) {
+                if !reply::text(tag).is_some_and(|tag| tag.eq_ignore_ascii_case("TERM")) {
                     continue;
                 }
-                let Some(term) = parse_simple_string(term) else {
+                let Some(term) = reply::text(term) else {
                     continue;
                 };
                 out.push(SpellingSuggestion {
@@ -716,12 +662,12 @@ fn parse_spellcheck(v: &Value) -> Vec<SpellingSuggestion> {
         }
         Value::Map(entries) => {
             for (key, val) in entries {
-                if !parse_simple_string(key).is_some_and(|key| key.eq_ignore_ascii_case("results")) {
+                if !reply::text(key).is_some_and(|key| key.eq_ignore_ascii_case("results")) {
                     continue;
                 }
                 if let Value::Map(terms) = val {
                     for (term, suggestions) in terms {
-                        let Some(term) = parse_simple_string(term) else {
+                        let Some(term) = reply::text(term) else {
                             continue;
                         };
                         out.push(SpellingSuggestion {
@@ -752,13 +698,13 @@ fn parse_suggestions(v: &Value) -> Vec<(String, f64)> {
         .filter_map(|item| match item {
             // RESP2: `[score, suggestion]`.
             Value::Array(pair) => match pair.as_slice() {
-                [score, suggestion] => Some((parse_simple_string(suggestion)?, parse_f64(score).unwrap_or(0.))),
+                [score, suggestion] => Some((reply::text(suggestion)?, reply::float(score).unwrap_or(0.))),
                 _ => None,
             },
             // RESP3: `{suggestion: score}`.
-            Value::Map(entry) => entry.first().and_then(|(suggestion, score)| {
-                Some((parse_simple_string(suggestion)?, parse_f64(score).unwrap_or(0.)))
-            }),
+            Value::Map(entry) => entry
+                .first()
+                .and_then(|(suggestion, score)| Some((reply::text(suggestion)?, reply::float(score).unwrap_or(0.)))),
             _ => None,
         })
         .collect()
@@ -772,7 +718,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
     // RESP3 may deliver this as a Map; in that case there are no bare
     // flags and pair extraction is sufficient.
     if let Value::Map(_) = v {
-        return parse_field_definition_from_pairs(extract_pairs(v)?);
+        return parse_field_definition_from_pairs(reply::pairs(v)?);
     }
     let items = match v {
         Value::Array(items) => items,
@@ -782,7 +728,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
     let mut legacy_name_candidate: Option<String> = None;
     let mut i = 0;
     while i < items.len() {
-        let token = match parse_simple_string(&items[i]) {
+        let token = match reply::text(&items[i]) {
             Some(s) => s,
             None => {
                 i += 1;
@@ -808,7 +754,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
             "identifier" => {
                 if field.name.is_empty()
                     && let Some(next) = items.get(i + 1)
-                    && let Some(s) = parse_simple_string(next)
+                    && let Some(s) = reply::text(next)
                 {
                     field.name = s;
                 }
@@ -816,7 +762,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
             }
             "attribute" => {
                 if let Some(next) = items.get(i + 1)
-                    && let Some(s) = parse_simple_string(next)
+                    && let Some(s) = reply::text(next)
                 {
                     field.name = s;
                 }
@@ -824,7 +770,7 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
             }
             "type" => {
                 if let Some(next) = items.get(i + 1)
-                    && let Some(s) = parse_simple_string(next)
+                    && let Some(s) = reply::text(next)
                 {
                     field.kind_str = s;
                 }
@@ -832,13 +778,13 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
             }
             "weight" => {
                 if let Some(next) = items.get(i + 1) {
-                    field.weight = parse_simple_string(next).and_then(|s| s.parse().ok());
+                    field.weight = reply::text(next).and_then(|s| s.parse().ok());
                 }
                 i += 2;
             }
             "separator" => {
                 if let Some(next) = items.get(i + 1) {
-                    field.separator = parse_simple_string(next);
+                    field.separator = reply::text(next);
                 }
                 i += 2;
             }
@@ -873,19 +819,19 @@ fn parse_field_definition_from_pairs(entries: Vec<(String, Value)>) -> Option<Fi
         let key = k.to_ascii_lowercase();
         match key.as_str() {
             "identifier" if field.name.is_empty() => {
-                field.name = parse_simple_string(&val).unwrap_or_default();
+                field.name = reply::text(&val).unwrap_or_default();
             }
             "attribute" => {
-                field.name = parse_simple_string(&val).unwrap_or_default();
+                field.name = reply::text(&val).unwrap_or_default();
             }
             "type" => {
-                field.kind_str = parse_simple_string(&val).unwrap_or_default();
+                field.kind_str = reply::text(&val).unwrap_or_default();
             }
-            "weight" => field.weight = parse_simple_string(&val).and_then(|s| s.parse().ok()),
-            "separator" => field.separator = parse_simple_string(&val),
-            "sortable" => field.sortable = matches!(parse_int(&val), Some(n) if n != 0),
-            "noindex" => field.no_index = matches!(parse_int(&val), Some(n) if n != 0),
-            "nostem" => field.no_stem = matches!(parse_int(&val), Some(n) if n != 0),
+            "weight" => field.weight = reply::text(&val).and_then(|s| s.parse().ok()),
+            "separator" => field.separator = reply::text(&val),
+            "sortable" => field.sortable = matches!(reply::int(&val), Some(n) if n != 0),
+            "noindex" => field.no_index = matches!(reply::int(&val), Some(n) if n != 0),
+            "nostem" => field.no_stem = matches!(reply::int(&val), Some(n) if n != 0),
             _ => {}
         }
     }
@@ -896,21 +842,21 @@ fn parse_field_definition_from_pairs(entries: Vec<(String, Value)>) -> Option<Fi
 }
 
 fn parse_info(value: &Value) -> Option<IndexInfo> {
-    let entries = extract_pairs(value)?;
+    let entries = reply::pairs(value)?;
     let mut info = IndexInfo::default();
     for (k, val) in entries {
         let key = k.to_ascii_lowercase();
         match key.as_str() {
-            "num_docs" => info.num_docs = parse_int(&val).unwrap_or_default().max(0) as u64,
-            "max_doc_id" => info.max_doc_id = parse_int(&val).unwrap_or_default().max(0) as u64,
-            "num_terms" => info.num_terms = parse_int(&val).unwrap_or_default().max(0) as u64,
-            "num_records" => info.num_records = parse_int(&val).unwrap_or_default().max(0) as u64,
-            "indexing" => info.indexing = matches!(parse_int(&val), Some(n) if n != 0),
+            "num_docs" => info.num_docs = reply::int(&val).unwrap_or_default().max(0) as u64,
+            "max_doc_id" => info.max_doc_id = reply::int(&val).unwrap_or_default().max(0) as u64,
+            "num_terms" => info.num_terms = reply::int(&val).unwrap_or_default().max(0) as u64,
+            "num_records" => info.num_records = reply::int(&val).unwrap_or_default().max(0) as u64,
+            "indexing" => info.indexing = matches!(reply::int(&val), Some(n) if n != 0),
             // Both legacy (RediSearch 1.x: `hash_indexing_failures`) and
             // modern (2.x: `indexing_failures` inside `gc_stats`/top-level)
             // spellings exist; accept either.
             "hash_indexing_failures" | "indexing_failures" => {
-                info.indexing_failures = parse_int(&val).unwrap_or_default().max(0) as u64;
+                info.indexing_failures = reply::int(&val).unwrap_or_default().max(0) as u64;
             }
             "inverted_sz_mb" => info.inverted_index_bytes = mib_to_bytes(&val),
             "vector_index_sz_mb" => info.vector_index_bytes = mib_to_bytes(&val),
@@ -918,28 +864,28 @@ fn parse_info(value: &Value) -> Option<IndexInfo> {
             "sortable_values_size_mb" => info.sortable_values_bytes = mib_to_bytes(&val),
             "key_table_size_mb" => info.key_table_bytes = mib_to_bytes(&val),
             "offset_vectors_sz_mb" => info.offset_vectors_bytes = mib_to_bytes(&val),
-            "percent_indexed" => info.percent_indexed = parse_f64(&val),
-            "bytes_per_record_avg" => info.bytes_per_record_avg = parse_f64(&val),
+            "percent_indexed" => info.percent_indexed = reply::float(&val),
+            "bytes_per_record_avg" => info.bytes_per_record_avg = reply::float(&val),
             "attributes" | "fields" => {
                 if let Value::Array(items) = &val {
                     info.fields = items.iter().filter_map(parse_field_definition).collect();
                 }
             }
             "index_definition" => {
-                if let Some(def_entries) = extract_pairs(&val) {
+                if let Some(def_entries) = reply::pairs(&val) {
                     for (dk, dv) in def_entries {
                         let dk = dk.to_ascii_lowercase();
                         match dk.as_str() {
                             "key_type" => {
-                                info.key_type = parse_simple_string(&dv).unwrap_or_default();
+                                info.key_type = reply::text(&dv).unwrap_or_default();
                             }
                             "prefixes" => {
                                 if let Value::Array(items) = dv {
-                                    info.prefixes = items.iter().filter_map(parse_simple_string).collect();
+                                    info.prefixes = items.iter().filter_map(reply::text).collect();
                                 }
                             }
                             "language" => {
-                                info.language = parse_simple_string(&dv);
+                                info.language = reply::text(&dv);
                             }
                             _ => {}
                         }
@@ -963,17 +909,17 @@ fn parse_search(value: &Value) -> Option<SearchResult> {
         _ => return None,
     };
     let mut iter = items.iter();
-    let total = iter.next().and_then(parse_int).unwrap_or_default().max(0) as u64;
+    let total = iter.next().and_then(reply::int).unwrap_or_default().max(0) as u64;
     let mut hits = Vec::new();
     while let Some(id_val) = iter.next() {
-        let doc_id: String = parse_simple_string(id_val)?;
+        let doc_id: String = reply::text(id_val)?;
         let fields_val = iter.next();
         let fields = fields_val
-            .and_then(extract_pairs)
+            .and_then(reply::pairs)
             .map(|pairs| {
                 pairs
                     .into_iter()
-                    .map(|(k, v)| (k, parse_simple_string(&v).unwrap_or_default()))
+                    .map(|(k, v)| (k, reply::text(&v).unwrap_or_default()))
                     .collect()
             })
             .unwrap_or_default();
@@ -983,25 +929,25 @@ fn parse_search(value: &Value) -> Option<SearchResult> {
 }
 
 fn parse_search_map(value: &Value) -> Option<SearchResult> {
-    let pairs = extract_pairs(value)?;
+    let pairs = reply::pairs(value)?;
     let mut result = SearchResult::default();
     for (k, v) in pairs {
         let key = k.to_ascii_lowercase();
         match key.as_str() {
-            "total_results" => result.total = parse_int(&v).unwrap_or_default().max(0) as u64,
+            "total_results" => result.total = reply::int(&v).unwrap_or_default().max(0) as u64,
             "results" => {
                 if let Value::Array(items) = v {
                     for hit in items {
-                        if let Some(hit_pairs) = extract_pairs(&hit) {
+                        if let Some(hit_pairs) = reply::pairs(&hit) {
                             let mut sh = SearchHit::default();
                             for (hk, hv) in hit_pairs {
                                 match hk.to_ascii_lowercase().as_str() {
-                                    "id" => sh.doc_id = parse_simple_string(&hv).unwrap_or_default(),
+                                    "id" => sh.doc_id = reply::text(&hv).unwrap_or_default(),
                                     "extra_attributes" | "values" => {
-                                        if let Some(field_pairs) = extract_pairs(&hv) {
+                                        if let Some(field_pairs) = reply::pairs(&hv) {
                                             sh.fields = field_pairs
                                                 .into_iter()
-                                                .map(|(fk, fv)| (fk, parse_simple_string(&fv).unwrap_or_default()))
+                                                .map(|(fk, fv)| (fk, reply::text(&fv).unwrap_or_default()))
                                                 .collect();
                                         }
                                     }
@@ -1028,7 +974,7 @@ fn profile_section(value: &Value) -> &Value {
         Value::Map(items) => items
             .iter()
             .find(|(k, _)| {
-                parse_simple_string(k)
+                reply::text(k)
                     .map(|s| s.to_ascii_lowercase().contains("profile"))
                     .unwrap_or(false)
             })
@@ -1054,7 +1000,7 @@ fn pretty_value(value: &Value, depth: usize, out: &mut String) {
                 return;
             }
             for item in items {
-                match parse_simple_string(item) {
+                match reply::text(item) {
                     Some(s) => out.push_str(&format!("{indent}{s}\n")),
                     None => pretty_value(item, depth + 1, out),
                 }
@@ -1062,8 +1008,8 @@ fn pretty_value(value: &Value, depth: usize, out: &mut String) {
         }
         Value::Map(items) => {
             for (k, v) in items {
-                let key = parse_simple_string(k).unwrap_or_default();
-                match parse_simple_string(v) {
+                let key = reply::text(k).unwrap_or_default();
+                match reply::text(v) {
                     Some(s) => out.push_str(&format!("{indent}{key}: {s}\n")),
                     None => {
                         out.push_str(&format!("{indent}{key}:\n"));
@@ -1073,7 +1019,7 @@ fn pretty_value(value: &Value, depth: usize, out: &mut String) {
             }
         }
         other => {
-            if let Some(s) = parse_simple_string(other) {
+            if let Some(s) = reply::text(other) {
                 out.push_str(&format!("{indent}{s}\n"));
             }
         }
@@ -1088,7 +1034,7 @@ fn extract_scalar_pairs(items: &[Value]) -> Option<Vec<(String, String)>> {
     }
     items
         .chunks(2)
-        .map(|pair| Some((parse_simple_string(&pair[0])?, parse_simple_string(&pair[1])?)))
+        .map(|pair| Some((reply::text(&pair[0])?, reply::text(&pair[1])?)))
         .collect()
 }
 
@@ -1098,14 +1044,14 @@ fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
         _ => return None,
     };
     let mut iter = items.iter();
-    let total = iter.next().and_then(parse_int).unwrap_or_default().max(0) as u64;
+    let total = iter.next().and_then(reply::int).unwrap_or_default().max(0) as u64;
     let mut rows = Vec::new();
     for row_val in iter {
-        if let Some(pairs) = extract_pairs(row_val) {
+        if let Some(pairs) = reply::pairs(row_val) {
             rows.push(
                 pairs
                     .into_iter()
-                    .map(|(k, v)| (k, parse_simple_string(&v).unwrap_or_default()))
+                    .map(|(k, v)| (k, reply::text(&v).unwrap_or_default()))
                     .collect(),
             );
         }

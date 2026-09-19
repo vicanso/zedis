@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{AiEndpoint, suggest_command};
 use crate::{
     connection::{
-        DangerKind, RedisAsyncConn, ReplyFormat, classify_dangerous_line, command_doc_url, format_exec, format_reply,
-        get_command_description, get_connection_manager, get_server, is_write_command, list_commands,
-        requires_write_confirm,
+        DangerKind, ExecReplies, ReplyFormat, ServerDb, TerminalReply, TerminalSession, classify_dangerous_line,
+        command_doc_url, get_command_description, get_server, is_write_command, list_commands, requires_write_confirm,
     },
     db::get_cmd_history_manager,
-    error::{ConnectionErrorKind, Error},
+    error::Error,
     helpers::{
         TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
         starts_with_ignore_ascii_case, write_file_atomic,
@@ -31,7 +28,6 @@ use crate::{
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, update_app_state_and_save_quiet},
     views::confirm_dangerous_command,
 };
-use async_lock::Mutex;
 use chrono::Local;
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -47,10 +43,8 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
-use redis::{Value, cmd};
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{error, info, warn};
 use web_time::Instant;
 use zedis_ui::stable_gutter_padding;
@@ -127,14 +121,9 @@ struct LineOutcome {
 
 /// The server's answer to one line, or the text shown in its place.
 enum LineReply {
-    /// The reply, with the command that produced it: `format_reply` needs
-    /// the command to tell a hash or `WITHSCORES` pair list from a plain
-    /// list (RESP2 flattens both).
-    Value {
-        cmd: String,
-        args: Vec<String>,
-        value: Value,
-    },
+    /// The reply, kept as the server sent it (with the command that
+    /// produced it) so the output can be rendered again in another format.
+    Value(TerminalReply),
     /// An error, or a line refused before it reached the server — verbatim.
     Message(String),
 }
@@ -159,7 +148,7 @@ enum TranscriptEntry {
     /// A `MULTI … EXEC` block: the queued commands beside EXEC's replies.
     Exec {
         commands: Vec<String>,
-        replies: Vec<Value>,
+        replies: ExecReplies,
     },
     /// Footer of a multi-line (Batch / pasted pipeline) run.
     BatchSummary {
@@ -190,8 +179,8 @@ fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String
             TranscriptEntry::Command { line, reply } => {
                 let _ = writeln!(out, "{CMD_LABEL} {line}");
                 match reply {
-                    LineReply::Value { cmd, args, value } => {
-                        let _ = writeln!(out, "{}", format_reply(cmd, args, value, format));
+                    LineReply::Value(reply) => {
+                        let _ = writeln!(out, "{}", reply.render(format));
                     }
                     LineReply::Message(message) => {
                         let _ = writeln!(out, "{message}");
@@ -200,7 +189,7 @@ fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String
             }
             TranscriptEntry::Exec { commands, replies } => {
                 let _ = writeln!(out, "{CMD_LABEL} EXEC");
-                let _ = writeln!(out, "{}", format_exec(commands, replies, format));
+                let _ = writeln!(out, "{}", replies.render(commands, format));
             }
             TranscriptEntry::BatchSummary {
                 commands,
@@ -225,28 +214,26 @@ fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String
 /// `WATCH` conflict answers nil — said in words, since a bare `(nil)` reads
 /// as a missing key.
 fn transcript_entries_for(queue: &mut Option<Vec<String>>, line: String, reply: LineReply) -> Vec<TranscriptEntry> {
-    if let LineReply::Value { cmd, value, .. } = &reply {
-        match cmd.to_ascii_uppercase().as_str() {
-            "MULTI" if matches!(value, Value::Okay) => *queue = Some(Vec::new()),
+    if let LineReply::Value(answer) = &reply {
+        match answer.command().to_ascii_uppercase().as_str() {
+            "MULTI" if answer.is_ok() => *queue = Some(Vec::new()),
             "DISCARD" => *queue = None,
-            "EXEC" => match (queue.take(), value) {
-                (Some(commands), Value::Array(replies)) => {
-                    return vec![TranscriptEntry::Exec {
-                        commands,
-                        replies: replies.clone(),
-                    }];
+            "EXEC" => {
+                if let Some(commands) = queue.take() {
+                    if let Some(replies) = answer.exec_replies() {
+                        return vec![TranscriptEntry::Exec { commands, replies }];
+                    }
+                    if answer.is_nil() {
+                        return vec![
+                            TranscriptEntry::Command { line, reply },
+                            TranscriptEntry::Text("(transaction aborted: a key under WATCH changed)".to_string()),
+                        ];
+                    }
                 }
-                (Some(_), Value::Nil) => {
-                    return vec![
-                        TranscriptEntry::Command { line, reply },
-                        TranscriptEntry::Text("(transaction aborted: a key under WATCH changed)".to_string()),
-                    ];
-                }
-                _ => {}
-            },
+            }
             _ => {
                 if let Some(queued) = queue.as_mut()
-                    && matches!(value, Value::SimpleString(s) if s == "QUEUED")
+                    && answer.is_queued()
                 {
                     queued.push(line.clone());
                 }
@@ -266,50 +253,6 @@ fn write_output_file(text: &str) -> io::Result<PathBuf> {
     let path = dir.join(format!("zedis-terminal-{}.txt", Local::now().format("%Y%m%d-%H%M%S")));
     write_file_atomic(&path, text.as_bytes())?;
     Ok(path)
-}
-
-/// The db a successful `SELECT <n>` moved the connection to, else `None`.
-/// Only the plain one-argument form counts: anything else Redis accepted
-/// was not a database switch.
-fn selected_db(cmd_name: &str, args: &[String], reply: &redis::Value) -> Option<usize> {
-    if !cmd_name.eq_ignore_ascii_case("SELECT") || !matches!(reply, redis::Value::Okay) {
-        return None;
-    }
-    match args {
-        [db] => db.parse().ok(),
-        _ => None,
-    }
-}
-
-/// Whether an error means the terminal's connection is gone and the next
-/// line must reopen it. Mirrors what the pool does with its own client
-/// (`note_link_error`): a dropped link, refused connect or broken tunnel
-/// discards the connection; a response timeout does not — the multiplexed
-/// connection stays in step after one, and a dead link surfaces as a
-/// network error on the next line anyway.
-fn drops_link(err: &Error) -> bool {
-    use ConnectionErrorKind as K;
-    matches!(err.connection_kind(), K::Network | K::Tls | K::Tunnel)
-}
-
-/// The terminal's connection, opened on first use. Cloning a
-/// `RedisAsyncConn` shares the underlying socket, so every line — and every
-/// later batch — sees the same connection state: the db a `SELECT` picked,
-/// a `MULTI` still open.
-async fn terminal_connection(
-    slot: &Mutex<Option<RedisAsyncConn>>,
-    server_id: &str,
-    db: usize,
-) -> Result<RedisAsyncConn> {
-    let mut slot = slot.lock().await;
-    if let Some(conn) = slot.as_ref() {
-        return Ok(conn.clone());
-    }
-    let conn = get_connection_manager()
-        .open_dedicated_connection(server_id, db)
-        .await?;
-    *slot = Some(conn.clone());
-    Ok(conn)
 }
 
 /// The saved command history for `server_id`; an unreadable local
@@ -394,13 +337,11 @@ pub struct ZedisTerminal {
     pending_ai_fill: Option<SharedString>,
     /// The terminal's own connection — never the pooled one the key tree
     /// scans on, so `SELECT` / `AUTH` / `CLIENT SETNAME` / `MULTI` typed
-    /// here reach nothing else (see
-    /// `ConnectionManager::open_dedicated_connection`). Opened lazily by
+    /// here reach nothing else (see `TerminalSession`). Opened lazily by
     /// the first line and shared by every later one, replaced on a server
-    /// or db switch, and cleared after a link error so the next line
-    /// reconnects. Behind an async lock because each line runs on its own
-    /// background task.
-    conn: Arc<Mutex<Option<RedisAsyncConn>>>,
+    /// or db switch, and forgotten after a link error so the next line
+    /// reconnects.
+    session: TerminalSession,
     /// Database the terminal's connection sits on after a `SELECT` typed
     /// here. Shown beside the prompt while it differs from the panel's db,
     /// so the divergence from the key tree is visible instead of silent.
@@ -548,7 +489,7 @@ impl ZedisTerminal {
             should_focus_input: false,
             ai_task: None,
             pending_ai_fill: None,
-            conn: Arc::new(Mutex::new(None)),
+            session: TerminalSession::default(),
             terminal_db: None,
             _subscriptions: subscriptions,
         };
@@ -558,10 +499,10 @@ impl ZedisTerminal {
     }
 
     /// Forget the terminal's connection; the next line opens a fresh one on
-    /// the panel's db. A new `Arc` rather than `take()`, so a line still in
-    /// flight on the old connection can't write it back into the slot.
+    /// the panel's db. A new session rather than emptying this one, so a
+    /// line still in flight on the old connection can't write it back.
     fn drop_connection(&mut self) {
-        self.conn = Arc::new(Mutex::new(None));
+        self.session = TerminalSession::default();
         self.terminal_db = None;
     }
 
@@ -979,8 +920,8 @@ impl ZedisTerminal {
     fn run_command_lines(&mut self, command: SharedString, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
-        let db = server_state.db();
-        let conn_slot = self.conn.clone();
+        let at = ServerDb::new(server_id.as_str(), server_state.db());
+        let session = self.session.clone();
         let lines: Vec<String> = command
             .lines()
             .map(|line| line.trim().to_string())
@@ -996,7 +937,8 @@ impl ZedisTerminal {
             for line in lines {
                 let line_clone = line.clone();
                 let server_id = server_id.clone();
-                let conn_slot = conn_slot.clone();
+                let at = at.clone();
+                let session = session.clone();
                 let task = cx.background_spawn(async move {
                     let Some(parts) = shlex::split(&line) else {
                         return Ok(LineOutcome::default());
@@ -1014,34 +956,25 @@ impl ZedisTerminal {
                             selected_db: None,
                         });
                     }
-                    let mut conn = terminal_connection(&conn_slot, &server_id, db).await?;
-                    let data: redis::Value = match cmd(&cmd_name).arg(&args).query_async(&mut conn).await {
-                        Ok(data) => data,
-                        Err(e) => {
-                            let e = Error::from(e);
-                            // A dead link is forgotten here, so the next line
-                            // reconnects instead of failing the same way.
-                            if drops_link(&e) {
-                                conn_slot.lock().await.take();
-                            }
-                            return Err(e);
-                        }
-                    };
+                    // A dead link is forgotten by the session, so the next
+                    // line reconnects instead of failing the same way.
+                    let reply = session.run(&at, &cmd_name, &args).await?;
                     let _ = get_cmd_history_manager().add_record(server_id.as_str(), line.as_str());
-                    let selected_db = selected_db(&cmd_name, &args, &data);
+                    let selected_db = reply.selected_db();
                     Ok(LineOutcome {
-                        reply: LineReply::Value {
-                            cmd: cmd_name,
-                            args,
-                            value: data,
-                        },
+                        reply: LineReply::Value(reply),
                         selected_db,
                     })
                 });
                 let result: Result<LineOutcome> = task.await;
                 let (reply, selected_db, link_dropped, failed) = match result {
                     Ok(outcome) => (outcome.reply, outcome.selected_db, false, false),
-                    Err(e) => (LineReply::Message(e.to_string()), None, drops_link(&e), true),
+                    Err(e) => (
+                        LineReply::Message(e.to_string()),
+                        None,
+                        TerminalSession::drops_link(e.connection_kind()),
+                        true,
+                    ),
                 };
                 if failed {
                     errors += 1;
@@ -1488,34 +1421,15 @@ impl Render for ZedisTerminal {
 #[cfg(test)]
 mod tests {
     use super::{
-        LineReply, ReplyFormat, TranscriptEntry, render_transcript, selected_db, strip_redis_cli_prefix,
+        LineReply, ReplyFormat, TerminalReply, TranscriptEntry, render_transcript, strip_redis_cli_prefix,
         transcript_entries_for,
     };
-    use redis::Value;
 
-    fn bulk(s: &str) -> Value {
-        Value::BulkString(s.as_bytes().to_vec())
-    }
-    fn reply(cmd: &str, args: &[&str], value: Value) -> LineReply {
-        LineReply::Value {
-            cmd: cmd.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            value,
-        }
-    }
-
-    #[test]
-    fn selected_db_reads_only_a_successful_plain_select() {
-        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(selected_db("SELECT", &args(&["3"]), &Value::Okay), Some(3));
-        assert_eq!(selected_db("select", &args(&["0"]), &Value::Okay), Some(0));
-        // The server refused it (out of range, cluster mode) — nothing moved.
-        assert_eq!(selected_db("SELECT", &args(&["99"]), &Value::Nil), None);
-        // Not a SELECT, or not the one-argument form.
-        assert_eq!(selected_db("GET", &args(&["3"]), &Value::Okay), None);
-        assert_eq!(selected_db("SELECT", &args(&[]), &Value::Okay), None);
-        assert_eq!(selected_db("SELECT", &args(&["3", "x"]), &Value::Okay), None);
-        assert_eq!(selected_db("SELECT", &args(&["three"]), &Value::Okay), None);
+    /// A reply from its RESP encoding — the view holds replies it cannot
+    /// look inside, and a test has no more access than the view does.
+    fn reply(cmd: &str, args: &[&str], resp: &[u8]) -> LineReply {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        LineReply::Value(TerminalReply::from_resp(cmd, &args, resp).expect("valid RESP"))
     }
 
     #[test]
@@ -1524,7 +1438,7 @@ mod tests {
             TranscriptEntry::Text("banner".to_string()),
             TranscriptEntry::Command {
                 line: "HGETALL h".to_string(),
-                reply: reply("HGETALL", &["h"], Value::Array(vec![bulk("a"), bulk("1")])),
+                reply: reply("HGETALL", &["h"], b"*2\r\n$1\r\na\r\n$1\r\n1\r\n"),
             },
             TranscriptEntry::Command {
                 line: "GET missing".to_string(),
@@ -1548,15 +1462,9 @@ mod tests {
     #[test]
     fn multi_exec_becomes_one_block_of_commands_and_replies() {
         let mut queue = None;
-        let queued = |line: &str| {
-            reply(
-                line.split(' ').next().unwrap_or_default(),
-                &[],
-                Value::SimpleString("QUEUED".into()),
-            )
-        };
+        let queued = |line: &str| reply(line.split(' ').next().unwrap_or_default(), &[], b"+QUEUED\r\n");
 
-        let entries = transcript_entries_for(&mut queue, "MULTI".into(), reply("MULTI", &[], Value::Okay));
+        let entries = transcript_entries_for(&mut queue, "MULTI".into(), reply("MULTI", &[], b"+OK\r\n"));
         assert!(matches!(entries.as_slice(), [TranscriptEntry::Command { .. }]));
         assert_eq!(queue.as_deref(), Some(&[][..]));
 
@@ -1564,8 +1472,8 @@ mod tests {
         transcript_entries_for(&mut queue, "INCR a".into(), queued("INCR a"));
         assert_eq!(queue.as_deref().map(<[String]>::len), Some(2));
 
-        let exec = Value::Array(vec![Value::Okay, Value::Int(2)]);
-        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], exec));
+        let exec = reply("EXEC", &[], b"*2\r\n+OK\r\n:2\r\n");
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), exec);
         assert!(queue.is_none(), "EXEC closes the transaction");
         let rendered = render_transcript(&entries, ReplyFormat::Text);
         assert_eq!(
@@ -1575,15 +1483,15 @@ mod tests {
 
         // A WATCH conflict: EXEC answers nil, which is said in words.
         let mut queue = Some(vec!["SET a 1".to_string()]);
-        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], Value::Nil));
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], b"*-1\r\n"));
         assert!(queue.is_none());
         assert!(render_transcript(&entries, ReplyFormat::Text).contains("key under WATCH changed"));
 
         // DISCARD drops the queue; EXEC outside a MULTI is a plain command.
         let mut queue = Some(vec!["SET a 1".to_string()]);
-        transcript_entries_for(&mut queue, "DISCARD".into(), reply("DISCARD", &[], Value::Okay));
+        transcript_entries_for(&mut queue, "DISCARD".into(), reply("DISCARD", &[], b"+OK\r\n"));
         assert!(queue.is_none());
-        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], Value::Nil));
+        let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], b"*-1\r\n"));
         assert!(matches!(entries.as_slice(), [TranscriptEntry::Command { .. }]));
     }
 

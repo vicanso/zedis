@@ -72,9 +72,6 @@ arc-swap = { workspace = true }
 # `async-io` → `rustix` → `errno` and has no wasm port; the channel does
 # (ADR 9).
 async-channel = "2.5.0"
-# Likewise `smol::lock`, which is this crate re-exported. The terminal's
-# dedicated connection is behind one of these.
-async-lock = "3.4.2"
 base64 = { workspace = true }
 bitflags = "2.13.1"
 bytes = "1.12.1"

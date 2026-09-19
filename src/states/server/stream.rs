@@ -325,67 +325,6 @@ pub(crate) async fn first_load_stream_value(conn: &mut RedisAsyncConn, key: &str
     })
 }
 
-/// One `XREAD COUNT n BLOCK ms STREAMS key last_id` round on a
-/// dedicated connection. Returns `(new_last_id, entries)`. On block
-/// timeout the server replies nil → `(last_id unchanged, [])`.
-///
-/// Parsed by hand from `redis::Value` because the `redis` crate's
-/// `streams` feature is not enabled (keeps the dep surface lean).
-/// Reply shape: `[ [ stream_name, [ [id, [f, v, f, v, …]], … ] ], … ]`.
-pub(crate) async fn tail_read(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    last_id: &str,
-    block_ms: u64,
-    count: usize,
-) -> Result<(String, Vec<RedisStreamEntry>)> {
-    let reply: redis::Value = cmd("XREAD")
-        .arg("COUNT")
-        .arg(count)
-        .arg("BLOCK")
-        .arg(block_ms)
-        .arg("STREAMS")
-        .arg(key)
-        .arg(last_id)
-        .query_async(conn)
-        .await?;
-
-    let mut new_last = last_id.to_string();
-    let mut out: Vec<RedisStreamEntry> = Vec::new();
-
-    let redis::Value::Array(streams) = reply else {
-        // Nil (block timeout) or unexpected — nothing new.
-        return Ok((new_last, out));
-    };
-    for stream in streams {
-        let redis::Value::Array(name_and_entries) = stream else {
-            continue;
-        };
-        let Some(redis::Value::Array(entries)) = name_and_entries.get(1) else {
-            continue;
-        };
-        for entry in entries {
-            let redis::Value::Array(id_and_fields) = entry else {
-                continue;
-            };
-            let Some(id_val) = id_and_fields.first() else {
-                continue;
-            };
-            let id = redis_to_string(id_val);
-            let mut fields: Vec<(SharedString, SharedString)> = Vec::new();
-            if let Some(redis::Value::Array(flat)) = id_and_fields.get(1) {
-                let mut it = flat.iter();
-                while let (Some(f), Some(v)) = (it.next(), it.next()) {
-                    fields.push((redis_to_string(f), redis_to_string(v)));
-                }
-            }
-            new_last = id.to_string();
-            out.push((id, fields));
-        }
-    }
-    Ok((new_last, out))
-}
-
 impl ZedisServerState {
     fn exec_stream_op<F, Fut, R>(
         &mut self,

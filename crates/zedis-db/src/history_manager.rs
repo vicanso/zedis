@@ -153,6 +153,52 @@ impl HistoryManager {
     }
 }
 
+// ── the four lists kept this way ───────────────────────────────────────────
+//
+// Each is this one manager over its own table; they used to be a file apiece
+// holding a `static` and a getter.
+
+use super::{CMD_HISTORY_TABLE, FAVORITES_TABLE, RECENT_KEYS_TABLE, SEARCH_HISTORY_TABLE};
+use std::sync::LazyLock;
+
+/// Max keys kept per connection. Matches the product "5–10 chips" budget.
+const RECENT_KEYS_CAP: usize = 10;
+
+static FAVORITES_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| HistoryManager::new(FAVORITES_TABLE));
+static SEARCH_HISTORY_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| HistoryManager::new(SEARCH_HISTORY_TABLE));
+static CMD_HISTORY_MANAGER: LazyLock<HistoryManager> =
+    LazyLock::new(|| HistoryManager::new(CMD_HISTORY_TABLE).set_max_history_size(100));
+static RECENT_KEYS_MANAGER: LazyLock<HistoryManager> =
+    LazyLock::new(|| HistoryManager::new(RECENT_KEYS_TABLE).set_max_history_size(RECENT_KEYS_CAP));
+
+/// Favorite keys, per server.
+pub fn get_favorites_manager() -> &'static HistoryManager {
+    &FAVORITES_MANAGER
+}
+
+/// The key tree's search box history, per server.
+pub fn get_search_history_manager() -> &'static HistoryManager {
+    &SEARCH_HISTORY_MANAGER
+}
+
+/// The terminal's command history, per server (the last 100).
+pub fn get_cmd_history_manager() -> &'static HistoryManager {
+    &CMD_HISTORY_MANAGER
+}
+
+/// Per-connection MRU list of recently opened Redis keys. Scoped by
+/// `(server_id, db)` ([`recent_keys_scope`]) so switching databases does not
+/// mix keys. The cap is intentionally small — the key-tree dropdown shows the
+/// whole list without scrolling friction.
+pub fn get_recent_keys_manager() -> &'static HistoryManager {
+    &RECENT_KEYS_MANAGER
+}
+
+/// Storage key for a connection's MRU list (`server_id` + db index).
+pub fn recent_keys_scope(server_id: &str, db: usize) -> String {
+    format!("{server_id}/{db}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

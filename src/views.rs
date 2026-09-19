@@ -57,6 +57,7 @@ mod migration_window;
 mod monitor;
 #[cfg(not(target_family = "wasm"))]
 mod multi_search;
+mod panel_poll;
 mod persistence;
 mod probabilistic_editor;
 #[cfg(not(target_family = "wasm"))]
@@ -117,7 +118,6 @@ pub use expire_at_dialog::ZedisExpireAtDialog;
 pub(crate) use export::{export_filename, export_to_file, export_to_file_global};
 pub use export_servers_dialog::ZedisExportServersDialog;
 pub use function_editor::ZedisFunctionEditor;
-pub(crate) use geo_map::zset_looks_geo;
 pub use geo_map::{GeoMapEvent, ZedisGeoMap};
 pub use hash_editor::ZedisHashEditor;
 pub use hll_editor::ZedisHllEditor;

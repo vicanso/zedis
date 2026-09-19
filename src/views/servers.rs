@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+// The Test button is the desktop's: the browser's entries are dialled by the
+// bridge, which tests an edit itself before keeping it (ADR 9).
 #[cfg(not(target_family = "wasm"))]
-use crate::connection::open_seed_connection;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
+use crate::connection::test_connection;
 use crate::connection::{
-    ImportError, RedisServer, SERVER_TYPE_SENTINEL, TAG_ENV_LABELS, get_server_groups, get_servers,
-    open_single_connection, tag_color_index,
+    ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, sentinel_master_names, tag_color_index,
 };
 use crate::error::Error;
 use crate::helpers::{
@@ -47,7 +46,6 @@ use gpui_kit::component::{
     label::Label,
 };
 use gpui_kit::component::{h_flex, v_flex};
-use redis::cmd;
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

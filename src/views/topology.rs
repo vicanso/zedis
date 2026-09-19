@@ -45,11 +45,11 @@
 use crate::assets::CustomIconName;
 use crate::connection::{
     AtomicSlotMigration, CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, RebalanceMove,
-    ReplicationRole, SentinelMaster, ServerCommand, SlotStatMetric, SlotStatRow, floors, get_connection_manager,
+    ReplicationRole, SentinelMaster, ServerCommand, ServerDb, SlotStatMetric, SlotStatRow, cluster_slot_stats, floors,
     get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{format_lag_bytes, get_mono_font_family};
 use crate::states::{
     ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ZedisGlobalStore,
     ZedisServerState, dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, fetch_slot_migrations,
@@ -92,14 +92,6 @@ fn role_marker_color(marker: &str, muted: Hsla, success: Hsla, danger: Hsla) -> 
         "✗" => danger,
         _ => muted,
     }
-}
-
-/// Compact lag-bytes label (same shape as the status-bar tooltip helper).
-fn format_lag_bytes(bytes: i64) -> String {
-    if bytes <= 0 {
-        return "0".into();
-    }
-    humansize::format_size(bytes as u64, humansize::FormatSizeOptions::default().decimal_places(1))
 }
 
 /// Strip optional `@busport` so CLUSTER NODES addresses match INFO replication.
@@ -535,8 +527,7 @@ impl Render for ZedisTopology {
 /// and truncates (see `RedisClient::cluster_slot_stats`).
 async fn fetch_slot_stats(server_id: String, db: usize, metric: SlotStatMetric) -> Result<Vec<SlotStatRow>, Error> {
     const SLOT_STATS_LIMIT: u64 = 20;
-    let client = get_connection_manager().get_client(&server_id, db).await?;
-    Ok(client.cluster_slot_stats(metric, SLOT_STATS_LIMIT).await?)
+    Ok(cluster_slot_stats(&ServerDb::new(server_id, db), metric, SLOT_STATS_LIMIT).await?)
 }
 
 #[cfg(test)]

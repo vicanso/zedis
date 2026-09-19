@@ -22,17 +22,16 @@
 //! than a spike.
 
 use crate::assets::CustomIconName;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
-use crate::connection::{Capability, CommandStat, get_connection_manager};
+use crate::connection::{Capability, CommandStat, ServerDb, command_stats, config_resetstat};
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, pacing};
 use crate::states::{
     ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_server_load,
 };
+use crate::views::panel_poll::{PanelPoll, summary_chip};
 use crate::views::unavailable_chip;
-use gpui::{App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -94,8 +93,7 @@ pub struct ZedisServerLoad {
     prev: HashMap<String, (u64, u64)>,
     last_sample_at: Option<Instant>,
     has_delta: bool,
-    poll_task: Option<Task<()>>,
-    force_tick: bool,
+    poll: Option<PanelPoll>,
     sort_by: SortBy,
     sort_desc: bool,
     show_idle: bool,
@@ -121,8 +119,7 @@ impl ZedisServerLoad {
             prev: HashMap::new(),
             last_sample_at: None,
             has_delta: false,
-            poll_task: None,
-            force_tick: false,
+            poll: None,
             sort_by: SortBy::Rate,
             sort_desc: true,
             show_idle: false,
@@ -137,54 +134,30 @@ impl ZedisServerLoad {
     }
 
     fn start_polling(&mut self, cx: &mut Context<Self>) {
-        self.poll_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let conn = match this.update(cx, |this, cx| {
-                    let s = this.server_state.read(cx);
-                    // A backgrounded workspace tab keeps this view alive —
-                    // don't keep streaming `INFO commandstats` (a payload
-                    // that scales with the number of distinct commands) for
-                    // a hidden panel. On re-activation the next tick samples
-                    // again; the delta then averages over the hidden window.
-                    if s.is_background() {
-                        return None;
-                    }
-                    Some((s.server_id().to_string(), s.db()))
-                }) {
-                    Ok(c) => c,
-                    Err(_) => break,
-                };
-                if let Some(conn) = conn.filter(|c| !c.0.is_empty()) {
-                    let result = fetch_command_stats(conn.0, conn.1).await;
-                    if this
-                        .update(cx, |this, cx| {
-                            this.force_tick = false;
-                            this.apply_command_stats(result, cx);
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                // Responsive Refresh: wake every 200ms to check force_tick.
-                let mut waited = 0u64;
-                while waited < POLL_SECS * 1000 {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(pacing::PANEL_WAKE_MS))
-                        .await;
-                    waited += pacing::PANEL_WAKE_MS;
-                    let force = this.update(cx, |this, _| this.force_tick).unwrap_or(false);
-                    if force {
-                        break;
-                    }
-                }
-            }
-        }));
+        // A backgrounded workspace tab keeps this view alive, and the poll
+        // skips its rounds meanwhile — no streaming `INFO commandstats` (a
+        // payload that scales with the number of distinct commands) for a
+        // hidden panel. On re-activation the next round samples again; the
+        // delta then averages over the hidden window.
+        self.poll = Some(PanelPoll::start(
+            cx,
+            self.server_state.clone(),
+            Duration::from_secs(POLL_SECS),
+            fetch_command_stats,
+            |this, result, cx| this.apply_command_stats(result, cx),
+        ));
     }
 
     fn request_refresh(&mut self, cx: &mut Context<Self>) {
-        self.force_tick = true;
+        self.refresh_now();
         cx.notify();
+    }
+
+    /// Sample now rather than at the end of the interval.
+    fn refresh_now(&self) {
+        if let Some(poll) = &self.poll {
+            poll.refresh_now();
+        }
     }
 
     fn apply_command_stats(&mut self, result: Result<Vec<CommandStat>>, cx: &mut Context<Self>) {
@@ -367,12 +340,7 @@ impl ZedisServerLoad {
         let entity = cx.entity().downgrade();
         cx.spawn(async move |_handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis::cmd("CONFIG")
-                    .arg("RESETSTAT")
-                    .query_async::<()>(&mut conn)
-                    .await
-                    .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                config_resetstat(&ServerDb::new(server_id, db)).await?;
                 Ok::<_, Error>(())
             });
             let result = task.await;
@@ -384,7 +352,7 @@ impl ZedisServerLoad {
                         this.last_sample_at = None;
                         this.cmd_rows.clear();
                         this.pending_notification = Some(Notification::success(i18n_server_load(cx, "reset_ok")));
-                        this.force_tick = true;
+                        this.refresh_now();
                     }
                     Err(e) => {
                         this.pending_notification = Some(Notification::error(e.to_string()));
@@ -801,23 +769,6 @@ impl ZedisServerLoad {
     }
 }
 
-fn summary_chip(
-    label: SharedString,
-    value: impl Into<SharedString>,
-    value_color: gpui::Hsla,
-    muted: gpui::Hsla,
-) -> impl IntoElement {
-    v_flex()
-        .gap_0p5()
-        .child(Label::new(label).text_xs().text_color(muted))
-        .child(
-            Label::new(value.into())
-                .text_sm()
-                .font_semibold()
-                .text_color(value_color),
-        )
-}
-
 fn format_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -885,6 +836,5 @@ impl Render for ZedisServerLoad {
 }
 
 async fn fetch_command_stats(server_id: String, db: usize) -> Result<Vec<CommandStat>> {
-    let client = get_connection_manager().get_client(&server_id, db).await?;
-    Ok(client.command_stats().await?)
+    Ok(command_stats(&ServerDb::new(server_id, db)).await?)
 }

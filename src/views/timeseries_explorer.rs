@@ -25,7 +25,7 @@
 //! buckets. Without it each line would be drawn against its own x-axis and
 //! the picture would be confidently wrong.
 
-use crate::connection::{TS_AGGREGATORS, TsMRange, TsSeries, get_connection_manager, has_positive_matcher, ts_mrange};
+use crate::connection::{ServerDb, TS_AGGREGATORS, TsMRange, TsSeries, has_positive_matcher, ts_mrange};
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, unix_ts_millis};
 use crate::states::{ZedisServerState, content_area_width, i18n_common, i18n_timeseries};
@@ -228,11 +228,8 @@ impl ZedisTimeSeriesExplorer {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result: Result<Vec<TsSeries>> = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                Ok(ts_mrange(&mut conn, &query).await?)
-            }
-            .await;
+            let result: Result<Vec<TsSeries>> =
+                async { Ok(ts_mrange(&ServerDb::new(server_id, db), &query).await?) }.await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {

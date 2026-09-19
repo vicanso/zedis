@@ -24,7 +24,7 @@
 //! column carries the node address, so filtering a field name compares
 //! it across nodes.
 
-use crate::connection::get_connection_manager;
+use crate::connection::{ServerDb, info_everything};
 use crate::error::Error;
 use crate::helpers::{KvDelta, build_csv, get_mono_font_family, kv_diff, now_clock};
 use crate::states::{
@@ -43,7 +43,6 @@ use gpui_kit::component::{
     table::{DataTable, TableState},
     v_flex,
 };
-use redis::cmd;
 use std::rc::Rc;
 use tracing::{error, info};
 use zedis_ui::{CellStyle, CellStyleProvider, TextColumn, ZedisDivider, ZedisTextTable, help_popover};
@@ -408,27 +407,7 @@ impl ZedisServerInfo {
 
         self.refresh_task = Some(cx.spawn(async move |handle, cx| {
             let result: Result<Vec<(String, String)>, Error> = cx
-                .background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server_id, db).await?;
-                    // `INFO everything` (7+) → `INFO all` → plain `INFO`.
-                    // Unknown sections reply with an empty string instead of
-                    // an error, so "empty" is the degrade signal.
-                    for section in ["everything", "all", ""] {
-                        let mut c = cmd("INFO");
-                        if !section.is_empty() {
-                            c.arg(section);
-                        }
-                        let (servers, list): (_, Vec<String>) = client.query_async_masters(vec![c]).await?;
-                        if list.iter().any(|text| !text.trim().is_empty()) {
-                            return Ok(servers
-                                .iter()
-                                .zip(list)
-                                .map(|(srv, text)| (format!("{}:{}", srv.host, srv.port), text))
-                                .collect());
-                        }
-                    }
-                    Ok(Vec::new())
-                })
+                .background_spawn(async move { Ok(info_everything(&ServerDb::new(server_id, db)).await?) })
                 .await;
 
             let _ = handle.update(cx, |this, cx| {

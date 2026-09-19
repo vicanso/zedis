@@ -23,8 +23,9 @@
 
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
-use crate::conn::RedisAsyncConn;
 use crate::error::Error;
+use crate::reply;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -36,14 +37,14 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// `timestamp` is `None` for "now" (`*`). A sample older than the series'
 /// retention, or a duplicate the policy rejects, comes back as an error the
 /// caller surfaces; there is nothing sensible to do about it here.
-pub async fn ts_add(conn: &mut RedisAsyncConn, key: &str, timestamp: Option<i64>, value: f64) -> Result<i64> {
+pub async fn ts_add(at: &ServerDb, key: &str, timestamp: Option<i64>, value: f64) -> Result<i64> {
     let mut command = cmd("TS.ADD");
     command.arg(key);
     match timestamp {
         Some(ts) => command.arg(ts),
         None => command.arg("*"),
     };
-    Ok(command.arg(value).query_async(conn).await?)
+    Ok(command.arg(value).query_async(&mut at.connection().await?).await?)
 }
 
 /// One `TS.ALTER` change set. Every field is optional and an omitted one is
@@ -66,7 +67,7 @@ impl TsAlter {
 }
 
 /// `TS.ALTER key [RETENTION ms] [LABELS ...]`.
-pub async fn ts_alter(conn: &mut RedisAsyncConn, key: &str, alter: &TsAlter) -> Result<()> {
+pub async fn ts_alter(at: &ServerDb, key: &str, alter: &TsAlter) -> Result<()> {
     if alter.is_empty() {
         return Ok(());
     }
@@ -81,7 +82,7 @@ pub async fn ts_alter(conn: &mut RedisAsyncConn, key: &str, alter: &TsAlter) -> 
             command.arg(name).arg(value);
         }
     }
-    Ok(command.query_async(conn).await?)
+    Ok(command.query_async(&mut at.connection().await?).await?)
 }
 
 /// `TS.CREATERULE source destination AGGREGATION aggregator bucketDuration`.
@@ -90,7 +91,7 @@ pub async fn ts_alter(conn: &mut RedisAsyncConn, key: &str, alter: &TsAlter) -> 
 /// create it, and the error when it is missing says only "TSDB: the key does
 /// not exist", so the dialog says it up front instead.
 pub async fn ts_create_rule(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     source: &str,
     destination: &str,
     aggregation: &str,
@@ -102,16 +103,16 @@ pub async fn ts_create_rule(
         .arg("AGGREGATION")
         .arg(aggregation)
         .arg(bucket_ms)
-        .query_async(conn)
+        .query_async(&mut at.connection().await?)
         .await?)
 }
 
 /// `TS.DELETERULE source destination`.
-pub async fn ts_delete_rule(conn: &mut RedisAsyncConn, source: &str, destination: &str) -> Result<()> {
+pub async fn ts_delete_rule(at: &ServerDb, source: &str, destination: &str) -> Result<()> {
     Ok(cmd("TS.DELETERULE")
         .arg(source)
         .arg(destination)
-        .query_async(conn)
+        .query_async(&mut at.connection().await?)
         .await?)
 }
 
@@ -120,6 +121,163 @@ pub async fn ts_delete_rule(conn: &mut RedisAsyncConn, source: &str, destination
 pub const TS_AGGREGATORS: &[&str] = &[
     "avg", "sum", "min", "max", "range", "count", "first", "last", "std.p", "std.s", "var.p", "var.s", "twa",
 ];
+
+/// A compaction rule out of a series: `TS.INFO` reports them as
+/// `[destination, bucket, aggregator]` triples.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TsRule {
+    pub destination: String,
+    pub bucket_ms: i64,
+    pub aggregator: String,
+}
+
+/// `TS.INFO`, best effort — a field the server did not send stays 0 / empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TsInfo {
+    pub total_samples: i64,
+    pub memory_usage: i64,
+    pub first_ts: i64,
+    pub last_ts: i64,
+    pub retention_ms: i64,
+    pub chunk_count: i64,
+    pub labels: Vec<(String, String)>,
+    pub rules: Vec<TsRule>,
+    /// The series this one is a compaction *of*, when it is one. A
+    /// destination series is written by its rule, not by hand.
+    pub source_key: Option<String>,
+}
+
+/// A series as its viewer shows it: the metadata and one window of samples.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TsWindow {
+    pub info: TsInfo,
+    pub samples: Vec<(i64, f64)>,
+}
+
+/// `TS.INFO` plus a `TS.RANGE` over the last `window_ms` of the series (all of
+/// it for `None`), bucketed with a server-side `avg` so that about
+/// `target_points` come back however dense the series is. An empty series is
+/// its info and no samples, not an error.
+pub async fn ts_window(at: &ServerDb, key: &str, window_ms: Option<i64>, target_points: i64) -> Result<TsWindow> {
+    let mut conn = at.connection().await?;
+    let info_raw: Value = cmd("TS.INFO").arg(key).query_async(&mut conn).await?;
+    let info = parse_ts_info(&info_raw);
+    if info.total_samples <= 0 || info.last_ts <= 0 {
+        return Ok(TsWindow {
+            info,
+            samples: Vec::new(),
+        });
+    }
+    let to = info.last_ts;
+    let from = match window_ms {
+        Some(window) => (to - window).max(info.first_ts),
+        None => info.first_ts,
+    }
+    .min(to);
+    // Skip aggregation for a span too short or sparse to need it.
+    let bucket = ((to - from).max(1) / target_points.max(1)).max(1);
+    let mut range = cmd("TS.RANGE");
+    range.arg(key).arg(from).arg(to);
+    if bucket > 1 {
+        range.arg("AGGREGATION").arg("avg").arg(bucket);
+    }
+    let samples: Vec<(i64, f64)> = range.query_async(&mut conn).await?;
+    Ok(TsWindow { info, samples })
+}
+
+/// The fields of a `TS.INFO` reply, RESP3 map or RESP2 flat array alike.
+/// Lenient where [`reply::pairs`] is strict: a field that cannot be read is
+/// skipped, because one odd entry must not blank the whole panel.
+fn ts_info_fields(value: &Value) -> Vec<(String, &Value)> {
+    match value {
+        Value::Map(pairs) => pairs
+            .iter()
+            .filter_map(|(k, v)| reply::text_lossy(k).map(|name| (name, v)))
+            .collect(),
+        Value::Array(items) => items
+            .chunks(2)
+            .filter_map(|chunk| Some((reply::text_lossy(chunk.first()?)?, chunk.get(1)?)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Read a `TS.INFO` reply, best effort.
+fn parse_ts_info(value: &Value) -> TsInfo {
+    let fields = ts_info_fields(value);
+    let find = |name: &str| fields.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+    let number = |name: &str| find(name).and_then(reply::int).unwrap_or(0);
+    let mut info = TsInfo {
+        total_samples: number("totalSamples"),
+        memory_usage: number("memoryUsage"),
+        first_ts: number("firstTimestamp"),
+        last_ts: number("lastTimestamp"),
+        retention_ms: number("retentionTime"),
+        chunk_count: number("chunkCount"),
+        source_key: find("sourceKey").and_then(reply::text_lossy).filter(|s| !s.is_empty()),
+        ..Default::default()
+    };
+    // Labels: `[[name, value], …]`, or a map under RESP3.
+    match find("labels") {
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Value::Array(kv) = item
+                    && let (Some(k), Some(v)) = (
+                        kv.first().and_then(reply::text_lossy),
+                        kv.get(1).and_then(reply::text_lossy),
+                    )
+                {
+                    info.labels.push((k, v));
+                }
+            }
+        }
+        Some(map @ Value::Map(_)) => {
+            for (k, v) in reply::pairs(map).unwrap_or_default() {
+                if let Some(v) = reply::text_lossy(&v) {
+                    info.labels.push((k, v));
+                }
+            }
+        }
+        _ => {}
+    }
+    // Rules: `[[destination, bucket, aggregator], …]`, or RESP3's map from
+    // destination to `[bucket, aggregator, …]`.
+    match find("rules") {
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Value::Array(f) = item
+                    && let (Some(destination), Some(bucket_ms), Some(aggregator)) = (
+                        f.first().and_then(reply::text_lossy),
+                        f.get(1).and_then(reply::int),
+                        f.get(2).and_then(reply::text_lossy),
+                    )
+                {
+                    info.rules.push(TsRule {
+                        destination,
+                        bucket_ms,
+                        aggregator,
+                    });
+                }
+            }
+        }
+        Some(map @ Value::Map(_)) => {
+            for (destination, v) in reply::pairs(map).unwrap_or_default() {
+                if let Value::Array(f) = v
+                    && let (Some(bucket_ms), Some(aggregator)) =
+                        (f.first().and_then(reply::int), f.get(1).and_then(reply::text_lossy))
+                {
+                    info.rules.push(TsRule {
+                        destination,
+                        bucket_ms,
+                        aggregator,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    info
+}
 
 /// One series returned by `TS.MRANGE`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -165,7 +323,7 @@ pub fn has_positive_matcher(filters: &[String]) -> bool {
 }
 
 /// `TS.MRANGE from to [AGGREGATION agg bucket] [COUNT n] WITHLABELS FILTER …`
-pub async fn ts_mrange(conn: &mut RedisAsyncConn, query: &TsMRange) -> Result<Vec<TsSeries>> {
+pub async fn ts_mrange(at: &ServerDb, query: &TsMRange) -> Result<Vec<TsSeries>> {
     if !has_positive_matcher(&query.filters) {
         return Err(Error::Invalid {
             message: "at least one label filter must be a positive match (label=value)".to_string(),
@@ -190,7 +348,7 @@ pub async fn ts_mrange(conn: &mut RedisAsyncConn, query: &TsMRange) -> Result<Ve
     for filter in &query.filters {
         command.arg(filter.as_str());
     }
-    let raw: Value = command.query_async(conn).await?;
+    let raw: Value = command.query_async(&mut at.connection().await?).await?;
     Ok(parse_mrange(&raw))
 }
 
@@ -258,107 +416,68 @@ fn value_text(value: &Value) -> Option<String> {
 
 // ── Geo ──────────────────────────────────────────────────────────────────
 
-/// `GEOADD key longitude latitude member` — the only way to put a point in.
-///
-/// A geo key is a sorted set whose score is a geohash, so the sorted-set
-/// editor cannot add one: nobody computes that score by hand. Longitude
-/// comes first, which is the opposite of how coordinates are usually spoken,
-/// so the dialog labels both.
-pub async fn geo_add(conn: &mut RedisAsyncConn, key: &str, lon: f64, lat: f64, member: &str) -> Result<i64> {
-    Ok(cmd("GEOADD")
-        .arg(key)
-        .arg(lon)
-        .arg(lat)
-        .arg(member)
-        .query_async(conn)
-        .await?)
-}
-
-/// `GEODIST key member1 member2 m` — metres, or `None` when either member is
-/// absent.
-///
-/// The unit is **lowercase on purpose**: Redis 6.2 compares it
-/// case-sensitively and answers "unsupported unit provided. please use m,
-/// km, ft, mi" for `M`, while later versions accept either. Lowercase works
-/// everywhere, so don't "tidy" it to match the other argument keywords.
-pub async fn geo_dist(conn: &mut RedisAsyncConn, key: &str, from: &str, to: &str) -> Result<Option<f64>> {
-    let raw: Option<String> = cmd("GEODIST")
-        .arg(key)
-        .arg(from)
-        .arg(to)
-        .arg("m")
-        .query_async(conn)
-        .await?;
-    Ok(raw.and_then(|value| value.parse().ok()))
-}
-
 // ── HyperLogLog / Bitmap ─────────────────────────────────────────────────
-
-/// `PFMERGE destination source [source …]`.
-///
-/// The destination is *included* in the merge by Redis, so this folds the
-/// sources into what is already there rather than replacing it — which is
-/// what "merge into this key" should mean, and worth saying in the dialog
-/// because the opposite reading is just as natural.
-pub async fn pf_merge(conn: &mut RedisAsyncConn, destination: &str, sources: &[String]) -> Result<()> {
-    if sources.is_empty() {
-        return Ok(());
-    }
-    let mut command = cmd("PFMERGE");
-    command.arg(destination);
-    for source in sources {
-        command.arg(source);
-    }
-    Ok(command.query_async(conn).await?)
-}
-
-/// The bitwise operations `BITOP` accepts. `NOT` is the odd one out: it
-/// takes exactly one source, and the server rejects more.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BitOpKind {
-    And,
-    Or,
-    Xor,
-    Not,
-}
-
-impl BitOpKind {
-    pub const ALL: [BitOpKind; 4] = [BitOpKind::And, BitOpKind::Or, BitOpKind::Xor, BitOpKind::Not];
-
-    pub const fn word(self) -> &'static str {
-        match self {
-            BitOpKind::And => "AND",
-            BitOpKind::Or => "OR",
-            BitOpKind::Xor => "XOR",
-            BitOpKind::Not => "NOT",
-        }
-    }
-
-    /// `NOT` inverts a single bitmap; the rest combine any number.
-    pub const fn single_source(self) -> bool {
-        matches!(self, BitOpKind::Not)
-    }
-}
-
-/// `BITOP op destination source [source …]` — returns the destination's
-/// length in bytes.
-pub async fn bit_op(conn: &mut RedisAsyncConn, op: BitOpKind, destination: &str, sources: &[String]) -> Result<u64> {
-    if sources.is_empty() || (op.single_source() && sources.len() != 1) {
-        return Err(Error::Invalid {
-            message: format!("{} takes exactly one source key", op.word()),
-        });
-    }
-    let mut command = cmd("BITOP");
-    command.arg(op.word()).arg(destination);
-    for source in sources {
-        command.arg(source);
-    }
-    Ok(command.query_async(conn).await?)
-}
 
 #[cfg(test)]
 mod tests {
-    use super::{BitOpKind, TsAlter, TsSeries, has_positive_matcher, parse_mrange};
+    use super::{TsAlter, TsSeries, has_positive_matcher, parse_mrange};
+
+    #[test]
+    fn ts_info_is_read_from_both_protocols_and_survives_an_odd_field() {
+        use super::{TsRule, parse_ts_info};
+        use redis::Value;
+        let b = |s: &str| Value::BulkString(s.as_bytes().to_vec());
+        let resp2 = Value::Array(vec![
+            b("totalSamples"),
+            Value::Int(42),
+            Value::Nil, // a field name that cannot be read: skipped, not fatal
+            Value::Int(1),
+            b("firstTimestamp"),
+            Value::Int(1000),
+            b("lastTimestamp"),
+            Value::Int(9000),
+            b("retentionTime"),
+            b("60000"),
+            b("labels"),
+            Value::Array(vec![Value::Array(vec![b("region"), b("eu")])]),
+            b("rules"),
+            Value::Array(vec![Value::Array(vec![b("series:1m"), Value::Int(60_000), b("AVG")])]),
+            b("sourceKey"),
+            Value::Nil,
+        ]);
+        let info = parse_ts_info(&resp2);
+        assert_eq!(
+            (info.total_samples, info.first_ts, info.last_ts, info.retention_ms),
+            (42, 1000, 9000, 60_000)
+        );
+        assert_eq!(info.labels, vec![("region".to_string(), "eu".to_string())]);
+        assert_eq!(
+            info.rules,
+            vec![TsRule {
+                destination: "series:1m".to_string(),
+                bucket_ms: 60_000,
+                aggregator: "AVG".to_string()
+            }]
+        );
+        assert_eq!(info.source_key, None);
+
+        // RESP3: maps all the way down.
+        let resp3 = Value::Map(vec![
+            (b("totalSamples"), Value::Int(1)),
+            (b("labels"), Value::Map(vec![(b("region"), b("eu"))])),
+            (
+                b("rules"),
+                Value::Map(vec![(b("series:1m"), Value::Array(vec![Value::Int(60_000), b("AVG")]))]),
+            ),
+            (b("sourceKey"), b("series")),
+        ]);
+        let info = parse_ts_info(&resp3);
+        assert_eq!(info.labels, vec![("region".to_string(), "eu".to_string())]);
+        assert_eq!(info.rules[0].bucket_ms, 60_000);
+        assert_eq!(info.source_key.as_deref(), Some("series"));
+        // Not a TS.INFO at all: everything at its default.
+        assert_eq!(parse_ts_info(&Value::Nil).total_samples, 0);
+    }
     use redis::Value;
 
     #[test]
@@ -380,15 +499,6 @@ mod tests {
             }
             .is_empty()
         );
-    }
-
-    #[test]
-    fn only_not_is_limited_to_one_source() {
-        assert!(BitOpKind::Not.single_source());
-        for op in [BitOpKind::And, BitOpKind::Or, BitOpKind::Xor] {
-            assert!(!op.single_source(), "{}", op.word());
-        }
-        assert_eq!(BitOpKind::Xor.word(), "XOR");
     }
 
     #[test]

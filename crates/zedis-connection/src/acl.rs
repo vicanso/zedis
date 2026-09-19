@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::reply;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -150,7 +151,8 @@ pub struct AclListing {
     pub unsupported: bool,
 }
 
-pub async fn acl_list(conn: &mut RedisAsyncConn) -> Result<AclListing> {
+pub async fn acl_list(at: &ServerDb) -> Result<AclListing> {
+    let conn = &mut at.connection().await?;
     let res: redis::RedisResult<Vec<String>> = cmd("ACL").arg("USERS").query_async(conn).await;
     match res {
         Ok(users) => Ok(AclListing {
@@ -158,7 +160,7 @@ pub async fn acl_list(conn: &mut RedisAsyncConn) -> Result<AclListing> {
             unsupported: false,
         }),
         Err(e) => {
-            if is_unsupported(&e) {
+            if reply::is_unsupported(&e) {
                 Ok(AclListing {
                     unsupported: true,
                     ..Default::default()
@@ -170,23 +172,26 @@ pub async fn acl_list(conn: &mut RedisAsyncConn) -> Result<AclListing> {
     }
 }
 
-pub async fn acl_get_user(conn: &mut RedisAsyncConn, username: &str) -> Result<AclUser> {
+pub async fn acl_get_user(at: &ServerDb, username: &str) -> Result<AclUser> {
+    let conn = &mut at.connection().await?;
     let value: Value = cmd("ACL").arg("GETUSER").arg(username).query_async(conn).await?;
     parse_get_user(username, &value).ok_or_else(|| Error::Invalid {
         message: format!("ACL GETUSER {username} returned unexpected shape"),
     })
 }
 
-pub async fn acl_whoami(conn: &mut RedisAsyncConn) -> Result<String> {
+pub async fn acl_whoami(at: &ServerDb) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let res: redis::RedisResult<String> = cmd("ACL").arg("WHOAMI").query_async(conn).await;
     match res {
         Ok(name) => Ok(name),
-        Err(e) if is_unsupported(&e) => Ok(String::new()),
+        Err(e) if reply::is_unsupported(&e) => Ok(String::new()),
         Err(e) => Err(e.into()),
     }
 }
 
-pub async fn acl_set_user(conn: &mut RedisAsyncConn, username: &str, rules: &[String]) -> Result<()> {
+pub async fn acl_set_user(at: &ServerDb, username: &str, rules: &[String]) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("ACL");
     c.arg("SETUSER").arg(username);
     for rule in rules {
@@ -199,7 +204,8 @@ pub async fn acl_set_user(conn: &mut RedisAsyncConn, username: &str, rules: &[St
     Ok(())
 }
 
-pub async fn acl_del_user(conn: &mut RedisAsyncConn, username: &str) -> Result<()> {
+pub async fn acl_del_user(at: &ServerDb, username: &str) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let _: () = cmd("ACL").arg("DELUSER").arg(username).query_async(conn).await?;
     Ok(())
 }
@@ -232,7 +238,8 @@ pub struct AclLogEntry {
 
 /// The `count` newest entries of `ACL LOG`, newest first (the server's own
 /// order).
-pub async fn acl_log(conn: &mut RedisAsyncConn, count: u64) -> Result<Vec<AclLogEntry>> {
+pub async fn acl_log(at: &ServerDb, count: u64) -> Result<Vec<AclLogEntry>> {
+    let conn = &mut at.connection().await?;
     let value: Value = cmd("ACL").arg("LOG").arg(count).query_async(conn).await?;
     let Value::Array(items) = value else {
         return Ok(Vec::new());
@@ -243,7 +250,8 @@ pub async fn acl_log(conn: &mut RedisAsyncConn, count: u64) -> Result<Vec<AclLog
 }
 
 /// `ACL LOG RESET` — drop every recorded event.
-pub async fn acl_log_reset(conn: &mut RedisAsyncConn) -> Result<()> {
+pub async fn acl_log_reset(at: &ServerDb) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let _: () = cmd("ACL").arg("LOG").arg("RESET").query_async(conn).await?;
     Ok(())
 }
@@ -251,20 +259,23 @@ pub async fn acl_log_reset(conn: &mut RedisAsyncConn) -> Result<()> {
 /// `ACL SAVE` — write the running ACL to the server's `aclfile`. Errors
 /// when the server keeps its users in the config file instead, which
 /// [`acl_file`] tells the caller in advance.
-pub async fn acl_save(conn: &mut RedisAsyncConn) -> Result<()> {
+pub async fn acl_save(at: &ServerDb) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let _: () = cmd("ACL").arg("SAVE").query_async(conn).await?;
     Ok(())
 }
 
 /// `ACL LOAD` — replace the running ACL with the `aclfile`'s contents,
 /// discarding every runtime change.
-pub async fn acl_load(conn: &mut RedisAsyncConn) -> Result<()> {
+pub async fn acl_load(at: &ServerDb) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let _: () = cmd("ACL").arg("LOAD").query_async(conn).await?;
     Ok(())
 }
 
 /// `ACL GENPASS [bits]` — a password from the server's CSPRNG, hex encoded.
-pub async fn acl_genpass(conn: &mut RedisAsyncConn, bits: Option<u32>) -> Result<String> {
+pub async fn acl_genpass(at: &ServerDb, bits: Option<u32>) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("ACL");
     c.arg("GENPASS");
     if let Some(bits) = bits {
@@ -277,7 +288,8 @@ pub async fn acl_genpass(conn: &mut RedisAsyncConn, bits: Option<u32>) -> Result
 /// config — which is what decides whether `ACL SAVE` / `LOAD` mean
 /// anything at all. A server that will not answer `CONFIG GET` is also
 /// `None`: better to hide the two buttons than to offer ones that error.
-pub async fn acl_file(conn: &mut RedisAsyncConn) -> Result<Option<String>> {
+pub async fn acl_file(at: &ServerDb) -> Result<Option<String>> {
+    let conn = &mut at.connection().await?;
     let res: redis::RedisResult<Vec<String>> = cmd("CONFIG").arg("GET").arg("aclfile").query_async(conn).await;
     let Ok(pair) = res else {
         return Ok(None);
@@ -297,7 +309,8 @@ pub enum AclDryRun {
 /// `ACL DRYRUN username command [arg …]` — would this user be allowed to
 /// run this, without running it. `args` is the command and its arguments,
 /// already split. Redis 7.0+ (see `floors::ACL_V2`).
-pub async fn acl_dryrun(conn: &mut RedisAsyncConn, username: &str, args: &[String]) -> Result<AclDryRun> {
+pub async fn acl_dryrun(at: &ServerDb, username: &str, args: &[String]) -> Result<AclDryRun> {
+    let conn = &mut at.connection().await?;
     if args.is_empty() {
         return Err(Error::Invalid {
             message: "ACL DRYRUN needs a command to test".to_string(),
@@ -312,7 +325,7 @@ pub async fn acl_dryrun(conn: &mut RedisAsyncConn, username: &str, args: &[Strin
     // `OK` means allowed; anything else is the server spelling out why not.
     Ok(match &value {
         Value::Okay => AclDryRun::Allowed,
-        _ => match parse_simple_string(&value) {
+        _ => match reply::text(&value) {
             Some(text) if text == "OK" => AclDryRun::Allowed,
             Some(text) => AclDryRun::Denied(text),
             None => AclDryRun::Denied(String::new()),
@@ -325,43 +338,22 @@ pub async fn acl_dryrun(conn: &mut RedisAsyncConn, username: &str, args: &[Strin
 /// servers.
 fn parse_log_entry(value: &Value) -> Option<AclLogEntry> {
     let mut entry = AclLogEntry::default();
-    for (key, val) in extract_pairs(value)? {
+    for (key, val) in reply::pairs(value)? {
         match key.as_str() {
-            "count" => entry.count = parse_u64(&val),
-            "reason" => entry.reason = parse_simple_string(&val).unwrap_or_default(),
-            "context" => entry.context = parse_simple_string(&val).unwrap_or_default(),
-            "object" => entry.object = parse_simple_string(&val).unwrap_or_default(),
-            "username" => entry.username = parse_simple_string(&val).unwrap_or_default(),
-            "age-seconds" => entry.age_seconds = parse_f64(&val),
-            "client-info" => entry.client_info = parse_simple_string(&val).unwrap_or_default(),
-            "entry-id" => entry.entry_id = parse_u64(&val),
-            "timestamp-created" => entry.timestamp_created = parse_u64(&val) as i64,
-            "timestamp-last-updated" => entry.timestamp_last_updated = parse_u64(&val) as i64,
+            "count" => entry.count = reply::uint(&val).unwrap_or(0),
+            "reason" => entry.reason = reply::text(&val).unwrap_or_default(),
+            "context" => entry.context = reply::text(&val).unwrap_or_default(),
+            "object" => entry.object = reply::text(&val).unwrap_or_default(),
+            "username" => entry.username = reply::text(&val).unwrap_or_default(),
+            "age-seconds" => entry.age_seconds = reply::float(&val).unwrap_or(0.0),
+            "client-info" => entry.client_info = reply::text(&val).unwrap_or_default(),
+            "entry-id" => entry.entry_id = reply::uint(&val).unwrap_or(0),
+            "timestamp-created" => entry.timestamp_created = reply::uint(&val).unwrap_or(0) as i64,
+            "timestamp-last-updated" => entry.timestamp_last_updated = reply::uint(&val).unwrap_or(0) as i64,
             _ => {}
         }
     }
     Some(entry)
-}
-
-fn parse_u64(v: &Value) -> u64 {
-    match v {
-        Value::Int(n) => (*n).max(0) as u64,
-        _ => parse_simple_string(v).and_then(|s| s.parse().ok()).unwrap_or(0),
-    }
-}
-
-/// `age-seconds` comes as a bulk string with decimals ("12.345").
-fn parse_f64(v: &Value) -> f64 {
-    match v {
-        Value::Int(n) => *n as f64,
-        Value::Double(d) => *d,
-        _ => parse_simple_string(v).and_then(|s| s.parse().ok()).unwrap_or(0.0),
-    }
-}
-
-fn is_unsupported(err: &redis::RedisError) -> bool {
-    let msg = err.to_string();
-    msg.contains("unknown command") || msg.contains("ERR unknown") || msg.contains("not available")
 }
 
 /// Convert the redis-rs `Value` shape returned by `ACL GETUSER` (a flat
@@ -371,7 +363,7 @@ fn is_unsupported(err: &redis::RedisError) -> bool {
 /// only on 7.0+), so unknown keys are ignored rather than failing the parse.
 fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
     let entries = match value {
-        Value::Array(_) | Value::Map(_) => extract_pairs(value)?,
+        Value::Array(_) | Value::Map(_) => reply::pairs(value)?,
         _ => return None,
     };
 
@@ -383,7 +375,7 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
     for (key, val) in entries {
         match key.as_str() {
             "flags" => {
-                let flags = parse_string_array(&val).unwrap_or_default();
+                let flags = reply::string_array(&val).unwrap_or_default();
                 user.enabled = flags.iter().any(|f| f == "on");
                 user.nopass = flags.iter().any(|f| f == "nopass");
                 user.flags = flags
@@ -400,7 +392,7 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
                 }
             }
             "passwords" => {
-                user.password_digests = parse_string_array(&val)
+                user.password_digests = reply::string_array(&val)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|s| {
@@ -410,7 +402,7 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
                     .collect();
             }
             "commands" => {
-                user.commands = parse_simple_string(&val).unwrap_or_default();
+                user.commands = reply::text(&val).unwrap_or_default();
             }
             "keys" => {
                 user.keys = parse_keys_or_channels(&val);
@@ -437,11 +429,11 @@ fn parse_selectors(v: &Value) -> Vec<AclSelector> {
     items
         .iter()
         .filter_map(|item| {
-            let pairs = extract_pairs(item)?;
+            let pairs = reply::pairs(item)?;
             let mut selector = AclSelector::default();
             for (key, val) in pairs {
                 match key.as_str() {
-                    "commands" => selector.commands = parse_simple_string(&val).unwrap_or_default(),
+                    "commands" => selector.commands = reply::text(&val).unwrap_or_default(),
                     "keys" => selector.keys = parse_keys_or_channels(&val),
                     "channels" => selector.channels = parse_keys_or_channels(&val),
                     _ => {}
@@ -452,53 +444,13 @@ fn parse_selectors(v: &Value) -> Vec<AclSelector> {
         .collect()
 }
 
-fn extract_pairs(v: &Value) -> Option<Vec<(String, Value)>> {
-    match v {
-        Value::Array(items) => {
-            // Redis 6 returns alternating key/value entries.
-            let mut out = Vec::with_capacity(items.len() / 2);
-            for pair in items.chunks(2) {
-                if pair.len() != 2 {
-                    return None;
-                }
-                let key = parse_simple_string(&pair[0])?;
-                out.push((key, pair[1].clone()));
-            }
-            Some(out)
-        }
-        Value::Map(items) => Some(
-            items
-                .iter()
-                .filter_map(|(k, v)| Some((parse_simple_string(k)?, v.clone())))
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
-fn parse_simple_string(v: &Value) -> Option<String> {
-    match v {
-        Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
-        Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Value::Int(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn parse_string_array(v: &Value) -> Option<Vec<String>> {
-    match v {
-        Value::Array(items) => Some(items.iter().filter_map(parse_simple_string).collect()),
-        _ => None,
-    }
-}
-
 /// `keys` / `channels` may come as an `Array<BulkString>` (one pattern each)
 /// or as a single space-joined `BulkString`. Normalize both into a token list.
 fn parse_keys_or_channels(v: &Value) -> Vec<String> {
-    if let Some(items) = parse_string_array(v) {
+    if let Some(items) = reply::string_array(v) {
         return items.into_iter().collect();
     }
-    if let Some(joined) = parse_simple_string(v) {
+    if let Some(joined) = reply::text(v) {
         return joined.split_whitespace().map(|s| s.to_string()).collect();
     }
     Vec::new()

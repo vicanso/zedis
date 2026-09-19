@@ -28,12 +28,13 @@
 //! a multi-million-sample series never ships every point to the UI.
 
 use crate::assets::CustomIconName;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{Capability, ServerCommand};
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::{TS_AGGREGATORS, TsAlter, get_connection_manager, ts_add, ts_alter, ts_create_rule, ts_delete_rule},
+    connection::{
+        ServerDb, TS_AGGREGATORS, TsAlter, TsInfo, TsWindow, ts_add, ts_alter, ts_create_rule, ts_delete_rule,
+        ts_window,
+    },
     error::Error,
     states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_timeseries},
     views::{ChartParams, format_timestamp_ms, make_line_canvas},
@@ -47,7 +48,6 @@ use gpui_kit::component::{
     label::Label,
     v_flex,
 };
-use redis::{Value, cmd};
 use rust_i18n::t;
 use std::sync::Arc;
 use tracing::info;
@@ -106,39 +106,6 @@ impl TsRange {
     }
 }
 
-/// Metadata parsed from `TS.INFO` (best effort — missing fields stay 0).
-#[derive(Clone, Default)]
-struct TsInfo {
-    total_samples: i64,
-    memory_usage: i64,
-    first_ts: i64,
-    last_ts: i64,
-    retention_ms: i64,
-    chunk_count: i64,
-    labels: Vec<(String, String)>,
-    /// Compaction rules out of this series: destination, bucket duration in
-    /// milliseconds, aggregator. `TS.INFO` reports them as
-    /// `[dest, bucket, aggregator]` triples.
-    rules: Vec<TsRule>,
-    /// The series this one is a compaction *of*, when it is one. A
-    /// destination series is written by the rule, not by hand, and the panel
-    /// says so rather than offering an Add button that would fight it.
-    source_key: Option<String>,
-}
-
-#[derive(Clone, Default, PartialEq)]
-struct TsRule {
-    destination: String,
-    bucket_ms: i64,
-    aggregator: String,
-}
-
-#[derive(Clone, Default)]
-struct TsData {
-    info: TsInfo,
-    samples: Vec<(i64, f64)>,
-}
-
 pub struct ZedisTimeSeriesEditor {
     server_state: Entity<ZedisServerState>,
     /// Key snapshotted at construction. The editor is recreated per key
@@ -146,7 +113,7 @@ pub struct ZedisTimeSeriesEditor {
     /// stale relative to the live selection.
     key: SharedString,
     range: TsRange,
-    data: Option<TsData>,
+    data: Option<TsWindow>,
     error: Option<SharedString>,
     loading: bool,
     /// In-flight fetch. Dropping it (new key, range switch, teardown)
@@ -186,7 +153,7 @@ impl ZedisTimeSeriesEditor {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_timeseries(server_id, db, key, range).await;
+            let result = ts_window(&ServerDb::new(server_id, db), &key, range.window_ms(), TARGET_POINTS).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -384,8 +351,7 @@ impl ZedisTimeSeriesEditor {
                     editor.update(cx, |this, cx| {
                         this.run_write(
                             move |server_id, db, key| async move {
-                                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                                ts_add(&mut conn, &key, timestamp, value).await?;
+                                ts_add(&ServerDb::new(server_id, db), &key, timestamp, value).await?;
                                 Ok(())
                             },
                             cx,
@@ -472,8 +438,7 @@ impl ZedisTimeSeriesEditor {
                     editor.update(cx, |this, cx| {
                         this.run_write(
                             move |server_id, db, key| async move {
-                                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                                ts_alter(&mut conn, &key, &alter).await?;
+                                ts_alter(&ServerDb::new(server_id, db), &key, &alter).await?;
                                 Ok(())
                             },
                             cx,
@@ -532,8 +497,14 @@ impl ZedisTimeSeriesEditor {
                     editor.update(cx, |this, cx| {
                         this.run_write(
                             move |server_id, db, key| async move {
-                                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                                ts_create_rule(&mut conn, &key, &destination, &aggregation, bucket_ms).await?;
+                                ts_create_rule(
+                                    &ServerDb::new(server_id, db),
+                                    &key,
+                                    &destination,
+                                    &aggregation,
+                                    bucket_ms,
+                                )
+                                .await?;
                                 Ok(())
                             },
                             cx,
@@ -565,8 +536,7 @@ impl ZedisTimeSeriesEditor {
                     editor.update(cx, |this, cx| {
                         this.run_write(
                             move |server_id, db, key| async move {
-                                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                                ts_delete_rule(&mut conn, &key, &destination).await?;
+                                ts_delete_rule(&ServerDb::new(server_id, db), &key, &destination).await?;
                                 Ok(())
                             },
                             cx,
@@ -579,7 +549,7 @@ impl ZedisTimeSeriesEditor {
             .open(window, cx);
     }
 
-    fn render_chart(&self, data: &TsData, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chart(&self, data: &TsWindow, cx: &mut Context<Self>) -> impl IntoElement {
         let dates: Vec<SharedString> = data.samples.iter().map(|(ts, _)| format_timestamp_ms(*ts)).collect();
         let values: Vec<f64> = data.samples.iter().map(|(_, v)| *v).collect();
         let max = values.iter().copied().fold(0.0_f64, f64::max);
@@ -694,140 +664,6 @@ impl Render for ZedisTimeSeriesEditor {
             .p_3()
             .child(header)
             .child(body)
-    }
-}
-
-/// Fetch `TS.INFO` (metadata) and a bucketed `TS.RANGE` (the line) for
-/// `key` over the selected window.
-async fn fetch_timeseries(server_id: String, db: usize, key: String, range: TsRange) -> Result<TsData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let info_raw: Value = cmd("TS.INFO").arg(&key).query_async(&mut conn).await?;
-    let info = parse_ts_info(&info_raw);
-
-    // No samples (or an unreadable INFO) → render the empty state.
-    if info.total_samples <= 0 || info.last_ts <= 0 {
-        return Ok(TsData { info, samples: vec![] });
-    }
-
-    let to = info.last_ts;
-    let from = match range.window_ms() {
-        Some(window) => (to - window).max(info.first_ts),
-        None => info.first_ts,
-    }
-    .min(to);
-
-    // Bucket so the returned point count is ~TARGET_POINTS regardless of
-    // sample density; skip aggregation for short/sparse spans.
-    let span = (to - from).max(1);
-    let bucket = (span / TARGET_POINTS).max(1);
-
-    let mut range_cmd = cmd("TS.RANGE");
-    range_cmd.arg(&key).arg(from).arg(to);
-    if bucket > 1 {
-        range_cmd.arg("AGGREGATION").arg("avg").arg(bucket);
-    }
-    let samples: Vec<(i64, f64)> = range_cmd.query_async(&mut conn).await?;
-
-    Ok(TsData { info, samples })
-}
-
-/// Flatten a `TS.INFO` reply into `(field, value)` pairs, tolerating
-/// both the RESP3 map and the RESP2 flat-array encodings.
-fn ts_info_pairs(value: &Value) -> Vec<(String, &Value)> {
-    match value {
-        Value::Map(pairs) => pairs
-            .iter()
-            .filter_map(|(k, v)| value_to_string(k).map(|s| (s, v)))
-            .collect(),
-        Value::Array(items) => items
-            .chunks(2)
-            .filter_map(|chunk| {
-                let key = chunk.first()?;
-                let val = chunk.get(1)?;
-                value_to_string(key).map(|s| (s, val))
-            })
-            .collect(),
-        _ => vec![],
-    }
-}
-
-fn parse_ts_info(value: &Value) -> TsInfo {
-    let pairs = ts_info_pairs(value);
-    let find = |name: &str| pairs.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
-
-    let mut info = TsInfo::default();
-    if let Some(v) = find("totalSamples") {
-        info.total_samples = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(v) = find("memoryUsage") {
-        info.memory_usage = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(v) = find("firstTimestamp") {
-        info.first_ts = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(v) = find("lastTimestamp") {
-        info.last_ts = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(v) = find("retentionTime") {
-        info.retention_ms = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(v) = find("chunkCount") {
-        info.chunk_count = value_to_i64(v).unwrap_or(0);
-    }
-    if let Some(Value::Array(items)) = find("labels") {
-        for item in items {
-            if let Value::Array(kv) = item
-                && let (Some(k), Some(v)) = (
-                    kv.first().and_then(value_to_string),
-                    kv.get(1).and_then(value_to_string),
-                )
-            {
-                info.labels.push((k, v));
-            }
-        }
-    }
-    // `[destination, bucketDuration, aggregator]` per rule. A malformed
-    // triple is skipped rather than defaulted — a rule shown with the wrong
-    // aggregator would be worse than one not shown.
-    if let Some(Value::Array(items)) = find("rules") {
-        for item in items {
-            let Value::Array(fields) = item else {
-                continue;
-            };
-            let (Some(destination), Some(bucket_ms), Some(aggregator)) = (
-                fields.first().and_then(value_to_string),
-                fields.get(1).and_then(value_to_i64),
-                fields.get(2).and_then(value_to_string),
-            ) else {
-                continue;
-            };
-            info.rules.push(TsRule {
-                destination,
-                bucket_ms,
-                aggregator,
-            });
-        }
-    }
-    info.source_key = find("sourceKey").and_then(value_to_string).filter(|s| !s.is_empty());
-    info
-}
-
-fn value_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::SimpleString(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn value_to_i64(value: &Value) -> Option<i64> {
-    match value {
-        Value::Int(i) => Some(*i),
-        Value::Double(d) => Some(*d as i64),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).trim().parse().ok(),
-        Value::SimpleString(s) => s.trim().parse().ok(),
-        _ => None,
     }
 }
 

@@ -81,14 +81,6 @@ pub const HOTKEYS_POLL_SECS: u64 = 2;
 #[cfg(target_family = "wasm")]
 pub const HOTKEYS_POLL_SECS: u64 = 10;
 
-/// Those two panels sleep in slices so that their Refresh button is answered
-/// within one: five wake-ups a second on the desktop, one in the browser,
-/// where a page that never goes idle is a page the browser cannot rest.
-#[cfg(not(target_family = "wasm"))]
-pub const PANEL_WAKE_MS: u64 = 200;
-#[cfg(target_family = "wasm")]
-pub const PANEL_WAKE_MS: u64 = 1000;
-
 /// The root's housekeeping tick: expired connection caches on every one, and
 /// once an hour the idle key histories and the recycle bin. The browser has
 /// no SSH sessions, no socket pool and no bin, so only the hourly part means
@@ -169,7 +161,6 @@ mod tests {
         assert_eq!(LATENCY_POLL_INTERVAL, Duration::from_secs(5));
         assert_eq!(SERVER_LOAD_POLL_SECS, 3);
         assert_eq!(HOTKEYS_POLL_SECS, 2);
-        assert_eq!(PANEL_WAKE_MS, 200);
         assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));
         assert_eq!(HOUSEKEEPING_HOURLY_TICKS, 120);
         assert_eq!(WINDOW_IDLE_AFTER, Duration::from_secs(120));

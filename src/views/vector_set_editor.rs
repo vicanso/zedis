@@ -32,13 +32,13 @@
 //! (remove) — `VADD` stays out: pasting a whole float vector by hand is
 //! the terminal's job.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
     assets::CustomIconName,
-    connection::{Capability, RedisAsyncConn, floors, get_connection_manager},
-    error::Error,
+    connection::{
+        Capability, ServerDb, VectorNeighbour, VectorSetInfo, VectorSimOptions, floors, vset_info, vset_remove,
+        vset_set_attr, vset_sim,
+    },
     states::{ZedisServerState, dialog_button_props, i18n_common, i18n_vector_set},
 };
 use gpui::{App, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -51,11 +51,8 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
-use redis::{Cmd, Value, cmd};
 use tracing::info;
 use zedis_ui::ZedisDialog;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Starting sizes for the `VSIM` neighbour list and the `VRANDMEMBER`
 /// sample. Both grow by doubling via their "load more" buttons, up to
@@ -78,23 +75,14 @@ struct Neighbour {
     attrs: Option<SharedString>,
 }
 
-/// Everything a `VSIM` run needs beyond the element: the COUNT, the
-/// optional `FILTER` expression with its `FILTER-EF` candidate budget, and
-/// whether the server understands `WITHATTRIBS`.
-#[derive(Clone, Default)]
-struct SimOptions {
-    count: i64,
-    filter: Option<String>,
-    filter_ef: Option<i64>,
-    with_attribs: bool,
-}
-
-/// What one KNN round hands back: the ranked neighbours plus the queried
-/// element's own attributes (`VGETATTR`) and dequantized vector (`VEMB`).
-struct SimResult {
-    neighbours: Vec<Neighbour>,
-    attrs: Option<String>,
-    vector: Option<Vec<f64>>,
+impl From<VectorNeighbour> for Neighbour {
+    fn from(found: VectorNeighbour) -> Self {
+        Self {
+            element: found.element.into(),
+            score: found.score,
+            attrs: found.attrs.map(Into::into),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +104,27 @@ struct VectorSetData {
     /// dequantizes it (int8 by default, so an approximation of what was
     /// added).
     queried_vector: Option<Vec<f64>>,
+}
+
+impl From<VectorSetInfo> for VectorSetData {
+    /// The loaded set, with the neighbour panel seeded from the first sampled
+    /// element when the server could search around it.
+    fn from(loaded: VectorSetInfo) -> Self {
+        let mut data = Self {
+            info: loaded.info,
+            card: loaded.card,
+            dim: loaded.dim,
+            sample: loaded.sample.into_iter().map(SharedString::from).collect(),
+            ..Default::default()
+        };
+        if let Some(found) = loaded.first {
+            data.queried = data.sample.first().cloned();
+            data.queried_attrs = found.attrs.map(Into::into);
+            data.queried_vector = found.vector;
+            data.neighbours = found.neighbours.into_iter().map(Neighbour::from).collect();
+        }
+        data
+    }
 }
 
 pub struct ZedisVectorSetEditor {
@@ -201,7 +210,7 @@ impl ZedisVectorSetEditor {
     }
 
     /// The current search options, read straight from the inputs.
-    fn sim_options(&self, cx: &App) -> SimOptions {
+    fn sim_options(&self, cx: &App) -> VectorSimOptions {
         let filter = self.filter_input.read(cx).value().trim().to_string();
         let filter_ef = self
             .filter_ef_input
@@ -211,7 +220,7 @@ impl ZedisVectorSetEditor {
             .parse::<i64>()
             .ok()
             .filter(|n| *n > 0);
-        SimOptions {
+        VectorSimOptions {
             count: self.knn_count,
             filter: (!filter.is_empty()).then_some(filter),
             filter_ef,
@@ -253,7 +262,9 @@ impl ZedisVectorSetEditor {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_vector_set(server_id, db, key, sample_cap, sim).await;
+            let result = vset_info(&ServerDb::new(server_id, db), &key, sample_cap, &sim)
+                .await
+                .map(VectorSetData::from);
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -286,13 +297,13 @@ impl ZedisVectorSetEditor {
         let element_str = element.to_string();
         let sim = self.sim_options(cx);
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_neighbours(server_id, db, key, element_str, sim).await;
+            let result = vset_sim(&ServerDb::new(server_id, db), &key, &element_str, &sim).await;
             let _ = this.update(cx, |this, cx| {
                 this.searching = false;
                 match result {
                     Ok(found) => {
                         if let Some(data) = this.data.as_mut() {
-                            data.neighbours = found.neighbours;
+                            data.neighbours = found.neighbours.into_iter().map(Neighbour::from).collect();
                             data.queried_attrs = found.attrs.map(SharedString::from);
                             data.queried_vector = found.vector;
                         }
@@ -319,16 +330,9 @@ impl ZedisVectorSetEditor {
         self.searching = true;
         cx.notify();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result: Result<()> = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: i64 = cmd("VREM")
-                    .arg(&key)
-                    .arg(element.as_ref())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(())
-            }
-            .await;
+            let result = vset_remove(&ServerDb::new(server_id, db), &key, element.as_ref())
+                .await
+                .map(|_| ());
             let _ = this.update(cx, |this, cx| {
                 this.searching = false;
                 match result {
@@ -399,17 +403,9 @@ impl ZedisVectorSetEditor {
         cx.notify();
         let element_for_refresh = element.clone();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result: Result<()> = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: i64 = cmd("VSETATTR")
-                    .arg(&key)
-                    .arg(element.as_ref())
-                    .arg(&json)
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(())
-            }
-            .await;
+            let result = vset_set_attr(&ServerDb::new(server_id, db), &key, element.as_ref(), &json)
+                .await
+                .map(|_| ());
             let _ = this.update(cx, |this, cx| {
                 this.searching = false;
                 match result {
@@ -761,290 +757,5 @@ impl Render for ZedisVectorSetEditor {
             .p_3()
             .child(header)
             .child(body)
-    }
-}
-
-/// Initial load: `VINFO` + `VCARD` + `VDIM` + a `VRANDMEMBER` sample,
-/// seeding the neighbour panel with the first sample element.
-async fn fetch_vector_set(
-    server_id: String,
-    db: usize,
-    key: String,
-    sample_cap: i64,
-    sim: SimOptions,
-) -> Result<VectorSetData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let info_raw: Value = cmd("VINFO").arg(&key).query_async(&mut conn).await?;
-    let info = info_pairs_display(&info_raw);
-    let card: i64 = cmd("VCARD").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    let dim: i64 = cmd("VDIM").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    let sample: Vec<String> = cmd("VRANDMEMBER")
-        .arg(&key)
-        .arg(sample_cap)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or_default();
-    let sample: Vec<SharedString> = sample.into_iter().map(SharedString::from).collect();
-
-    let mut data = VectorSetData {
-        info,
-        card,
-        dim,
-        sample,
-        ..Default::default()
-    };
-    if let Some(first) = data.sample.first().cloned()
-        && let Ok(found) = run_vsim(&mut conn, &key, first.as_ref(), &sim).await
-    {
-        data.queried_attrs = found.attrs.map(Into::into);
-        data.queried_vector = found.vector;
-        data.queried = Some(first);
-        data.neighbours = found.neighbours;
-    }
-    Ok(data)
-}
-
-/// `VGETATTR key element` — `None` for no attributes (nil reply) or any
-/// error (attrs are decoration; a failed read must not fail the search).
-async fn fetch_attrs(conn: &mut RedisAsyncConn, key: &str, element: &str) -> Option<String> {
-    cmd("VGETATTR")
-        .arg(key)
-        .arg(element)
-        .query_async::<Option<String>>(conn)
-        .await
-        .ok()
-        .flatten()
-        .filter(|s| !s.is_empty())
-}
-
-/// `VEMB key element` — the stored vector as the server dequantizes it.
-/// Decoration like the attributes: any failure just hides the row.
-async fn fetch_vector(conn: &mut RedisAsyncConn, key: &str, element: &str) -> Option<Vec<f64>> {
-    let raw: Value = cmd("VEMB").arg(key).arg(element).query_async(conn).await.ok()?;
-    let Value::Array(items) = raw else {
-        return None;
-    };
-    let components: Vec<f64> = items.iter().filter_map(value_to_f64).collect();
-    (!components.is_empty()).then_some(components)
-}
-
-/// `VSIM key ELE elem WITHSCORES [WITHATTRIBS] COUNT n [FILTER expr
-/// [FILTER-EF n]]` — FILTER-EF only means something next to a FILTER.
-fn vsim_cmd(key: &str, element: &str, opts: &SimOptions) -> Cmd {
-    let mut c = cmd("VSIM");
-    c.arg(key).arg("ELE").arg(element).arg("WITHSCORES");
-    if opts.with_attribs {
-        c.arg("WITHATTRIBS");
-    }
-    c.arg("COUNT").arg(opts.count);
-    if let Some(filter) = &opts.filter {
-        c.arg("FILTER").arg(filter.as_str());
-        if let Some(ef) = opts.filter_ef {
-            c.arg("FILTER-EF").arg(ef);
-        }
-    }
-    c
-}
-
-/// One KNN round on an open connection.
-async fn run_vsim(conn: &mut RedisAsyncConn, key: &str, element: &str, opts: &SimOptions) -> Result<SimResult> {
-    let raw: Value = vsim_cmd(key, element, opts).query_async(conn).await?;
-    let neighbours = parse_neighbours(&raw, opts.with_attribs);
-    let attrs = fetch_attrs(conn, key, element).await;
-    let vector = fetch_vector(conn, key, element).await;
-    Ok(SimResult {
-        neighbours,
-        attrs,
-        vector,
-    })
-}
-
-async fn fetch_neighbours(
-    server_id: String,
-    db: usize,
-    key: String,
-    element: String,
-    sim: SimOptions,
-) -> Result<SimResult> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    run_vsim(&mut conn, &key, &element, &sim).await
-}
-
-/// Parse a `WITHSCORES [WITHATTRIBS]` reply. RESP3 is a map from element
-/// to either the score or `[score, attrs]`; RESP2 is a flat array of
-/// pairs, or of triples with `WITHATTRIBS` (nil for an element without
-/// attributes).
-fn parse_neighbours(value: &Value, with_attribs: bool) -> Vec<Neighbour> {
-    let attrs_of = |v: Option<&Value>| {
-        v.and_then(value_to_string)
-            .filter(|s| !s.is_empty())
-            .map(SharedString::from)
-    };
-    match value {
-        Value::Map(pairs) => pairs
-            .iter()
-            .filter_map(|(k, v)| {
-                let element = SharedString::from(value_to_string(k)?);
-                let (score, attrs) = match v {
-                    Value::Array(items) => (value_to_f64(items.first()?)?, attrs_of(items.get(1))),
-                    scalar => (value_to_f64(scalar)?, None),
-                };
-                Some(Neighbour { element, score, attrs })
-            })
-            .collect(),
-        Value::Array(items) => {
-            let stride = if with_attribs { 3 } else { 2 };
-            items
-                .chunks(stride)
-                .filter_map(|chunk| {
-                    let element = SharedString::from(value_to_string(chunk.first()?)?);
-                    let score = value_to_f64(chunk.get(1)?)?;
-                    Some(Neighbour {
-                        element,
-                        score,
-                        attrs: attrs_of(chunk.get(2)),
-                    })
-                })
-                .collect()
-        }
-        _ => vec![],
-    }
-}
-
-/// Flatten a `VINFO` reply (RESP3 map or RESP2 flat array) into
-/// display-ready `(field, value)` pairs.
-fn info_pairs_display(value: &Value) -> Vec<(String, String)> {
-    let pairs: Vec<(String, &Value)> = match value {
-        Value::Map(pairs) => pairs
-            .iter()
-            .filter_map(|(k, v)| value_to_string(k).map(|s| (s, v)))
-            .collect(),
-        Value::Array(items) => items
-            .chunks(2)
-            .filter_map(|chunk| {
-                let key = chunk.first()?;
-                let val = chunk.get(1)?;
-                value_to_string(key).map(|s| (s, val))
-            })
-            .collect(),
-        _ => vec![],
-    };
-    pairs.into_iter().map(|(k, v)| (k, value_to_display(v))).collect()
-}
-
-fn value_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::SimpleString(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn value_to_f64(value: &Value) -> Option<f64> {
-    match value {
-        Value::Double(d) => Some(*d),
-        Value::Int(i) => Some(*i as f64),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).trim().parse().ok(),
-        Value::SimpleString(s) => s.trim().parse().ok(),
-        _ => None,
-    }
-}
-
-fn value_to_display(value: &Value) -> String {
-    match value {
-        Value::Int(i) => i.to_string(),
-        Value::Double(d) => format!("{d}"),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        Value::SimpleString(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Nil => "—".to_string(),
-        other => format!("{other:?}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use redis::Arg;
-
-    fn words(c: &Cmd) -> Vec<String> {
-        c.args_iter()
-            .map(|a| match a {
-                Arg::Simple(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-                _ => String::new(),
-            })
-            .collect()
-    }
-
-    fn bs(s: &str) -> Value {
-        Value::BulkString(s.as_bytes().to_vec())
-    }
-
-    #[test]
-    fn vsim_cmd_spells_filter_and_attribs() {
-        let opts = SimOptions {
-            count: 5,
-            filter: Some(".year > 2000".to_string()),
-            filter_ef: Some(500),
-            with_attribs: true,
-        };
-        assert_eq!(
-            words(&vsim_cmd("k", "e", &opts)),
-            [
-                "VSIM",
-                "k",
-                "ELE",
-                "e",
-                "WITHSCORES",
-                "WITHATTRIBS",
-                "COUNT",
-                "5",
-                "FILTER",
-                ".year > 2000",
-                "FILTER-EF",
-                "500"
-            ]
-        );
-        let plain = SimOptions {
-            count: 10,
-            ..Default::default()
-        };
-        assert_eq!(
-            words(&vsim_cmd("k", "e", &plain)),
-            ["VSIM", "k", "ELE", "e", "WITHSCORES", "COUNT", "10"]
-        );
-        // FILTER-EF without a FILTER is meaningless — never sent alone.
-        let ef_only = SimOptions {
-            count: 10,
-            filter_ef: Some(9),
-            ..Default::default()
-        };
-        assert!(!words(&vsim_cmd("k", "e", &ef_only)).iter().any(|w| w == "FILTER-EF"));
-    }
-
-    #[test]
-    fn neighbours_parse_both_transports() {
-        // RESP2 triples; nil attrs for an element that has none.
-        let resp2 = Value::Array(vec![bs("a"), bs("1"), bs(r#"{"y":1}"#), bs("b"), bs("0.5"), Value::Nil]);
-        let n = parse_neighbours(&resp2, true);
-        assert_eq!(n.len(), 2);
-        assert_eq!(n[0].attrs.as_deref(), Some(r#"{"y":1}"#));
-        assert_eq!(n[1].attrs, None);
-        assert_eq!(n[1].score, 0.5);
-        // RESP3 map: element → [score, attrs].
-        let resp3 = Value::Map(vec![
-            (bs("a"), Value::Array(vec![Value::Double(1.0), bs(r#"{"y":1}"#)])),
-            (bs("b"), Value::Array(vec![Value::Double(0.5), Value::Nil])),
-        ]);
-        let n = parse_neighbours(&resp3, true);
-        assert_eq!(n[0].attrs.as_deref(), Some(r#"{"y":1}"#));
-        assert_eq!(n[1].attrs, None);
-        // Without WITHATTRIBS: pairs, or plain scores in the map.
-        let n = parse_neighbours(&Value::Array(vec![bs("a"), bs("0.9")]), false);
-        assert_eq!((n[0].element.as_ref(), n[0].score), ("a", 0.9));
-        let n = parse_neighbours(&Value::Map(vec![(bs("a"), Value::Double(0.9))]), false);
-        assert_eq!(n[0].score, 0.9);
-        assert_eq!(n[0].attrs, None);
     }
 }

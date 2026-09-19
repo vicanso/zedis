@@ -20,10 +20,11 @@
 //! project only the fields the UI needs so module upgrades don't
 //! break the GUI.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::reply;
+use crate::server_db::ServerDb;
 use crate::string::redis_value_to_string;
 use redis::{Value, cmd};
 
@@ -118,7 +119,8 @@ pub struct LibraryValidation {
     pub warnings: Vec<&'static str>,
 }
 
-pub async fn function_list(conn: &mut RedisAsyncConn, with_code: bool) -> Result<FunctionListing> {
+pub async fn function_list(at: &ServerDb, with_code: bool) -> Result<FunctionListing> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FUNCTION");
     c.arg("LIST");
     if with_code {
@@ -130,7 +132,7 @@ pub async fn function_list(conn: &mut RedisAsyncConn, with_code: bool) -> Result
             libraries: parse_list(&v).unwrap_or_default(),
             unsupported: false,
         }),
-        Err(e) if is_unsupported(&e) => Ok(FunctionListing {
+        Err(e) if reply::is_unsupported(&e) => Ok(FunctionListing {
             unsupported: true,
             ..Default::default()
         }),
@@ -142,7 +144,8 @@ pub async fn function_list(conn: &mut RedisAsyncConn, with_code: bool) -> Result
 /// `#!lua name=<libname>` shebang line — Redis returns that name on
 /// success. `replace=true` overwrites an existing library with the
 /// same name (the default RESP error otherwise).
-pub async fn function_load(conn: &mut RedisAsyncConn, code: &str, replace: bool) -> Result<String> {
+pub async fn function_load(at: &ServerDb, code: &str, replace: bool) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FUNCTION");
     c.arg("LOAD");
     if replace {
@@ -153,7 +156,8 @@ pub async fn function_load(conn: &mut RedisAsyncConn, code: &str, replace: bool)
     Ok(name)
 }
 
-pub async fn function_delete(conn: &mut RedisAsyncConn, library: &str) -> Result<()> {
+pub async fn function_delete(at: &ServerDb, library: &str) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let _: () = cmd("FUNCTION").arg("DELETE").arg(library).query_async(conn).await?;
     Ok(())
 }
@@ -161,12 +165,13 @@ pub async fn function_delete(conn: &mut RedisAsyncConn, library: &str) -> Result
 /// Invoke a loaded function. `readonly=true` uses `FCALL_RO` so Redis
 /// rejects writes inside the script.
 pub async fn function_fcall(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     name: &str,
     keys: &[String],
     args: &[String],
     readonly: bool,
 ) -> Result<String> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd(if readonly { "FCALL_RO" } else { "FCALL" });
     c.arg(name).arg(keys.len());
     for k in keys {
@@ -181,13 +186,15 @@ pub async fn function_fcall(
 
 /// Serialize every loaded library into a binary payload (portable via
 /// base64 for clipboard / file transfer).
-pub async fn function_dump(conn: &mut RedisAsyncConn) -> Result<Vec<u8>> {
+pub async fn function_dump(at: &ServerDb) -> Result<Vec<u8>> {
+    let conn = &mut at.connection().await?;
     let bytes: Vec<u8> = cmd("FUNCTION").arg("DUMP").query_async(conn).await?;
     Ok(bytes)
 }
 
 /// Restore libraries from a `FUNCTION DUMP` payload.
-pub async fn function_restore(conn: &mut RedisAsyncConn, payload: &[u8], policy: FunctionRestorePolicy) -> Result<()> {
+pub async fn function_restore(at: &ServerDb, payload: &[u8], policy: FunctionRestorePolicy) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FUNCTION");
     c.arg("RESTORE").arg(payload);
     match policy {
@@ -206,7 +213,8 @@ pub async fn function_restore(conn: &mut RedisAsyncConn, payload: &[u8], policy:
 }
 
 /// Drop every library. `async_mode` maps to `ASYNC` vs `SYNC`.
-pub async fn function_flush(conn: &mut RedisAsyncConn, async_mode: bool) -> Result<()> {
+pub async fn function_flush(at: &ServerDb, async_mode: bool) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut c = cmd("FUNCTION");
     c.arg("FLUSH");
     c.arg(if async_mode { "ASYNC" } else { "SYNC" });
@@ -214,7 +222,8 @@ pub async fn function_flush(conn: &mut RedisAsyncConn, async_mode: bool) -> Resu
     Ok(())
 }
 
-pub async fn function_stats(conn: &mut RedisAsyncConn) -> Result<FunctionStats> {
+pub async fn function_stats(at: &ServerDb) -> Result<FunctionStats> {
+    let conn = &mut at.connection().await?;
     let v: Value = cmd("FUNCTION").arg("STATS").query_async(conn).await?;
     Ok(parse_stats(&v).unwrap_or_default())
 }
@@ -285,76 +294,22 @@ pub fn is_valid_function_identifier(name: &str) -> bool {
 
 // -------- parsers --------
 
-fn is_unsupported(err: &redis::RedisError) -> bool {
-    let msg = err.to_string();
-    msg.contains("unknown command") || msg.contains("ERR unknown") || msg.contains("ERR Unknown")
-}
-
-fn parse_simple_string(v: &Value) -> Option<String> {
-    match v {
-        Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
-        Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Value::Int(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn parse_int(v: &Value) -> Option<u64> {
-    match v {
-        Value::Int(n) if *n >= 0 => Some(*n as u64),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).parse().ok(),
-        Value::SimpleString(s) => s.parse().ok(),
-        _ => None,
-    }
-}
-
-fn extract_pairs(v: &Value) -> Option<Vec<(String, Value)>> {
-    match v {
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len() / 2);
-            for pair in items.chunks(2) {
-                if pair.len() != 2 {
-                    return None;
-                }
-                let key = parse_simple_string(&pair[0])?;
-                out.push((key, pair[1].clone()));
-            }
-            Some(out)
-        }
-        Value::Map(items) => Some(
-            items
-                .iter()
-                .filter_map(|(k, v)| Some((parse_simple_string(k)?, v.clone())))
-                .collect(),
-        ),
-        _ => None,
-    }
-}
-
-fn parse_string_array(v: &Value) -> Vec<String> {
-    match v {
-        Value::Array(items) => items.iter().filter_map(parse_simple_string).collect(),
-        Value::Set(items) => items.iter().filter_map(parse_simple_string).collect(),
-        _ => Vec::new(),
-    }
-}
-
 fn parse_function_meta(v: &Value) -> Option<FunctionMeta> {
-    let entries = extract_pairs(v)?;
+    let entries = reply::pairs(v)?;
     let mut meta = FunctionMeta::default();
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
             "name" => {
-                meta.name = parse_simple_string(&val).unwrap_or_default();
+                meta.name = reply::text(&val).unwrap_or_default();
             }
             "description" => {
-                let s = parse_simple_string(&val).unwrap_or_default();
+                let s = reply::text(&val).unwrap_or_default();
                 if !s.is_empty() {
                     meta.description = Some(s);
                 }
             }
             "flags" => {
-                meta.flags = parse_string_array(&val);
+                meta.flags = reply::string_array(&val).unwrap_or_default();
             }
             _ => {}
         }
@@ -366,15 +321,15 @@ fn parse_function_meta(v: &Value) -> Option<FunctionMeta> {
 }
 
 fn parse_library(v: &Value) -> Option<FunctionLibrary> {
-    let entries = extract_pairs(v)?;
+    let entries = reply::pairs(v)?;
     let mut lib = FunctionLibrary::default();
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
             "library_name" => {
-                lib.name = parse_simple_string(&val).unwrap_or_default();
+                lib.name = reply::text(&val).unwrap_or_default();
             }
             "engine" => {
-                lib.engine = parse_simple_string(&val).unwrap_or_default();
+                lib.engine = reply::text(&val).unwrap_or_default();
             }
             "functions" => {
                 if let Value::Array(items) = val {
@@ -382,7 +337,7 @@ fn parse_library(v: &Value) -> Option<FunctionLibrary> {
                 }
             }
             "library_code" => {
-                lib.code = parse_simple_string(&val);
+                lib.code = reply::text(&val);
             }
             _ => {}
         }
@@ -402,16 +357,16 @@ fn parse_list(v: &Value) -> Option<Vec<FunctionLibrary>> {
 }
 
 fn parse_stats(v: &Value) -> Option<FunctionStats> {
-    let entries = extract_pairs(v)?;
+    let entries = reply::pairs(v)?;
     let mut stats = FunctionStats::default();
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
             "running_script" => {
-                if let Some(pairs) = extract_pairs(&val) {
+                if let Some(pairs) = reply::pairs(&val) {
                     for (rk, rv) in pairs {
                         match rk.to_ascii_lowercase().as_str() {
-                            "name" => stats.running_name = parse_simple_string(&rv),
-                            "duration_ms" => stats.running_duration_ms = parse_int(&rv),
+                            "name" => stats.running_name = reply::text(&rv),
+                            "duration_ms" => stats.running_duration_ms = reply::uint(&rv),
                             _ => {}
                         }
                     }
@@ -419,19 +374,19 @@ fn parse_stats(v: &Value) -> Option<FunctionStats> {
             }
             "engines" => {
                 // engines → map/array of engine name → counters
-                if let Some(engine_pairs) = extract_pairs(&val) {
+                if let Some(engine_pairs) = reply::pairs(&val) {
                     for (engine, counters) in engine_pairs {
                         let _ = engine;
-                        if let Some(c_pairs) = extract_pairs(&counters) {
+                        if let Some(c_pairs) = reply::pairs(&counters) {
                             for (ck, cv) in c_pairs {
                                 match ck.to_ascii_lowercase().as_str() {
                                     "libraries_count" => {
-                                        if let Some(n) = parse_int(&cv) {
+                                        if let Some(n) = reply::uint(&cv) {
                                             stats.libraries_count = stats.libraries_count.saturating_add(n);
                                         }
                                     }
                                     "functions_count" => {
-                                        if let Some(n) = parse_int(&cv) {
+                                        if let Some(n) = reply::uint(&cv) {
                                             stats.functions_count = stats.functions_count.saturating_add(n);
                                         }
                                     }

@@ -17,12 +17,12 @@ use crate::{
     assets::CustomIconName,
     components::ZedisKvFetcher,
     components::{KvTableColumn, KvTableMode},
-    connection::{get_server, open_single_connection},
+    connection::{ServerDb, StreamTail},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
         ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
         StreamInfoData, StreamRefPolicy, StreamTrim, ZedisGlobalStore, ZedisServerState, dialog_button_props,
-        escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor, tail_read,
+        escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
@@ -554,21 +554,12 @@ impl ZedisStreamEditor {
         let (tx, rx) = channel::unbounded::<Vec<RedisStreamEntry>>();
 
         let task = cx.spawn(async move |_handle, cx| {
-            let Ok(server) = get_server(&server_id) else {
-                let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
-                    this.tailing = false;
-                    this.tail_task = None;
-                    cx.notify();
-                });
-                return;
-            };
-
             // Open the dedicated tail connection on the foreground task (we
             // still have `cx` here) so a failure can be surfaced. The old code
             // opened it inside `background_spawn`, where a failure just ended
             // the loop silently — the tail button sprang back with no hint why.
-            let mut conn = match open_single_connection(&server, db, false).await {
-                Ok(c) => c,
+            let mut tail = match StreamTail::open(&ServerDb::new(server_id, db), &key).await {
+                Ok(tail) => tail,
                 Err(e) => {
                     let kind = e.connection_kind();
                     let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
@@ -580,19 +571,21 @@ impl ZedisStreamEditor {
                     return;
                 }
             };
-            let key_bg = key.clone();
             let bg = cx.background_spawn(async move {
-                // `$` = only entries that arrive after we subscribe.
                 // A read error ends the while-let (and the loop).
-                let mut last_id = "$".to_string();
-                while let Ok((new_last, entries)) =
-                    tail_read(&mut conn, &key_bg, &last_id, TAIL_BLOCK_MS, TAIL_COUNT).await
-                {
-                    if !entries.is_empty() {
-                        last_id = new_last;
-                        if tx.send(entries).await.is_err() {
-                            break;
-                        }
+                while let Ok(entries) = tail.next_batch(TAIL_BLOCK_MS, TAIL_COUNT).await {
+                    if entries.is_empty() {
+                        continue;
+                    }
+                    let entries: Vec<RedisStreamEntry> = entries
+                        .into_iter()
+                        .map(|(id, fields)| {
+                            let fields = fields.into_iter().map(|(f, v)| (f.into(), v.into())).collect();
+                            (id.into(), fields)
+                        })
+                        .collect();
+                    if tx.send(entries).await.is_err() {
+                        break;
                     }
                 }
             });

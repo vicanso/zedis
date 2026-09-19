@@ -21,10 +21,11 @@
 //! gets recorded; the GUI surfaces that fact when LATEST comes back
 //! empty so users don't think the panel is broken.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::reply;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -58,14 +59,17 @@ pub struct LatencyListing {
     pub unsupported: bool,
 }
 
-pub async fn latency_latest(conn: &mut RedisAsyncConn) -> Result<LatencyListing> {
-    let res: redis::RedisResult<Value> = cmd("LATENCY").arg("LATEST").query_async(conn).await;
+pub async fn latency_latest(at: &ServerDb) -> Result<LatencyListing> {
+    let res: redis::RedisResult<Value> = cmd("LATENCY")
+        .arg("LATEST")
+        .query_async(&mut at.connection().await?)
+        .await;
     match res {
         Ok(v) => Ok(LatencyListing {
             events: parse_latest(&v).unwrap_or_default(),
             unsupported: false,
         }),
-        Err(e) if is_unsupported(&e) => Ok(LatencyListing {
+        Err(e) if reply::is_unsupported(&e) => Ok(LatencyListing {
             unsupported: true,
             ..Default::default()
         }),
@@ -73,31 +77,35 @@ pub async fn latency_latest(conn: &mut RedisAsyncConn) -> Result<LatencyListing>
     }
 }
 
-pub async fn latency_history(conn: &mut RedisAsyncConn, event: &str) -> Result<Vec<LatencySample>> {
-    let v: Value = cmd("LATENCY").arg("HISTORY").arg(event).query_async(conn).await?;
+pub async fn latency_history(at: &ServerDb, event: &str) -> Result<Vec<LatencySample>> {
+    let v: Value = cmd("LATENCY")
+        .arg("HISTORY")
+        .arg(event)
+        .query_async(&mut at.connection().await?)
+        .await?;
     Ok(parse_history(&v).unwrap_or_default())
 }
 
 /// `LATENCY RESET [event ...]`. Empty `events` clears everything;
 /// returns the count of events Redis actually reset.
-pub async fn latency_reset(conn: &mut RedisAsyncConn, events: &[String]) -> Result<u64> {
+pub async fn latency_reset(at: &ServerDb, events: &[String]) -> Result<u64> {
     let mut c = cmd("LATENCY");
     c.arg("RESET");
     for e in events {
         c.arg(e.as_str());
     }
-    let n: i64 = c.query_async(conn).await?;
+    let n: i64 = c.query_async(&mut at.connection().await?).await?;
     Ok(n.max(0) as u64)
 }
 
 /// Read the current `latency-monitor-threshold` (in ms). 0 means
 /// latency tracking is disabled — UI surfaces this directly so the
 /// user knows why LATEST is empty.
-pub async fn latency_monitor_threshold(conn: &mut RedisAsyncConn) -> Result<u64> {
+pub async fn latency_monitor_threshold(at: &ServerDb) -> Result<u64> {
     let res: redis::RedisResult<Vec<String>> = cmd("CONFIG")
         .arg("GET")
         .arg("latency-monitor-threshold")
-        .query_async(conn)
+        .query_async(&mut at.connection().await?)
         .await;
     match res {
         Ok(pair) => {
@@ -112,29 +120,6 @@ pub async fn latency_monitor_threshold(conn: &mut RedisAsyncConn) -> Result<u64>
 
 // -------- parsers --------
 
-fn is_unsupported(err: &redis::RedisError) -> bool {
-    let msg = err.to_string();
-    msg.contains("unknown command") || msg.contains("ERR unknown") || msg.contains("ERR Unknown")
-}
-
-fn parse_int(v: &Value) -> Option<i64> {
-    match v {
-        Value::Int(n) => Some(*n),
-        Value::BulkString(bytes) => std::str::from_utf8(bytes).ok().and_then(|s| s.parse().ok()),
-        Value::SimpleString(s) => s.parse().ok(),
-        _ => None,
-    }
-}
-
-fn parse_simple_string(v: &Value) -> Option<String> {
-    match v {
-        Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
-        Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Value::Int(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
 fn parse_latest(v: &Value) -> Option<Vec<LatencyEvent>> {
     let items = match v {
         Value::Array(items) => items,
@@ -147,15 +132,15 @@ fn parse_latest(v: &Value) -> Option<Vec<LatencyEvent>> {
         if parts.len() < 4 {
             continue;
         }
-        let event = match parse_simple_string(&parts[0]) {
+        let event = match reply::text(&parts[0]) {
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
         out.push(LatencyEvent {
             event,
-            timestamp: parse_int(&parts[1]).unwrap_or_default(),
-            latest_ms: parse_int(&parts[2]).unwrap_or_default(),
-            max_ms: parse_int(&parts[3]).unwrap_or_default(),
+            timestamp: reply::int(&parts[1]).unwrap_or_default(),
+            latest_ms: reply::int(&parts[2]).unwrap_or_default(),
+            max_ms: reply::int(&parts[3]).unwrap_or_default(),
         });
     }
     Some(out)
@@ -173,8 +158,8 @@ fn parse_history(v: &Value) -> Option<Vec<LatencySample>> {
             continue;
         }
         out.push(LatencySample {
-            timestamp: parse_int(&parts[0]).unwrap_or_default(),
-            latency_ms: parse_int(&parts[1]).unwrap_or_default(),
+            timestamp: reply::int(&parts[0]).unwrap_or_default(),
+            latency_ms: reply::int(&parts[1]).unwrap_or_default(),
         });
     }
     Some(out)

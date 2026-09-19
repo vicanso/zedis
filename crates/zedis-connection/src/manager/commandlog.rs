@@ -24,6 +24,7 @@
 
 use super::{RedisClient, SlowLogEntry};
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::cmd;
 use std::cmp::Reverse;
 
@@ -76,6 +77,17 @@ impl CommandLogKind {
     pub const fn is_slow(self) -> bool {
         matches!(self, Self::Slow)
     }
+}
+
+/// The slow log, or one of Valkey's size logs, newest first — what the panel
+/// shows, for a caller that holds a [`ServerDb`] rather than a client.
+pub async fn command_logs(at: &ServerDb, kind: CommandLogKind) -> Result<Vec<SlowLogEntry>> {
+    at.client().await?.get_command_logs(kind).await
+}
+
+/// Empty that log on every master.
+pub async fn command_log_reset(at: &ServerDb, kind: CommandLogKind) -> Result<()> {
+    at.client().await?.commandlog_reset(kind).await
 }
 
 impl RedisClient {

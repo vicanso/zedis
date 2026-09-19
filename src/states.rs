@@ -100,7 +100,6 @@ pub use server::event::ServerTask;
 pub use server::stat::{
     PersistenceNodeSnapshot, RedisKeySpaceStats, RedisMetrics, ReplicaInfo, get_metrics_cache, load_persisted_metrics,
 };
-pub(crate) use server::stream::tail_read;
 pub use server::string::detect_and_decode;
 pub(crate) use server::value::json_merge_diff;
 pub use server::value::*;

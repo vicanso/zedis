@@ -41,3 +41,29 @@ kept for a server that answers but rejects the detection commands
   the user acts sooner — clicking a key or the reconnect dot dials at once.
 - A Sentinel or Cluster entry whose every seed is down now fails the
   connect outright instead of pretending the first seed is a standalone.
+
+## Amended 2026-09-19 — what a beat sends, and how often
+
+The cadence rules above stand; three things about the beat itself changed,
+for the server's sake rather than this machine's (an idle connected window
+measured about 0.1% of a core, but one forgotten tab sent a Redis billed per
+command some 86,000 commands a day).
+
+- **One command where there is one master.** The beat was `PING` then `INFO`,
+  on two different connections: `PING` on the client's own connection — the
+  one every user command uses — and `INFO` fanned out through the per-node
+  connection cache. With a single master (standalone, Sentinel) the `INFO` is
+  now sent on the client's connection and is the probe as well
+  (`RedisClient::heartbeat_probe`). A cluster keeps its `PING`: a bare `INFO`
+  there answers for one arbitrary node. The probe must stay on the client's
+  connection — the fan-out proves nothing about the link a NAT timeout or a
+  failover actually breaks. "A failed `PING`" above now reads "a failed probe".
+- **A cluster beats less often the larger it is.** One `INFO` per master per
+  beat grows with the cluster, so `pacing::heartbeat_interval(masters)`
+  stretches the interval in whole beats to stay at or under two `INFO`s a
+  second: up to four masters are untouched, 5–8 beat every 4s, capped at 30s.
+  Not while a retry is pending — the backoff owns that wait.
+- **An app nobody is looking at beats like a background tab.** The main window
+  out of the front for two minutes, or a browser page that is hidden, sets
+  `pacing::unattended()`, which `is_background()` ORs in. Coming back clears
+  it and beats at once.

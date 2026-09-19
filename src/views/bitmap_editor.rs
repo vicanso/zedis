@@ -27,12 +27,9 @@
 //! / `BITPOS`, and a thin `BITFIELD` box runs raw sub-commands. The grid
 //! is capped at [`CAP_BITS`]; `BITCOUNT` / `BITPOS` stay whole-key.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::{BitOpKind, Capability, bit_op, get_connection_manager},
-    error::Error,
+    connection::{BitOpKind, BitmapInfo, Capability, ServerDb, bit_field, bit_op, bitmap_info, set_bit},
     states::{ZedisServerState, dialog_button_props, i18n_bitmap, i18n_common},
 };
 use gpui::{
@@ -48,13 +45,10 @@ use gpui_kit::component::{
     label::Label,
     v_flex,
 };
-use redis::cmd;
 use std::cell::Cell;
 use std::rc::Rc;
 use tracing::info;
 use zedis_ui::ZedisDialog;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Max bits painted in the grid. The value can be far bigger — this is a
 /// debug visualiser, not a renderer for million-bit bitmaps — so beyond
@@ -135,34 +129,11 @@ fn grid_layout(n: usize, vw: f32, vh: f32) -> GridLayout {
     }
 }
 
-/// Bitmap stats + the rendered (capped) byte window.
-#[derive(Clone, Default)]
-struct BitmapData {
-    /// First [`CAP_BITS`] bits' worth of bytes, painted in the grid.
-    bytes: Vec<u8>,
-    /// `STRLEN key * 8` — full bit length.
-    total_bits: u64,
-    /// `BITCOUNT key` — whole-key set-bit count.
-    set_bits: i64,
-    /// `BITPOS key 1` — first set bit, or -1.
-    first_set: i64,
-    /// `BITPOS key 0` — first clear bit, or -1.
-    first_clear: i64,
-    /// `total_bits` exceeds the painted window.
-    truncated: bool,
-}
-
-impl BitmapData {
-    fn rendered_bits(&self) -> usize {
-        self.bytes.len() * 8
-    }
-}
-
 pub struct ZedisBitmapEditor {
     server_state: Entity<ZedisServerState>,
     key: SharedString,
     readonly: bool,
-    data: Option<BitmapData>,
+    data: Option<BitmapInfo>,
     error: Option<SharedString>,
     loading: bool,
     /// Bit currently under the cursor (grid index), for hover + click.
@@ -235,7 +206,7 @@ impl ZedisBitmapEditor {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_bitmap(server_id, db, key).await;
+            let result = bitmap_info(&ServerDb::new(server_id, db), &key, CAP_BITS / 8).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -307,7 +278,9 @@ impl ZedisBitmapEditor {
         let db = state.db();
         let key = self.key.to_string();
         self.write_task = Some(cx.spawn(async move |this, cx| {
-            let result = setbit(server_id, db, key, offset as i64, new_bit).await;
+            let result = set_bit(&ServerDb::new(server_id, db), &key, offset as u64, new_bit != 0)
+                .await
+                .map(|_| ());
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => this.load(cx),
                 Err(e) => {
@@ -335,7 +308,7 @@ impl ZedisBitmapEditor {
         let key = self.key.to_string();
         cx.notify();
         self.write_task = Some(cx.spawn(async move |this, cx| {
-            let result = bitfield(server_id, db, key, args).await;
+            let result = bit_field(&ServerDb::new(server_id, db), &key, &args).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(values) => {
@@ -550,11 +523,7 @@ impl ZedisBitmapEditor {
         let server_id = state.server_id().to_string();
         let db = state.db();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                bit_op(&mut conn, op, &destination, &sources).await
-            }
-            .await;
+            let result = async { bit_op(&ServerDb::new(server_id, db), op, &destination, &sources).await }.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
                     this.error = None;
@@ -658,75 +627,6 @@ impl Render for ZedisBitmapEditor {
             .child(self.render_bitfield_bar(cx))
             .child(body)
     }
-}
-
-/// Fetch the rendered byte window plus whole-key `BITCOUNT` / `BITPOS`.
-/// Only `STRLEN` is fatal; the stats are best-effort.
-async fn fetch_bitmap(server_id: String, db: usize, key: String) -> Result<BitmapData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let len: i64 = cmd("STRLEN").arg(&key).query_async(&mut conn).await?;
-    let cap_bytes = (CAP_BITS / 8) as i64;
-    let bytes: Vec<u8> = if len <= 0 {
-        vec![]
-    } else {
-        let end = len.min(cap_bytes) - 1;
-        cmd("GETRANGE")
-            .arg(&key)
-            .arg(0)
-            .arg(end)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or_default()
-    };
-    let set_bits: i64 = cmd("BITCOUNT").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    let first_set: i64 = cmd("BITPOS")
-        .arg(&key)
-        .arg(1)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or(-1);
-    let first_clear: i64 = cmd("BITPOS")
-        .arg(&key)
-        .arg(0)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or(-1);
-
-    let total_bits = (len.max(0) as u64) * 8;
-    let rendered = (bytes.len() * 8) as u64;
-    Ok(BitmapData {
-        bytes,
-        total_bits,
-        set_bits,
-        first_set,
-        first_clear,
-        truncated: total_bits > rendered,
-    })
-}
-
-/// `SETBIT key offset value` — flip a single bit.
-async fn setbit(server_id: String, db: usize, key: String, offset: i64, value: i64) -> Result<()> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let _: i64 = cmd("SETBIT")
-        .arg(&key)
-        .arg(offset)
-        .arg(value)
-        .query_async(&mut conn)
-        .await?;
-    Ok(())
-}
-
-/// `BITFIELD key <args>` — run the user's raw sub-command, returning the
-/// integer reply array.
-async fn bitfield(server_id: String, db: usize, key: String, args: Vec<String>) -> Result<Vec<i64>> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let mut command = cmd("BITFIELD");
-    command.arg(&key);
-    for arg in &args {
-        command.arg(arg);
-    }
-    Ok(command.query_async(&mut conn).await?)
 }
 
 /// Body of the `BITOP` dialog.

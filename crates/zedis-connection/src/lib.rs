@@ -21,6 +21,7 @@ use tracing::info;
 pub mod clients;
 pub mod error;
 pub mod floors;
+pub mod reply;
 pub mod reply_format;
 pub mod script_kill;
 #[cfg(not(target_family = "wasm"))]
@@ -45,6 +46,7 @@ native_only!(
     ssh_stream,
     ssh_tunnel,
 );
+mod bitmap;
 mod bridge;
 mod command;
 #[cfg(not(target_family = "wasm"))]
@@ -53,9 +55,12 @@ mod config;
 mod conn;
 mod danger;
 mod dump_restore;
+mod entry_check;
 mod functions;
+mod geo;
 mod hash_fields;
 mod hotkeys;
+mod hyperloglog;
 mod import_clients;
 mod key_ops;
 mod latency;
@@ -65,11 +70,20 @@ mod manager;
 mod module_ops;
 #[cfg(not(target_family = "wasm"))]
 mod multi_search;
+mod panel_ops;
+mod probabilistic;
 mod probe;
 mod readable_export;
 mod search;
+mod server_config;
+mod server_db;
 mod server_report;
 mod slot_stats;
+mod stream_tail;
+#[cfg(not(target_family = "wasm"))]
+mod subscription;
+mod terminal;
+mod vector_set;
 
 pub use acl::{
     AclDryRun, AclLogEntry, AclSelector, AclUser, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
@@ -80,6 +94,7 @@ pub use async_connection::{
     client_name, open_monitor_connection, open_node_connection, open_node_connection_cached, open_seed_connection,
     open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
 };
+pub use bitmap::{BitOpKind, BitmapInfo, bit_field, bit_op, bitmap_info, set_bit};
 pub use bridge::{
     BridgeConn, BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport,
     PipelineSpec, bridge_server_store, bridge_transport, set_bridge_server_store, set_bridge_transport,
@@ -91,7 +106,10 @@ pub use bridge::{
 /// and never consulted (ADR 9).
 #[cfg(target_family = "wasm")]
 pub use bridge::{BridgePipeline, BridgeQuery};
-pub use clients::{KillFilter, PauseMode, kill_filter_commands, kill_filter_summary, pause_args};
+pub use clients::{
+    KillFilter, PauseMode, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
+    kill_filter_commands, kill_filter_summary, pause_args,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use compare::{
     CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, DifferingKey, KeyDifference,
@@ -118,32 +136,44 @@ pub use diagnostics::{
 };
 pub use dump_restore::{
     ConflictMode, ConflictPreview, DumpEntry, RestoreStatus, copy_key, dump_keys_chunk, preview_key_conflicts,
-    restore_keys_chunk,
+    restore_key, restore_keys_chunk,
 };
 /// The `.zdis` file itself: desktop only, there being no file in a tab.
 #[cfg(not(target_family = "wasm"))]
 pub use dump_restore::{DumpHeader, DumpReader, DumpWriter, preview_dump_conflicts};
+pub use entry_check::sentinel_master_names;
+#[cfg(not(target_family = "wasm"))]
+pub use entry_check::test_connection;
 pub use functions::{
     FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, LibraryValidateError, LibraryValidation,
     function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
     function_stats, validate_library_source,
 };
+pub use geo::{GeoMember, GeoSample, GeoShape, geo_add, geo_dist, geo_sample, geo_search, zset_looks_geo};
 pub use hash_fields::{FieldTtl, rename_hash_field, write_hash_field};
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
+pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};
 pub use key_ops::{FromEnd, KeyOp, KeyOpOutcome, run_key_op};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
 pub use list_ops::remove_list_indexes;
-pub use lua_script::{ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load};
+pub use lua_script::{
+    ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use master_key::disable_keychain;
 pub use module_ops::{
-    BitOpKind, TS_AGGREGATORS, TsAlter, TsMRange, TsSeries, bit_op, geo_add, geo_dist, has_positive_matcher, pf_merge,
-    ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
+    TS_AGGREGATORS, TsAlter, TsInfo, TsMRange, TsRule, TsSeries, TsWindow, has_positive_matcher, ts_add, ts_alter,
+    ts_create_rule, ts_delete_rule, ts_mrange, ts_window,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
+pub use panel_ops::{
+    cluster_slot_stats, command_stats, hotkeys_report, hotkeys_reset, hotkeys_start, hotkeys_stop, key_bytes,
+    key_size_distributions, maxmemory_policy, pubsub_channels, sample_memory_usage, scan_values_round, value_preview,
+};
+pub use probabilistic::{ProbInfo, ProbKind, ProbeOutcome, prob_info, prob_probe};
 pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
@@ -166,10 +196,27 @@ pub use sentinel::{
     SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,
     sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset, sentinel_set, summarize_replies,
 };
+pub use server_config::{
+    ServerConfig, config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite,
+    config_set, info_everything,
+};
+pub use server_db::ServerDb;
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 #[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
+pub use stream_tail::{StreamTail, StreamTailEntry};
+/// A held socket the server pushes on — Pub/Sub, `MONITOR` — has no
+/// equivalent over the HTTP bridge, and the panels that read one are left out
+/// of the web build (ADR 9).
+#[cfg(not(target_family = "wasm"))]
+pub use subscription::{
+    ChannelMessage, ChannelSubscription, MonitorFeed, MonitorFeeds, SubscribeKind, open_monitor_feeds,
+};
+pub use terminal::{ExecReplies, TerminalReply, TerminalSession};
+pub use vector_set::{
+    VectorNeighbour, VectorSetInfo, VectorSim, VectorSimOptions, vset_info, vset_remove, vset_set_attr, vset_sim,
+};
 
 /// A connection of the caller's own, through the bridge.
 ///
@@ -202,7 +249,8 @@ pub use manager::{
     AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
     HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
     REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, SlowLogEntry, ValueMatch, ValueSearchRound,
-    group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots, slots_in_ranges, unassigned_slot_ranges,
+    command_log_reset, command_logs, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots, slots_in_ranges,
+    unassigned_slot_ranges,
 };
 /// Slot migration and sharded Pub/Sub are cluster surgery and a held socket
 /// — server-side work either way, and both are panels the web build drops

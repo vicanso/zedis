@@ -25,12 +25,12 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        Capability, KillTarget, ScriptRunOutcome, floors, get_connection_manager, max_keys_index, run_script,
-        script_exists, script_flush, script_load,
+        Capability, KillTarget, ScriptRunOutcome, ServerDb, floors, max_keys_index, run_script, script_exists,
+        script_flush, script_load, script_sha1,
     },
     db::{LuaScript, LuaScriptExport, LuaScriptManager},
     error::Error,
-    helpers::{get_mono_font_family, unix_ts},
+    helpers::{get_mono_font_family, parse_lines, unix_ts},
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
         escalate_dangerous_body, i18n_common, i18n_lua_scripts,
@@ -357,7 +357,7 @@ impl ZedisLuaScriptLibrary {
         let created_at = existing.as_ref().map(|s| s.created_at).unwrap_or(now);
         let calls = existing.as_ref().map(|s| s.calls).unwrap_or(0);
         let evalsha_hits = existing.as_ref().map(|s| s.evalsha_hits).unwrap_or(0);
-        let sha = redis::Script::new(&code).get_hash().to_string();
+        let sha = script_sha1(&code);
 
         let script = LuaScript {
             name,
@@ -508,8 +508,8 @@ impl ZedisLuaScriptLibrary {
         self.error = None;
         self._run_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                run_script(&mut conn, &code, &sha, &keys, &args, readonly).await
+                let at = ServerDb::new(&*server_id, db);
+                run_script(&at, &code, &sha, &keys, &args, readonly).await
             });
             let result: Result<ScriptRunOutcome> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -584,8 +584,8 @@ impl ZedisLuaScriptLibrary {
         let id_for_task = id.clone();
         self._probe_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let returned = script_load(&mut conn, &code).await?;
+                let at = ServerDb::new(&*server_id, db);
+                let returned = script_load(&at, &code).await?;
                 Ok::<_, Error>((returned, expected_sha))
             });
             let result = task.await;
@@ -621,9 +621,9 @@ impl ZedisLuaScriptLibrary {
         let pairs: Vec<(String, String)> = self.scripts.iter().map(|(id, s)| (id.clone(), s.sha.clone())).collect();
         self._probe_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let at = ServerDb::new(&*server_id, db);
                 let shas: Vec<String> = pairs.iter().map(|(_, s)| s.clone()).collect();
-                let flags = script_exists(&mut conn, &shas).await?;
+                let flags = script_exists(&at, &shas).await?;
                 let mut map = AHashMap::new();
                 for ((id, _), ok) in pairs.into_iter().zip(flags) {
                     map.insert(id, ok);
@@ -662,8 +662,8 @@ impl ZedisLuaScriptLibrary {
                     this.error = None;
                     this._probe_task = Some(cx.spawn(async move |handle, cx| {
                         let task = cx.background_spawn(async move {
-                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
-                            script_flush(&mut conn, false).await
+                            let at = ServerDb::new(&*server_id_inner, db);
+                            script_flush(&at, false).await
                         });
                         let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| match result {
@@ -751,7 +751,7 @@ impl ZedisLuaScriptLibrary {
                             continue;
                         }
                         let id = Uuid::now_v7().to_string();
-                        let sha = redis::Script::new(&item.code).get_hash().to_string();
+                        let sha = script_sha1(&item.code);
                         let script = LuaScript {
                             name: item.name.clone(),
                             code: item.code.clone(),
@@ -791,14 +791,6 @@ impl ZedisLuaScriptLibrary {
             .cloned()
             .collect()
     }
-}
-
-fn parse_lines(s: &str) -> Vec<String> {
-    s.lines()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 fn format_hit_rate(calls: u64, hits: u64) -> String {
@@ -1362,7 +1354,7 @@ impl ZedisLuaScriptLibrary {
         let sha = if code_text.trim().is_empty() {
             SharedString::default()
         } else {
-            SharedString::from(redis::Script::new(&code_text).get_hash().to_string())
+            SharedString::from(script_sha1(&code_text))
         };
         let needed = max_keys_index(&code_text);
         let name_dup = LuaScriptManager::name_taken(name_text.trim(), form.target_id.as_deref());

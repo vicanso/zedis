@@ -21,7 +21,9 @@ use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
     connection::HeatMetric,
-    connection::{ConflictMode, RestoreStatus, copy_key, floors, get_connection_manager, get_server, get_servers},
+    connection::{
+        ConflictMode, RestoreStatus, ServerDb, copy_key, floors, get_server, get_servers, key_bytes, zset_looks_geo,
+    },
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{
@@ -38,7 +40,7 @@ use crate::{
         ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
         ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
         ZedisZsetEditor, bitmap_eligible, export_to_file, json_invalid_message, key_op_title_key, looks_like_bitmap,
-        looks_like_hll, open_change_log_dialog, open_key_op_dialog, zset_looks_geo,
+        looks_like_hll, open_change_log_dialog, open_key_op_dialog,
     },
 };
 use bytes::Bytes;
@@ -816,7 +818,7 @@ impl ZedisEditor {
             return;
         };
         self.geo_probe_task = Some(cx.spawn(async move |this, cx| {
-            let is_geo = zset_looks_geo(server_id, db, key).await;
+            let is_geo = zset_looks_geo(&ServerDb::new(server_id, db), &key).await;
             let _ = this.update(cx, |this, cx| {
                 this.zset_is_geo = Some(is_geo);
                 cx.notify();

@@ -27,12 +27,9 @@
 //! user can watch the estimate move; that is the only mutation — the raw
 //! sketch bytes are never editable.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::{Capability, get_connection_manager, pf_merge},
-    error::Error,
+    connection::{Capability, HllInfo, ServerDb, hll_info, pf_add, pf_merge},
     states::{ZedisServerState, dialog_button_props, i18n_common, i18n_hll},
 };
 use gpui::{Context, Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -45,11 +42,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use humansize::{DECIMAL, format_size};
-use redis::cmd;
 use tracing::info;
 use zedis_ui::ZedisDialog;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// HLL header magic. Every Redis HyperLogLog string (dense or sparse)
 /// starts with these 4 ASCII bytes followed by a 12-byte header, so a
@@ -64,21 +58,10 @@ pub(crate) fn looks_like_hll(bytes: &[u8]) -> bool {
     bytes.len() >= 16 && bytes.starts_with(HLL_MAGIC)
 }
 
-/// Decoded HLL stats for display.
-#[derive(Clone, Default)]
-struct HllData {
-    /// `PFCOUNT key` — estimated cardinality.
-    cardinality: i64,
-    /// Dense vs sparse, from the encoding byte at offset 4 (i18n key).
-    encoding: Option<&'static str>,
-    /// `STRLEN key` — internal representation size in bytes.
-    size: u64,
-}
-
 pub struct ZedisHllEditor {
     server_state: Entity<ZedisServerState>,
     key: SharedString,
-    data: Option<HllData>,
+    data: Option<HllInfo>,
     error: Option<SharedString>,
     loading: bool,
     /// `PFADD` element input.
@@ -134,7 +117,7 @@ impl ZedisHllEditor {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_hll(server_id, db, key).await;
+            let result = hll_info(&ServerDb::new(server_id, db), &key).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -166,7 +149,7 @@ impl ZedisHllEditor {
         let key = self.key.to_string();
         cx.notify();
         self.add_task = Some(cx.spawn(async move |this, cx| {
-            let result = pfadd(server_id, db, key, elems).await;
+            let result = pf_add(&ServerDb::new(server_id, db), &key, &elems).await.map(|_| ());
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     this.add_error = None;
@@ -252,11 +235,7 @@ impl ZedisHllEditor {
         let db = state.db();
         let key = self.key.to_string();
         self.add_task = Some(cx.spawn(async move |this, cx| {
-            let result = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                pf_merge(&mut conn, &key, &sources).await
-            }
-            .await;
+            let result = async { pf_merge(&ServerDb::new(server_id, db), &key, &sources).await }.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     this.add_error = None;
@@ -301,7 +280,7 @@ impl Render for ZedisHllEditor {
                 data.cardinality.to_string(),
                 muted,
             ));
-            if let Some(enc) = data.encoding {
+            if let Some(enc) = data.encoding.map(|encoding| encoding.as_str()) {
                 rows = rows.child(self.stat_row(i18n_hll(cx, "encoding"), i18n_hll(cx, enc).to_string(), muted));
             }
             rows = rows.child(self.stat_row(i18n_hll(cx, "size"), format_size(data.size, DECIMAL), muted));
@@ -350,48 +329,6 @@ impl Render for ZedisHllEditor {
             .child(body)
             .child(add_row)
     }
-}
-
-/// Fetch the estimated cardinality (`PFCOUNT`), the internal encoding
-/// (dense / sparse, from the header byte at offset 4) and the byte size
-/// (`STRLEN`). Only `PFCOUNT` is fatal on error; the extras best-effort.
-async fn fetch_hll(server_id: String, db: usize, key: String) -> Result<HllData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let cardinality: i64 = cmd("PFCOUNT").arg(&key).query_async(&mut conn).await?;
-    let size: i64 = cmd("STRLEN").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    // Header byte at offset 4: 0 = dense, 1 = sparse.
-    let encoding = match cmd("GETRANGE")
-        .arg(&key)
-        .arg(4)
-        .arg(4)
-        .query_async::<Vec<u8>>(&mut conn)
-        .await
-        .ok()
-        .and_then(|b| b.first().copied())
-    {
-        Some(0) => Some("dense"),
-        Some(1) => Some("sparse"),
-        _ => None,
-    };
-
-    Ok(HllData {
-        cardinality,
-        encoding,
-        size: size.max(0) as u64,
-    })
-}
-
-/// `PFADD key <elems>` — fold new elements into the sketch.
-async fn pfadd(server_id: String, db: usize, key: String, elems: Vec<String>) -> Result<()> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let mut command = cmd("PFADD");
-    command.arg(&key);
-    for elem in &elems {
-        command.arg(elem);
-    }
-    let _: i64 = command.query_async(&mut conn).await?;
-    Ok(())
 }
 
 #[cfg(test)]

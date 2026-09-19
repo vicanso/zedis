@@ -28,12 +28,11 @@
 //! non-geo members are listed separately. Capped at [`GEO_CAP`] points.
 
 use crate::assets::CustomIconName;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::{Capability, ServerCommand, geo_add, geo_dist, get_connection_manager},
-    error::Error,
+    connection::{
+        Capability, GeoMember, GeoSample, GeoShape, ServerCommand, ServerDb, geo_add, geo_dist, geo_sample, geo_search,
+    },
     states::{ZedisServerState, dialog_button_props, i18n_common, i18n_geo_map},
 };
 use gpui::{
@@ -50,13 +49,10 @@ use gpui_kit::component::{
     scroll::{Scrollbar, ScrollbarMode},
     v_flex,
 };
-use redis::{Value, cmd};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use zedis_ui::ZedisDialog;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Max points fetched / rendered. Beyond this we warn and truncate —
 /// this is a debug radar, not a big-data viz, and painting tens of
@@ -95,28 +91,6 @@ struct GeoData {
     /// signature of a plain sorted set (`ZADD`, not `GEOADD`) whose scores
     /// `GEOPOS` decodes to the same geohash corner. Surfaces a hint.
     degenerate: bool,
-}
-
-/// What a `GEOSEARCH` covers. Redis offers both and they answer different
-/// questions — "within 5 km of here" versus "inside this tile" — so the map
-/// offers both rather than approximating one with the other.
-#[derive(Clone, Copy, PartialEq)]
-enum GeoShape {
-    /// Metres from the centre (`BYRADIUS`).
-    Radius(f64),
-    /// Full width and height in metres (`BYBOX`).
-    Box { width_m: f64, height_m: f64 },
-}
-
-impl GeoShape {
-    /// Half-extents in metres, east–west and north–south. A circle is the
-    /// degenerate case where both are the radius.
-    fn half_extents_m(self) -> (f64, f64) {
-        match self {
-            GeoShape::Radius(r) => (r, r),
-            GeoShape::Box { width_m, height_m } => (width_m / 2.0, height_m / 2.0),
-        }
-    }
 }
 
 /// An active search (`GEOSEARCH FROMLONLAT … BYRADIUS` / `… BYBOX`).
@@ -244,7 +218,9 @@ impl ZedisGeoMap {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_geo(server_id, db, key).await;
+            let result = geo_sample(&ServerDb::new(server_id, db), &key, GEO_CAP)
+                .await
+                .map(project_geo);
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -316,7 +292,7 @@ impl ZedisGeoMap {
         };
         cx.notify();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = geosearch(server_id, db, key, lon, lat, shape).await;
+            let result = geo_search(&ServerDb::new(server_id, db), &key, lon, lat, shape, GEO_CAP).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(members) => {
@@ -859,11 +835,7 @@ impl ZedisGeoMap {
         let db = state.db();
         let key = self.key.to_string();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                geo_add(&mut conn, &key, lon, lat, &member).await
-            }
-            .await;
+            let result = async { geo_add(&ServerDb::new(server_id, db), &key, lon, lat, &member).await }.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
                     this.search_error = None;
@@ -927,11 +899,7 @@ impl ZedisGeoMap {
         let db = state.db();
         let key = self.key.to_string();
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            let result = async {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                geo_dist(&mut conn, &key, &from, &to).await
-            }
-            .await;
+            let result = async { geo_dist(&ServerDb::new(server_id, db), &key, &from, &to).await }.await;
             let _ = this.update(cx, |this, cx| {
                 this.distance = match &result {
                     Ok(Some(metres)) => Some(SharedString::from(format!("{from} ↔ {to}: {:.1} m", metres))),
@@ -1394,60 +1362,13 @@ fn world_to_lat(wy: f64) -> f64 {
     n.sinh().atan().to_degrees()
 }
 
-/// `ZCARD` + member sample + `GEOPOS` → projected points + invalid members.
-async fn fetch_geo(server_id: String, db: usize, key: String) -> Result<GeoData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let total: i64 = cmd("ZCARD").arg(&key).query_async(&mut conn).await.unwrap_or(0);
-    // At or under the cap the range is the whole set — nothing to sample.
-    // Over it, ZRANDMEMBER draws an unbiased sample: `ZRANGE 0..cap`
-    // would take the *lowest geohash scores*, which sort geographically —
-    // one corner of the world — so the map would claim the data lives
-    // only there.
-    let members: Vec<String> = if total <= GEO_CAP as i64 {
-        cmd("ZRANGE")
-            .arg(&key)
-            .arg(0)
-            .arg(GEO_CAP as i64 - 1)
-            .query_async(&mut conn)
-            .await?
-    } else {
-        // A positive count returns distinct members, at most GEO_CAP.
-        match cmd("ZRANDMEMBER")
-            .arg(&key)
-            .arg(GEO_CAP as i64)
-            .query_async(&mut conn)
-            .await
-        {
-            Ok(members) => members,
-            // Pre-6.2 servers / proxies without ZRANDMEMBER: the biased
-            // low-score corner beats showing nothing.
-            Err(_) => {
-                cmd("ZRANGE")
-                    .arg(&key)
-                    .arg(0)
-                    .arg(GEO_CAP as i64 - 1)
-                    .query_async(&mut conn)
-                    .await?
-            }
-        }
-    };
-
-    let mut geopos = cmd("GEOPOS");
-    geopos.arg(&key);
-    for m in &members {
-        geopos.arg(m);
-    }
-    let raw: Value = geopos.query_async(&mut conn).await?;
-    let coords = match raw {
-        Value::Array(items) => items,
-        _ => Vec::new(),
-    };
-
+/// A sample of the key's members (`geo_sample`) projected for the map: the
+/// points, the members without a usable position, the bounding box.
+fn project_geo(sample: GeoSample) -> GeoData {
     let mut points = Vec::new();
     let mut invalid = Vec::new();
-    for (member, coord) in members.into_iter().zip(coords) {
-        match parse_lon_lat(&coord) {
+    for GeoMember { member, position } in sample.members {
+        match position {
             // Treat exact (0,0) "Null Island" as suspicious, not a real point.
             Some((lon, lat)) if lon != 0.0 || lat != 0.0 => points.push(GeoPoint {
                 wx: lon_to_world(lon),
@@ -1473,103 +1394,12 @@ async fn fetch_geo(server_id: String, db: usize, key: String) -> Result<GeoData>
     // to the same geohash cell — almost always a plain ZADD set, not GEO.
     let degenerate = points.len() >= 2 && (bbox.2 - bbox.0) < 1e-6 && (bbox.3 - bbox.1) < 1e-6;
 
-    Ok(GeoData {
+    GeoData {
         points: Rc::new(points),
         invalid,
-        total: total.max(0) as usize,
+        total: sample.total as usize,
         bbox,
         degenerate,
-    })
-}
-
-/// `GEOSEARCH key FROMLONLAT <lon> <lat> BYRADIUS <r> km ASC COUNT <cap>`
-/// → matching member names.
-async fn geosearch(
-    server_id: String,
-    db: usize,
-    key: String,
-    lon: f64,
-    lat: f64,
-    shape: GeoShape,
-) -> Result<Vec<String>> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let mut command = cmd("GEOSEARCH");
-    command.arg(&key).arg("FROMLONLAT").arg(lon).arg(lat);
-    match shape {
-        GeoShape::Radius(radius_m) => {
-            command.arg("BYRADIUS").arg(radius_m / 1000.0).arg("km");
-        }
-        // Width then height, both in the same unit as the radius form.
-        GeoShape::Box { width_m, height_m } => {
-            command
-                .arg("BYBOX")
-                .arg(width_m / 1000.0)
-                .arg(height_m / 1000.0)
-                .arg("km");
-        }
-    }
-    let members: Vec<String> = command
-        .arg("ASC")
-        .arg("COUNT")
-        .arg(GEO_CAP as i64)
-        .query_async(&mut conn)
-        .await?;
-    Ok(members)
-}
-
-/// Cheap heuristic: does this sorted set hold GEO data? Probes the first
-/// couple of members with `GEOPOS` and checks the decoded coordinates.
-///
-/// `GEOPOS` decodes *any* sorted-set score as a geohash, so a plain
-/// `ZADD` set (e.g. all score 0) collapses to the south-west corner
-/// `(-180, -85.05)`. We treat the set as GEO only when at least one
-/// probed member decodes to a real coordinate away from that corner —
-/// enough to decide whether to offer the Map view.
-pub(crate) async fn zset_looks_geo(server_id: String, db: usize, key: String) -> bool {
-    let Ok(mut conn) = get_connection_manager().get_connection(&server_id, db).await else {
-        return false;
-    };
-    let members: Vec<String> = cmd("ZRANGE")
-        .arg(&key)
-        .arg(0)
-        .arg(1)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or_default();
-    if members.is_empty() {
-        return false;
-    }
-    let mut geopos = cmd("GEOPOS");
-    geopos.arg(&key);
-    for m in &members {
-        geopos.arg(m);
-    }
-    let Ok(Value::Array(coords)) = geopos.query_async::<Value>(&mut conn).await else {
-        return false;
-    };
-    // GEO if any probed member sits away from the (-180, -85.05) corner.
-    coords
-        .iter()
-        .filter_map(parse_lon_lat)
-        .any(|(lon, lat)| lon > -179.99 || lat > -85.0)
-}
-
-/// Parse a single `GEOPOS` element: `[lon, lat]` bulk strings, or nil.
-fn parse_lon_lat(value: &Value) -> Option<(f64, f64)> {
-    let Value::Array(pair) = value else {
-        return None;
-    };
-    let lon = value_to_f64(pair.first()?)?;
-    let lat = value_to_f64(pair.get(1)?)?;
-    Some((lon, lat))
-}
-
-fn value_to_f64(value: &Value) -> Option<f64> {
-    match value {
-        Value::Double(d) => Some(*d),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).trim().parse().ok(),
-        Value::SimpleString(s) => s.trim().parse().ok(),
-        _ => None,
     }
 }
 
@@ -1607,12 +1437,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_lon_lat_handles_pair_and_nil() {
-        let pair = Value::Array(vec![
-            Value::BulkString(b"116.39".to_vec()),
-            Value::BulkString(b"39.90".to_vec()),
-        ]);
-        assert_eq!(parse_lon_lat(&pair), Some((116.39, 39.90)));
-        assert_eq!(parse_lon_lat(&Value::Nil), None);
+    fn a_sample_is_projected_and_what_has_no_position_is_set_aside() {
+        let member = |name: &str, position| GeoMember {
+            member: name.to_string(),
+            position,
+        };
+        let data = project_geo(GeoSample {
+            total: 9,
+            members: vec![
+                member("beijing", Some((116.39, 39.90))),
+                member("no-position", None),
+                // Null Island: a plain ZADD member decodes here, not a place.
+                member("null-island", Some((0.0, 0.0))),
+            ],
+        });
+        assert_eq!(data.total, 9, "the whole key, not the sample");
+        assert_eq!(data.points.len(), 1);
+        assert_eq!(data.points[0].member.as_ref(), "beijing");
+        let invalid: Vec<&str> = data.invalid.iter().map(|m| m.as_ref()).collect();
+        assert_eq!(invalid, ["no-position", "null-island"]);
+        assert!(!data.degenerate);
+
+        // Every member on one spot: the signature of a set that is not GEO.
+        let same = project_geo(GeoSample {
+            total: 2,
+            members: vec![member("a", Some((-180.0, -85.05))), member("b", Some((-180.0, -85.05)))],
+        });
+        assert!(same.degenerate);
+        // Nothing to draw: the box is the whole world, not an inverted one.
+        assert_eq!(project_geo(GeoSample::default()).bbox, (0.0, 0.0, 1.0, 1.0));
     }
 }

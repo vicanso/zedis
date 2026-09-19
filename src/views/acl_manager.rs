@@ -32,9 +32,9 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        AclDryRun, AclLogEntry, AclUser, Capability, ServerCommand, acl_del_user, acl_dryrun, acl_file, acl_genpass,
-        acl_get_user, acl_list, acl_load, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, floors,
-        get_connection_manager, split_acl_rules,
+        AclDryRun, AclLogEntry, AclUser, Capability, ServerCommand, ServerDb, acl_del_user, acl_dryrun, acl_file,
+        acl_genpass, acl_get_user, acl_list, acl_load, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami,
+        floors, split_acl_rules,
     },
     error::Error,
     helpers::{format_duration, format_unix_secs, get_mono_font_family},
@@ -243,8 +243,8 @@ impl ZedisAclManager {
         cx.notify();
         self._log_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                acl_log(&mut conn, LOG_FETCH_LIMIT).await
+                let at = ServerDb::new(&*server_id, db);
+                acl_log(&at, LOG_FETCH_LIMIT).await
             });
             let result: Result<Vec<AclLogEntry>> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -284,16 +284,16 @@ impl ZedisAclManager {
         self.loading = true;
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let listing = acl_list(&mut conn).await?;
+                let at = ServerDb::new(&*server_id, db);
+                let listing = acl_list(&at).await?;
                 let whoami = if listing.unsupported {
                     SharedString::default()
                 } else {
-                    acl_whoami(&mut conn).await?.into()
+                    acl_whoami(&at).await?.into()
                 };
                 let mut users = Vec::with_capacity(listing.usernames.len());
                 for name in &listing.usernames {
-                    match acl_get_user(&mut conn, name.as_ref()).await {
+                    match acl_get_user(&at, name.as_ref()).await {
                         Ok(u) => users.push(u),
                         Err(e) => {
                             error!(error = %e, user = name.as_str(), "ACL GETUSER failed");
@@ -304,7 +304,7 @@ impl ZedisAclManager {
                 let file = if listing.unsupported {
                     None
                 } else {
-                    acl_file(&mut conn).await?
+                    acl_file(&at).await?
                 };
                 Ok::<(Vec<AclUser>, SharedString, bool, Option<String>), Error>((
                     users,
@@ -380,8 +380,8 @@ impl ZedisAclManager {
         let rules_vec: Vec<String> = split_acl_rules(&rules);
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                acl_set_user(&mut conn, &username, &rules_vec).await
+                let at = ServerDb::new(&*server_id, db);
+                acl_set_user(&at, &username, &rules_vec).await
             });
             let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -428,8 +428,8 @@ impl ZedisAclManager {
         let db = self.server_state.read(cx).db();
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                acl_del_user(&mut conn, username.as_ref()).await
+                let at = ServerDb::new(&*server_id, db);
+                acl_del_user(&at, username.as_ref()).await
             });
             let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -456,11 +456,11 @@ impl ZedisAclManager {
         }
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let at = ServerDb::new(&*server_id, db);
                 match op {
-                    AclOp::Save => acl_save(&mut conn).await,
-                    AclOp::Load => acl_load(&mut conn).await,
-                    AclOp::LogReset => acl_log_reset(&mut conn).await,
+                    AclOp::Save => acl_save(&at).await,
+                    AclOp::Load => acl_load(&at).await,
+                    AclOp::LogReset => acl_log_reset(&at).await,
                 }
             });
             let result: Result<()> = task.await.map_err(Into::into);
@@ -1079,8 +1079,8 @@ impl ZedisAclEditor {
         let db = self.server_state.read(cx).db();
         self._genpass_task = Some(cx.spawn_in(window, async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                acl_genpass(&mut conn, None).await
+                let at = ServerDb::new(&*server_id, db);
+                acl_genpass(&at, None).await
             });
             let result: Result<String> = task.await.map_err(Into::into);
             let _ = handle.update_in(cx, |this, window, cx| match result {
@@ -1268,8 +1268,8 @@ impl ZedisAclDryRun {
         cx.notify();
         self._task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                acl_dryrun(&mut conn, &username, &args).await
+                let at = ServerDb::new(&*server_id, db);
+                acl_dryrun(&at, &username, &args).await
             });
             let result: Result<AclDryRun> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {

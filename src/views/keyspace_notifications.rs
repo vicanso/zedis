@@ -24,9 +24,9 @@
 //! 3. Config banner + Enable presets for `notify-keyspace-events`.
 //! 4. Pause (drop inbound), export filtered rows as CSV, rate hint.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
-use crate::connection::{Capability, get_connection_manager, get_server};
+use crate::connection::{
+    Capability, ChannelSubscription, ServerDb, SubscribeKind, config_get_one, config_set, get_server,
+};
 use crate::error::Error;
 use crate::helpers::channel;
 use crate::helpers::{build_csv, get_mono_font_family, now_clock};
@@ -37,7 +37,6 @@ use crate::states::{
 use crate::views::unavailable_chip;
 use crate::views::{export_to_file, open_key_in_editor};
 use ahash::AHashSet;
-use futures::StreamExt;
 use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
@@ -398,22 +397,15 @@ impl ZedisKeyspaceNotifications {
         cx.notify();
 
         let entity = cx.entity().downgrade();
-        let server_id_for_task = server_id.clone();
+        let at = ServerDb::new(server_id, self.server_state.read(cx).db());
 
         self.refresh_notify_flags(cx);
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
-            let connect: Result<_, Error> = cx
+            let connect: Result<ChannelSubscription, Error> = cx
                 .background_spawn(async move {
-                    let mut pubsub = get_connection_manager()
-                        .get_pubsub_connection(&server_id_for_task)
-                        .await?;
-                    let patterns: Vec<&str> = vec![KEYSPACE_PATTERN, KEYEVENT_PATTERN];
-                    pubsub
-                        .psubscribe(patterns)
-                        .await
-                        .map_err(|e| Error::Invalid { message: e.to_string() })?;
-                    Ok(pubsub)
+                    let patterns = [KEYSPACE_PATTERN, KEYEVENT_PATTERN];
+                    Ok(ChannelSubscription::open(&at, SubscribeKind::Patterns, &patterns).await?)
                 })
                 .await;
 
@@ -449,11 +441,8 @@ impl ZedisKeyspaceNotifications {
 
             let (tx, rx) = channel::unbounded::<NotificationRow>();
             let reader = cx.background_spawn(async move {
-                let mut stream = pubsub.on_message();
-                while let Some(msg) = stream.next().await {
-                    let channel: String = msg.get_channel_name().to_string();
-                    let payload = msg.get_payload_bytes();
-                    if let Some(row) = parse_notification(&channel, payload)
+                while let Some(msg) = pubsub.next_message().await {
+                    if let Some(row) = parse_notification(&msg.channel, &msg.payload)
                         && tx.send(row).await.is_err()
                     {
                         break;
@@ -565,14 +554,8 @@ impl ZedisKeyspaceNotifications {
         let entity = cx.entity().downgrade();
         cx.spawn(async move |_handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let pair: Vec<String> = redis::cmd("CONFIG")
-                    .arg("GET")
-                    .arg("notify-keyspace-events")
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| Error::Invalid { message: e.to_string() })?;
-                Ok::<_, Error>(pair.get(1).cloned().unwrap_or_default())
+                let flags = config_get_one(&ServerDb::new(&*server_id, db), "notify-keyspace-events").await?;
+                Ok::<_, Error>(flags.unwrap_or_default())
             });
             let result = task.await;
             let _ = entity.update(cx, |this, cx| {
@@ -639,14 +622,7 @@ impl ZedisKeyspaceNotifications {
         let flags = flags.to_string();
         cx.spawn(async move |_handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis::cmd("CONFIG")
-                    .arg("SET")
-                    .arg("notify-keyspace-events")
-                    .arg(&flags)
-                    .query_async::<()>(&mut conn)
-                    .await
-                    .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                config_set(&ServerDb::new(&*server_id, db), "notify-keyspace-events", &flags).await?;
                 Ok::<_, Error>(())
             });
             let result = task.await;

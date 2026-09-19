@@ -25,9 +25,7 @@
 //! servers get the escalated warning.
 
 use crate::assets::CustomIconName;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
-use crate::connection::{Capability, get_connection_manager, get_server};
+use crate::connection::{Capability, ServerDb, config_get_named, get_server};
 use crate::helpers::{format_duration, format_unix_secs, get_mono_font_family, unix_ts};
 use crate::states::{
     PersistenceNodeSnapshot, RedisMetrics, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
@@ -44,7 +42,6 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use redis::cmd;
 use std::time::Duration;
 use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
 
@@ -212,7 +209,6 @@ impl ZedisPersistence {
         }
         self._config_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 let keys = [
                     "save",
                     "appendonly",
@@ -225,31 +221,22 @@ impl ZedisPersistence {
                 ];
                 let mut cfg = PersistenceConfig::default();
                 let mut any_ok = false;
-                for key in keys {
-                    let res: redis::RedisResult<Vec<String>> =
-                        cmd("CONFIG").arg("GET").arg(key).query_async(&mut conn).await;
-                    match res {
-                        Ok(pairs) => {
-                            any_ok = true;
-                            // CONFIG GET returns [key, value] pairs.
-                            if pairs.len() >= 2 {
-                                let val = pairs[1].clone();
-                                match key {
-                                    "save" => cfg.save = val,
-                                    "appendonly" => cfg.appendonly = val,
-                                    "appendfsync" => cfg.appendfsync = val,
-                                    "auto-aof-rewrite-percentage" => cfg.auto_aof_rewrite_percentage = val,
-                                    "auto-aof-rewrite-min-size" => cfg.auto_aof_rewrite_min_size = val,
-                                    "dir" => cfg.dir = val,
-                                    "dbfilename" => cfg.dbfilename = val,
-                                    "appendfilename" => cfg.appendfilename = val,
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // NOPERM / blocked — mark unavailable if nothing succeeded.
-                        }
+                let values = config_get_named(&ServerDb::new(server_id, db), &keys).await?;
+                for (key, value) in keys.into_iter().zip(values) {
+                    // `None`: NOPERM / blocked / unknown — the panel is marked
+                    // unavailable only if nothing at all could be read.
+                    let Some(val) = value else { continue };
+                    any_ok = true;
+                    match key {
+                        "save" => cfg.save = val,
+                        "appendonly" => cfg.appendonly = val,
+                        "appendfsync" => cfg.appendfsync = val,
+                        "auto-aof-rewrite-percentage" => cfg.auto_aof_rewrite_percentage = val,
+                        "auto-aof-rewrite-min-size" => cfg.auto_aof_rewrite_min_size = val,
+                        "dir" => cfg.dir = val,
+                        "dbfilename" => cfg.dbfilename = val,
+                        "appendfilename" => cfg.appendfilename = val,
+                        _ => {}
                     }
                 }
                 if !any_ok {

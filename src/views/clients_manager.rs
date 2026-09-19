@@ -13,10 +13,9 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{
-    Capability, PauseMode, RedisServer, floors, get_connection_manager, open_single_connection, pause_args,
+    Capability, PauseMode, RedisServer, ServerDb, client_kill_by, client_kill_id, client_list, client_pause,
+    client_unpause, floors,
 };
 use crate::error::Error;
 use crate::helpers::channel;
@@ -44,7 +43,6 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
-use redis::cmd;
 use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -673,13 +671,9 @@ impl ZedisClientsManager {
 
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let (addrs, results): (Vec<RedisServer>, Vec<String>) = client
-                    .query_async_masters(vec![cmd("CLIENT").arg("LIST").clone()])
-                    .await?;
                 let mut all_rows = Vec::new();
-                for (node, raw) in addrs.iter().zip(results.iter()) {
-                    all_rows.extend(parse_client_list(raw, node));
+                for (node, raw) in client_list(&ServerDb::new(server_id, db)).await? {
+                    all_rows.extend(parse_client_list(&raw, &node));
                 }
                 all_rows.sort_by_key(|b| std::cmp::Reverse(b.age));
                 Ok::<Vec<ClientRow>, Error>(all_rows)
@@ -752,13 +746,7 @@ impl ZedisClientsManager {
 
                 let id_clone = client_id.clone();
                 let task = cx.background_spawn(async move {
-                    let mut conn = open_single_connection(&node, db, true).await?;
-                    let _: String = cmd("CLIENT")
-                        .arg("KILL")
-                        .arg("ID")
-                        .arg(id_clone.as_ref())
-                        .query_async(&mut conn)
-                        .await?;
+                    client_kill_id(&node, db, id_clone.as_ref()).await?;
                     Ok::<(), Error>(())
                 });
 
@@ -803,11 +791,7 @@ impl ZedisClientsManager {
         let server_state = self.server_state.clone();
         self._unpause_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let (_, replies): (_, Vec<String>) = client
-                    .query_async_masters(vec![cmd("CLIENT").arg("UNPAUSE").clone()])
-                    .await?;
-                let _ = replies;
+                client_unpause(&ServerDb::new(server_id, db)).await?;
                 Ok::<(), Error>(())
             });
             let result = task.await;
@@ -882,13 +866,7 @@ impl ZedisClientsManager {
                 let mut failed = 0usize;
                 for (id, node) in targets {
                     let result = async {
-                        let mut conn = open_single_connection(&node, db, true).await?;
-                        let _: String = cmd("CLIENT")
-                            .arg("KILL")
-                            .arg("ID")
-                            .arg(id.as_ref())
-                            .query_async(&mut conn)
-                            .await?;
+                        client_kill_id(&node, db, id.as_ref()).await?;
                         Ok::<(), Error>(())
                     }
                     .await;
@@ -967,16 +945,9 @@ impl ZedisClientsManager {
         }
         let db = self.server_state.read(cx).db();
         let server_state = self.server_state.clone();
-        let args = pause_args(timeout_ms, mode, mode_supported);
         self._pause_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut command = cmd("CLIENT");
-                for arg in &args {
-                    command.arg(arg);
-                }
-                let (_, replies): (_, Vec<String>) = client.query_async_masters(vec![command]).await?;
-                let _ = replies;
+                client_pause(&ServerDb::new(server_id, db), timeout_ms, mode, mode_supported).await?;
                 Ok::<(), Error>(())
             });
             let result = task.await;
@@ -1077,16 +1048,7 @@ impl ZedisClientsManager {
         let table_state = self.table_state.clone();
         self._kill_filter_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut killed: i64 = 0;
-                for args in &commands {
-                    let mut command = cmd("CLIENT");
-                    for arg in args {
-                        command.arg(arg);
-                    }
-                    let (_, counts): (_, Vec<i64>) = client.query_async_masters(vec![command]).await?;
-                    killed += counts.iter().sum::<i64>();
-                }
+                let killed = client_kill_by(&ServerDb::new(server_id, db), &commands).await?;
                 Ok::<i64, Error>(killed)
             });
             let result = task.await;

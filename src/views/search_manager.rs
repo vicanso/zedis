@@ -30,9 +30,9 @@ use crate::{
     assets::CustomIconName,
     connection::{
         AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
-        ReducerFn, ReducerSpec, SearchOptions, SearchResult, SpellingSuggestion, escape_tag_value, ft_aggregate,
-        ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search, ft_spellcheck,
-        ft_tagvals, get_connection_manager,
+        ReducerFn, ReducerSpec, SearchOptions, SearchResult, ServerDb, SpellingSuggestion, escape_tag_value,
+        ft_aggregate, ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search,
+        ft_spellcheck, ft_tagvals,
     },
     error::Error,
     helpers::get_mono_font_family,
@@ -364,8 +364,8 @@ impl ZedisSearchManager {
         self.loading_indexes = true;
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                ft_list(&mut conn).await
+                let at = ServerDb::new(&*server_id, db);
+                ft_list(&at).await
             });
             let result = task.await;
             let _ = handle.update(cx, |this, cx| {
@@ -411,8 +411,8 @@ impl ZedisSearchManager {
             let server_id_for_task = server_id.clone();
             let name_for_task = name.clone();
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id_for_task, db).await?;
-                ft_info(&mut conn, name_for_task.as_ref()).await
+                let at = ServerDb::new(&*server_id_for_task, db);
+                ft_info(&at, name_for_task.as_ref()).await
             });
             let result: Result<IndexInfo> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -511,8 +511,8 @@ impl ZedisSearchManager {
                     let cmd_index = index_inner.clone();
                     this._drop_task = Some(cx.spawn(async move |handle, cx| {
                         let task = cx.background_spawn(async move {
-                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
-                            ft_dropindex(&mut conn, cmd_index.as_ref(), false).await
+                            let at = ServerDb::new(&*server_id_inner, db);
+                            ft_dropindex(&at, cmd_index.as_ref(), false).await
                         });
                         let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| {
@@ -608,8 +608,8 @@ impl ZedisSearchManager {
         let index_for_task = index.clone();
         self._alter_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                ft_alter_add(&mut conn, index_for_task.as_ref(), &spec).await
+                let at = ServerDb::new(&*server_id, db);
+                ft_alter_add(&at, index_for_task.as_ref(), &spec).await
             });
             let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -748,8 +748,8 @@ impl ZedisSearchManager {
         let created_name = SharedString::from(name);
         self._create_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                ft_create(&mut conn, &opts).await
+                let at = ServerDb::new(&*server_id, db);
+                ft_create(&at, &opts).await
             });
             let result: Result<()> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -854,8 +854,8 @@ impl ZedisSearchManager {
                 let query_for_check = query.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
                     let task = cx.background_spawn(async move {
-                        let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                        ft_search(&mut conn, index_for_task.as_ref(), &query, &opts).await
+                        let at = ServerDb::new(&*server_id, db);
+                        ft_search(&at, index_for_task.as_ref(), &query, &opts).await
                     });
                     let result: Result<SearchResult> = task.await.map_err(Into::into);
                     let _ = handle.update(cx, |this, cx| {
@@ -903,8 +903,8 @@ impl ZedisSearchManager {
                 let index_for_task = index.clone();
                 self._query_task = Some(cx.spawn(async move |handle, cx| {
                     let task = cx.background_spawn(async move {
-                        let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                        ft_aggregate(&mut conn, index_for_task.as_ref(), &query, &opts).await
+                        let at = ServerDb::new(&*server_id, db);
+                        ft_aggregate(&at, index_for_task.as_ref(), &query, &opts).await
                     });
                     let result: Result<AggregateResult> = task.await.map_err(Into::into);
                     let _ = handle.update(cx, |this, cx| {
@@ -964,11 +964,11 @@ impl ZedisSearchManager {
         self.error = None;
         self._plan_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let at = ServerDb::new(&*server_id, db);
                 if profile {
-                    ft_profile(&mut conn, index.as_ref(), aggregate, &query, &params, dialect).await
+                    ft_profile(&at, index.as_ref(), aggregate, &query, &params, dialect).await
                 } else {
-                    ft_explain(&mut conn, index.as_ref(), &query, &params, dialect).await
+                    ft_explain(&at, index.as_ref(), &query, &params, dialect).await
                 }
             });
             let result: Result<String> = task.await.map_err(Into::into);
@@ -1006,8 +1006,8 @@ impl ZedisSearchManager {
         let db = self.server_state.read(cx).db();
         self._spell_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                ft_spellcheck(&mut conn, index.as_ref(), &query, dialect).await
+                let at = ServerDb::new(&*server_id, db);
+                ft_spellcheck(&at, index.as_ref(), &query, dialect).await
             });
             let result: Result<Vec<SpellingSuggestion>> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -1055,8 +1055,8 @@ impl ZedisSearchManager {
         self._tagvals_task = Some(cx.spawn(async move |handle, cx| {
             let field_for_task = field.clone();
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                ft_tagvals(&mut conn, index.as_ref(), &field_for_task).await
+                let at = ServerDb::new(&*server_id, db);
+                ft_tagvals(&at, index.as_ref(), &field_for_task).await
             });
             let result: Result<Vec<String>> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {

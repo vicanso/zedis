@@ -15,8 +15,6 @@
 use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 /// Redis Slow Log viewer.
 ///
 /// Displays a table of slow-query log entries fetched from the server's
@@ -26,11 +24,11 @@ use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 /// (large requests / large replies, fetched by the panel with a 30s poll)
 /// behind a log-kind switch; the Duration column reads Size there.
 use crate::connection::{
-    CommandLogKind, LatencyEvent, LatencySample, SlowLogEntry, floors, get_connection_manager, get_server,
-    latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_commands,
+    CommandLogKind, LatencyEvent, LatencySample, ServerDb, SlowLogEntry, command_log_reset, command_logs, config_set,
+    floors, get_server, latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_commands,
 };
 use crate::error::Error;
-use crate::helpers::{SlowlogAction, build_csv, format_unix_secs, get_mono_font_family, pacing};
+use crate::helpers::{SlowlogAction, build_csv, djb2_hash, format_unix_secs, get_mono_font_family, pacing};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
@@ -913,8 +911,7 @@ impl ZedisSlowlogEditor {
         let event_for_task = event.clone();
         self._event_detail_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let history = latency_history(&mut conn, event_for_task.as_ref()).await?;
+                let history = latency_history(&ServerDb::new(server_id, db), event_for_task.as_ref()).await?;
                 Ok::<_, Error>(history)
             });
             let result = task.await;
@@ -985,10 +982,7 @@ impl ZedisSlowlogEditor {
         let server_state = self.server_state.clone();
         let kind = self.log_kind;
         self._slowlog_reset_task = Some(cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.commandlog_reset(kind).await
-            });
+            let task = cx.background_spawn(async move { command_log_reset(&ServerDb::new(server_id, db), kind).await });
             let result = task.await;
             let _ = handle.update(cx, |this, cx| {
                 match result {
@@ -1675,16 +1669,6 @@ fn format_unix_seconds(ts: i64) -> String {
         return "--".to_string();
     }
     format_unix_secs(ts).unwrap_or_else(|| ts.to_string())
-}
-
-/// Stable DJB2 hash so `(static_id, u32)` element keys derived from
-/// event names compile (ElementId only accepts primitive tuples).
-fn djb2_hash(s: &str) -> u32 {
-    let mut h: u32 = 5381;
-    for b in s.bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u32);
-    }
-    h
 }
 
 #[cfg(test)]

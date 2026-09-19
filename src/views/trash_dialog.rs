@@ -21,9 +21,7 @@
 //! on the server fails with a BUSYKEY-specific message.
 
 use crate::assets::CustomIconName;
-use crate::connection::get_connection_manager;
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
+use crate::connection::{ServerDb, restore_key};
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
 use crate::helpers::{format_unix_millis_with, get_mono_font_family, unix_ts_millis};
@@ -38,7 +36,6 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use redis::cmd;
 use rust_i18n::t;
 use tracing::warn;
 use zedis_ui::ZedisDialog;
@@ -131,13 +128,8 @@ impl ZedisTrashDialog {
                             continue;
                         };
                         let result = async {
-                            let mut conn = get_connection_manager().get_connection(&sid, entry.db).await?;
-                            let _: () = cmd("RESTORE")
-                                .arg(entry.key.as_str())
-                                .arg(entry.pttl_ms.max(0))
-                                .arg(entry.payload.as_slice())
-                                .query_async(&mut conn)
-                                .await?;
+                            let at = ServerDb::new(&*sid, entry.db);
+                            restore_key(&at, &entry.key, entry.pttl_ms, &entry.payload).await?;
                             Ok::<(), Error>(())
                         }
                         .await;
@@ -210,15 +202,8 @@ impl ZedisTrashDialog {
             let notification = match entry {
                 Ok(Some(entry)) => {
                     let restored = async {
-                        let mut conn = get_connection_manager().get_connection(&server_id, entry.db).await?;
-                        // RESTORE ttl is milliseconds; 0 = no expiry. A key
-                        // deleted without TTL reports PTTL -1 → clamp to 0.
-                        let _: () = cmd("RESTORE")
-                            .arg(entry.key.as_str())
-                            .arg(entry.pttl_ms.max(0))
-                            .arg(entry.payload.as_slice())
-                            .query_async(&mut conn)
-                            .await?;
+                        let at = ServerDb::new(&*server_id, entry.db);
+                        restore_key(&at, &entry.key, entry.pttl_ms, &entry.payload).await?;
                         Ok::<(), Error>(())
                     }
                     .await;

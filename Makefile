@@ -78,6 +78,12 @@ bench:
 check-locales:
 	cargo test --test locale_keys
 
+# What src/views knows about Redis (tests/view_layering.rs): nothing, since
+# the baseline reached empty — a failure here means the new code belongs in
+# zedis-connection as a typed operation, not that the baseline wants rewriting.
+check-layering:
+	cargo test --test view_layering
+
 # Live integration tests against real servers (crates/zedis-connection/tests/live.rs).
 # `make it-up` starts the topology (local redis-server, or REDIS_IMAGE=redis:7.2 for docker),
 # `make it` runs the ignored tests with its ZEDIS_IT_* env, `make it-down` stops it.

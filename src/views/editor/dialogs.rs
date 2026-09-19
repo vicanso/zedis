@@ -289,11 +289,7 @@ impl ZedisEditor {
             .unwrap_or_else(|_| target_id.clone());
         let label: SharedString = format!("{target_name} / db{target_db}").into();
         cx.spawn(async move |this, cx| {
-            let fetched = async {
-                let client = get_connection_manager().get_client(&target_id, target_db).await?;
-                client.get_key_bytes(&key).await
-            }
-            .await;
+            let fetched = async { key_bytes(&ServerDb::new(&*target_id, target_db), &key).await }.await;
             let _ = this.update(cx, move |this, cx| match fetched {
                 Ok(other_bytes) => {
                     let session = DiffSession {

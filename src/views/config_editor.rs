@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::views::config_doc::ConfigDocMap;
 use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
-    connection::{Capability, DangerKind, ServerCommand, floors, get_connection_manager, get_server, get_servers},
+    connection::{
+        Capability, DangerKind, ServerCommand, ServerDb, config_get_all, config_load, config_rewrite, config_set,
+        floors, get_server, get_servers,
+    },
     error::Error,
     helpers::{ConfigEditAction, card_background, get_mono_font_family, humanize_keystroke},
     states::{
@@ -39,7 +40,6 @@ use gpui_kit::component::{
     spinner::Spinner,
     v_flex,
 };
-use redis::cmd;
 use rust_i18n::t;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -467,24 +467,12 @@ impl ZedisConfigEditor {
         self.loading = true;
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let map: HashMap<String, String> = cmd("CONFIG").arg("GET").arg("*").query_async(&mut conn).await?;
-                let mut configs: Vec<(SharedString, SharedString)> =
-                    map.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
-                configs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                // Whether the edits below can be made to survive a restart.
-                let info: String = cmd("INFO")
-                    .arg("server")
-                    .query_async(&mut conn)
-                    .await
-                    .unwrap_or_default();
-                let config_file = info
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix("config_file:"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                Ok((configs, config_file))
+                // `config_file` says whether the edits below can be made to
+                // survive a restart.
+                let loaded = config_load(&ServerDb::new(server_id, db)).await?;
+                let configs: Vec<(SharedString, SharedString)> =
+                    loaded.params.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+                Ok((configs, loaded.config_file))
             });
             let result: Result<(Vec<(SharedString, SharedString)>, String)> = task.await;
             let _ = handle.update(cx, |this, cx| {
@@ -521,10 +509,7 @@ impl ZedisConfigEditor {
         }
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let (_, _replies): (_, Vec<String>) = client
-                    .query_async_masters(vec![cmd("CONFIG").arg("REWRITE").clone()])
-                    .await?;
+                config_rewrite(&ServerDb::new(server_id, db)).await?;
                 Ok(())
             });
             let result: Result<()> = task.await;
@@ -590,13 +575,7 @@ impl ZedisConfigEditor {
             let key_clone = key.clone();
             let value_clone = value.clone();
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: () = cmd("CONFIG")
-                    .arg("SET")
-                    .arg(key.as_str())
-                    .arg(value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+                config_set(&ServerDb::new(server_id, db), key.as_str(), value.as_str()).await?;
                 Ok(())
             });
             let result: Result<()> = task.await;
@@ -672,8 +651,7 @@ impl ZedisConfigEditor {
             .unwrap_or_else(|_| target_id.clone());
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&target_id, target_db).await?;
-                let map: HashMap<String, String> = cmd("CONFIG").arg("GET").arg("*").query_async(&mut conn).await?;
+                let map = config_get_all(&ServerDb::new(target_id.to_string(), target_db)).await?;
                 Ok::<HashMap<String, String>, Error>(map)
             });
             let result = task.await;

@@ -14,7 +14,7 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
-use crate::connection::{Capability, ShardedPubSub, get_connection_manager};
+use crate::connection::{Capability, ChannelMessage, ChannelSubscription, ServerDb, SubscribeKind};
 use crate::error::Error;
 /// Redis Pub/Sub editor view.
 ///
@@ -39,7 +39,6 @@ use gpui_kit::component::{
     table::{DataTable, TableState},
     v_flex,
 };
-use redis::aio::PubSub;
 use std::rc::Rc;
 use std::time::Duration;
 use tracing::{error, info};
@@ -62,31 +61,15 @@ struct PubsubMessage {
     message: SharedString,
 }
 
-/// The two subscription transports: classic Pub/Sub over the dedicated
-/// RESP2 connection (`PSUBSCRIBE`), or sharded Pub/Sub over a RESP3 push
-/// connection (`SSUBSCRIBE`, Redis 7+ — slot-routed on clusters instead
-/// of broadcast). Both yield [`redis::Msg`], so the reader/drainer path
-/// downstream is shared.
-enum SubscribeConn {
-    Plain(Box<PubSub>),
-    Sharded(Box<ShardedPubSub>),
-}
-
-/// Decode one incoming message and ferry it to the drainer. `Err` means
-/// the receiver (the view) is gone, so the reader loop should stop.
-async fn forward_message(
-    tx: &channel::Sender<PubsubMessage>,
-    msg: &redis::Msg,
-) -> Result<(), channel::SendError<PubsubMessage>> {
-    let channel: String = msg.get_channel_name().to_string();
-    let (_, text) = detect_and_decode(msg.get_payload_bytes(), 1024);
-    let timestamp = now_datetime();
-    tx.send(PubsubMessage {
-        timestamp: timestamp.into(),
-        channel: channel.into(),
+/// Decode one incoming message for the table. Runs on the reader's
+/// background task, so payload decoding never lands on the UI thread.
+fn decode_message(msg: ChannelMessage) -> PubsubMessage {
+    let (_, text) = detect_and_decode(&msg.payload, 1024);
+    PubsubMessage {
+        timestamp: now_datetime().into(),
+        channel: msg.channel.into(),
         message: text,
-    })
-    .await
+    }
 }
 
 impl PubsubMessage {
@@ -253,7 +236,7 @@ impl ZedisPubsubEditor {
         }
 
         let server_state = self.server_state.read(cx);
-        let server_id = server_state.server_id().to_string();
+        let at = ServerDb::new(server_state.server_id(), server_state.db());
         let sharded = self.sharded;
         self.subscribing = true;
         cx.notify();
@@ -265,29 +248,25 @@ impl ZedisPubsubEditor {
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             // Establish a dedicated Pub/Sub connection on a background thread
             // so the UI thread stays responsive during the network handshake.
-            let result: Result<SubscribeConn, Error> = cx
+            let result: Result<ChannelSubscription, Error> = cx
                 .background_spawn(async move {
                     let channels = channel_clone
                         .split(' ')
                         .filter(|s| !s.is_empty())
                         .collect::<Vec<&str>>();
-                    if sharded {
-                        let mut pubsub = get_connection_manager().get_sharded_pubsub(&server_id).await?;
-                        pubsub.ssubscribe(&channels).await?;
-                        Ok(SubscribeConn::Sharded(Box::new(pubsub)))
+                    // Classic mode subscribes by pattern; sharded mode
+                    // (Redis 7+) by exact name, routed to the slot's owner.
+                    let kind = if sharded {
+                        SubscribeKind::Sharded
                     } else {
-                        let mut pubsub = get_connection_manager().get_pubsub_connection(&server_id).await?;
-                        pubsub
-                            .psubscribe(channels)
-                            .await
-                            .map_err(|e| Error::Invalid { message: e.to_string() })?;
-                        Ok(SubscribeConn::Plain(Box::new(pubsub)))
-                    }
+                        SubscribeKind::Patterns
+                    };
+                    Ok(ChannelSubscription::open(&at, kind, &channels).await?)
                 })
                 .await;
 
             match result {
-                Ok(sub) => {
+                Ok(mut sub) => {
                     let _ = entity.update(cx, |this, cx| {
                         this.subscribing = false;
                         this.subscribed_at = Some(unix_ts());
@@ -300,23 +279,10 @@ impl ZedisPubsubEditor {
                     // decoding never lands on the UI thread; parsed entries
                     // are ferried over the channel to the drainer below.
                     let reader = cx.background_spawn(async move {
-                        match sub {
-                            SubscribeConn::Plain(mut pubsub) => {
-                                use futures::StreamExt;
-                                let mut stream = pubsub.on_message();
-                                while let Some(msg) = stream.next().await {
-                                    // Receiver gone (entity dropped) — stop reading.
-                                    if forward_message(&tx, &msg).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            SubscribeConn::Sharded(pubsub) => {
-                                while let Some(msg) = pubsub.recv().await {
-                                    if forward_message(&tx, &msg).await.is_err() {
-                                        break;
-                                    }
-                                }
+                        while let Some(msg) = sub.next_message().await {
+                            // Receiver gone (entity dropped) — stop reading.
+                            if tx.send(decode_message(msg)).await.is_err() {
+                                break;
                             }
                         }
                     });

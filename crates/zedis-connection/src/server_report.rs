@@ -20,6 +20,7 @@ use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -33,7 +34,8 @@ pub struct NodeReply<T> {
 }
 
 /// `MEMORY DOCTOR` — the server's advice on its memory use, per node.
-pub async fn memory_doctor(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<String>>> {
+pub async fn memory_doctor(at: &ServerDb) -> Result<Vec<NodeReply<String>>> {
+    let conn = &mut at.connection().await?;
     let reply: Value = cmd("MEMORY").arg("DOCTOR").query_async(conn).await?;
     Ok(per_node(conn, reply)
         .into_iter()
@@ -46,7 +48,8 @@ pub async fn memory_doctor(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<St
 
 /// `LATENCY DOCTOR` — the server's analysis of its recorded latency
 /// events, per node.
-pub async fn latency_doctor(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<String>>> {
+pub async fn latency_doctor(at: &ServerDb) -> Result<Vec<NodeReply<String>>> {
+    let conn = &mut at.connection().await?;
     let reply: Value = cmd("LATENCY").arg("DOCTOR").query_async(conn).await?;
     Ok(per_node(conn, reply)
         .into_iter()
@@ -60,7 +63,8 @@ pub async fn latency_doctor(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<S
 /// `MEMORY STATS` as `(metric, value)` rows in the server's order, per
 /// node. The per-database entries nest a map of their own; those are
 /// flattened with a dotted prefix (`db.0.overhead.hashtable.main`).
-pub async fn memory_stats(conn: &mut RedisAsyncConn) -> Result<Vec<NodeReply<Vec<(String, String)>>>> {
+pub async fn memory_stats(at: &ServerDb) -> Result<Vec<NodeReply<Vec<(String, String)>>>> {
+    let conn = &mut at.connection().await?;
     let reply: Value = cmd("MEMORY").arg("STATS").query_async(conn).await?;
     Ok(per_node(conn, reply)
         .into_iter()

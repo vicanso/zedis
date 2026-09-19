@@ -113,23 +113,8 @@ impl ZedisServers {
                                 let locale = locale.clone();
                                 let candidates = candidates.clone();
                                 cx.spawn(async move |form_entity, cx| {
-                                    let result: Result<Vec<String>, Error> = async {
-                                        let mut conn = match open_single_connection(&server, 0, false).await {
-                                            Ok(c) => c,
-                                            Err(e) => {
-                                                if !e.to_string().contains("AuthenticationFailed") {
-                                                    return Err(e.into());
-                                                }
-                                                let mut tmp = server.clone();
-                                                tmp.password = None;
-                                                open_single_connection(&tmp, 0, false).await?
-                                            }
-                                        };
-                                        let masters: Vec<std::collections::HashMap<String, String>> =
-                                            cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
-                                        Ok(masters.into_iter().filter_map(|m| m.get("name").cloned()).collect())
-                                    }
-                                    .await;
+                                    let result: Result<Vec<String>, Error> =
+                                        sentinel_master_names(&server).await.map_err(Error::from);
                                     let _ = form_entity.update(cx, |form, cx| match result {
                                         Ok(names) if names.len() == 1 => {
                                             form.schedule_field_update("master_name".into(), names[0].clone().into());
@@ -460,41 +445,7 @@ impl ZedisServers {
                             form.is_processing = true;
                             cx.notify();
                             cx.spawn(async move |handle, cx| {
-                                let result = async {
-                                    // The same dial as discovery: the sentinel's own
-                                    // credentials when it has some, else the legacy
-                                    // retry without a password.
-                                    let mut conn = open_seed_connection(&server).await?;
-                                    if server.server_type == Some(SERVER_TYPE_SENTINEL) {
-                                        // sentinel: verify by connecting to the actual master
-                                        let masters: Vec<std::collections::HashMap<String, String>> =
-                                            cmd("SENTINEL").arg("MASTERS").query_async(&mut conn).await?;
-                                        let master = masters.into_iter().next().ok_or_else(|| Error::Invalid {
-                                            message: "no master found in sentinel".to_string(),
-                                        })?;
-                                        let ip = master.get("ip").ok_or_else(|| Error::Invalid {
-                                            message: "master ip not found".to_string(),
-                                        })?;
-                                        let port: u16 = master
-                                            .get("port")
-                                            .ok_or_else(|| Error::Invalid {
-                                                message: "master port not found".to_string(),
-                                            })?
-                                            .parse()
-                                            .map_err(|e| Error::Invalid {
-                                                message: format!("invalid master port: {e}"),
-                                            })?;
-                                        let mut master_server = server.clone();
-                                        master_server.host = ip.clone();
-                                        master_server.port = port;
-                                        let mut master_conn = open_single_connection(&master_server, 0, false).await?;
-                                        let _: () = cmd("PING").query_async(&mut master_conn).await?;
-                                    } else {
-                                        let _: () = cmd("PING").query_async(&mut conn).await?;
-                                    }
-                                    Ok::<(), Error>(())
-                                }
-                                .await;
+                                let result: Result<(), Error> = test_connection(&server).await.map_err(Error::from);
                                 handle
                                     .update(cx, |form, cx| {
                                         form.is_processing = false;

@@ -35,7 +35,7 @@
 //! list / set / zset with case-insensitive substring matching.
 
 use crate::components::KeyTypeBadge;
-use crate::connection::{MatchLocation, ValueMatch, ValueSearchRound, get_connection_manager};
+use crate::connection::{MatchLocation, ServerDb, ValueMatch, ValueSearchRound, scan_values_round, value_preview};
 use crate::helpers::{build_csv, get_mono_font_family};
 use crate::states::{
     KeyType, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_value_search,
@@ -262,26 +262,20 @@ impl ZedisValueSearch {
             )
         };
         self.task = Some(cx.spawn(async move |this, cx| {
-            let client = match get_connection_manager().get_client(&server_id, db).await {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = this.update(cx, |this, cx| this.finish_error(e.to_string().into(), cx));
-                    return;
-                }
-            };
+            let at = ServerDb::new(&*server_id, db);
             let start = Instant::now();
             let mut cursors = None;
             loop {
-                let round = match client
-                    .scan_values_round(
-                        &pattern,
-                        &needle,
-                        MAX_VALUE_BYTES,
-                        MAX_CONTAINER_ELEMS,
-                        cursors.clone(),
-                        PAGE_COUNT,
-                    )
-                    .await
+                let round = match scan_values_round(
+                    &at,
+                    &pattern,
+                    &needle,
+                    MAX_VALUE_BYTES,
+                    MAX_CONTAINER_ELEMS,
+                    cursors.clone(),
+                    PAGE_COUNT,
+                )
+                .await
                 {
                     Ok(r) => r,
                     Err(e) => {
@@ -374,11 +368,7 @@ impl ZedisValueSearch {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         self.preview_task = Some(cx.spawn(async move |this, cx| {
-            let fetched = async {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                client.get_value_preview(&key).await
-            }
-            .await;
+            let fetched = async { value_preview(&ServerDb::new(&*server_id, db), &key).await }.await;
             let _ = this.update(cx, |this, cx| {
                 // Ignore stale previews if the user already clicked another row.
                 if this.selected.as_deref() != Some(key.as_ref()) {

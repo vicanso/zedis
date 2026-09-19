@@ -35,3 +35,48 @@ pub fn decompress_zstd(bytes: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| Error::Invalid { message: e.to_string() })?;
     Ok(decompressed_vec)
 }
+
+/// Compact human form for replication lag in bytes. Drops the unit when zero
+/// so healthy replicas don't carry "0 B" noise. (Status bar and Topology.)
+pub fn format_lag_bytes(bytes: i64) -> String {
+    if bytes <= 0 {
+        return "0".into();
+    }
+    humansize::format_size(bytes as u64, humansize::FormatSizeOptions::default().decimal_places(1))
+}
+
+/// Tiny stable hash so element IDs derived from a name compile to `u32`
+/// (`ElementId` only accepts primitive tuple seconds).
+pub fn djb2_hash(s: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for b in s.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u32);
+    }
+    h
+}
+
+/// Split a multi-line KEYS / ARGV field into trimmed non-empty entries.
+pub fn parse_lines(s: &str) -> Vec<String> {
+    s.lines()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_small_shared_helpers_do_what_their_copies_did() {
+        assert_eq!(format_lag_bytes(0), "0");
+        assert_eq!(format_lag_bytes(-5), "0");
+        assert_eq!(format_lag_bytes(1500), "1.5kB");
+        assert_eq!(parse_lines(" a \n\n  b\n"), vec!["a".to_string(), "b".to_string()]);
+        // Stable across runs and platforms: it names UI elements.
+        assert_eq!(djb2_hash(""), 5381);
+        assert_eq!(djb2_hash("a"), 5381u32.wrapping_mul(33).wrapping_add(97));
+        assert_ne!(djb2_hash("lib-a"), djb2_hash("lib-b"));
+    }
+}

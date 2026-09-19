@@ -27,12 +27,9 @@
 //! adds min / max / p50 / p90 / p99 (`TDIGEST.MIN` / `MAX` /
 //! `QUANTILE`). The viewer is read-only.
 
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::get_mono_font_family;
 use crate::{
-    connection::{Capability, get_connection_manager},
-    error::Error,
+    connection::{Capability, ProbInfo, ProbeOutcome, ServerDb, prob_info, prob_probe},
     states::{ProbKind, ZedisGlobalStore, ZedisServerState, i18n_probabilistic},
 };
 use gpui::{App, Context, Entity, SharedString, Task, Window, div, prelude::*, px};
@@ -44,11 +41,8 @@ use gpui_kit::component::{
     label::Label,
     v_flex,
 };
-use redis::{Value, cmd};
 use rust_i18n::t;
 use tracing::info;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// i18n sub-key for the kind's display name.
 fn kind_i18n_key(kind: ProbKind) -> &'static str {
@@ -61,40 +55,11 @@ fn kind_i18n_key(kind: ProbKind) -> &'static str {
     }
 }
 
-#[derive(Clone, Default)]
-struct ProbData {
-    /// Flattened `*.INFO` reply, rendered as a stat table.
-    info: Vec<(String, String)>,
-    /// Top-K only: `(item, count)` from `TOPK.LIST … WITHCOUNT`.
-    top_items: Vec<(String, i64)>,
-    /// t-digest only: `(label, value)` for min / max / pNN.
-    quantiles: Vec<(SharedString, f64)>,
-}
-
-/// What a probe (query or add) learned — localized at render time.
-enum ProbeOutcome {
-    /// Bloom / Cuckoo positive: probabilistic, may be a false positive.
-    MaybeExists,
-    /// Bloom / Cuckoo negative: definitive.
-    DefinitelyNot,
-    /// CMS estimate (query, or the new estimate after INCRBY).
-    Count(i64),
-    InTopK,
-    NotInTopK,
-    /// `TDIGEST.CDF` — fraction of samples ≤ the probed value.
-    Cdf(f64),
-    Added,
-    /// `BF.ADD` returned 0 — the filter thinks it was already there.
-    AlreadyMaybe,
-    /// `TOPK.ADD` pushed this item out of the list.
-    TopkDropped(String),
-}
-
 pub struct ZedisProbabilisticEditor {
     server_state: Entity<ZedisServerState>,
     key: SharedString,
     kind: ProbKind,
-    data: Option<ProbData>,
+    data: Option<ProbInfo>,
     error: Option<SharedString>,
     loading: bool,
     /// In-flight fetch; dropped (and thereby cancelled) when the editor
@@ -156,7 +121,7 @@ impl ZedisProbabilisticEditor {
         self.error = None;
         cx.notify();
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = fetch_probabilistic(server_id, db, key, kind).await;
+            let result = prob_info(&ServerDb::new(server_id, db), &key, kind).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
@@ -199,7 +164,7 @@ impl ZedisProbabilisticEditor {
         self.probe_failed = false;
         cx.notify();
         self.probe_task = Some(cx.spawn(async move |this, cx| {
-            let result = probe_probabilistic(server_id, db, key, kind, item, add).await;
+            let result = prob_probe(&ServerDb::new(server_id, db), &key, kind, &item, add).await;
             let _ = this.update(cx, |this, cx| {
                 this.probing = false;
                 match result {
@@ -258,7 +223,7 @@ impl ZedisProbabilisticEditor {
         col
     }
 
-    fn render_info(&self, data: &ProbData, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_info(&self, data: &ProbInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let mut rows = v_flex().w_full().gap_1();
         for (k, v) in data.info.iter() {
@@ -278,7 +243,7 @@ impl ZedisProbabilisticEditor {
         rows
     }
 
-    fn render_top_items(&self, data: &ProbData, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_top_items(&self, data: &ProbInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let mut rows = v_flex().w_full().gap_1().child(
             Label::new(i18n_probabilistic(cx, "top_items"))
@@ -308,7 +273,7 @@ impl ZedisProbabilisticEditor {
         rows
     }
 
-    fn render_quantiles(&self, data: &ProbData, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_quantiles(&self, data: &ProbInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let mut row = h_flex().w_full().flex_wrap().gap_x_4().gap_y_1().items_center().child(
             Label::new(i18n_probabilistic(cx, "quantiles"))
@@ -320,7 +285,7 @@ impl ZedisProbabilisticEditor {
                 h_flex()
                     .gap_1()
                     .items_baseline()
-                    .child(Label::new(label.clone()).text_xs().text_color(muted))
+                    .child(Label::new(*label).text_xs().text_color(muted))
                     .child(Label::new(format!("{value:.4}")).text_xs().font_semibold()),
             );
         }
@@ -417,207 +382,5 @@ fn probe_outcome_label(outcome: &ProbeOutcome, cx: &App) -> SharedString {
         ProbeOutcome::TopkDropped(item) => t!("probabilistic.probe_topk_dropped", item = item, locale = locale)
             .to_string()
             .into(),
-    }
-}
-
-/// One probe round-trip. Query answers the structure's defining question;
-/// add inserts (`CMS.INCRBY … 1` for the sketch — its "add" is a count
-/// increment by definition).
-async fn probe_probabilistic(
-    server_id: String,
-    db: usize,
-    key: String,
-    kind: ProbKind,
-    item: String,
-    add: bool,
-) -> Result<ProbeOutcome> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-    let outcome = match (kind, add) {
-        (ProbKind::Bloom, false) | (ProbKind::Cuckoo, false) => {
-            let exists: i64 = cmd(&format!("{}.EXISTS", kind.prefix()))
-                .arg(&key)
-                .arg(&item)
-                .query_async(&mut conn)
-                .await?;
-            if exists == 1 {
-                ProbeOutcome::MaybeExists
-            } else {
-                ProbeOutcome::DefinitelyNot
-            }
-        }
-        (ProbKind::Bloom, true) => {
-            let added: i64 = cmd("BF.ADD").arg(&key).arg(&item).query_async(&mut conn).await?;
-            if added == 1 {
-                ProbeOutcome::Added
-            } else {
-                ProbeOutcome::AlreadyMaybe
-            }
-        }
-        (ProbKind::Cuckoo, true) => {
-            let _: i64 = cmd("CF.ADD").arg(&key).arg(&item).query_async(&mut conn).await?;
-            ProbeOutcome::Added
-        }
-        (ProbKind::CountMinSketch, false) => {
-            let counts: Vec<i64> = cmd("CMS.QUERY").arg(&key).arg(&item).query_async(&mut conn).await?;
-            ProbeOutcome::Count(counts.first().copied().unwrap_or(0))
-        }
-        (ProbKind::CountMinSketch, true) => {
-            let counts: Vec<i64> = cmd("CMS.INCRBY")
-                .arg(&key)
-                .arg(&item)
-                .arg(1)
-                .query_async(&mut conn)
-                .await?;
-            ProbeOutcome::Count(counts.first().copied().unwrap_or(0))
-        }
-        (ProbKind::TopK, false) => {
-            let hits: Vec<i64> = cmd("TOPK.QUERY").arg(&key).arg(&item).query_async(&mut conn).await?;
-            if hits.first().copied().unwrap_or(0) == 1 {
-                ProbeOutcome::InTopK
-            } else {
-                ProbeOutcome::NotInTopK
-            }
-        }
-        (ProbKind::TopK, true) => {
-            let dropped: Vec<Option<String>> = cmd("TOPK.ADD").arg(&key).arg(&item).query_async(&mut conn).await?;
-            match dropped.into_iter().next().flatten() {
-                Some(evicted) => ProbeOutcome::TopkDropped(evicted),
-                None => ProbeOutcome::Added,
-            }
-        }
-        (ProbKind::TDigest, false) => {
-            let fractions: Vec<f64> = cmd("TDIGEST.CDF").arg(&key).arg(&item).query_async(&mut conn).await?;
-            ProbeOutcome::Cdf(fractions.first().copied().unwrap_or(f64::NAN))
-        }
-        (ProbKind::TDigest, true) => {
-            let _: () = cmd("TDIGEST.ADD").arg(&key).arg(&item).query_async(&mut conn).await?;
-            ProbeOutcome::Added
-        }
-    };
-    Ok(outcome)
-}
-
-/// Fetch the `*.INFO` stats plus the per-kind extras (Top-K list /
-/// t-digest quantiles). Only `*.INFO` is fatal on error; the extras are
-/// best-effort.
-async fn fetch_probabilistic(server_id: String, db: usize, key: String, kind: ProbKind) -> Result<ProbData> {
-    let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
-    let info_cmd = format!("{}.INFO", kind.prefix());
-    let info_raw: Value = cmd(info_cmd.as_str()).arg(&key).query_async(&mut conn).await?;
-    let mut data = ProbData {
-        info: info_pairs_display(&info_raw),
-        ..Default::default()
-    };
-
-    match kind {
-        ProbKind::TopK => {
-            if let Ok(raw) = cmd("TOPK.LIST")
-                .arg(&key)
-                .arg("WITHCOUNT")
-                .query_async::<Value>(&mut conn)
-                .await
-            {
-                data.top_items = parse_topk_list(&raw);
-            }
-        }
-        ProbKind::TDigest => {
-            let mut quantiles = Vec::new();
-            if let Ok(v) = cmd("TDIGEST.MIN").arg(&key).query_async::<f64>(&mut conn).await
-                && v.is_finite()
-            {
-                quantiles.push((SharedString::from("min"), v));
-            }
-            if let Ok(v) = cmd("TDIGEST.MAX").arg(&key).query_async::<f64>(&mut conn).await
-                && v.is_finite()
-            {
-                quantiles.push((SharedString::from("max"), v));
-            }
-            if let Ok(vs) = cmd("TDIGEST.QUANTILE")
-                .arg(&key)
-                .arg(0.5)
-                .arg(0.9)
-                .arg(0.99)
-                .query_async::<Vec<f64>>(&mut conn)
-                .await
-            {
-                for (label, value) in [("p50", vs.first()), ("p90", vs.get(1)), ("p99", vs.get(2))] {
-                    if let Some(value) = value.copied().filter(|x| x.is_finite()) {
-                        quantiles.push((SharedString::from(label), value));
-                    }
-                }
-            }
-            data.quantiles = quantiles;
-        }
-        _ => {}
-    }
-
-    Ok(data)
-}
-
-/// Flatten a `*.INFO` reply (RESP3 map or RESP2 flat array) into
-/// display-ready `(field, value)` pairs.
-fn info_pairs_display(value: &Value) -> Vec<(String, String)> {
-    let pairs: Vec<(String, &Value)> = match value {
-        Value::Map(pairs) => pairs
-            .iter()
-            .filter_map(|(k, v)| value_to_string(k).map(|s| (s, v)))
-            .collect(),
-        Value::Array(items) => items
-            .chunks(2)
-            .filter_map(|chunk| {
-                let key = chunk.first()?;
-                let val = chunk.get(1)?;
-                value_to_string(key).map(|s| (s, val))
-            })
-            .collect(),
-        _ => vec![],
-    };
-    pairs.into_iter().map(|(k, v)| (k, value_to_display(v))).collect()
-}
-
-/// Parse `TOPK.LIST key WITHCOUNT` (a flat `[item, count, …]` array).
-fn parse_topk_list(value: &Value) -> Vec<(String, i64)> {
-    let Value::Array(items) = value else {
-        return vec![];
-    };
-    items
-        .chunks(2)
-        .filter_map(|chunk| {
-            let item = value_to_string(chunk.first()?)?;
-            let count = value_to_i64(chunk.get(1)?)?;
-            Some((item, count))
-        })
-        .collect()
-}
-
-fn value_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::SimpleString(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn value_to_i64(value: &Value) -> Option<i64> {
-    match value {
-        Value::Int(i) => Some(*i),
-        Value::Double(d) => Some(*d as i64),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).trim().parse().ok(),
-        Value::SimpleString(s) => s.trim().parse().ok(),
-        _ => None,
-    }
-}
-
-/// Stringify any `*.INFO` value for display.
-fn value_to_display(value: &Value) -> String {
-    match value {
-        Value::Int(i) => i.to_string(),
-        Value::Double(d) => format!("{d}"),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        Value::SimpleString(s) => s.clone(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Nil => "—".to_string(),
-        other => format!("{other:?}"),
     }
 }

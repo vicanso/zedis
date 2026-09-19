@@ -680,8 +680,8 @@ mod sharded_pubsub;
 #[cfg(not(target_family = "wasm"))]
 mod slot_migration;
 
-pub use commandlog::CommandLogKind;
 pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
+pub use commandlog::{CommandLogKind, command_log_reset, command_logs};
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
 #[cfg(not(target_family = "wasm"))]

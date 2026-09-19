@@ -1,0 +1,4 @@
+# What src/views still knows about Redis — see tests/view_layering.rs.
+# cmd = commands built, exec = commands run, conn = connections taken, redis = `redis::` paths.
+# Only ever shrinks. Rewrite with: ZEDIS_VIEW_LAYERING_WRITE=1 make check-layering
+# 0 files: cmd=0 exec=0 conn=0 redis=0

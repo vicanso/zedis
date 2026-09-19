@@ -21,6 +21,7 @@
 //!
 //! [`RedisClient`]: crate::manager::get_connection_manager
 
+use crate::reply;
 use redis::Value;
 
 /// One tracked key with its metric value (CPU µs or network bytes).
@@ -62,16 +63,16 @@ impl HotkeysReport {
         };
         for (field, value) in pairs {
             match field.as_str() {
-                "tracking-active" => self.tracking_active |= as_u64(value) == Some(1),
-                "sample-ratio" => self.sample_ratio = self.sample_ratio.max(as_u64(value).unwrap_or(0)),
+                "tracking-active" => self.tracking_active |= reply::uint(value) == Some(1),
+                "sample-ratio" => self.sample_ratio = self.sample_ratio.max(reply::uint(value).unwrap_or(0)),
                 "collection-duration-ms" => {
-                    self.collection_duration_ms = self.collection_duration_ms.max(as_u64(value).unwrap_or(0))
+                    self.collection_duration_ms = self.collection_duration_ms.max(reply::uint(value).unwrap_or(0))
                 }
                 "all-commands-all-slots-us" => {
-                    self.total_cpu_us = self.total_cpu_us.saturating_add(as_u64(value).unwrap_or(0))
+                    self.total_cpu_us = self.total_cpu_us.saturating_add(reply::uint(value).unwrap_or(0))
                 }
                 "net-bytes-all-commands-all-slots" => {
-                    self.total_net_bytes = self.total_net_bytes.saturating_add(as_u64(value).unwrap_or(0))
+                    self.total_net_bytes = self.total_net_bytes.saturating_add(reply::uint(value).unwrap_or(0))
                 }
                 "by-cpu-time-us" => self.by_cpu.extend(entry_list(value)),
                 "by-net-bytes" => self.by_net.extend(entry_list(value)),
@@ -99,7 +100,12 @@ impl HotkeysReport {
 /// RESP3 map or a RESP2 flat array. `None` for `Nil` or anything else.
 fn reply_pairs(value: &Value) -> Option<Vec<(String, &Value)>> {
     match value {
-        Value::Map(items) => Some(items.iter().filter_map(|(k, v)| Some((as_string(k)?, v))).collect()),
+        Value::Map(items) => Some(
+            items
+                .iter()
+                .filter_map(|(k, v)| Some((reply::text_lossy(k)?, v)))
+                .collect(),
+        ),
         // The server wraps the report in a one-element outer array (an
         // array of collections; at most one exists) — seen on the wire as
         // `*1` around the `*24` field list on 8.6.1. Unwrap it. A flat
@@ -112,7 +118,7 @@ fn reply_pairs(value: &Value) -> Option<Vec<(String, &Value)>> {
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .filter_map(|[k, v]| Some((as_string(k)?, v)))
+                .filter_map(|[k, v]| Some((reply::text_lossy(k)?, v)))
                 .collect(),
         ),
         _ => None,
@@ -125,26 +131,13 @@ fn entry_list(value: &Value) -> Vec<HotkeyEntry> {
     reply_pairs(value)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(key, v)| Some(HotkeyEntry { key, value: as_u64(v)? }))
+        .filter_map(|(key, v)| {
+            Some(HotkeyEntry {
+                key,
+                value: reply::uint(v)?,
+            })
+        })
         .collect()
-}
-
-fn as_string(value: &Value) -> Option<String> {
-    match value {
-        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::SimpleString(s) => Some(s.clone()),
-        Value::VerbatimString { text, .. } => Some(text.clone()),
-        _ => None,
-    }
-}
-
-fn as_u64(value: &Value) -> Option<u64> {
-    match value {
-        Value::Int(n) => u64::try_from(*n).ok(),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).parse().ok(),
-        Value::SimpleString(s) => s.parse().ok(),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

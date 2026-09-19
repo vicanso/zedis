@@ -593,30 +593,9 @@ impl RedisValue {
     }
 }
 
-/// RedisBloom probabilistic structure, distinguished by the module type
-/// string returned by `TYPE`. Carried inside [`KeyType::Probabilistic`]
-/// so a single key-type arm fans out to the right viewer / commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProbKind {
-    Bloom,
-    Cuckoo,
-    CountMinSketch,
-    TopK,
-    TDigest,
-}
-
-impl ProbKind {
-    /// Command prefix / short label (`BF`, `CF`, `CMS`, `TOPK`, `TDIGEST`).
-    pub fn prefix(&self) -> &'static str {
-        match self {
-            ProbKind::Bloom => "BF",
-            ProbKind::Cuckoo => "CF",
-            ProbKind::CountMinSketch => "CMS",
-            ProbKind::TopK => "TOPK",
-            ProbKind::TDigest => "TDIGEST",
-        }
-    }
-}
+// `ProbKind` lives with the commands it selects (`zedis_connection::probabilistic`);
+// re-exported so `states::ProbKind` stays the path every caller uses.
+pub use crate::connection::ProbKind;
 
 /// A key type Zedis has no viewer for, identified by the raw `TYPE` reply
 /// (`graphdata`, `TairHash-`, …). The name is interned once per process so

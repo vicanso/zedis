@@ -21,6 +21,7 @@
 //! `network-bytes-in` / `network-bytes-out` appear only when the server
 //! runs with `cluster-slot-stats-enabled yes` (start-time only config).
 
+use crate::reply;
 use redis::Value;
 
 /// The sortable metrics `ORDERBY` accepts. `KeyCount` is the only one a
@@ -99,14 +100,14 @@ pub fn parse_slot_stats(reply: &Value, node: &str) -> Vec<SlotStatRow> {
         .iter()
         .filter_map(|entry| {
             let Value::Array(pair) = entry else { return None };
-            let slot = u16::try_from(as_u64(pair.first()?)?).ok()?;
+            let slot = u16::try_from(reply::uint(pair.first()?)?).ok()?;
             let mut row = SlotStatRow {
                 slot,
                 node: node.to_string(),
                 ..Default::default()
             };
             for (name, value) in stat_pairs(pair.get(1)?) {
-                let value = as_u64(value);
+                let value = reply::uint(value);
                 match name.as_str() {
                     "key-count" => row.key_count = value.unwrap_or(0),
                     "memory-bytes" => row.memory_bytes = value,
@@ -124,30 +125,17 @@ pub fn parse_slot_stats(reply: &Value, node: &str) -> Vec<SlotStatRow> {
 /// `metric-name value …` pairs, RESP3 map or RESP2 flat array.
 fn stat_pairs(value: &Value) -> Vec<(String, &Value)> {
     match value {
-        Value::Map(items) => items.iter().filter_map(|(k, v)| Some((as_string(k)?, v))).collect(),
+        Value::Map(items) => items
+            .iter()
+            .filter_map(|(k, v)| Some((reply::text_lossy(k)?, v)))
+            .collect(),
         Value::Array(items) => items
             .as_chunks::<2>()
             .0
             .iter()
-            .filter_map(|[k, v]| Some((as_string(k)?, v)))
+            .filter_map(|[k, v]| Some((reply::text_lossy(k)?, v)))
             .collect(),
         _ => Vec::new(),
-    }
-}
-
-fn as_string(value: &Value) -> Option<String> {
-    match value {
-        Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::SimpleString(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn as_u64(value: &Value) -> Option<u64> {
-    match value {
-        Value::Int(n) => u64::try_from(*n).ok(),
-        Value::BulkString(bytes) => String::from_utf8_lossy(bytes).parse().ok(),
-        _ => None,
     }
 }
 

@@ -38,8 +38,6 @@ pub mod error;
 #[cfg(not(target_family = "wasm"))]
 mod backup;
 
-mod cmd_history_manager;
-mod favorites_manager;
 mod history_manager;
 mod key_metadata_manager;
 mod lua_scripts;
@@ -52,25 +50,23 @@ mod mem_store;
 mod metrics_history;
 #[cfg(not(target_family = "wasm"))]
 mod protos;
-mod recent_keys_manager;
 #[cfg(not(target_family = "wasm"))]
 mod scripts;
-mod search_history_manager;
 mod trash;
 
 #[cfg(not(target_family = "wasm"))]
 pub use backup::*;
-pub use cmd_history_manager::*;
-pub use favorites_manager::*;
+pub use history_manager::{
+    get_cmd_history_manager, get_favorites_manager, get_recent_keys_manager, get_search_history_manager,
+    recent_keys_scope,
+};
 pub use key_metadata_manager::*;
 pub use lua_scripts::*;
 pub use metrics_history::*;
 #[cfg(not(target_family = "wasm"))]
 pub use protos::*;
-pub use recent_keys_manager::*;
 #[cfg(not(target_family = "wasm"))]
 pub use scripts::*;
-pub use search_history_manager::*;
 pub use trash::*;
 
 const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
@@ -79,7 +75,9 @@ const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
 #[cfg(not(target_family = "wasm"))]
 const SCRIPT_VIEWER_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("script_viewer");
 const CMD_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("cmd_history");
-const FAVORITY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
+// The table is spelled "favority" on disk and stays so: it is the key under
+// which every existing user's favorites are stored.
+const FAVORITES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favority");
 /// Per-(server, db) MRU of recently opened keys (JSON array of key names).
 const RECENT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("recent_keys");
 // Saved Lua scripts: globally shared across servers, persisted to disk.
@@ -179,7 +177,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
             write_txn.open_table(SCRIPT_VIEWER_TABLE)?;
         }
         write_txn.open_table(CMD_HISTORY_TABLE)?;
-        write_txn.open_table(FAVORITY_TABLE)?;
+        write_txn.open_table(FAVORITES_TABLE)?;
         write_txn.open_table(RECENT_KEYS_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
@@ -333,7 +331,7 @@ mod schema_tests {
         {
             let db = Database::create(&scratch.0).expect("create");
             let txn = db.begin_write().expect("begin write");
-            txn.open_table(FAVORITY_TABLE).expect("open");
+            txn.open_table(FAVORITES_TABLE).expect("open");
             txn.commit().expect("commit");
             assert_eq!(stored_version(&db), None);
             ensure_schema(&db).expect("ensure schema");
@@ -402,7 +400,7 @@ mod schema_tests {
         assert_eq!(stored_version(&db), Some(0));
         let txn = db.begin_read().expect("begin read");
         assert!(matches!(
-            txn.open_table(FAVORITY_TABLE),
+            txn.open_table(FAVORITES_TABLE),
             Err(redb::TableError::TableDoesNotExist(_))
         ));
     }
@@ -434,7 +432,7 @@ mod schema_tests {
         assert_eq!(stored_version(&db), Some(SCHEMA_VERSION + 5));
         let txn = db.begin_read().expect("begin read");
         assert!(matches!(
-            txn.open_table(FAVORITY_TABLE),
+            txn.open_table(FAVORITES_TABLE),
             Err(redb::TableError::TableDoesNotExist(_))
         ));
     }

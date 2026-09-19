@@ -176,7 +176,7 @@ pub const HINT_TOPOLOGY: &str = "topology";
 pub const HINT_MEMORY_ANALYSIS: &str = "memory_analysis";
 
 #[cfg(not(target_family = "wasm"))]
-fn get_or_create_server_config() -> Result<PathBuf> {
+fn app_state_path() -> Result<PathBuf> {
     // Same file name in both environments — a development run is isolated by its
     // own config *directory* (`<config_dir>/dev`), not by a `-dev` file suffix.
     let path = get_or_create_config_dir()?.join("zedis.toml");
@@ -192,7 +192,7 @@ fn get_or_create_server_config() -> Result<PathBuf> {
 /// a path from `browser_store_path` means to `fs` there (ADR 9). Nothing to
 /// create — an absent entry reads as "first run".
 #[cfg(target_family = "wasm")]
-fn get_or_create_server_config() -> Result<PathBuf> {
+fn app_state_path() -> Result<PathBuf> {
     Ok(browser_store_path("zedis.toml"))
 }
 
@@ -533,7 +533,7 @@ impl Global for ZedisGlobalStore {}
 /// Persists the app state crash-safely: atomic replace plus a rolling
 /// `zedis.toml.bak` of the previous version (see `write_file_atomic_with_backup`).
 pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
-    let path = get_or_create_server_config()?;
+    let path = app_state_path()?;
     // What a tab stores is readable by every script on the origin, and there
     // is no master key in a tab to encrypt it under — so the two secrets this
     // state can hold are not part of what is stored there. They stay in
@@ -578,7 +578,7 @@ fn system_language() -> &'static str {
 
 impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
-        let path = get_or_create_server_config()?;
+        let path = app_state_path()?;
         // A damaged file is quarantined and the `.bak` restored (or defaults
         // used) — never parsed-as-empty, which the next save would then
         // write over the user's preferences. The recovery is reported in the
@@ -1758,7 +1758,7 @@ mod tests {
         use super::*;
 
         fn config_file() -> std::path::PathBuf {
-            get_or_create_server_config().expect("config path")
+            app_state_path().expect("config path")
         }
 
         fn file_text() -> String {

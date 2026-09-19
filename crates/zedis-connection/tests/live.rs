@@ -30,20 +30,27 @@ use std::sync::atomic::AtomicBool;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, BitOpKind, CommandLogKind, CommandStatus, CompareOptions, CompareSide, ConflictMode, ExpireCondition,
-    FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd, HeatMetric, HeatProbe, ImportFormat, KeyDifference, KeyOp, KeyOpOutcome,
-    KillFilter, KillOutcome, KillTarget, PauseMode, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus,
-    RedisAsyncConn, RedisServer, ReplicationInfo, ReplicationRole, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions,
-    ServerCommand, ServerFlavor, SlotStatMetric, TsAlter, TsMRange, acl_del_user, acl_dryrun, acl_file, acl_genpass,
-    acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, bit_op, cluster_get_slot_migrations,
-    cluster_migrate_slots, compare_prefix, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain,
-    ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist, get_connection_manager, get_server,
-    get_server_heat_probe, get_servers, kill_filter_commands, kill_running, open_single_connection,
-    parse_readable_entries, pause_args, pf_merge, plan_cluster_rebalance, preview_key_conflicts, probe_server_features,
-    read_readable_chunk, remove_list_indexes, rename_hash_field, restore_keys_chunk, run_key_op, run_script,
-    save_servers, sentinel_ckquorum, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove,
-    sentinel_set, sniff_import_format, split_acl_rules, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange,
-    unassigned_slot_ranges, write_hash_field, write_readable_chunk,
+    AclDryRun, BitOpKind, ChannelSubscription, CommandLogKind, CommandStatus, CompareOptions, CompareSide,
+    ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd, GeoShape, HeatMetric, HeatProbe,
+    HllEncoding, ImportFormat, KeyDifference, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
+    ProbKind, ProbeOutcome, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer,
+    ReplicationInfo, ReplicationRole, ReplyFormat, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand,
+    ServerDb, ServerFlavor, SlotStatMetric, StreamTail, SubscribeKind, TerminalSession, TsAlter, TsMRange,
+    VectorSimOptions, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
+    acl_set_user, acl_whoami, bit_field, bit_op, bitmap_info, client_kill_by, client_kill_id, client_list,
+    client_pause, client_unpause, cluster_get_slot_migrations, cluster_migrate_slots, command_log_reset, command_logs,
+    compare_prefix, config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite,
+    config_set, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_info, ft_search,
+    ft_spellcheck, ft_tagvals, geo_add, geo_dist, geo_sample, geo_search, get_connection_manager, get_server,
+    get_server_heat_probe, get_servers, hll_info, info_everything, key_bytes, kill_filter_commands, kill_running,
+    latency_history, latency_latest, latency_monitor_threshold, latency_reset, maxmemory_policy, open_monitor_feeds,
+    open_single_connection, parse_readable_entries, pf_add, pf_merge, plan_cluster_rebalance, preview_key_conflicts,
+    prob_info, prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field,
+    restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, script_exists, script_load, script_sha1,
+    sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names, sentinel_masters, sentinel_monitor,
+    sentinel_remove, sentinel_set, set_bit, sniff_import_format, split_acl_rules, test_connection, ts_add, ts_alter,
+    ts_create_rule, ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info,
+    vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_looks_geo,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -902,17 +909,19 @@ fn standalone_geo_hll_and_bitmap_writes() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
         let mut c = conn(&id, 0).await;
+        // What the viewers hold instead of a connection.
+        let at = ServerDb::new(&id, 0);
 
         // Three points along a line of latitude, ~110 km apart in longitude.
         let geo = unique("geo-write");
         for (lon, member) in [(0.0_f64, "origin"), (1.0, "east"), (2.0, "far-east")] {
-            let added = geo_add(&mut c, &geo, lon, 0.0, member).await.expect("geoadd");
+            let added = geo_add(&at, &geo, lon, 0.0, member).await.expect("geoadd");
             assert_eq!(added, 1, "{member} is new");
         }
         // Re-adding a member moves it rather than counting as new.
-        assert_eq!(geo_add(&mut c, &geo, 0.0, 0.0, "origin").await.expect("re-add"), 0);
+        assert_eq!(geo_add(&at, &geo, 0.0, 0.0, "origin").await.expect("re-add"), 0);
 
-        let metres = geo_dist(&mut c, &geo, "origin", "east")
+        let metres = geo_dist(&at, &geo, "origin", "east")
             .await
             .expect("geodist")
             .expect("both members exist");
@@ -921,10 +930,70 @@ fn standalone_geo_hll_and_bitmap_writes() {
             "a degree of longitude at the equator: {metres} m"
         );
         // A member that is not there is absent, not an error.
-        assert_eq!(
-            geo_dist(&mut c, &geo, "origin", "nowhere").await.expect("geodist"),
-            None
+        assert_eq!(geo_dist(&at, &geo, "origin", "nowhere").await.expect("geodist"), None);
+
+        // What the map reads. Under the cap the sample is the whole set, in
+        // score order, each member with the position GEOPOS decodes.
+        let sample = geo_sample(&at, &geo, 100).await.expect("geo sample");
+        assert_eq!(sample.total, 3);
+        let names: Vec<&str> = sample.members.iter().map(|m| m.member.as_str()).collect();
+        assert_eq!(names, ["origin", "east", "far-east"]);
+        let (east_lon, east_lat) = sample.members[1].position.expect("east has a position");
+        assert!(
+            (east_lon - 1.0).abs() < 1e-4 && east_lat.abs() < 1e-4,
+            "east at ({east_lon}, {east_lat})"
         );
+        // Over the cap: a sample of exactly the cap, and the total still the
+        // whole key's.
+        let capped = geo_sample(&at, &geo, 2).await.expect("capped sample");
+        assert_eq!((capped.total, capped.members.len()), (3, 2));
+        assert!(capped.members.iter().all(|m| m.position.is_some()));
+        // A missing key is an empty map, not an error.
+        let none = geo_sample(&at, &unique("geo-none"), 100).await.expect("missing key");
+        assert_eq!((none.total, none.members.len()), (0, 0));
+
+        // The same two searches the raw commands below make, through the
+        // operation the map calls: nearest first.
+        assert_eq!(
+            geo_search(&at, &geo, 0.0, 0.0, GeoShape::Radius(150_000.0), 10)
+                .await
+                .expect("by radius"),
+            ["origin", "east"]
+        );
+        let tile = GeoShape::Box {
+            width_m: 500_000.0,
+            height_m: 10_000.0,
+        };
+        assert_eq!(
+            geo_search(&at, &geo, 0.0, 0.0, tile, 10).await.expect("by box"),
+            ["origin", "east", "far-east"]
+        );
+        assert_eq!(
+            geo_search(&at, &geo, 0.0, 0.0, tile, 1).await.expect("count").len(),
+            1,
+            "COUNT caps it"
+        );
+
+        // "Does this sorted set hold GEO data?" — yes for GEOADD members, no
+        // for plain ZADD scores (GEOPOS decodes those to one far corner), no
+        // for a key that is not there.
+        assert!(zset_looks_geo(&at, &geo).await);
+        let plain = unique("geo-plain-zset");
+        let _: () = cmd("ZADD")
+            .arg(&plain)
+            .arg(0)
+            .arg("a")
+            .arg(0)
+            .arg("b")
+            .query_async(&mut c)
+            .await
+            .expect("zadd");
+        assert!(
+            !zset_looks_geo(&at, &plain).await,
+            "a plain sorted set was taken for GEO"
+        );
+        assert!(!zset_looks_geo(&at, &unique("geo-none")).await);
+        let _: () = cmd("DEL").arg(&plain).query_async(&mut c).await.expect("cleanup plain");
 
         // A 150 km radius reaches the first neighbour but not the second.
         let by_radius: Vec<String> = cmd("GEOSEARCH")
@@ -961,25 +1030,39 @@ fn standalone_geo_hll_and_bitmap_writes() {
         // PFMERGE keeps what the destination already had and adds the rest.
         let hll_a = unique("hll-a");
         let hll_b = unique("hll-b");
-        let _: () = cmd("PFADD")
-            .arg(&hll_a)
-            .arg(&["x", "y"])
-            .query_async(&mut c)
-            .await
-            .expect("pfadd a");
-        let _: () = cmd("PFADD")
-            .arg(&hll_b)
-            .arg(&["y", "z"])
-            .query_async(&mut c)
-            .await
-            .expect("pfadd b");
-        pf_merge(&mut c, &hll_a, std::slice::from_ref(&hll_b))
+        // Through the operations the HLL viewer calls.
+        let strs = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(
+            pf_add(&at, &hll_a, &strs(&["x", "y"])).await.expect("pfadd a"),
+            "new elements change the estimate"
+        );
+        assert!(
+            !pf_add(&at, &hll_a, &strs(&["x"])).await.expect("pfadd again"),
+            "a known element does not"
+        );
+        pf_add(&at, &hll_b, &strs(&["y", "z"])).await.expect("pfadd b");
+        // No elements: not sent — a bare `PFADD key` would create the key.
+        let absent = unique("hll-absent");
+        assert!(!pf_add(&at, &absent, &[]).await.expect("empty pfadd"));
+        let exists: bool = cmd("EXISTS").arg(&absent).query_async(&mut c).await.expect("exists");
+        assert!(!exists, "an empty PFADD created a sketch");
+
+        pf_merge(&at, &hll_a, std::slice::from_ref(&hll_b))
             .await
             .expect("pfmerge");
-        let count: u64 = cmd("PFCOUNT").arg(&hll_a).query_async(&mut c).await.expect("pfcount");
-        assert_eq!(count, 3, "x, y and z — the destination was folded in, not replaced");
+        let info = hll_info(&at, &hll_a).await.expect("hll info");
+        assert_eq!(
+            info.cardinality, 3,
+            "x, y and z — the destination was folded in, not replaced"
+        );
+        assert_eq!(
+            info.encoding,
+            Some(HllEncoding::Sparse),
+            "three elements are nowhere near dense"
+        );
+        assert!(info.size > 0);
         // Nothing to merge is a no-op, not an error.
-        pf_merge(&mut c, &hll_a, &[]).await.expect("empty merge");
+        pf_merge(&at, &hll_a, &[]).await.expect("empty merge");
 
         // BITOP over two known byte patterns.
         let bits_a = unique("bits-a");
@@ -997,7 +1080,7 @@ fn standalone_geo_hll_and_bitmap_writes() {
             .query_async(&mut c)
             .await
             .expect("set b");
-        let len = bit_op(&mut c, BitOpKind::And, &dest, &[bits_a.clone(), bits_b.clone()])
+        let len = bit_op(&at, BitOpKind::And, &dest, &[bits_a.clone(), bits_b.clone()])
             .await
             .expect("bitop and");
         assert_eq!(len, 1, "one byte in, one byte out");
@@ -1007,11 +1090,68 @@ fn standalone_geo_hll_and_bitmap_writes() {
         // NOT takes exactly one source, and the wrapper refuses more before
         // the server has to.
         assert!(
-            bit_op(&mut c, BitOpKind::Not, &dest, &[bits_a.clone(), bits_b.clone()])
+            bit_op(&at, BitOpKind::Not, &dest, &[bits_a.clone(), bits_b.clone()])
                 .await
                 .is_err()
         );
-        bit_op(&mut c, BitOpKind::Not, &dest, std::slice::from_ref(&bits_a))
+        // What the bitmap viewer reads and writes. `bits_a` is one byte, 0x0f.
+        let info = bitmap_info(&at, &bits_a, 512).await.expect("bitmap info");
+        assert_eq!(
+            (info.bytes.as_slice(), info.total_bits, info.set_bits),
+            (&[0x0f_u8][..], 8, 4)
+        );
+        assert_eq!((info.first_set, info.first_clear), (4, 0), "0000 1111");
+        assert!(!info.truncated);
+        assert_eq!(info.rendered_bits(), 8);
+        // A window smaller than the key: truncated, and the statistics still
+        // describe the whole key.
+        let wide = unique("bits-wide");
+        let _: () = cmd("SET")
+            .arg(&wide)
+            .arg(vec![0xff_u8; 4])
+            .query_async(&mut c)
+            .await
+            .expect("set wide");
+        let windowed = bitmap_info(&at, &wide, 1).await.expect("windowed");
+        assert_eq!(
+            (windowed.bytes.len(), windowed.total_bits, windowed.set_bits),
+            (1, 32, 32)
+        );
+        assert!(windowed.truncated);
+        // A missing key is an empty bitmap, not an error.
+        let missing = bitmap_info(&at, &unique("bits-none"), 512).await.expect("missing key");
+        assert_eq!((missing.total_bits, missing.rendered_bits()), (0, 0));
+        // SETBIT reports the bit it replaced.
+        assert!(
+            !set_bit(&at, &bits_a, 0, true).await.expect("setbit"),
+            "bit 0 was clear"
+        );
+        assert!(
+            set_bit(&at, &bits_a, 0, false).await.expect("setbit back"),
+            "and then set"
+        );
+        // BITFIELD, as typed by the user.
+        let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            bit_field(&at, &bits_a, &args("GET u8 0")).await.expect("bitfield get"),
+            vec![0x0f]
+        );
+        assert_eq!(
+            bit_field(&at, &bits_a, &args("SET u4 0 15 GET u8 0"))
+                .await
+                .expect("bitfield set"),
+            vec![0, 0xff],
+            "one integer per sub-command: the old u4, then the new u8"
+        );
+        let _: () = cmd("SET")
+            .arg(&bits_a)
+            .arg("\x0f")
+            .query_async(&mut c)
+            .await
+            .expect("restore bits_a");
+        let _: () = cmd("DEL").arg(&wide).query_async(&mut c).await.expect("cleanup wide");
+
+        bit_op(&at, BitOpKind::Not, &dest, std::slice::from_ref(&bits_a))
             .await
             .expect("bitop not");
         let negated: Vec<u8> = cmd("GET").arg(&dest).query_async(&mut c).await.expect("get dest");
@@ -1027,6 +1167,327 @@ fn standalone_geo_hll_and_bitmap_writes() {
 
 /// The TimeSeries writes the chart panel gained. RedisTimeSeries only, so
 /// this runs on the stack lane and skips loudly everywhere else.
+/// `CONFIG` through the operations the config editor calls. It changes one
+/// parameter nothing else depends on, and puts it back.
+#[test]
+#[ignore]
+fn standalone_config_is_read_set_and_compared() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+
+        let loaded = config_load(&at).await.expect("config load");
+        assert!(
+            loaded.params.len() > 50,
+            "CONFIG GET * returned {} parameters",
+            loaded.params.len()
+        );
+        assert!(loaded.params.windows(2).all(|w| w[0].0 <= w[1].0), "sorted by name");
+        let map = config_get_all(&at).await.expect("config get all");
+        assert_eq!(
+            map.len(),
+            loaded.params.len(),
+            "the list and the map are the same reply"
+        );
+
+        // `slowlog-max-len` is a plain integer no other test reads.
+        let name = "slowlog-max-len";
+        let before = map.get(name).cloned().expect("slowlog-max-len exists");
+        let changed = if before == "137" { "138" } else { "137" };
+        config_set(&at, name, changed).await.expect("config set");
+        assert_eq!(
+            config_get_all(&at).await.expect("reread").get(name).map(String::as_str),
+            Some(changed)
+        );
+        config_set(&at, name, &before).await.expect("restore");
+        // A value the server refuses is an error, not a silent no-op.
+        assert!(config_set(&at, name, "not-a-number").await.is_err());
+        assert!(config_set(&at, "zedis-no-such-parameter", "1").await.is_err());
+
+        // REWRITE needs a config file: with one it succeeds, without one the
+        // server says so — and `config_file` is what told the editor which.
+        let rewritten = config_rewrite(&at).await;
+        assert_eq!(
+            rewritten.is_ok(),
+            !loaded.config_file.is_empty(),
+            "config_file = {:?}, rewrite = {rewritten:?}",
+            loaded.config_file
+        );
+    });
+}
+
+/// The small reads and resets behind the persistence, load, INFO and latency
+/// panels — each was one hand-built command inside its view.
+#[test]
+#[ignore]
+fn standalone_admin_panels_read_and_reset_through_their_operations() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+
+        // CONFIG GET by name: a value for what exists, `None` for what does
+        // not, in the order asked.
+        let values = config_get_named(&at, &["appendonly", "zedis-no-such-parameter", "dbfilename"])
+            .await
+            .expect("config get named");
+        assert_eq!(values.len(), 3);
+        assert!(
+            matches!(values[0].as_deref(), Some("yes" | "no")),
+            "appendonly = {:?}",
+            values[0]
+        );
+        assert_eq!(values[1], None);
+        assert!(
+            values[2].as_deref().is_some_and(|name| !name.is_empty()),
+            "dbfilename = {:?}",
+            values[2]
+        );
+
+        // The fullest INFO the server gives, one entry per master.
+        let info = info_everything(&at).await.expect("info everything");
+        assert_eq!(info.len(), 1);
+        assert!(info[0].0.contains(':'), "labelled host:port, got {:?}", info[0].0);
+        assert!(info[0].1.contains("redis_version:"));
+        // `everything` / `all` carry what the plain INFO leaves out.
+        assert!(info[0].1.contains("# Commandstats"), "the full listing was not reached");
+
+        config_resetstat(&at).await.expect("config resetstat");
+
+        // LATENCY: the listing parses whether or not monitoring is on, a
+        // reset answers how many events it cleared, and the threshold is what
+        // CONFIG says.
+        let listing = latency_latest(&at).await.expect("latency latest");
+        assert!(!listing.unsupported, "a real Redis has LATENCY");
+        let threshold = latency_monitor_threshold(&at).await.expect("threshold");
+        assert_eq!(
+            config_get_named(&at, &["latency-monitor-threshold"])
+                .await
+                .expect("named")[0],
+            Some(threshold.to_string())
+        );
+        latency_reset(&at, &[]).await.expect("latency reset");
+        assert!(
+            latency_latest(&at).await.expect("after reset").events.is_empty(),
+            "reset left events behind"
+        );
+        assert!(latency_history(&at, "command").await.expect("history").is_empty());
+
+        // The slow log through the panel's operation, and its reset.
+        command_log_reset(&at, CommandLogKind::Slow)
+            .await
+            .expect("slowlog reset");
+        let logs = command_logs(&at, CommandLogKind::Slow).await.expect("slow log");
+        assert!(logs.len() <= 1, "just reset — at most the reset itself: {}", logs.len());
+    });
+}
+
+/// Vector sets through the operations their viewer calls. Gated on the
+/// command, not on a version: `VADD` exists wherever the module is loaded.
+#[test]
+#[ignore]
+fn standalone_vector_set_describes_itself_and_finds_neighbours() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let key = unique("vset");
+        let add = |element: &'static str, x: f64, y: f64| {
+            let mut command = cmd("VADD");
+            command.arg(&key).arg("VALUES").arg(2).arg(x).arg(y).arg(element);
+            command
+        };
+        if let Err(e) = add("east", 1.0, 0.0).query_async::<i64>(&mut c).await {
+            eprintln!("skipped: no vector sets on this server ({e})");
+            return;
+        }
+        let _: i64 = add("north", 0.0, 1.0).query_async(&mut c).await.expect("vadd north");
+        let _: i64 = add("north-east", 1.0, 1.0)
+            .query_async(&mut c)
+            .await
+            .expect("vadd north-east");
+
+        let at = ServerDb::new(&id, 0);
+        let sim = VectorSimOptions {
+            count: 10,
+            ..Default::default()
+        };
+        let loaded = vset_info(&at, &key, 10, &sim).await.expect("vset info");
+        assert_eq!((loaded.card, loaded.dim), (3, 2));
+        assert!(!loaded.info.is_empty(), "VINFO rows");
+        let mut sample = loaded.sample.clone();
+        sample.sort();
+        assert_eq!(sample, ["east", "north", "north-east"]);
+        // The neighbour panel is seeded from the first sampled element, which
+        // is its own nearest neighbour.
+        let seeded = loaded.first.expect("a search around the first sample");
+        assert_eq!(
+            seeded.neighbours.first().map(|n| n.element.as_str()),
+            loaded.sample.first().map(String::as_str)
+        );
+
+        // Around `east`: itself at 1.0, then the diagonal, then the orthogonal one.
+        let found = vset_sim(&at, &key, "east", &sim).await.expect("vsim");
+        let order: Vec<&str> = found.neighbours.iter().map(|n| n.element.as_str()).collect();
+        assert_eq!(order, ["east", "north-east", "north"]);
+        assert!(
+            (found.neighbours[0].score - 1.0).abs() < 1e-6,
+            "an element is its own best match"
+        );
+        assert_eq!(found.attrs, None, "no attributes yet");
+        let vector = found.vector.expect("VEMB");
+        assert_eq!(vector.len(), 2);
+
+        // Attributes: set, read back with the search, cleared by an empty string.
+        assert!(
+            vset_set_attr(&at, &key, "east", r#"{"side":"right"}"#)
+                .await
+                .expect("vsetattr")
+        );
+        assert_eq!(
+            vset_sim(&at, &key, "east", &sim).await.expect("vsim").attrs.as_deref(),
+            Some(r#"{"side":"right"}"#)
+        );
+        assert!(
+            !vset_set_attr(&at, &key, "no-such-element", "{}")
+                .await
+                .expect("vsetattr on a missing element")
+        );
+        assert!(vset_set_attr(&at, &key, "east", "").await.expect("clear attrs"));
+        assert_eq!(vset_sim(&at, &key, "east", &sim).await.expect("vsim").attrs, None);
+
+        // Remove: says whether there was anything to remove.
+        assert!(vset_remove(&at, &key, "north").await.expect("vrem"));
+        assert!(!vset_remove(&at, &key, "north").await.expect("vrem again"));
+        assert_eq!(vset_info(&at, &key, 10, &sim).await.expect("vset info").card, 2);
+        // A key that is not there: `VINFO` answers nil rather than failing,
+        // and the rest is empty.
+        let missing = vset_info(&at, &unique("vset-none"), 10, &sim)
+            .await
+            .expect("missing key");
+        assert_eq!((missing.card, missing.sample.len(), missing.first), (0, 0, None));
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// RedisBloom through the operations the probabilistic viewer calls: every
+/// structure's add and query, the `*.INFO` rows, the Top-K list and the
+/// t-digest quantiles. None of these commands had a test while the view built
+/// them itself.
+#[test]
+#[ignore]
+fn stack_probabilistic_structures_probe_and_describe_themselves() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
+        let probe = |key: &str, kind: ProbKind, item: &str, add: bool| {
+            let (at, key, item) = (at.clone(), key.to_string(), item.to_string());
+            async move { prob_probe(&at, &key, kind, &item, add).await.expect("probe") }
+        };
+
+        // Bloom: a negative is definitive, a positive is a maybe, and a second
+        // add of the same item says "already".
+        let bf = unique("prob-bf");
+        assert_eq!(probe(&bf, ProbKind::Bloom, "a", true).await, ProbeOutcome::Added);
+        assert_eq!(probe(&bf, ProbKind::Bloom, "a", true).await, ProbeOutcome::AlreadyMaybe);
+        assert_eq!(probe(&bf, ProbKind::Bloom, "a", false).await, ProbeOutcome::MaybeExists);
+        assert_eq!(
+            probe(&bf, ProbKind::Bloom, "zz", false).await,
+            ProbeOutcome::DefinitelyNot
+        );
+        let info = prob_info(&at, &bf, ProbKind::Bloom).await.expect("bf info");
+        assert!(
+            info.info.iter().any(|(k, _)| k == "Capacity"),
+            "BF.INFO rows: {:?}",
+            info.info
+        );
+        assert!(
+            info.top_items.is_empty() && info.quantiles.is_empty(),
+            "extras are per kind"
+        );
+
+        // Cuckoo shares the EXISTS path by prefix.
+        let cf = unique("prob-cf");
+        assert_eq!(probe(&cf, ProbKind::Cuckoo, "a", true).await, ProbeOutcome::Added);
+        assert_eq!(
+            probe(&cf, ProbKind::Cuckoo, "a", false).await,
+            ProbeOutcome::MaybeExists
+        );
+
+        // Count-Min Sketch: "add" is INCRBY 1, and both directions report the
+        // estimate.
+        let cms = unique("prob-cms");
+        let _: () = cmd("CMS.INITBYDIM")
+            .arg(&cms)
+            .arg(2000)
+            .arg(5)
+            .query_async(&mut c)
+            .await
+            .expect("cms init");
+        assert_eq!(
+            probe(&cms, ProbKind::CountMinSketch, "a", true).await,
+            ProbeOutcome::Count(1)
+        );
+        assert_eq!(
+            probe(&cms, ProbKind::CountMinSketch, "a", true).await,
+            ProbeOutcome::Count(2)
+        );
+        assert_eq!(
+            probe(&cms, ProbKind::CountMinSketch, "a", false).await,
+            ProbeOutcome::Count(2)
+        );
+
+        // Top-K of one: the list carries counts.
+        let topk = unique("prob-topk");
+        let _: () = cmd("TOPK.RESERVE")
+            .arg(&topk)
+            .arg(1)
+            .query_async(&mut c)
+            .await
+            .expect("topk reserve");
+        assert_eq!(probe(&topk, ProbKind::TopK, "a", true).await, ProbeOutcome::Added);
+        assert_eq!(probe(&topk, ProbKind::TopK, "a", false).await, ProbeOutcome::InTopK);
+        assert_eq!(probe(&topk, ProbKind::TopK, "b", false).await, ProbeOutcome::NotInTopK);
+        let listed = prob_info(&at, &topk, ProbKind::TopK).await.expect("topk info");
+        assert_eq!(listed.top_items, vec![("a".to_string(), 1)]);
+
+        // t-digest: an empty one answers nan, which is left out rather than drawn.
+        let td = unique("prob-td");
+        let _: () = cmd("TDIGEST.CREATE")
+            .arg(&td)
+            .query_async(&mut c)
+            .await
+            .expect("tdigest create");
+        let empty = prob_info(&at, &td, ProbKind::TDigest).await.expect("tdigest info");
+        assert!(
+            empty.quantiles.is_empty(),
+            "nan quantiles were kept: {:?}",
+            empty.quantiles
+        );
+        for value in ["1", "2", "3", "4"] {
+            assert_eq!(probe(&td, ProbKind::TDigest, value, true).await, ProbeOutcome::Added);
+        }
+        let filled = prob_info(&at, &td, ProbKind::TDigest).await.expect("tdigest info");
+        let labels: Vec<&str> = filled.quantiles.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["min", "max", "p50", "p90", "p99"]);
+        assert_eq!((filled.quantiles[0].1, filled.quantiles[1].1), (1.0, 4.0));
+        match probe(&td, ProbKind::TDigest, "4", false).await {
+            ProbeOutcome::Cdf(fraction) => assert!(fraction > 0.5 && fraction <= 1.0, "cdf(4) = {fraction}"),
+            other => panic!("expected a CDF, got {other:?}"),
+        }
+
+        let _: () = cmd("DEL")
+            .arg(&[&bf, &cf, &cms, &topk, &td])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
 #[test]
 #[ignore]
 fn stack_timeseries_write_operations() {
@@ -1037,6 +1498,7 @@ fn stack_timeseries_write_operations() {
         }
         let id = register(server("it-stack", standalone())).await;
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let key = unique("ts-write");
         let compacted = unique("ts-write-1m");
 
@@ -1052,14 +1514,25 @@ fn stack_timeseries_write_operations() {
             .expect("ts.create");
 
         // A sample at an explicit timestamp, and one at "now".
-        assert_eq!(ts_add(&mut c, &key, Some(1000), 1.5).await.expect("ts.add"), 1000);
-        let now_ts = ts_add(&mut c, &key, None, 2.5).await.expect("ts.add now");
+        assert_eq!(ts_add(&at, &key, Some(1000), 1.5).await.expect("ts.add"), 1000);
+        let now_ts = ts_add(&at, &key, None, 2.5).await.expect("ts.add now");
+        // What the series viewer reads: the metadata and the samples of the
+        // window — all of it here, and too short a span to be bucketed.
+        let window = ts_window(&at, &key, None, 240).await.expect("ts window");
+        assert_eq!(window.info.total_samples, 2);
+        assert_eq!((window.info.first_ts, window.info.last_ts), (1000, now_ts));
+        assert_eq!(window.samples.first(), Some(&(1000, 1.5)));
+        assert_eq!(window.samples.len(), 2);
+        // A window that ends at the last sample and is one millisecond long
+        // holds that sample only.
+        let last_only = ts_window(&at, &key, Some(1), 240).await.expect("narrow window");
+        assert_eq!(last_only.samples, vec![(now_ts, 2.5)]);
         assert!(now_ts > 1000, "wall clock follows the backfilled sample: {now_ts}");
 
         // TS.ALTER touches only what it is given: retention alone leaves the
         // labels, which is the distinction `Option` carries in `TsAlter`.
         ts_alter(
-            &mut c,
+            &at,
             &key,
             &TsAlter {
                 retention_ms: Some(86_400_000),
@@ -1083,7 +1556,7 @@ fn stack_timeseries_write_operations() {
         // An empty label list clears them — the reason "leave alone" and
         // "clear" are different states rather than an empty vector.
         ts_alter(
-            &mut c,
+            &at,
             &key,
             &TsAlter {
                 retention_ms: None,
@@ -1099,16 +1572,32 @@ fn stack_timeseries_write_operations() {
             .query_async(&mut c)
             .await
             .expect("ts.create dst");
-        ts_create_rule(&mut c, &key, &compacted, "avg", 60_000)
+        ts_create_rule(&at, &key, &compacted, "avg", 60_000)
             .await
             .expect("ts.createrule");
+        let rules = ts_window(&at, &key, None, 240).await.expect("ts window").info.rules;
+        assert_eq!(rules.len(), 1, "the rule as the viewer lists it: {rules:?}");
+        assert_eq!(
+            (rules[0].destination.as_str(), rules[0].bucket_ms),
+            (compacted.as_str(), 60_000)
+        );
+        assert_eq!(
+            ts_window(&at, &compacted, None, 240)
+                .await
+                .expect("compacted")
+                .info
+                .source_key
+                .as_deref(),
+            Some(key.as_str()),
+            "a destination series names the series it is compacted from"
+        );
         let info = ts_info_map(&mut c, &key).await;
         let rules = info.get("rules").cloned().expect("TS.INFO reports rules");
         assert!(
             matches!(&rules, redis::Value::Array(items) if items.len() == 1),
             "one rule, the one the panel lists: {rules:?}"
         );
-        ts_delete_rule(&mut c, &key, &compacted).await.expect("ts.deleterule");
+        ts_delete_rule(&at, &key, &compacted).await.expect("ts.deleterule");
 
         let _: () = cmd("DEL")
             .arg(&[&key, &compacted])
@@ -1134,6 +1623,7 @@ fn stack_timeseries_mrange_selects_by_label_and_aligns_buckets() {
         }
         let id = register(server("it-stack", standalone())).await;
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let tag = unique("mrange");
         let a = format!("{tag}:a");
         let b = format!("{tag}:b");
@@ -1177,7 +1667,7 @@ fn stack_timeseries_mrange_selects_by_label_and_aligns_buckets() {
 
         // A filter that only excludes is refused before it is sent.
         let refused = ts_mrange(
-            &mut c,
+            &at,
             &TsMRange {
                 filters: vec!["host!=a".to_string()],
                 ..Default::default()
@@ -1193,7 +1683,7 @@ fn stack_timeseries_mrange_selects_by_label_and_aligns_buckets() {
             aggregation: Some(("avg".to_string(), 60_000)),
             count: Some(100),
         };
-        let mut series = ts_mrange(&mut c, &query).await.expect("ts.mrange");
+        let mut series = ts_mrange(&at, &query).await.expect("ts.mrange");
         series.sort_by(|x, y| x.key.cmp(&y.key));
         assert_eq!(
             series.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(),
@@ -2383,6 +2873,399 @@ fn standalone_dedicated_connection_keeps_select_to_itself() {
     });
 }
 
+/// The terminal's session (ADR 10): one connection of its own, opened by the
+/// first line and shared by its clones, holding what was typed into it — the
+/// db a `SELECT` picked, a `MULTI` still open — and a fresh session is how
+/// all of that is forgotten.
+#[test]
+#[ignore]
+fn standalone_terminal_session_keeps_its_own_connection_state() {
+    smol::block_on(async {
+        let id = register(server("it-terminal-session", standalone())).await;
+        let at = ServerDb::new(&*id, 0);
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let session = TerminalSession::default();
+        let key = unique("terminal");
+
+        let moved = session.run(&at, "SELECT", &args(&["1"])).await.expect("select");
+        assert_eq!(moved.selected_db(), Some(1));
+        // A clone is the same connection: it is still on db 1.
+        let set = session
+            .clone()
+            .run(&at, "SET", &args(&[&key, "v", "EX", "60"]))
+            .await
+            .expect("set");
+        assert!(set.is_ok());
+        let mut pooled = conn(&id, 0).await;
+        let on_db0: bool = cmd("EXISTS").arg(&key).query_async(&mut pooled).await.expect("exists");
+        assert!(!on_db0, "the terminal's SELECT leaked into the pooled connection");
+
+        // MULTI … EXEC across separate calls: the transaction lives on the
+        // session's connection.
+        assert!(session.run(&at, "MULTI", &[]).await.expect("multi").is_ok());
+        assert!(
+            session
+                .run(&at, "INCR", &args(&[&format!("{key}:n")]))
+                .await
+                .expect("incr")
+                .is_queued()
+        );
+        assert!(session.run(&at, "GET", &args(&[&key])).await.expect("get").is_queued());
+        let exec = session.run(&at, "EXEC", &[]).await.expect("exec");
+        let replies = exec.exec_replies().expect("EXEC answers an array");
+        assert_eq!(replies.len(), 2);
+        let text = replies.render(&args(&["INCR n", "GET k"]), ReplyFormat::Text);
+        assert!(text.contains("INCR n") && text.contains('v'), "{text}");
+
+        // A reply is rendered on demand, in any format, from the same value.
+        let _ = session
+            .run(&at, "HSET", &args(&[&format!("{key}:h"), "f", "1"]))
+            .await
+            .expect("hset");
+        let hash = session
+            .run(&at, "HGETALL", &args(&[&format!("{key}:h")]))
+            .await
+            .expect("hgetall");
+        assert!(
+            hash.render(ReplyFormat::Json).contains("\"f\": \"1\""),
+            "pairs become an object"
+        );
+        assert!(hash.render(ReplyFormat::Table).contains("field"));
+        assert!(
+            session
+                .run(&at, "GET", &args(&["zedis:it:no-such-key"]))
+                .await
+                .expect("get")
+                .is_nil()
+        );
+
+        // A server error is an `Err` and does not cost the connection.
+        let err = session
+            .run(&at, "NOSUCHCOMMAND", &[])
+            .await
+            .expect_err("unknown command");
+        assert!(!TerminalSession::drops_link(err.connection_kind()), "{err}");
+        assert!(
+            session.run(&at, "EXISTS", &args(&[&key])).await.is_ok(),
+            "still on db 1"
+        );
+
+        // A fresh session starts over on the panel's db.
+        let fresh = TerminalSession::default();
+        let seen = fresh.run(&at, "EXISTS", &args(&[&key])).await.expect("exists");
+        assert_eq!(
+            seen.render(ReplyFormat::Text).trim(),
+            "0",
+            "a new session is back on db 0"
+        );
+
+        let _ = session
+            .run(&at, "DEL", &args(&[&key, &format!("{key}:n"), &format!("{key}:h")]))
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// The stream editor's live tail: from `$`, so what was there before is never
+/// returned; each round continues after the last id it saw; and a block that
+/// times out is an empty batch, not an error.
+#[test]
+#[ignore]
+fn standalone_stream_tail_returns_only_what_arrives_after_it_opened() {
+    smol::block_on(async {
+        let id = register(server("it-stream-tail", standalone())).await;
+        let at = ServerDb::new(&*id, 0);
+        let mut c = conn(&id, 0).await;
+        let key = unique("tail");
+        let _: String = cmd("XADD")
+            .arg(&key)
+            .arg("*")
+            .arg("before")
+            .arg("1")
+            .query_async(&mut c)
+            .await
+            .expect("xadd");
+
+        let mut tail = StreamTail::open(&at, &key).await.expect("open the tail");
+        let quiet = tail.next_batch(50, 10).await.expect("a timed-out block");
+        assert!(quiet.is_empty(), "nothing arrived yet: {quiet:?}");
+
+        // The entries are written while the tail is blocked, as in the app.
+        let writer = smol::spawn({
+            let key = key.clone();
+            let mut c = c.clone();
+            async move {
+                smol::Timer::after(std::time::Duration::from_millis(100)).await;
+                for n in 1..=2 {
+                    let _: String = cmd("XADD")
+                        .arg(&key)
+                        .arg("*")
+                        .arg("n")
+                        .arg(n)
+                        .arg("name")
+                        .arg("zedis")
+                        .query_async(&mut c)
+                        .await
+                        .expect("xadd");
+                }
+            }
+        });
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            seen.extend(tail.next_batch(500, 10).await.expect("next batch"));
+            if seen.len() >= 2 {
+                break;
+            }
+        }
+        writer.await;
+        let fields: Vec<_> = seen.iter().map(|(_, fields)| fields.clone()).collect();
+        let pair = |n: &str| {
+            vec![
+                ("n".to_string(), n.to_string()),
+                ("name".to_string(), "zedis".to_string()),
+            ]
+        };
+        assert_eq!(
+            fields,
+            vec![pair("1"), pair("2")],
+            "only the new entries, in order, each once"
+        );
+        assert!(seen.iter().all(|(id, _)| id.contains('-')), "{seen:?}");
+
+        let again = tail.next_batch(50, 10).await.expect("caught up");
+        assert!(again.is_empty(), "the cursor moved past what was returned: {again:?}");
+
+        let missing = ServerDb::new("it-no-such-server", 0);
+        assert!(StreamTail::open(&missing, &key).await.is_err());
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// What the Pub/Sub and keyspace panels subscribe through: by pattern on the
+/// classic transport, by exact name on the sharded one (Redis 7+), and either
+/// way a message is the channel it was published to plus its bytes.
+#[test]
+#[ignore]
+fn standalone_channel_subscription_delivers_both_kinds_of_pubsub() {
+    smol::block_on(async {
+        let id = register(server("it-channel-subscription", standalone())).await;
+        let at = ServerDb::new(&*id, 0);
+        let mut c = conn(&id, 0).await;
+        let channel = unique("sub");
+        let pattern = format!("{channel}:*");
+
+        let mut subscription = ChannelSubscription::open(&at, SubscribeKind::Patterns, &[pattern.as_str()])
+            .await
+            .expect("psubscribe");
+        let receivers: i64 = cmd("PUBLISH")
+            .arg(format!("{channel}:a"))
+            .arg(b"\xffbytes".as_slice())
+            .query_async(&mut c)
+            .await
+            .expect("publish");
+        assert_eq!(receivers, 1, "the subscription is live once `open` returns");
+        let _: i64 = cmd("PUBLISH")
+            .arg(format!("{channel}:b"))
+            .arg("second")
+            .query_async(&mut c)
+            .await
+            .expect("publish");
+        let first = subscription.next_message().await.expect("first message");
+        assert_eq!(first.channel, format!("{channel}:a"), "the channel, not the pattern");
+        assert_eq!(first.payload, b"\xffbytes", "the payload is handed over undecoded");
+        let second = subscription.next_message().await.expect("second message");
+        assert_eq!(
+            (second.channel.as_str(), second.payload.as_slice()),
+            (format!("{channel}:b").as_str(), b"second".as_slice())
+        );
+
+        // Dropping it is the unsubscribe.
+        drop(subscription);
+        let mut gone = false;
+        for _ in 0..50 {
+            let receivers: i64 = cmd("PUBLISH")
+                .arg(format!("{channel}:a"))
+                .arg("x")
+                .query_async(&mut c)
+                .await
+                .expect("publish");
+            if receivers == 0 {
+                gone = true;
+                break;
+            }
+            smol::Timer::after(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "a dropped subscription must close its connection");
+
+        if !supports(&id, floors::SHARDED_PUBSUB).await {
+            eprintln!("skipped the sharded half: SSUBSCRIBE needs Redis 7");
+            return;
+        }
+        let mut sharded = ChannelSubscription::open(&at, SubscribeKind::Sharded, &[channel.as_str()])
+            .await
+            .expect("ssubscribe");
+        // The push connection acknowledges asynchronously: publish until the
+        // server counts the subscriber.
+        let mut delivered = false;
+        for _ in 0..50 {
+            let receivers: i64 = cmd("SPUBLISH")
+                .arg(&channel)
+                .arg("shard")
+                .query_async(&mut c)
+                .await
+                .expect("spublish");
+            if receivers > 0 {
+                delivered = true;
+                break;
+            }
+            smol::Timer::after(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(delivered, "the sharded subscriber never showed up");
+        let msg = sharded.next_message().await.expect("sharded message");
+        assert_eq!(
+            (msg.channel.as_str(), msg.payload.as_slice()),
+            (channel.as_str(), b"shard".as_slice())
+        );
+    });
+}
+
+/// The Monitor panel's feeds: one per master, each naming its node, carrying
+/// the server's own lines — and a server it cannot reach at all is the `Err`.
+#[test]
+#[ignore]
+fn standalone_monitor_feed_carries_the_commands_the_server_receives() {
+    smol::block_on(async {
+        let (host, port) = standalone();
+        let id = register(server("it-monitor-feed", (host.clone(), port))).await;
+        let at = ServerDb::new(&*id, 0);
+        let opened = open_monitor_feeds(&at).await.expect("feeds");
+        assert!(opened.failures.is_empty(), "{:?}", opened.failures);
+        let [mut feed] = <[_; 1]>::try_from(opened.feeds)
+            .ok()
+            .expect("a standalone has one master");
+        assert_eq!(feed.node(), format!("{host}:{port}"));
+
+        let marker = unique("monitored");
+        let mut c = conn(&id, 0).await;
+        let _: Option<String> = cmd("GET").arg(&marker).query_async(&mut c).await.expect("get");
+        // The suite runs in parallel against this server, so the feed carries
+        // everyone's commands; ours is in there.
+        let mut found = None;
+        for _ in 0..5_000 {
+            let line = feed.next_line().await.expect("the feed stays open");
+            if line.contains(&marker) {
+                found = Some(line);
+                break;
+            }
+        }
+        let line = found.expect("the GET never appeared in the feed");
+        assert!(line.to_ascii_uppercase().contains("\"GET\""), "{line}");
+
+        let nowhere = ServerDb::new("it-no-such-server", 0);
+        assert!(open_monitor_feeds(&nowhere).await.is_err());
+    });
+}
+
+/// The operations the server form and the recycle bin got when their commands
+/// left the view: a sentinel lists the masters it watches, Test means the
+/// data node was reached, one CONFIG parameter is read by name, and RESTORE
+/// puts a payload back with its TTL.
+#[test]
+#[ignore]
+fn entry_checks_and_single_key_restore_work_through_their_operations() {
+    smol::block_on(async {
+        let id = register(server("it-entry-check", standalone())).await;
+        let at = ServerDb::new(&*id, 0);
+        test_connection(&server("it-entry-check-probe", standalone()))
+            .await
+            .expect("a reachable standalone passes the test");
+        let (host, _) = standalone();
+        let err = test_connection(&server("it-entry-check-closed", (host, 1)))
+            .await
+            .expect_err("nothing listens on port 1");
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Network, "{err}");
+
+        assert_eq!(
+            config_get_one(&at, "maxmemory-policy").await.expect("config get"),
+            Some(maxmemory_policy(&at).await.expect("maxmemory policy"))
+        );
+        assert_eq!(
+            config_get_one(&at, "zedis-no-such-parameter")
+                .await
+                .expect("config get"),
+            None
+        );
+
+        let mut c = conn(&id, 0).await;
+        let key = unique("restore");
+        let _: () = cmd("RPUSH")
+            .arg(&key)
+            .arg("a")
+            .arg("b")
+            .query_async(&mut c)
+            .await
+            .expect("rpush");
+        let payload: Vec<u8> = cmd("DUMP").arg(&key).query_async(&mut c).await.expect("dump");
+        let raw = format!("{key}:raw");
+        let _: () = cmd("SET")
+            .arg(&raw)
+            .arg(b"\xffraw".as_slice())
+            .arg("EX")
+            .arg(60)
+            .query_async(&mut c)
+            .await
+            .expect("set");
+        assert_eq!(
+            key_bytes(&at, &raw).await.expect("key bytes"),
+            b"\xffraw",
+            "bytes, not text"
+        );
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("del");
+        restore_key(&at, &key, 60_000, &payload).await.expect("restore");
+        let items: Vec<String> = cmd("LRANGE")
+            .arg(&key)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c)
+            .await
+            .expect("lrange");
+        assert_eq!(items, ["a", "b"]);
+        let pttl: i64 = cmd("PTTL").arg(&key).query_async(&mut c).await.expect("pttl");
+        assert!((1..=60_000).contains(&pttl), "the TTL came back with the value: {pttl}");
+        // No REPLACE: a key that is there again is not overwritten.
+        assert!(restore_key(&at, &key, 0, &payload).await.is_err(), "BUSYKEY");
+        assert!(value_preview(&at, &key).await.expect("preview").contains('a'));
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+
+        let Some(sentinel) = scenario("ZEDIS_IT_SENTINEL") else {
+            eprintln!("skipped the sentinel half: ZEDIS_IT_SENTINEL not set");
+            return;
+        };
+        let master_name = env::var("ZEDIS_IT_MASTER_NAME").unwrap_or_else(|_| "mymaster".into());
+        // The form has one password field when the button is pressed. Holding
+        // the sentinel's own password, the listing is one dial …
+        let form = RedisServer {
+            password: env::var("ZEDIS_IT_SENTINEL_PASSWORD").ok().filter(|p| !p.is_empty()),
+            ..server("it-entry-check-names", sentinel.clone())
+        };
+        let names = sentinel_master_names(&form).await.expect("sentinel masters");
+        assert!(names.contains(&master_name), "{names:?}");
+        // … and holding the data nodes' password — which a sentinel commonly
+        // does not share — it is refused and retried without one. This
+        // topology's sentinel has a password of its own, so the retry is
+        // refused as well, and that is reported as what it is.
+        if form.password.is_some() {
+            let err = sentinel_master_names(&protected_server("it-entry-check-data-pw", sentinel.clone()))
+                .await
+                .expect_err("neither the data password nor none opens this sentinel");
+            assert_eq!(err.connection_kind(), ConnectionErrorKind::Auth, "{err}");
+        }
+        test_connection(&sentinel_declared_server("it-entry-check-sentinel", sentinel))
+            .await
+            .expect("the test reaches the master the sentinel names");
+    });
+}
+
 /// A runaway script makes the server answer BUSY to everything — the pooled
 /// connection included — so the kill travels on a fresh connection that
 /// sends only what a busy server still takes. With nothing running every
@@ -2471,19 +3354,17 @@ fn standalone_client_pause_and_filtered_kill() {
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         let mut c = conn(&id, 0).await;
 
+        // Through the operations the Clients panel calls.
+        let at = ServerDb::new(&id, 0);
         let mode_supported = client.supports(floors::CLIENT_PAUSE_WRITE);
-        let mut pause = cmd("CLIENT");
         // Without UNPAUSE (pre-6.2) the pause has to run out on its own —
         // keep it short so the other tests on this server barely notice.
         let ms = if mode_supported { 5000 } else { 50 };
-        for arg in pause_args(ms, PauseMode::Write, mode_supported) {
-            pause.arg(arg);
-        }
-        let reply: String = pause.query_async(&mut c).await.expect("pause");
-        assert_eq!(reply, "OK");
+        client_pause(&at, ms, PauseMode::Write, mode_supported)
+            .await
+            .expect("pause");
         if mode_supported {
-            let reply: String = cmd("CLIENT").arg("UNPAUSE").query_async(&mut c).await.expect("unpause");
-            assert_eq!(reply, "OK");
+            client_unpause(&at).await.expect("unpause");
         } else {
             smol::Timer::after(std::time::Duration::from_millis(100)).await;
         }
@@ -2496,7 +3377,7 @@ fn standalone_client_pause_and_filtered_kill() {
             .expect("a write after the pause");
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
 
-        // A victim connection, found by its id in CLIENT LIST, killed by ADDR.
+        // A victim connection, found by its id in the listing, killed by ADDR.
         let mut victim = open_single_connection(&entry, 0, false)
             .await
             .expect("victim connection");
@@ -2505,12 +3386,11 @@ fn standalone_client_pause_and_filtered_kill() {
             .query_async(&mut victim)
             .await
             .expect("client id");
-        let list: String = cmd("CLIENT")
-            .arg("LIST")
-            .query_async(&mut c)
-            .await
-            .expect("client list");
-        let addr = list
+        let listing = client_list(&at).await.expect("client list");
+        assert_eq!(listing.len(), 1, "a standalone is one node");
+        let (node, clients) = &listing[0];
+        assert_eq!((node.host.as_str(), node.port), (entry.host.as_str(), entry.port));
+        let addr = clients
             .lines()
             .find(|line| line.split_whitespace().any(|f| f == format!("id={victim_id}")))
             .and_then(|line| line.split_whitespace().find_map(|f| f.strip_prefix("addr=")))
@@ -2523,14 +3403,31 @@ fn standalone_client_pause_and_filtered_kill() {
         };
         let commands = kill_filter_commands(&filter);
         assert_eq!(commands.len(), 1);
-        let mut kill = cmd("CLIENT");
-        for arg in &commands[0] {
-            kill.arg(arg);
-        }
-        let killed: i64 = kill.query_async(&mut c).await.expect("kill by addr");
-        assert_eq!(killed, 1, "exactly the victim");
+        assert_eq!(
+            client_kill_by(&at, &commands).await.expect("kill by addr"),
+            1,
+            "exactly the victim"
+        );
         let after: Result<String, redis::RedisError> = cmd("PING").query_async(&mut victim).await;
         assert!(after.is_err(), "the victim's connection is gone");
+
+        // The row's own Kill button: by id, on the node that listed it.
+        let mut second = open_single_connection(&entry, 0, false).await.expect("second victim");
+        let second_id: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut second)
+            .await
+            .expect("client id");
+        let second_id = second_id.to_string();
+        assert!(client_kill_id(node, 0, &second_id).await.expect("kill by id"));
+        let after: Result<String, redis::RedisError> = cmd("PING").query_async(&mut second).await;
+        assert!(after.is_err(), "the second victim's connection is gone");
+        // Already gone: the filter form of CLIENT KILL answers 0, not an error.
+        assert!(
+            !client_kill_id(node, 0, &second_id)
+                .await
+                .expect("kill a client that left")
+        );
 
         if client.supports(floors::CLIENT_KILL_MAXAGE) {
             let filter = KillFilter {
@@ -2538,11 +3435,9 @@ fn standalone_client_pause_and_filtered_kill() {
                 skipme: true,
                 ..Default::default()
             };
-            let mut kill = cmd("CLIENT");
-            for arg in &kill_filter_commands(&filter)[0] {
-                kill.arg(arg);
-            }
-            let killed: i64 = kill.query_async(&mut c).await.expect("kill by maxage");
+            let killed = client_kill_by(&at, &kill_filter_commands(&filter))
+                .await
+                .expect("kill by maxage");
             assert_eq!(killed, 0, "no client is that old");
         }
     });
@@ -2654,7 +3549,7 @@ async fn config_value(c: &mut RedisAsyncConn, name: &str) -> String {
     pair.get(1).cloned().expect("CONFIG GET answers name, value")
 }
 
-async fn config_set(c: &mut RedisAsyncConn, name: &str, value: &str) {
+async fn set_config_raw(c: &mut RedisAsyncConn, name: &str, value: &str) {
     let _: String = cmd("CONFIG")
         .arg("SET")
         .arg(name)
@@ -2683,10 +3578,10 @@ fn commandlog_lists_slow_and_oversized_commands() {
         // The slow log, through the same door, on every server: log every
         // command for a moment.
         let slower_than = config_value(&mut c, "slowlog-log-slower-than").await;
-        config_set(&mut c, "slowlog-log-slower-than", "0").await;
+        set_config_raw(&mut c, "slowlog-log-slower-than", "0").await;
         let _: String = cmd("SET").arg(&key).arg("v").query_async(&mut c).await.expect("SET");
         let slow = client.get_command_logs(CommandLogKind::Slow).await.expect("slow log");
-        config_set(&mut c, "slowlog-log-slower-than", &slower_than).await;
+        set_config_raw(&mut c, "slowlog-log-slower-than", &slower_than).await;
         assert!(
             slow.iter().any(|e| is_set_of_key(e, "SET")),
             "the SET was logged: {slow:?}"
@@ -2699,8 +3594,8 @@ fn commandlog_lists_slow_and_oversized_commands() {
         // Thresholds down to 1 KB, then one 2 KB request and one 2 KB reply.
         let request_threshold = config_value(&mut c, "commandlog-request-larger-than").await;
         let reply_threshold = config_value(&mut c, "commandlog-reply-larger-than").await;
-        config_set(&mut c, "commandlog-request-larger-than", "1024").await;
-        config_set(&mut c, "commandlog-reply-larger-than", "1024").await;
+        set_config_raw(&mut c, "commandlog-request-larger-than", "1024").await;
+        set_config_raw(&mut c, "commandlog-reply-larger-than", "1024").await;
         let payload = "x".repeat(2048);
         let _: String = cmd("SET")
             .arg(&key)
@@ -2747,8 +3642,8 @@ fn commandlog_lists_slow_and_oversized_commands() {
             "the other log is untouched: {replies:?}"
         );
 
-        config_set(&mut c, "commandlog-request-larger-than", &request_threshold).await;
-        config_set(&mut c, "commandlog-reply-larger-than", &reply_threshold).await;
+        set_config_raw(&mut c, "commandlog-request-larger-than", &request_threshold).await;
+        set_config_raw(&mut c, "commandlog-reply-larger-than", &reply_threshold).await;
     });
 }
 
@@ -3652,8 +4547,8 @@ fn standalone_hotkeys_collects_a_report() {
 fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
     smol::block_on(async {
         let admin_id = register(server("it-standalone", standalone())).await;
-        let mut admin = conn(&admin_id, 0).await;
-        if acl_whoami(&mut admin).await.expect("whoami").is_empty() {
+        let at_admin = ServerDb::new(&admin_id, 0);
+        if acl_whoami(&at_admin).await.expect("whoami").is_empty() {
             eprintln!("skipped: server has no ACL (Redis < 6)");
             return;
         }
@@ -3663,7 +4558,7 @@ fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
         let suffix = unique("acllog").rsplit(':').take(3).collect::<Vec<_>>().join("_");
         let username = format!("zedis_it_log_{suffix}");
         acl_set_user(
-            &mut admin,
+            &at_admin,
             &username,
             &split_acl_rules("on >pw ~* &* -@all +@connection +select"),
         )
@@ -3680,7 +4575,7 @@ fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
         let refused: Result<String, _> = cmd("GET").arg("zedis:it:nope").query_async(&mut denied).await;
         assert!(refused.is_err(), "the restricted user must not be able to GET");
 
-        let entries = acl_log(&mut admin, 128).await.expect("acl log");
+        let entries = acl_log(&at_admin, 128).await.expect("acl log");
         let hit = entries
             .iter()
             .find(|entry| entry.username == username)
@@ -3693,12 +4588,12 @@ fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
         // `ACL DRYRUN` answers the same question without running anything.
         if supports(&admin_id, floors::ACL_V2).await {
             assert_eq!(
-                acl_dryrun(&mut admin, &username, &["ping".to_string()])
+                acl_dryrun(&at_admin, &username, &["ping".to_string()])
                     .await
                     .expect("dryrun ping"),
                 AclDryRun::Allowed
             );
-            match acl_dryrun(&mut admin, &username, &["get".to_string(), "zedis:it:nope".to_string()])
+            match acl_dryrun(&at_admin, &username, &["get".to_string(), "zedis:it:nope".to_string()])
                 .await
                 .expect("dryrun get")
             {
@@ -3711,30 +4606,30 @@ fn acl_log_dryrun_genpass_and_the_aclfile_gate() {
             eprintln!("skipped ACL DRYRUN: it is Redis 7.0+");
         }
 
-        let password = acl_genpass(&mut admin, None).await.expect("genpass");
+        let password = acl_genpass(&at_admin, None).await.expect("genpass");
         assert_eq!(password.len(), 64, "256 bits, hex encoded: {password}");
         assert!(password.chars().all(|c| c.is_ascii_hexdigit()), "{password}");
         assert_eq!(
-            acl_genpass(&mut admin, Some(64)).await.expect("genpass 64").len(),
+            acl_genpass(&at_admin, Some(64)).await.expect("genpass 64").len(),
             16,
             "the bit count decides the length"
         );
 
         // No aclfile here, so the page offers neither Save nor Load — and
         // the command itself says why.
-        assert!(acl_file(&mut admin).await.expect("config get aclfile").is_none());
-        assert!(acl_save(&mut admin).await.is_err(), "ACL SAVE needs an aclfile");
+        assert!(acl_file(&at_admin).await.expect("config get aclfile").is_none());
+        assert!(acl_save(&at_admin).await.is_err(), "ACL SAVE needs an aclfile");
 
-        acl_log_reset(&mut admin).await.expect("acl log reset");
+        acl_log_reset(&at_admin).await.expect("acl log reset");
         assert!(
-            !acl_log(&mut admin, 128)
+            !acl_log(&at_admin, 128)
                 .await
                 .expect("acl log")
                 .iter()
                 .any(|entry| entry.username == username),
             "RESET cleared the log"
         );
-        acl_del_user(&mut admin, &username).await.expect("deluser");
+        acl_del_user(&at_admin, &username).await.expect("deluser");
     });
 }
 
@@ -3748,12 +4643,12 @@ fn standalone_acl_selectors_round_trip() {
             return;
         }
         let username = unique("selector-user").replace(':', "-");
-        let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let rules = split_acl_rules("on ~app:* +@read (-@all +lpush ~queue:*)");
         assert_eq!(rules.len(), 4, "the selector group must stay one argument");
-        acl_set_user(&mut c, &username, &rules).await.expect("setuser");
+        acl_set_user(&at, &username, &rules).await.expect("setuser");
 
-        let user = acl_get_user(&mut c, &username).await.expect("getuser");
+        let user = acl_get_user(&at, &username).await.expect("getuser");
         assert_eq!(user.selectors.len(), 1, "the selector is parsed, not dropped");
         assert!(
             user.selectors[0].commands.contains("+lpush"),
@@ -3765,13 +4660,13 @@ fn standalone_acl_selectors_round_trip() {
         assert!(text.contains("(") && text.contains("~queue:*"), "rules text: {text}");
 
         // The editor round trip: what we display must re-apply as-is.
-        acl_set_user(&mut c, &username, &split_acl_rules(&text))
+        acl_set_user(&at, &username, &split_acl_rules(&text))
             .await
             .expect("re-apply rules text");
-        let again = acl_get_user(&mut c, &username).await.expect("getuser again");
+        let again = acl_get_user(&at, &username).await.expect("getuser again");
         assert_eq!(again.selectors, user.selectors, "re-applying is lossless");
 
-        acl_del_user(&mut c, &username).await.expect("deluser");
+        acl_del_user(&at, &username).await.expect("deluser");
     });
 }
 
@@ -3995,6 +4890,43 @@ fn standalone_hash_field_writes_carry_their_ttl() {
     });
 }
 
+/// The script library's cache operations: the digest computed locally is the
+/// one the server computes, `SCRIPT EXISTS` answers per digest in order, and
+/// a script never loaded is `false` rather than an error.
+#[test]
+#[ignore]
+fn standalone_script_cache_agrees_with_the_local_digest() {
+    smol::block_on(async {
+        let id = register(server("it-script-cache", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        // Unique source, so another test's SCRIPT FLUSH or LOAD cannot be
+        // what this one observes.
+        let code = format!("return '{}'", unique("script"));
+        let sha = script_sha1(&code);
+        assert_eq!(sha.len(), 40);
+        assert_eq!(
+            script_sha1("return 1"),
+            "e0e1f9fabfc9d4800c877a703b823ac0578ff8db",
+            "SHA-1 of the source, as redis-cli prints it"
+        );
+
+        let never = script_sha1(&format!("{code} -- never loaded"));
+        assert_eq!(
+            script_exists(&at, &[sha.clone(), never.clone()])
+                .await
+                .expect("script exists"),
+            [false, false]
+        );
+        assert_eq!(script_load(&at, &code).await.expect("script load"), sha);
+        assert_eq!(
+            script_exists(&at, &[never, sha]).await.expect("script exists"),
+            [false, true],
+            "one answer per digest, in the order asked"
+        );
+        assert!(script_exists(&at, &[]).await.expect("no digests").is_empty());
+    });
+}
+
 /// `EVALSHA_RO` (7.0): the read-only spelling makes the server refuse a
 /// write inside the script; the same script runs under `EVALSHA`, and a
 /// reading script runs under the read-only one.
@@ -4009,13 +4941,14 @@ fn standalone_evalsha_ro_rejects_writes() {
             return;
         }
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let key = unique("evalro");
         let writer = "return redis.call('SET', KEYS[1], 'written')";
         let reader = "return redis.call('GET', KEYS[1])";
         let sha_of = |code: &str| redis::Script::new(code).get_hash().to_string();
         let keys = vec![key.clone()];
 
-        let refused = run_script(&mut c, writer, &sha_of(writer), &keys, &[], true).await;
+        let refused = run_script(&at, writer, &sha_of(writer), &keys, &[], true).await;
         let message = refused.expect_err("EVALSHA_RO must refuse a write").to_string();
         assert!(
             message.to_lowercase().contains("read-only"),
@@ -4024,10 +4957,10 @@ fn standalone_evalsha_ro_rejects_writes() {
         let exists: i64 = cmd("EXISTS").arg(&key).query_async(&mut c).await.expect("exists");
         assert_eq!(exists, 0, "the refused write left nothing behind");
 
-        run_script(&mut c, writer, &sha_of(writer), &keys, &[], false)
+        run_script(&at, writer, &sha_of(writer), &keys, &[], false)
             .await
             .expect("EVALSHA writes");
-        let read = run_script(&mut c, reader, &sha_of(reader), &keys, &[], true)
+        let read = run_script(&at, reader, &sha_of(reader), &keys, &[], true)
             .await
             .expect("EVALSHA_RO reads");
         assert!(read.formatted.contains("written"), "read back: {}", read.formatted);
@@ -4447,6 +5380,7 @@ fn stack_modules_are_detected_and_usable() {
 
         let key = unique("json");
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         cmd("JSON.SET")
             .arg(&key)
             .arg("$")
@@ -4455,7 +5389,7 @@ fn stack_modules_are_detected_and_usable() {
             .await
             .expect("json.set");
         assert_eq!(client.key_type(&key).await.expect("type"), "ReJSON-RL");
-        let listing = zedis_connection::ft_list(&mut c).await.expect("ft._list");
+        let listing = zedis_connection::ft_list(&at).await.expect("ft._list");
         assert!(!listing.unsupported);
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
@@ -4580,6 +5514,7 @@ fn stack_search_index_size_tag_values_and_spelling() {
         }
         let id = register(server("it-stack-tagvals", standalone())).await;
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let index = unique("idx");
         let prefix = unique("doc");
         cmd("FT.CREATE")
@@ -4609,7 +5544,7 @@ fn stack_search_index_size_tag_values_and_spelling() {
                 .expect("hset");
         }
 
-        let info = ft_info(&mut c, &index).await.expect("ft.info");
+        let info = ft_info(&at, &index).await.expect("ft.info");
         assert_eq!(info.num_docs, 2);
         assert!(
             info.index_bytes().is_some_and(|bytes| bytes > 0),
@@ -4620,7 +5555,7 @@ fn stack_search_index_size_tag_values_and_spelling() {
             "the inverted index is one of the parts"
         );
 
-        let mut values = ft_tagvals(&mut c, &index, "tags").await.expect("ft.tagvals");
+        let mut values = ft_tagvals(&at, &index, "tags").await.expect("ft.tagvals");
         values.sort();
         assert_eq!(
             values,
@@ -4628,9 +5563,7 @@ fn stack_search_index_size_tag_values_and_spelling() {
             "TAG values, lowercased by the index"
         );
 
-        let suggestions = ft_spellcheck(&mut c, &index, "helo", None)
-            .await
-            .expect("ft.spellcheck");
+        let suggestions = ft_spellcheck(&at, &index, "helo", None).await.expect("ft.spellcheck");
         let for_term = suggestions
             .iter()
             .find(|entry| entry.term == "helo")
@@ -4640,7 +5573,7 @@ fn stack_search_index_size_tag_values_and_spelling() {
             "the indexed term is proposed: {suggestions:?}"
         );
         assert!(
-            ft_spellcheck(&mut c, &index, "hello", None)
+            ft_spellcheck(&at, &index, "hello", None)
                 .await
                 .expect("ft.spellcheck")
                 .is_empty(),
@@ -4669,6 +5602,7 @@ fn stack_search_params_bind_a_knn_vector() {
         }
         let id = register(server("it-stack-knn", standalone())).await;
         let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
         let index = unique("idx");
         let prefix = unique("vec");
         cmd("FT.CREATE")
@@ -4713,19 +5647,19 @@ fn stack_search_params_bind_a_knn_vector() {
             params: params.clone(),
             ..Default::default()
         };
-        let result = ft_search(&mut c, &index, query, &opts).await.expect("ft.search");
+        let result = ft_search(&at, &index, query, &opts).await.expect("ft.search");
         assert_eq!(result.total, 2);
         assert_eq!(
             result.hits.first().map(|h| h.doc_id.as_str()),
             Some(format!("{prefix}:a").as_str()),
             "(0.9, 0.1) is nearest to (1, 0)"
         );
-        let plan = ft_explain(&mut c, &index, query, &params, Some(2))
+        let plan = ft_explain(&at, &index, query, &params, Some(2))
             .await
             .expect("ft.explain");
         assert!(plan.contains("VECTOR"), "plan names the vector iterator: {plan}");
         assert!(
-            ft_explain(&mut c, &index, query, &[], Some(2)).await.is_err(),
+            ft_explain(&at, &index, query, &[], Some(2)).await.is_err(),
             "without the binding the server refuses to plan"
         );
 

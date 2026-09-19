@@ -25,7 +25,7 @@
 //! [`open_pubsub_channels_dialog`].
 
 use crate::assets::CustomIconName;
-use crate::connection::{MAX_PUBSUB_CHANNELS, PubsubChannelsSnapshot, get_connection_manager};
+use crate::connection::{MAX_PUBSUB_CHANNELS, PubsubChannelsSnapshot, ServerDb, pubsub_channels};
 use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_pubsub_editor};
@@ -175,8 +175,7 @@ impl ZedisPubsubChannelsDialog {
         self.fetch_task = Some(cx.spawn(async move |handle, cx| {
             let result: Result<PubsubChannelsSnapshot, Error> = cx
                 .background_spawn(async move {
-                    let client = get_connection_manager().get_client(&server_id, db).await?;
-                    Ok(client.pubsub_channels(&pattern, sharded).await?)
+                    Ok(pubsub_channels(&ServerDb::new(&*server_id, db), &pattern, sharded).await?)
                 })
                 .await;
             let _ = handle.update(cx, |this, cx| {

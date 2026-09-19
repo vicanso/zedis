@@ -23,12 +23,12 @@ use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
     connection::{
-        Capability, FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, KillTarget, function_delete,
-        function_dump, function_fcall, function_flush, function_list, function_load, function_restore, function_stats,
-        get_connection_manager, validate_library_source,
+        Capability, FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, KillTarget, ServerDb,
+        function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
+        function_stats, validate_library_source,
     },
     error::Error,
-    helpers::get_mono_font_family,
+    helpers::{djb2_hash, get_mono_font_family, parse_lines},
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
         escalate_dangerous_body, i18n_common, i18n_functions,
@@ -196,12 +196,12 @@ impl ZedisFunctionEditor {
         self.loading = true;
         self._fetch_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let listing = function_list(&mut conn, true).await?;
+                let at = ServerDb::new(&*server_id, db);
+                let listing = function_list(&at, true).await?;
                 let stats = if listing.unsupported {
                     None
                 } else {
-                    function_stats(&mut conn).await.ok()
+                    function_stats(&at).await.ok()
                 };
                 Ok::<_, Error>((listing, stats))
             });
@@ -349,8 +349,8 @@ impl ZedisFunctionEditor {
         self.error = None;
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                function_load(&mut conn, &code, replace).await
+                let at = ServerDb::new(&*server_id, db);
+                function_load(&at, &code, replace).await
             });
             let result: Result<String> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -396,8 +396,8 @@ impl ZedisFunctionEditor {
         self.error = None;
         self._run_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                function_fcall(&mut conn, &name_for_task, &keys, &args, readonly).await
+                let at = ServerDb::new(&*server_id, db);
+                function_fcall(&at, &name_for_task, &keys, &args, readonly).await
             });
             let result: Result<String> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -462,8 +462,8 @@ impl ZedisFunctionEditor {
                     let log_name = lib.clone();
                     this._mutate_task = Some(cx.spawn(async move |handle, cx| {
                         let task = cx.background_spawn(async move {
-                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
-                            function_delete(&mut conn, lib.as_ref()).await
+                            let at = ServerDb::new(&*server_id_inner, db);
+                            function_delete(&at, lib.as_ref()).await
                         });
                         let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| {
@@ -508,8 +508,8 @@ impl ZedisFunctionEditor {
                     this.error = None;
                     this._mutate_task = Some(cx.spawn(async move |handle, cx| {
                         let task = cx.background_spawn(async move {
-                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
-                            function_flush(&mut conn, false).await
+                            let at = ServerDb::new(&*server_id_inner, db);
+                            function_flush(&at, false).await
                         });
                         let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| match result {
@@ -538,8 +538,8 @@ impl ZedisFunctionEditor {
         self.error = None;
         self._mutate_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                function_dump(&mut conn).await
+                let at = ServerDb::new(&*server_id, db);
+                function_dump(&at).await
             });
             let result: Result<Vec<u8>> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -600,8 +600,8 @@ impl ZedisFunctionEditor {
                     this.error = None;
                     this._mutate_task = Some(cx.spawn(async move |handle, cx| {
                         let task = cx.background_spawn(async move {
-                            let mut conn = get_connection_manager().get_connection(&server_id_inner, db).await?;
-                            function_restore(&mut conn, &payload, FunctionRestorePolicy::Replace).await
+                            let at = ServerDb::new(&*server_id_inner, db);
+                            function_restore(&at, &payload, FunctionRestorePolicy::Replace).await
                         });
                         let result: Result<()> = task.await.map_err(Into::into);
                         let _ = handle.update(cx, |this, cx| match result {
@@ -636,15 +636,6 @@ impl ZedisFunctionEditor {
             .cloned()
             .collect()
     }
-}
-
-/// Split a multi-line KEYS / ARGV field into trimmed non-empty entries.
-fn parse_lines(s: &str) -> Vec<String> {
-    s.lines()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 impl gpui::Render for ZedisFunctionEditor {
@@ -1414,14 +1405,4 @@ impl ZedisFunctionEditor {
             .bg(bg)
             .child(Label::new(text).text_xs().text_color(color))
     }
-}
-
-/// Tiny stable hash so element IDs derived from library names compile
-/// to `u32` (ElementId only accepts primitive tuple seconds).
-fn djb2_hash(s: &str) -> u32 {
-    let mut h: u32 = 5381;
-    for b in s.bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u32);
-    }
-    h
 }

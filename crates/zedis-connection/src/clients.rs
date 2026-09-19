@@ -14,6 +14,82 @@
 
 //! `CLIENT PAUSE` and filtered `CLIENT KILL` — the argument lists, composed
 //! here so the Clients panel and the live tests spell them the same way.
+//!
+//! And the operations of the Clients panel themselves. `CLIENT LIST`, `PAUSE`,
+//! `UNPAUSE` and a filtered `KILL` go to every master, because a client is
+//! connected to one node and the panel shows them all; `KILL ID` goes to the
+//! one node that listed that client, since an id means nothing anywhere else.
+
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::config::RedisServer;
+use crate::error::Error;
+use crate::open_single_connection;
+use crate::server_db::ServerDb;
+use redis::{Cmd, cmd};
+
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+fn client_cmd(args: &[impl AsRef<str>]) -> Cmd {
+    let mut command = cmd("CLIENT");
+    for arg in args {
+        command.arg(arg.as_ref());
+    }
+    command
+}
+
+/// `CLIENT LIST` from every master: the node, and its reply as the server
+/// wrote it (one client per line, `key=value` fields).
+pub async fn client_list(at: &ServerDb) -> Result<Vec<(RedisServer, String)>> {
+    let (nodes, replies): (Vec<RedisServer>, Vec<String>) = at
+        .client()
+        .await?
+        .query_async_masters(vec![client_cmd(&["LIST"])])
+        .await?;
+    Ok(nodes.into_iter().zip(replies).collect())
+}
+
+/// `CLIENT KILL ID id` on `node` — the node whose `CLIENT LIST` had the id.
+/// `false` when no such client was connected any more: the filter form of
+/// `CLIENT KILL` answers with a count, not with the old form's "No such
+/// client" error, so a client that left between the listing and the click is
+/// not a failure — and not a kill either.
+pub async fn client_kill_id(node: &RedisServer, db: usize, id: &str) -> Result<bool> {
+    let mut conn = open_single_connection(node, db, true).await?;
+    let killed: i64 = client_cmd(&["KILL", "ID", id]).query_async(&mut conn).await?;
+    Ok(killed > 0)
+}
+
+/// `CLIENT PAUSE timeout [WRITE|ALL]` on every master ([`pause_args`]).
+pub async fn client_pause(at: &ServerDb, timeout_ms: u64, mode: PauseMode, mode_supported: bool) -> Result<()> {
+    let command = client_cmd(&pause_args(timeout_ms, mode, mode_supported));
+    let (_, _replies): (_, Vec<String>) = at.client().await?.query_async_masters(vec![command]).await?;
+    Ok(())
+}
+
+/// `CLIENT UNPAUSE` on every master.
+pub async fn client_unpause(at: &ServerDb) -> Result<()> {
+    let (_, _replies): (_, Vec<String>) = at
+        .client()
+        .await?
+        .query_async_masters(vec![client_cmd(&["UNPAUSE"])])
+        .await?;
+    Ok(())
+}
+
+/// Run composed `CLIENT KILL …` argument lists ([`kill_filter_commands`]) on
+/// every master and sum the counts the servers answer with. It takes the
+/// lists rather than the filter so that what runs is exactly what the confirm
+/// dialog summarised ([`kill_filter_summary`]).
+pub async fn client_kill_by(at: &ServerDb, commands: &[Vec<String>]) -> Result<i64> {
+    let client = at.client().await?;
+    let mut killed = 0;
+    for args in commands {
+        let (_, counts): (_, Vec<i64>) = client.query_async_masters(vec![client_cmd(args)]).await?;
+        killed += counts.iter().sum::<i64>();
+    }
+    Ok(killed)
+}
 
 /// What `CLIENT PAUSE` holds back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
