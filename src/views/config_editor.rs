@@ -42,6 +42,7 @@ use gpui_kit::component::{
 use redis::cmd;
 use rust_i18n::t;
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 use tracing::error;
 use zedis_ui::{ZedisDialog, ZedisSelect, ZedisSelectEvent, help_popover};
 
@@ -265,6 +266,40 @@ const CONFIG_GROUPS: &[ConfigGroup] = &[
     },
 ];
 
+/// The config list as the page draws it: narrowed by the filter box, bucketed
+/// into [`CONFIG_GROUPS`] order, the rest in `others`.
+struct GroupedConfigs {
+    /// What it was built from: the filter text and `configs_version`.
+    filter: String,
+    version: u64,
+    buckets: Vec<Vec<(SharedString, SharedString)>>,
+    others: Vec<(SharedString, SharedString)>,
+}
+
+impl GroupedConfigs {
+    fn build(configs: &[(SharedString, SharedString)], filter: &str, version: u64) -> Self {
+        let needle = filter.to_lowercase();
+        let mut buckets: Vec<Vec<(SharedString, SharedString)>> = vec![Vec::new(); CONFIG_GROUPS.len()];
+        let mut others: Vec<(SharedString, SharedString)> = Vec::new();
+        for (k, v) in configs {
+            if !needle.is_empty() && !k.to_lowercase().contains(&needle) {
+                continue;
+            }
+            // Anything not matching a known group falls into "others".
+            match config_group_index(k) {
+                Some(i) => buckets[i].push((k.clone(), v.clone())),
+                None => others.push((k.clone(), v.clone())),
+            }
+        }
+        Self {
+            filter: filter.to_string(),
+            version,
+            buckets,
+            others,
+        }
+    }
+}
+
 /// The group index a config key belongs to, or `None` for the "others" bucket.
 fn config_group_index(key: &str) -> Option<usize> {
     CONFIG_GROUPS
@@ -285,6 +320,14 @@ pub struct ZedisConfigEditor {
     /// keystroke bubbles up to the global "back" binding.
     focus_handle: FocusHandle,
     configs: Vec<(SharedString, SharedString)>,
+    /// Bumped whenever `configs` is replaced — half of the key of `grouped`.
+    configs_version: u64,
+    /// `configs` filtered and bucketed by section: what `render` draws.
+    /// Kept between frames, because a frame is a hover or a scroll and the
+    /// list is some 200–400 parameters: filtering it used to allocate a
+    /// lowercase copy of every name, clone every pair and re-bucket them,
+    /// on every paint of the page.
+    grouped: Option<Rc<GroupedConfigs>>,
     filter_state: Entity<InputState>,
     filter: String,
     editing_key: Option<SharedString>,
@@ -328,6 +371,20 @@ pub struct ZedisConfigEditor {
 }
 
 impl ZedisConfigEditor {
+    /// The grouping `render` draws, rebuilt only when the filter text or the
+    /// config list changed since the last frame.
+    fn grouped_configs(&mut self) -> Rc<GroupedConfigs> {
+        if let Some(grouped) = &self.grouped
+            && grouped.version == self.configs_version
+            && grouped.filter == self.filter
+        {
+            return grouped.clone();
+        }
+        let grouped = Rc::new(GroupedConfigs::build(&self.configs, &self.filter, self.configs_version));
+        self.grouped = Some(grouped.clone());
+        grouped
+    }
+
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter_state = cx.new(|cx| InputState::new(window, cx).placeholder("Filter by key..."));
         let edit_state = cx.new(|cx| InputState::new(window, cx));
@@ -360,6 +417,8 @@ impl ZedisConfigEditor {
             server_state,
             focus_handle: cx.focus_handle(),
             configs: Vec::new(),
+            configs_version: 0,
+            grouped: None,
             filter_state,
             filter: String::new(),
             editing_key: None,
@@ -433,6 +492,7 @@ impl ZedisConfigEditor {
                 match result {
                     Ok((configs, config_file)) => {
                         this.configs = configs;
+                        this.configs_version += 1;
                         this.config_file = config_file.into();
                         this.error = None;
                     }
@@ -1040,28 +1100,12 @@ impl Render for ZedisConfigEditor {
         }
 
         let font_family: SharedString = get_mono_font_family().into();
-        let filter = self.filter.to_lowercase();
-
-        let filtered: Vec<(SharedString, SharedString)> = self
-            .configs
-            .iter()
-            .filter(|(k, _)| filter.is_empty() || k.to_lowercase().contains(&filter))
-            .cloned()
-            .collect();
+        let grouped = self.grouped_configs();
+        let (buckets, others) = (&grouped.buckets, &grouped.others);
 
         // `stripe_bg` is still used by the cross-server diff view below.
         let stripe_bg = cx.theme().table_even;
 
-        // Group the filtered configs into ordered sections; anything not
-        // matching a known group falls into the synthetic "others" section.
-        let mut buckets: Vec<Vec<(SharedString, SharedString)>> = vec![Vec::new(); CONFIG_GROUPS.len()];
-        let mut others: Vec<(SharedString, SharedString)> = Vec::new();
-        for (k, v) in filtered {
-            match config_group_index(&k) {
-                Some(i) => buckets[i].push((k, v)),
-                None => others.push((k, v)),
-            }
-        }
         // Responsive card-grid column count via the content-width proxy.
         let cols: u16 = cx
             .global::<ZedisGlobalStore>()
@@ -1333,7 +1377,7 @@ impl Render for ZedisConfigEditor {
                         ConfigGroupSection {
                             label: i18n_config_editor(cx, "group_others"),
                             desc: i18n_config_editor(cx, "group_others_desc"),
-                            configs: &others,
+                            configs: others,
                             cols,
                             font_family: &font_family,
                             docs: &self.config_docs,
@@ -1355,7 +1399,42 @@ impl Render for ZedisConfigEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigKind, config_enum_options, config_kind};
+    use super::{ConfigKind, GroupedConfigs, config_enum_options, config_group_index, config_kind};
+    use gpui::SharedString;
+
+    #[test]
+    fn the_grouping_narrows_by_name_ignoring_case_and_keeps_every_pair() {
+        let pair = |k: &str, v: &str| (SharedString::from(k.to_string()), SharedString::from(v.to_string()));
+        let configs = vec![
+            pair("maxmemory", "0"),
+            pair("maxmemory-policy", "noeviction"),
+            pair("zedis-no-such-option", "x"),
+        ];
+        let count = |g: &GroupedConfigs| g.buckets.iter().map(Vec::len).sum::<usize>() + g.others.len();
+
+        let all = GroupedConfigs::build(&configs, "", 7);
+        assert_eq!(count(&all), 3, "an empty filter keeps everything");
+        assert_eq!(
+            (all.version, all.filter.as_str()),
+            (7, ""),
+            "the cache key is what it was built from"
+        );
+        // A name no group claims is not dropped: it lands in `others`.
+        assert!(all.others.iter().any(|(k, _)| k.as_ref() == "zedis-no-such-option"));
+        for (k, _) in &configs {
+            match config_group_index(k) {
+                Some(i) => assert!(
+                    all.buckets[i].iter().any(|(name, _)| name == k),
+                    "{k} is not in its group"
+                ),
+                None => assert!(all.others.iter().any(|(name, _)| name == k), "{k} is not in others"),
+            }
+        }
+
+        let narrowed = GroupedConfigs::build(&configs, "MaxMem", 7);
+        assert_eq!(count(&narrowed), 2, "the filter matches names, whatever their case");
+        assert_eq!(count(&GroupedConfigs::build(&configs, "nothing-matches", 7)), 0);
+    }
 
     #[test]
     fn config_kind_infers_from_value() {

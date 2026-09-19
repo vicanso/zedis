@@ -51,7 +51,7 @@ use transport::HttpBridgeTransport;
 #[cfg(target_family = "wasm")]
 use zedis_connection::{set_bridge_server_store, set_bridge_transport, set_servers_cache};
 #[cfg(target_family = "wasm")]
-use zedis_gui::helpers::pacing::set_page_hidden;
+use zedis_gui::helpers::pacing::set_unattended;
 #[cfg(target_family = "wasm")]
 use zedis_gui::helpers::set_web_command_key;
 #[cfg(target_family = "wasm")]
@@ -189,7 +189,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn set_page_visible(visible: bool) {
-    set_page_hidden(!visible);
+    set_unattended(!visible);
 }
 
 // The page is the process: it lives until the tab closes, and so does this.

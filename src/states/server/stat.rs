@@ -659,6 +659,15 @@ impl ZedisServerState {
         }
     }
 
+    /// The app is being looked at again (the window came back to the front,
+    /// the page became visible): beat now instead of waiting out what is
+    /// left of the relaxed interval.
+    pub fn resume_heartbeat(&mut self, cx: &mut Context<Self>) {
+        self.last_background_refresh = 0;
+        self.last_heartbeat_at = None;
+        self.refresh_redis_info(cx);
+    }
+
     pub fn refresh_redis_info(&mut self, cx: &mut Context<Self>) {
         if self.server_id.is_empty() {
             return;
@@ -685,6 +694,18 @@ impl ZedisServerState {
         // Inactive workspace tabs poll at a relaxed cadence: the 2s status-bar
         // heartbeat keeps firing, but only one refresh per interval gets
         // through. Re-activating the tab resets the window (`set_background`).
+        // A cluster's beat is one `INFO` per master, so a large one beats
+        // less often (`pacing::heartbeat_interval`; up to four masters — and
+        // every standalone or Sentinel entry — are untouched). The 2s tick
+        // stays the metronome; this only decides which ticks go through.
+        // Not while a retry is pending: the backoff above owns that wait.
+        let stretched = pacing::heartbeat_interval(self.nodes.0);
+        if stretched > Self::HEARTBEAT_INTERVAL
+            && let Some(last) = self.last_heartbeat_at
+            && last.elapsed() + Self::HEARTBEAT_INTERVAL / 2 < stretched
+        {
+            return;
+        }
         if self.is_background() {
             let now = unix_ts();
             if now - self.last_background_refresh < pacing::BACKGROUND_REFRESH_SECS {
@@ -710,12 +731,15 @@ impl ZedisServerState {
         let server_id_clone = server_id.clone();
 
         self.heartbeat_in_flight = true;
+        self.last_heartbeat_at = Some(Instant::now());
         self.spawn(
             ServerTask::RefreshRedisInfo,
             move || async move {
                 let client = get_connection_manager().get_client(&server_id, db).await?;
+                // One command when it can be: with a single master the probe
+                // is the `INFO` itself (`RedisClient::heartbeat_probe`).
                 let start = Instant::now();
-                client.ping().await?;
+                let probed_info = client.heartbeat_probe().await?;
                 let latency = start.elapsed();
                 let now = unix_ts();
                 let slow_logs = if now - last_slow_logs_checked_at >= slow_logs_check_interval {
@@ -750,7 +774,10 @@ impl ZedisServerState {
                 } else {
                     None
                 };
-                let (servers, list): (_, Vec<String>) = client.query_async_masters(vec![cmd("INFO")]).await?;
+                let (servers, list): (_, Vec<String>) = match probed_info {
+                    Some(info) => (client.master_servers(), vec![info]),
+                    None => client.query_async_masters(vec![cmd("INFO")]).await?,
+                };
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 // Cluster only: keep a per-master persistence row so the
                 // Persistence panel can show which node is still forking.

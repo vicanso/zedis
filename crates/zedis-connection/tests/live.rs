@@ -3075,6 +3075,67 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
     });
 }
 
+/// The heartbeat's probe: with one master the `INFO` is the probe, on the
+/// client's own connection, so a beat is one command; a cluster still probes
+/// with `PING` and leaves the per-master `INFO` to the fan-out.
+#[test]
+#[ignore]
+fn heartbeat_probe_is_the_info_itself_where_there_is_one_master() {
+    smol::block_on(async {
+        let id = register(server("it-heartbeat-standalone", standalone())).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("standalone client");
+        let info = client
+            .heartbeat_probe()
+            .await
+            .expect("probe")
+            .expect("one master: the probe carries the INFO");
+        assert!(info.contains("redis_version:"), "not an INFO reply: {info:.60}");
+        // The same text the fan-out would have fetched, so the parser behind
+        // the status bar is fed what it always was.
+        let (_, fanned): (_, Vec<String>) = client.query_async_masters(vec![cmd("INFO")]).await.expect("fan-out");
+        assert_eq!(fanned.len(), 1);
+        let section = |text: &str| {
+            text.lines()
+                .filter(|l| l.starts_with('#'))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(section(&info), section(&fanned[0]), "the two INFOs differ in shape");
+
+        // A Sentinel entry's client is the data master: one master as well.
+        if let Some(addr) = scenario("ZEDIS_IT_SENTINEL") {
+            let id = register(sentinel_server("it-heartbeat-sentinel", addr)).await;
+            let client = get_connection_manager()
+                .get_client(&id, 0)
+                .await
+                .expect("sentinel client");
+            let info = client
+                .heartbeat_probe()
+                .await
+                .expect("probe")
+                .expect("the master's INFO");
+            assert!(info.contains("role:master"), "the probe did not reach the master");
+        }
+
+        let Some(addr) = scenario("ZEDIS_IT_CLUSTER") else {
+            eprintln!("skipped the cluster half: ZEDIS_IT_CLUSTER not set");
+            return;
+        };
+        let id = register(protected_server("it-heartbeat-cluster", addr)).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("cluster client");
+        assert!(
+            client.heartbeat_probe().await.expect("probe").is_none(),
+            "a cluster's bare INFO answers for one arbitrary node; the probe has to stay a PING"
+        );
+    });
+}
+
 /// TLS *inside* the tunnel: the forwarded stream carries the handshake, so
 /// the certificate is checked against the endpoint the sshd dials, not the
 /// sshd. Its own test (and the RSA port, so its own `user@addr`) because

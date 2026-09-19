@@ -21,6 +21,7 @@
 //! first*).
 
 use super::*;
+use gpui::Subscription;
 
 /// The desktop-only state of the [`Zedis`] root.
 pub(crate) struct DesktopOnly {
@@ -38,10 +39,19 @@ pub(crate) struct DesktopOnly {
     /// The crash report the previous run left behind, if it ended in a panic.
     /// Consumed in `render` (which has the `Window` needed for the dialog).
     pub(crate) pending_crash: Option<CrashReport>,
+    /// Counts down from the moment the main window stops being the active
+    /// one; when it runs out the app is unattended (`pacing::unattended`) and
+    /// its heartbeats relax. Dropped — cancelled — when the window comes back.
+    idle_task: Option<Task<()>>,
+    /// The main window's activation, which is what starts and stops it.
+    _activation: Subscription,
 }
 
 impl DesktopOnly {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Zedis>) -> Self {
+        let activation = cx.observe_window_activation(window, |zedis, window, cx| {
+            zedis.on_window_activation(window.is_window_active(), cx);
+        });
         Self {
             multi_search: cx.new(|cx| ZedisMultiSearch::new(window, cx)),
             pending_update: None,
@@ -49,11 +59,46 @@ impl DesktopOnly {
             download_task: None,
             pending_install_quit: false,
             pending_crash: None,
+            idle_task: None,
+            _activation: activation,
         }
     }
 }
 
 impl Zedis {
+    /// The main window became, or stopped being, the active one.
+    ///
+    /// A window nobody is looking at keeps sending its heartbeat — `INFO`
+    /// every two seconds per connected tab, for as long as it stays open. It
+    /// costs this machine nothing measurable; it costs a Redis billed per
+    /// command tens of thousands of commands a day, and a laptop its idle
+    /// network. So after [`pacing::WINDOW_IDLE_AFTER`] out of the front the
+    /// app counts as unattended and beats like a background tab. The grace
+    /// period is the point: switching to a document, a chat or Zedis's own
+    /// Settings window and back changes nothing, and neither does a window
+    /// parked on a second screen that is clicked now and then.
+    ///
+    /// Coming back is immediate: the flag clears and the active tab beats at
+    /// once, so the status bar is never looked at stale.
+    fn on_window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
+        if !active {
+            self.desktop.idle_task = Some(cx.spawn(async move |_this, cx| {
+                cx.background_executor().timer(pacing::WINDOW_IDLE_AFTER).await;
+                pacing::set_unattended(true);
+            }));
+            return;
+        }
+        self.desktop.idle_task = None;
+        if !pacing::unattended() {
+            return;
+        }
+        pacing::set_unattended(false);
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let state = tab.content.read(cx).server_state();
+            state.update(cx, |state, cx| state.resume_heartbeat(cx));
+        }
+    }
+
     /// Open whatever the desktop queued for the first frame that has a
     /// `Window`: the crash report, the install-quit prompt, the update prompt.
     pub(super) fn open_desktop_prompts(&mut self, window: &mut Window, cx: &mut Context<Self>) {

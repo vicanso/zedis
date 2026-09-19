@@ -261,6 +261,9 @@ pub struct ZedisServerState {
     /// open. Cleared by a healthy PING, by any other task reaching the server
     /// (the link is evidently up) and by `reset` (ADR 5).
     heartbeat_retry_at: Option<Instant>,
+    /// When the last heartbeat attempt went out — what a large cluster's
+    /// stretched interval is measured from (`pacing::heartbeat_interval`).
+    last_heartbeat_at: Option<Instant>,
 
     /// A heartbeat refresh is still in flight: the next tick skips instead of
     /// stacking a second attempt while a connect timeout runs its course.
@@ -388,10 +391,11 @@ impl ZedisServerState {
     /// View-owned poll loops (e.g. the command-stats sampler) read this to
     /// pause their own traffic while the tab is hidden.
     ///
-    /// Also true while the whole *page* is hidden — browser only
-    /// (`pacing::page_hidden`, a constant `false` on the desktop).
+    /// Also true while nobody is looking at the app at all
+    /// (`pacing::unattended`): a hidden browser page, or a desktop window that
+    /// has been inactive for a while.
     pub fn is_background(&self) -> bool {
-        self.background || pacing::page_hidden()
+        self.background || pacing::unattended()
     }
 
     /// Reset all scan-related state (clears keys, cursors, etc.)
@@ -463,6 +467,7 @@ impl ZedisServerState {
         self.last_connection_error = ConnectionErrorKind::Unknown;
         self.ping_failures = 0;
         self.heartbeat_retry_at = None;
+        self.last_heartbeat_at = None;
         self.heartbeat_in_flight = false;
         // A fresh select / reconnect always re-establishes the link, so clear
         // any manual-disconnect pause (reconnect routes through here too).

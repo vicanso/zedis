@@ -103,28 +103,53 @@ pub const HOUSEKEEPING_HOURLY_TICKS: u64 = 120;
 #[cfg(target_family = "wasm")]
 pub const HOUSEKEEPING_HOURLY_TICKS: u64 = 1;
 
-/// Whether the page is one nobody is looking at — a browser tab in the
-/// background, a minimised window. A desktop window has no such state worth
-/// acting on (its inactive *workspace tabs* are already relaxed), so there it
-/// is a constant and everything that asks compiles to what it was. In the
-/// browser a page is routinely left open for days, and every beat of it is
-/// the bridge's and the Redis server's work: hidden, it polls like a
-/// background workspace tab. The page tells us through `zedis-web`'s
-/// `set_page_visible` (a `visibilitychange` listener in `index.html`).
+/// Whether nobody is looking: a browser page in a background tab, or a
+/// desktop window that has not been the active one for [`WINDOW_IDLE_AFTER`].
+/// An unattended app polls like a background workspace tab instead of at the
+/// heartbeat — `ZedisServerState::is_background()` ORs this in, and the
+/// panels that pause on `is_background()` pause with it.
+///
+/// Why it matters on the desktop too: a beat is commands sent to the server,
+/// and on a Redis billed per command (Upstash and the like) a window left
+/// open over a weekend is tens of thousands of them that nobody saw the
+/// result of. The browser sets this from the page's `visibilitychange`
+/// (`zedis-web`'s `set_page_visible`); the desktop from the main window's
+/// activation (`root/desktop.rs`), after a grace period so that a glance at
+/// another window changes nothing.
+pub fn unattended() -> bool {
+    UNATTENDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+static UNATTENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_unattended(unattended: bool) {
+    UNATTENDED.store(unattended, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How long the desktop's main window may be inactive before the app counts
+/// as unattended. Long enough to read a document, answer a message or use
+/// Zedis's own Settings window without the status bar going stale.
 #[cfg(not(target_family = "wasm"))]
-pub const fn page_hidden() -> bool {
-    false
-}
-#[cfg(target_family = "wasm")]
-pub fn page_hidden() -> bool {
-    PAGE_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
-}
-#[cfg(target_family = "wasm")]
-static PAGE_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Browser only: the page's `visibilitychange`.
-#[cfg(target_family = "wasm")]
-pub fn set_page_hidden(hidden: bool) {
-    PAGE_HIDDEN.store(hidden, std::sync::atomic::Ordering::Relaxed);
+pub const WINDOW_IDLE_AFTER: Duration = Duration::from_secs(120);
+
+/// The longest a cluster's heartbeat is stretched to, however many masters.
+const HEARTBEAT_STRETCH_CAP: Duration = Duration::from_secs(30);
+
+/// The heartbeat interval for a server with `masters` master nodes.
+///
+/// A beat sends one `INFO` to *every* master, so at a fixed interval a
+/// cluster's heartbeat grows with its size — thirty masters at 2s is fifteen
+/// `INFO`s a second, for a status bar. The interval is stretched in whole
+/// beats so the rate stays at or under two `INFO`s a second: up to four
+/// masters beat at the plain interval (a standalone, a Sentinel pair and the
+/// common three-master cluster are untouched), 5–8 at twice it, 9–12 at three
+/// times, capped at [`HEARTBEAT_STRETCH_CAP`]. In the browser the base is
+/// 10s, so the same rule starts stretching at twenty-one masters.
+pub fn heartbeat_interval(masters: usize) -> Duration {
+    // Masters one beat may cover at two INFOs a second.
+    let per_beat = (HEARTBEAT_INTERVAL.as_secs() * 2).max(1) as usize;
+    let beats = masters.div_ceil(per_beat).max(1) as u32;
+    HEARTBEAT_INTERVAL
+        .saturating_mul(beats)
+        .min(HEARTBEAT_STRETCH_CAP.max(HEARTBEAT_INTERVAL))
 }
 
 #[cfg(test)]
@@ -147,6 +172,26 @@ mod tests {
         assert_eq!(PANEL_WAKE_MS, 200);
         assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));
         assert_eq!(HOUSEKEEPING_HOURLY_TICKS, 120);
-        assert!(!page_hidden(), "a desktop window is never \"hidden\" to the pacing");
+        assert_eq!(WINDOW_IDLE_AFTER, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn a_cluster_heartbeat_stretches_with_its_masters_and_nothing_smaller_does() {
+        // Standalone, Sentinel and the usual small cluster: the plain beat.
+        for masters in [0, 1, 2, 3, 4] {
+            assert_eq!(heartbeat_interval(masters), Duration::from_secs(2), "{masters} masters");
+        }
+        assert_eq!(heartbeat_interval(5), Duration::from_secs(4));
+        assert_eq!(heartbeat_interval(8), Duration::from_secs(4));
+        assert_eq!(heartbeat_interval(9), Duration::from_secs(6));
+        assert_eq!(heartbeat_interval(30), Duration::from_secs(16));
+        // Capped: a status bar older than half a minute is not a status bar.
+        assert_eq!(heartbeat_interval(60), Duration::from_secs(30));
+        assert_eq!(heartbeat_interval(500), Duration::from_secs(30));
+        // Never more than two INFOs a second below the cap.
+        for masters in 1..=60usize {
+            let rate = masters as f64 / heartbeat_interval(masters).as_secs_f64();
+            assert!(rate <= 2.0, "{masters} masters beat at {rate:.2} INFO/s");
+        }
     }
 }

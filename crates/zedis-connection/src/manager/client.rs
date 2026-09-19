@@ -851,6 +851,38 @@ impl RedisClient {
         let mut conn = self.connection.clone();
         Ok(cmd("DBSIZE").query_async(&mut conn).await?)
     }
+    /// The heartbeat's liveness probe: `Some(info)` when the probe was itself
+    /// the `INFO` the beat is after, `None` when it was a `PING` and the
+    /// caller still has to fan the `INFO` out ([`Self::query_async_masters`]).
+    /// The caller times this call — that is the latency the status bar shows.
+    ///
+    /// The probe has to travel on `self.connection`, the connection every
+    /// user command uses. The `INFO` fan-out does not: it dials each master
+    /// through the per-node connection cache, so it says nothing about
+    /// whether the *client's* link is alive — which is what a dropped link,
+    /// a failover or a NAT timeout breaks, and what the heartbeat exists to
+    /// notice (ADR 5). That is why a `PING` used to precede it.
+    ///
+    /// With one master that `PING` is a wasted command: `INFO` sent on
+    /// `self.connection` is the probe *and* the data, so a standalone or a
+    /// Sentinel-managed master costs one command a beat instead of two — on
+    /// a server billed per command, half the bill of an open window. The
+    /// measured latency then includes the reply's transfer (a few KB), which
+    /// is noise next to the round trip on anything but a very slow link.
+    ///
+    /// A cluster keeps the `PING`: its client connection routes a bare
+    /// `INFO` to one arbitrary node, the per-master replies still need the
+    /// fan-out, and saving one command in N+1 is not worth a weaker probe.
+    /// Its cost is handled by beating less often instead.
+    pub async fn heartbeat_probe(&self) -> Result<Option<String>> {
+        if self.master_nodes.len() == 1 && !self.is_cluster() {
+            let mut conn = self.connection.clone();
+            let info: String = cmd("INFO").query_async(&mut conn).await?;
+            return Ok(Some(info));
+        }
+        self.ping().await?;
+        Ok(None)
+    }
     /// Pings the server to check connectivity.
     pub async fn ping(&self) -> Result<()> {
         let mut conn = self.connection.clone();
