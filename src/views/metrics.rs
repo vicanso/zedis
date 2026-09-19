@@ -14,7 +14,7 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{ServerCommand, get_server};
-use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family};
+use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family, pacing};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_metrics};
 use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
@@ -37,12 +37,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use std::sync::Arc;
-use std::time::Duration;
 use zedis_ui::ZedisSkeletonLoading;
 
 const TIME_FORMAT: &str = "%H:%M:%S";
 const CHART_CARD_HEIGHT: Pixels = px(300.);
-const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const BYTES_TO_MB: f64 = 1_000_000.;
 const Y_LABEL_WIDTH: f32 = 45.;
 const Y_TICK_COUNT: usize = 4;
@@ -731,9 +729,7 @@ impl ZedisMetrics {
     fn start_heartbeat(&mut self, cx: &mut Context<Self>) {
         self.heartbeat_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(HEARTBEAT_INTERVAL_SECS))
-                    .await;
+                cx.background_executor().timer(pacing::HEARTBEAT_INTERVAL).await;
                 let _ = this.update(cx, |state, cx| state.tick(cx));
             }
         }));

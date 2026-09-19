@@ -630,7 +630,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
                                 let cached = cx.global::<ZedisGlobalStore>().read(cx).available_update();
                                 view.update(cx, |zedis, cx| match cached {
                                     Some(info) => {
-                                        zedis.pending_update = Some(info);
+                                        zedis.desktop.pending_update = Some(info);
                                         cx.notify();
                                     }
                                     None => zedis.check_for_updates(true, true, cx),
@@ -656,7 +656,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
                     zedis.pending_config_recoveries = take_config_recoveries();
                     #[cfg(not(target_family = "wasm"))]
                     {
-                        zedis.pending_crash = take_pending_crash();
+                        zedis.desktop.pending_crash = take_pending_crash();
                     }
                 });
                 // One-shot welcome card, and only for a truly fresh start

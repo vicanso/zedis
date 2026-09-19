@@ -48,6 +48,12 @@ use zedis_core::string::{bracket_ipv6, split_host_port_or, strip_ipv6_brackets};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+// Reading TLS material — PEM from a field or a file, an encrypted client
+// key — is the desktop's and the bridge's business: the browser build never
+// dials TLS itself. One gated module rather than a gate per item.
+#[cfg(not(target_family = "wasm"))]
+mod tls;
+
 /// Preset tag color keys, ordered to match the RadioGroup option list.
 /// Index 0 = "none" (no chip rendered).
 /// Tag color preset keys, ordered Local → Dev → UAT → Prod → Archive.
@@ -1005,117 +1011,6 @@ impl RedisServer {
 
         url
     }
-    /// The root certificate as PEM bytes — the field's content, or the
-    /// file it names. `None` when unset.
-    ///
-    /// Native only: TLS material is for dialling, which the bridge does.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn root_cert_pem(&self) -> Result<Option<Vec<u8>>> {
-        self.root_cert.as_deref().map(tls_material).transpose()
-    }
-
-    /// The client certificate as PEM bytes. `None` when unset.
-    ///
-    /// Native only: TLS material is for dialling, which the bridge does.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn client_cert_pem(&self) -> Result<Option<Vec<u8>>> {
-        self.client_cert.as_deref().map(tls_material).transpose()
-    }
-
-    /// The client key as *unencrypted* PEM bytes: the field's content or the
-    /// file it names, decrypted with `client_key_passphrase` when it is a
-    /// PKCS#8 `ENCRYPTED PRIVATE KEY`. `None` when unset.
-    ///
-    /// Native only: it may have to decrypt the key, and the browser presents
-    /// no client certificate — the bridge dials (ADR 9).
-    #[cfg(not(target_family = "wasm"))]
-    pub fn client_key_pem(&self) -> Result<Option<Vec<u8>>> {
-        let Some(key) = self.client_key.as_deref() else {
-            return Ok(None);
-        };
-        let pem = tls_material(key)?;
-        let passphrase = self.client_key_passphrase.as_deref().map(str::trim).unwrap_or_default();
-        decrypt_private_key_pem(pem, passphrase).map(Some)
-    }
-
-    /// The TLS material redis-rs needs, or `None` when TLS is off or every
-    /// certificate field is empty (system roots, no client auth).
-    /// The TLS material redis-rs needs to dial. Native only: the browser
-    /// never opens a socket, so it never presents a certificate.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn tls_certificates(&self) -> Result<Option<TlsCertificates>> {
-        if !self.tls.unwrap_or(false) {
-            return Ok(None);
-        }
-        let mut client_tls = None;
-        if let Some(client_cert) = self.client_cert_pem()?
-            && let Some(client_key) = self.client_key_pem()?
-        {
-            client_tls = Some(ClientTlsConfig {
-                client_cert,
-                client_key,
-            });
-        }
-        let root_cert = self.root_cert_pem()?;
-        if client_tls.is_none() && root_cert.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(TlsCertificates { client_tls, root_cert }))
-    }
-}
-
-/// A certificate field's bytes: pasted PEM is taken as is, anything else is
-/// a path (`~` expanded) to read. Empty fields never reach here — the
-/// callers filter them out.
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn tls_material(value: &str) -> Result<Vec<u8>> {
-    let trimmed = value.trim();
-    if trimmed.starts_with("-----BEGIN ") {
-        return Ok(trimmed.as_bytes().to_vec());
-    }
-    let path = resolve_path(trimmed);
-    std::fs::read(&path).map_err(|e| Error::Invalid {
-        message: format!("could not read the certificate file {path}: {e}"),
-    })
-}
-
-/// A private key as unencrypted PEM. A PKCS#8 `ENCRYPTED PRIVATE KEY` is
-/// decrypted with `passphrase`; the legacy OpenSSL form (`Proc-Type:
-/// 4,ENCRYPTED` inside a `BEGIN RSA PRIVATE KEY` block) is refused with a
-/// pointer at `openssl pkcs8 -topk8`, which rewrites it as PKCS#8.
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn decrypt_private_key_pem(pem: Vec<u8>, passphrase: &str) -> Result<Vec<u8>> {
-    let text = String::from_utf8_lossy(&pem);
-    if text.contains("Proc-Type: 4,ENCRYPTED") {
-        return Err(Error::Invalid {
-            message: "the client key uses the legacy OpenSSL encryption; convert it with \
-                      `openssl pkcs8 -topk8 -in key.pem -out key.pk8` (PKCS#8, which Zedis decrypts)"
-                .to_string(),
-        });
-    }
-    if !text.contains("ENCRYPTED PRIVATE KEY") {
-        return Ok(pem);
-    }
-    if passphrase.is_empty() {
-        return Err(Error::Invalid {
-            message: "the client key is encrypted — fill in the client key passphrase".to_string(),
-        });
-    }
-    let (_label, document) = pkcs8::SecretDocument::from_pem(&text).map_err(|e| Error::Invalid {
-        message: format!("could not parse the encrypted client key: {e}"),
-    })?;
-    let encrypted = pkcs8::EncryptedPrivateKeyInfoRef::try_from(document.as_bytes()).map_err(|e| Error::Invalid {
-        message: format!("could not parse the encrypted client key: {e}"),
-    })?;
-    let decrypted = encrypted.decrypt(passphrase).map_err(|e| Error::Invalid {
-        message: format!("could not decrypt the client key (wrong passphrase?): {e}"),
-    })?;
-    let pem = decrypted
-        .to_pem("PRIVATE KEY", pkcs8::LineEnding::LF)
-        .map_err(|e| Error::Invalid {
-            message: format!("could not re-encode the client key: {e}"),
-        })?;
-    Ok(pem.as_bytes().to_vec())
 }
 
 /// Wrapper struct to match the TOML `[[servers]]` structure.

@@ -14,7 +14,7 @@
 
 use crate::connection::{ReplicationInfo, get_connection_manager, get_server};
 use crate::db::{insert_metrics_sample, list_metrics_samples, prune_metrics_history};
-use crate::helpers::{unix_ts, unix_ts_millis};
+use crate::helpers::{pacing, unix_ts, unix_ts_millis};
 use crate::states::{
     ConnectionErrorKind, ConnectionHealth, ServerEvent, ServerTask, ZedisServerState, i18n_status_bar,
 };
@@ -160,10 +160,6 @@ static METRICS_CACHE: LazyLock<MetricsCache> = LazyLock::new(|| MetricsCache::ne
 pub fn get_metrics_cache() -> &'static MetricsCache {
     &METRICS_CACHE
 }
-
-/// Refill `dbsize` from the heartbeat's INFO keyspace at most this often
-/// (seconds) — the key total needn't be real-time.
-const DBSIZE_REFRESH_INTERVAL: i64 = 60;
 
 /// Persist at most one sample per minute per server — the in-memory cache
 /// keeps the 2s-resolution live window, disk only needs trend resolution.
@@ -604,8 +600,9 @@ impl ZedisServerState {
     /// Offline rather than Reconnecting (~2s heartbeat cadence -> >=6s down).
     const PING_OFFLINE_THRESHOLD: u32 = 3;
 
-    /// The status bar's heartbeat cadence; also the first retry wait.
-    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+    /// The status bar's heartbeat cadence; also the first retry wait. Paced
+    /// per target in `helpers::pacing` (2s on the desktop).
+    const HEARTBEAT_INTERVAL: Duration = pacing::HEARTBEAT_INTERVAL;
     /// Longest wait between two attempts against an unreachable server.
     const HEARTBEAT_BACKOFF_CAP: Duration = Duration::from_secs(60);
 
@@ -731,23 +728,22 @@ impl ZedisServerState {
         // Inactive workspace tabs poll at a relaxed cadence: the 2s status-bar
         // heartbeat keeps firing, but only one refresh per interval gets
         // through. Re-activating the tab resets the window (`set_background`).
-        const BACKGROUND_REFRESH_INTERVAL: i64 = 30;
         if self.background {
             let now = unix_ts();
-            if now - self.last_background_refresh < BACKGROUND_REFRESH_INTERVAL {
+            if now - self.last_background_refresh < pacing::BACKGROUND_REFRESH_SECS {
                 return;
             }
             self.last_background_refresh = now;
         }
 
-        let slow_logs_check_interval = 60;
+        let slow_logs_check_interval = pacing::SLOW_LOG_CHECK_SECS;
         let mut last_slow_logs_checked_at = self.last_slow_logs_checked_at;
         // The status bar's key total: one `DBSIZE` at most every minute —
         // the number needn't track every tick, and a steady denominator
         // reads calmer than a live one. The same call the initial load
         // made, so the total never changes its meaning between the connect
         // and a minute later.
-        let refresh_dbsize = unix_ts() - self.last_dbsize_refreshed_at >= DBSIZE_REFRESH_INTERVAL;
+        let refresh_dbsize = unix_ts() - self.last_dbsize_refreshed_at >= pacing::DBSIZE_REFRESH_SECS;
         if last_slow_logs_checked_at == 0 {
             last_slow_logs_checked_at = unix_ts() - slow_logs_check_interval;
         }

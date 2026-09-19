@@ -31,6 +31,7 @@ mod keybindings;
 mod local_data;
 #[cfg(not(target_family = "wasm"))]
 mod logger;
+pub mod pacing;
 mod platform;
 #[cfg(not(target_family = "wasm"))]
 mod proxy;

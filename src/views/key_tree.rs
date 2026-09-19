@@ -77,6 +77,15 @@ use actions::KeyTreeAction;
 use build::*;
 use delegate::*;
 
+/// What a tree build starts from.
+enum KeySnapshot {
+    /// The cached snapshot, sorted by an earlier build: an expand / collapse
+    /// or a filter change over the same keys.
+    Sorted(Arc<Vec<(SharedString, KeyType)>>),
+    /// Straight from server state, in hash order — the build sorts it.
+    Fresh(Vec<(SharedString, KeyType)>),
+}
+
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
 const TREE_INDENT_OFFSET: f32 = 8.0; // Additional offset for all items
 const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
@@ -234,6 +243,13 @@ pub struct ZedisKeyTree {
     /// Trailing-edge rebuild scheduled while scan pages are streaming in;
     /// dropping it cancels the pending rebuild.
     pending_tree_update: Option<Task<()>>,
+    /// The tree build in flight. Every rebuild — a scan page, an expand, a
+    /// sort, a filter — replaces it, and dropping a task is what keeps its
+    /// result from being applied: builds run on the background pool and a
+    /// big one can finish *after* a smaller one started later, which used
+    /// to put the older tree (a folder collapsed again, the previous
+    /// filter's rows) on top of the newer one.
+    build_task: Option<Task<()>>,
 
     /// When the last `KeyTreeUpdated`-driven rebuild started — the
     /// leading-edge check in `schedule_key_tree_update`.
@@ -478,6 +494,7 @@ impl ZedisKeyTree {
             should_enter_add_key_mode: None,
             auto_refresh_task: None,
             pending_tree_update: None,
+            build_task: None,
             last_tree_update_at: None,
             last_observed_scroll_y: 0.0,
             _subscriptions: subscriptions,
@@ -631,25 +648,22 @@ impl ZedisKeyTree {
 
         // Only re-clone keys from server state when key_tree_id actually changed
         // (keys added/removed/type changed). For expand/collapse, reuse cached snapshot.
-        if self.state.cached_key_tree_id != key_tree_id {
-            let mut keys_snapshot: Vec<(SharedString, KeyType)> =
-                server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
-            // Sort once here, not per rebuild: expand/collapse and filter
-            // changes reuse this snapshot, so they no longer pay the
-            // O(N log N) that used to run inside every tree build.
-            // (Borrow-compare — `sort_unstable_by_key` would clone the
-            // SharedString on every comparison.)
-            keys_snapshot.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-            self.state.cached_keys = Arc::new(keys_snapshot);
+        let keys_snapshot = if self.state.cached_key_tree_id != key_tree_id {
             // Arc share, not a structural copy — the server side mutates
             // its map through `Arc::make_mut`, so this snapshot stays
             // immutable for the background build while writes COW at most
             // once per build window.
             self.state.cached_key_ttls = server_state.key_ttls_arc();
-            self.state.cached_key_tree_id = key_tree_id.to_string().into();
-        }
-
-        let keys_snapshot = self.state.cached_keys.clone();
+            // Copied here because the map belongs to an entity; *sorted* by
+            // the build, off this thread. The sorted result comes back with
+            // the rows and becomes the cache, so expand / collapse and
+            // filter changes still sort nothing — but a million keys no
+            // longer hold the UI thread for an O(N log N) per scan page.
+            KeySnapshot::Fresh(server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect())
+        } else {
+            KeySnapshot::Sorted(self.state.cached_keys.clone())
+        };
+        let snapshot_tree_id: SharedString = key_tree_id.to_string().into();
         let key_ttls_snapshot = self.state.cached_key_ttls.clone();
         let readonly = server_state.readonly();
         let scanning_prefixes = server_state.scanning_prefixes().clone();
@@ -703,10 +717,19 @@ impl ZedisKeyTree {
         } else {
             TtlFilter::All
         };
-        self.key_tree_list_state.update(cx, move |_state, cx| {
+        let build = self.key_tree_list_state.update(cx, move |_state, cx| {
             cx.spawn(async move |handle, cx| {
                 let task = cx.background_spawn(async move {
                     let start = Instant::now();
+                    let (keys_snapshot, sorted_now) = match keys_snapshot {
+                        KeySnapshot::Sorted(keys) => (keys, false),
+                        KeySnapshot::Fresh(mut keys) => {
+                            // Borrow-compare — `sort_unstable_by_key` would
+                            // clone the SharedString on every comparison.
+                            keys.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                            (Arc::new(keys), true)
+                        }
+                    };
                     // Source switch: tag filter → local metadata union
                     // (covers tagged keys not yet in the SCAN page);
                     // otherwise the SCAN snapshot is the source (cloned out
@@ -751,11 +774,19 @@ impl ZedisKeyTree {
                     let mut items = append_load_more_rows(items, &incomplete_prefixes, &load_more_label, &separator);
                     fill_parent_indices(&mut items);
                     tracing::debug!("Key tree build time: {:?}", start.elapsed());
-                    items
+                    (items, sorted_now.then_some(keys_snapshot))
                 });
 
-                let result = task.await;
+                let (result, sorted_keys) = task.await;
                 let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
+                    // The build sorted a fresh snapshot: that is the cache
+                    // the next expand / collapse reuses. Set only here, so a
+                    // build that was replaced before finishing leaves the
+                    // cache describing the keys it was really made from.
+                    if let Some(sorted_keys) = sorted_keys {
+                        view.state.cached_keys = sorted_keys;
+                        view.state.cached_key_tree_id = snapshot_tree_id;
+                    }
                     // Scroll a jumped-to key into view now that the rebuilt
                     // rows exist. A key that is filtered out (or not scanned
                     // yet) simply has no row — drop the request instead of
@@ -775,15 +806,16 @@ impl ZedisKeyTree {
                     view.state.clear_selection = true;
                     cx.notify();
                 });
-                handle.update(cx, |this, cx| {
+                let _ = handle.update(cx, |this, cx| {
                     this.delegate_mut().clear_selection();
                     this.delegate_mut().items = result;
                     this.delegate_mut().readonly = readonly;
                     cx.notify();
-                })
+                });
             })
-            .detach();
         });
+        // Replacing the previous build cancels it: see `build_task`.
+        self.build_task = Some(build);
     }
 
     /// Rebuild the tree after a tag/note change so leaf rows and

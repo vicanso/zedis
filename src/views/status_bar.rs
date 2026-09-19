@@ -17,7 +17,7 @@ use crate::{
     assets::CustomIconName,
     connection::{KillTarget, RedisClientDescription, ServerFeatures, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{get_mono_font_family, group_thousands, humanize_keystroke, resolve_tag_chip},
+    helpers::{get_mono_font_family, group_thousands, humanize_keystroke, pacing, resolve_tag_chip},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
@@ -658,7 +658,7 @@ impl ZedisStatusBar {
     fn start_heartbeat(&mut self, server_state: Entity<ZedisServerState>, cx: &mut Context<Self>) {
         self.heartbeat_task = Some(cx.spawn(async move |_this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+                cx.background_executor().timer(pacing::HEARTBEAT_INTERVAL).await;
                 server_state.update(cx, |state, cx| {
                     state.refresh_redis_info(cx);
                 });
