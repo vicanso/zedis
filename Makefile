@@ -103,6 +103,19 @@ publish-check:
 publish:
 	scripts/publish.sh
 
+# The rolling nightly, by hand: a workflow_dispatch of publish.yml on main
+# (the scheduled one skips itself when main has not moved). It builds
+# origin/main, not the working tree — scripts/nightly.sh says what is local
+# only, refuses a second run while one is going, and asks before triggering.
+# `make nightly` is everything (~30 min, macOS signing included);
+# `make nightly-docker` rebuilds only vicanso/zedis-web:nightly and leaves
+# the release alone. Extra flags: `make nightly ARGS="--watch --yes"`.
+nightly:
+	scripts/nightly.sh all $(ARGS)
+
+nightly-docker:
+	scripts/nightly.sh docker $(ARGS)
+
 build-cmd:
 	cargo run --package zedis-cmd-builder
 
