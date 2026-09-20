@@ -1,4 +1,9 @@
+# The single gate. `cargo fmt --check` comes first because CI runs it first,
+# and because leaving it out made "make lint passes" a claim that did not
+# cover formatting: a test file landed unformatted, the gate stayed green,
+# and the lint job went red on a diff the author never saw.
 lint:
+	cargo fmt --check
 	typos
 	cargo clippy --all-targets --all -- --deny=warnings
 
