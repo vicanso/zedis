@@ -461,11 +461,21 @@ if has cluster; then
   for i in 0 1 2 3 4 5; do wait_pong "cluster-$((PORT_CLUSTER_BASE + i))" -p $((PORT_CLUSTER_BASE + i)) "${DATA_AUTH[@]}"; done
   # shellcheck disable=SC2086
   cli "${DATA_AUTH[@]}" --cluster create $nodes --cluster-replicas 1 --cluster-yes >/dev/null
-  for _ in $(seq 1 60); do
-    if cli -p "$PORT_CLUSTER_BASE" "${DATA_AUTH[@]}" cluster info 2>/dev/null | grep -q 'cluster_state:ok'; then break; fi
-    sleep 0.5
+  # Every node, not just the first: `cluster create` returns before the slot
+  # map has propagated, and a suite that starts at that moment sees a cluster
+  # whose other masters still answer `cluster_state:fail` — which is exactly
+  # what `cluster_discovers_nodes_and_scans_every_master` and the rebalance
+  # planner read. CI hid it (the cargo build between up.sh and the tests gave
+  # it the time), a local `make it-up && make it` did not.
+  for i in 0 1 2 3 4 5; do
+    port=$((PORT_CLUSTER_BASE + i))
+    for _ in $(seq 1 60); do
+      if cli -p "$port" "${DATA_AUTH[@]}" cluster info 2>/dev/null | grep -q 'cluster_state:ok'; then break; fi
+      sleep 0.5
+    done
+    cli -p "$port" "${DATA_AUTH[@]}" cluster info 2>/dev/null | grep -q 'cluster_state:ok' \
+      || { echo "!! cluster node $port never reached state ok" >&2; exit 1; }
   done
-  cli -p "$PORT_CLUSTER_BASE" "${DATA_AUTH[@]}" cluster info | grep -q 'cluster_state:ok' || { echo "!! cluster never reached state ok" >&2; exit 1; }
   echo "  cluster ready"
   env_put ZEDIS_IT_CLUSTER "127.0.0.1:$PORT_CLUSTER_BASE"
 fi
