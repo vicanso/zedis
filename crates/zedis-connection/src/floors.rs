@@ -171,6 +171,34 @@ pub const MAXMEMORY_LRM: Floor = Floor::redis_only("8.6.0");
 /// sets exist only in Redis).
 pub const VSIM_WITHATTRIBS: Floor = Floor::redis_only("8.2.0");
 
+/// Whether `CLIENT NO-TOUCH ON` is safe to send to this server.
+///
+/// Not a [`Floor`], and it cannot be one: this is a *regression window*, not
+/// an adoption point. `NO-TOUCH` arrived in Redis 7.2 and works there, then
+/// Redis 8.0 refactored the command path and `lookupKey()` began reading
+/// `server.executing_client` — which is NULL while a blocked client is being
+/// served. So a client that has `NO-TOUCH` set and runs a command that
+/// *unblocks* another client segfaults the server. Upstream #14415,
+/// "Potential crash in `lookupKey()` when `executing_client` is NULL", fixed
+/// in **8.2.7** and never backported: the 8.0 branch is still affected at
+/// 8.0.6, its newest release.
+///
+/// The blocked client needs no flag of its own, which is what makes this
+/// ours to avoid rather than the user's: one `XADD` from Zedis, while any
+/// consumer anywhere is blocked on `XREAD`, takes the server down. Verified
+/// against a locally built 8.0.0 — with the flag the server dies in
+/// `lookupKey`, without it the same sequence is clean.
+///
+/// Valkey forked before the refactor and is unaffected at every release.
+pub fn no_touch_is_safe(is_valkey: bool, version: &Version) -> bool {
+    if is_valkey {
+        return true;
+    }
+    let affected_from = Version::new(8, 0, 0);
+    let fixed_in = Version::new(8, 2, 7);
+    *version < affected_from || *version >= fixed_in
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +289,26 @@ mod tests {
             valkey: None,
         };
         assert!(!broken.met_by(false, &v("99.0.0")));
+    }
+
+    #[test]
+    fn no_touch_is_refused_only_inside_the_redis_regression_window() {
+        // 7.x has the flag and none of the bug.
+        assert!(no_touch_is_safe(false, &v("7.2.0")));
+        assert!(no_touch_is_safe(false, &v("7.4.5")));
+        // 8.0.0 through 8.2.6 crash in lookupKey when a blocked client is
+        // served — including 8.0.6, the newest 8.0 release, which never got
+        // the backport.
+        assert!(!no_touch_is_safe(false, &v("8.0.0")));
+        assert!(!no_touch_is_safe(false, &v("8.0.6")));
+        assert!(!no_touch_is_safe(false, &v("8.1.0")));
+        assert!(!no_touch_is_safe(false, &v("8.2.6")));
+        // Fixed in 8.2.7.
+        assert!(no_touch_is_safe(false, &v("8.2.7")));
+        assert!(no_touch_is_safe(false, &v("8.6.1")));
+        // Valkey forked before the refactor: safe at every release.
+        for valkey in ["7.2.4", "8.0.0", "8.1.0", "9.0.0"] {
+            assert!(no_touch_is_safe(true, &v(valkey)), "valkey {valkey}");
+        }
     }
 }

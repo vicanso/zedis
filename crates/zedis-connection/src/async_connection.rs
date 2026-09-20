@@ -16,6 +16,8 @@ use super::conn::RedisAsyncConn;
 use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
 use super::ssh_tunnel::{open_single_sni_tls_connection, open_single_ssh_tunnel_connection, tls_server_name};
 use crate::error::{ConnectionErrorKind, Error};
+use crate::floors;
+use semver::Version;
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use redis::{
@@ -31,6 +33,7 @@ use std::sync::{
 };
 use std::{sync::LazyLock, time::Duration};
 use tracing::{debug, error};
+use zedis_core::features::ServerFlavor;
 use zedis_core::string::split_host_port;
 use zedis_core::ttl_cache::{TtlCache, now_secs};
 
@@ -184,8 +187,14 @@ pub fn resolve_response_timeout(config: &RedisServer) -> Duration {
 /// - `NO-TOUCH ON` (Redis ≥ 7.2): browsing a key must not distort the
 ///   LRU/LFU accounting the memory analyzer's `OBJECT IDLETIME`/`FREQ`
 ///   heat column reports — observation shouldn't perturb the observed.
+///   **Withheld from the servers it would crash** — see
+///   [`floors::no_touch_is_safe`], which is why this asks for `INFO server`
+///   first. That one round trip buys the version; without it the flag would
+///   be set before anything knows what it is talking to, and on Redis
+///   8.0–8.2.6 the next `XADD` that wakes a blocked `XREAD` segfaults the
+///   server.
 ///
-/// The two flags are silently skipped where unsupported (older servers,
+/// The flags are silently skipped where unsupported (older servers,
 /// proxies, NOPERM-restricted users) — debug log only.
 pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) {
     if let Err(err) = cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME).exec_async(conn).await {
@@ -204,11 +213,34 @@ pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) 
             debug!(error = %err, field, "client setinfo not applied");
         }
     }
-    for flag in ["NO-EVICT", "NO-TOUCH"] {
-        if let Err(err) = cmd("CLIENT").arg(flag).arg("ON").exec_async(conn).await {
-            debug!(error = %err, flag, "client flag not applied");
-        }
+    if let Err(err) = cmd("CLIENT").arg("NO-EVICT").arg("ON").exec_async(conn).await {
+        debug!(error = %err, "client no-evict not applied");
     }
+    if no_touch_is_safe_here(conn).await
+        && let Err(err) = cmd("CLIENT").arg("NO-TOUCH").arg("ON").exec_async(conn).await
+    {
+        debug!(error = %err, "client no-touch not applied");
+    }
+}
+
+/// `INFO server`, read for the one question [`floors::no_touch_is_safe`]
+/// asks. A server that will not say (a proxy, a NOPERM user, a reply this
+/// cannot parse) is treated as unsafe: not setting the flag costs a little
+/// accuracy in one panel, and setting it on the wrong server costs the
+/// server.
+async fn no_touch_is_safe_here(conn: &mut impl ConnectionLike) -> bool {
+    let Ok(info) = cmd("INFO").arg("server").query_async::<String>(conn).await else {
+        return false;
+    };
+    let fields = || info.lines().filter_map(|line| line.split_once(':'));
+    let is_valkey = ServerFlavor::from_info(fields()) == ServerFlavor::Valkey;
+    let version = fields()
+        .find(|(key, _)| {
+            let key = key.trim();
+            key == "valkey_version" || key == "redis_version"
+        })
+        .and_then(|(_, value)| Version::parse(value.trim()).ok());
+    version.is_some_and(|version| floors::no_touch_is_safe(is_valkey, &version))
 }
 
 /// Opens a single Redis connection with connection pooling support.
