@@ -146,7 +146,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 canvas 渲染。浏览器无法直接建立 TCP 连接，所以由一个很小的 HTTP 服务 —— `zedis-bridge` —— 同时提供页面，并代替浏览器与 Redis 通信。在 Redis 旁边部署一次，整个团队打开浏览器就能用，无需安装任何东西。Redis 的密码只保存在 bridge 上（加密存储），不会发送给浏览器。
 
-> **早期预览。** 目前只发布了 `:nightly` 镜像（linux/amd64 与 linux/arm64，约 26 MB）。
+> **早期预览。** 镜像已发布 linux/amd64 与 linux/arm64 两个架构（约 26 MB）：正式发布对应 `:latest` 与版本号标签，`:nightly` 是跟随 `main` 的滚动构建。
 
 ### 快速试用
 
@@ -154,7 +154,7 @@ Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 c
 docker run -d --name zedis-web -p 7379:7379 \
   -e ZEDIS_BRIDGE_USERS="admin@change-me" \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly --listen 0.0.0.0:7379 --insecure-cookie
+  vicanso/zedis-web:latest --listen 0.0.0.0:7379 --insecure-cookie
 ```
 
 打开 <http://localhost:7379>，用 `admin` / `change-me` 登录。
@@ -172,7 +172,7 @@ docker run -d --name zedis-web -p 7379:7379 \
 docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly
+  vicanso/zedis-web:latest
 ```
 
 ```caddyfile
@@ -192,7 +192,7 @@ docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
   -e ZEDIS_BRIDGE_BASE_PATH=/zedis \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly
+  vicanso/zedis-web:latest
 ```
 
 ```caddyfile

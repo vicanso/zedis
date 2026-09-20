@@ -243,6 +243,14 @@
                 ⌘K 面板、⌘P 最近键、⌘⇧F 多库搜索、redis-cli + <code>?</code> AI 助手、Batch 模式。
               </p>
             </article>
+            <article class="card">
+              <div class="icon">🕸️</div>
+              <h3>浏览器里也能用</h3>
+              <p>
+                同一套代码编译成 WebAssembly，一个约 26&nbsp;MB 的 Docker 镜像即可自托管 &mdash;&mdash;
+                部署在 Redis 旁边，整个团队从标签页上手。
+              </p>
+            </article>
           </div>
           <p class="feat-more">
             <a href="https://github.com/vicanso/zedis/blob/main/docs/FEATURES_zh.md" target="_blank" rel="noopener"
@@ -354,6 +362,24 @@
                 <button type="button" class="copy-btn" data-copy="cmd-cargo">复制</button>
               </div>
               <p class="install-alt">crates.io 可能滞后（GPUI 为 git 依赖）。推荐 git 或 Releases。</p>
+            </div>
+            <div class="install-card">
+              <h3>浏览器（自托管）</h3>
+              <div class="cmd-box">
+                <code id="cmd-docker">docker run -p 7379:7379 -e ZEDIS_BRIDGE_USERS=admin@change-me -v zedis-data:/data vicanso/zedis-web:latest --listen 0.0.0.0:7379 --insecure-cookie</code>
+                <button type="button" class="copy-btn" data-copy="cmd-docker">复制</button>
+              </div>
+              <p class="install-alt">
+                打开 <code>localhost:7379</code>，以 <code>admin</code> 登录。试用之外请去掉
+                <code>--insecure-cookie</code> 并在前面加一层 HTTPS &mdash;&mdash; 见
+                <a
+                  href="https://github.com/vicanso/zedis/blob/main/README_zh.md#-web-版自托管"
+                  target="_blank"
+                  rel="noopener"
+                  >Web 版</a
+                >
+                说明。
+              </p>
             </div>
           </div>
           <div class="cta-center">

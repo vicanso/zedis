@@ -149,7 +149,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn on a canvas. A browser cannot open a TCP socket, so a small HTTP server — `zedis-bridge` — serves the page and talks to Redis on the browser's behalf. Host it once next to your Redis servers and the whole team reaches them from a browser tab, with nothing to install. Redis passwords stay on the bridge, encrypted at rest; the browser never receives them.
 
-> **Early preview.** Only the `:nightly` image is published so far (linux/amd64 and linux/arm64, ~26 MB).
+> **Early preview.** The image is published for linux/amd64 and linux/arm64 (~26 MB): `:latest` and the release version for tagged releases, `:nightly` for the rolling build from `main`.
 
 ### Try it
 
@@ -157,7 +157,7 @@ Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn 
 docker run -d --name zedis-web -p 7379:7379 \
   -e ZEDIS_BRIDGE_USERS="admin@change-me" \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly --listen 0.0.0.0:7379 --insecure-cookie
+  vicanso/zedis-web:latest --listen 0.0.0.0:7379 --insecure-cookie
 ```
 
 Open <http://localhost:7379> and sign in as `admin` / `change-me`.
@@ -175,7 +175,7 @@ Over plain http the account password and everything read from Redis cross the ne
 docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly
+  vicanso/zedis-web:latest
 ```
 
 ```caddyfile
@@ -195,7 +195,7 @@ docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   -e ZEDIS_BRIDGE_USERS="alice@…,bob@…" \
   -e ZEDIS_BRIDGE_BASE_PATH=/zedis \
   -v zedis-data:/data \
-  vicanso/zedis-web:nightly
+  vicanso/zedis-web:latest
 ```
 
 ```caddyfile

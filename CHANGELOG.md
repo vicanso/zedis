@@ -1,22 +1,61 @@
 # Changelog
 
-## [0.11.0](https://github.com/vicanso/zedis/compare/v0.10.0..v0.11.0) - 2026-09-15
+## [0.11.0](https://github.com/vicanso/zedis/compare/v0.10.0..v0.11.0) - 2026-09-20
 
 ### ⛰️  Features
 
+- *(bridge)* Mount the page and the API under a base path - ([0fef5ec](https://github.com/vicanso/zedis/commit/0fef5ec8c1a5e961c5f2f0bd988434e871011555))
 - *(editor)* Text / Tree switch for JSON elements in collection panels ([#141](https://github.com/orhun/git-cliff/issues/141)) - ([feebdbe](https://github.com/vicanso/zedis/commit/feebdbe49fae50e50c78ef3e6d2d7ea862e0372b))
+- *(update)* A second address for every update request - ([a7e1272](https://github.com/vicanso/zedis/commit/a7e1272c16dfe5e0df415ffea2d521dd89f2b4cf))
 
 ### 🐛 Bug Fixes
 
+- *(ci)* Keep the nightly release when only the web image is built - ([3c7edd9](https://github.com/vicanso/zedis/commit/3c7edd975a880e5b8b6eecb9926c018f4c105b18))
 - *(ci)* Restore contents: write on the Windows publish job - ([1830df1](https://github.com/vicanso/zedis/commit/1830df1eba01874a67605ed03d72e1549473266a))
+- *(editor)* Show the full image without cropping or upscaling ([#147](https://github.com/orhun/git-cliff/issues/147)) - ([e90a178](https://github.com/vicanso/zedis/commit/e90a178fc010e2827b8c24222d6ac271ab9da3e0))
 - *(editor)* Keep the line-number gutter and fonts steady on gpui-kit 0.6.1 - ([15cef64](https://github.com/vicanso/zedis/commit/15cef6406d4c171a5b652a58999682f59ec8d0c1))
+- *(key-tree)* Stop the tree blanking on refresh and going stale behind it - ([74159d3](https://github.com/vicanso/zedis/commit/74159d3cedf35c9243d3534f5cdb30ca40ef1e3f))
+- *(ssh)* Negotiate the RSA signature algorithm for key-file authentication ([#146](https://github.com/orhun/git-cliff/issues/146)) - ([7637ed8](https://github.com/vicanso/zedis/commit/7637ed84db1f5b31517d5da821e1f35f7655e17e))
+- *(timeseries)* A window's buckets align to the window, not to the epoch - ([ea3005c](https://github.com/vicanso/zedis/commit/ea3005cd1c7f2be16a8c5039d514104752432808))
+- Withhold CLIENT NO-TOUCH from the Redis versions it crashes - ([d83e069](https://github.com/vicanso/zedis/commit/d83e069ff781fccf54ce355e48bc017627dd4ae5))
+- An operation's future no longer carries its connection chain - ([e01ef64](https://github.com/vicanso/zedis/commit/e01ef649fb6cbc8e613d857ca1f0659ea8f0a00f))
 - Rustls tls handshake ([#145](https://github.com/orhun/git-cliff/issues/145)) - ([e9f730c](https://github.com/vicanso/zedis/commit/e9f730c21e0bb4dca659a17d8a3a3d705ef42ca5))
+
+### 🚜 Refactor
+
+- No file in the GUI crate speaks Redis (ADR 10) - ([79b55b0](https://github.com/vicanso/zedis/commit/79b55b0ca70f05917b192f21c21b6574e8423bf9))
+- Views no longer speak Redis (ADR 10) - ([6b0b92a](https://github.com/vicanso/zedis/commit/6b0b92aa641f89cc10798f8c4006249616d87b69))
+- Split the largest files, fold the target gates, pace the web build - ([7e929c0](https://github.com/vicanso/zedis/commit/7e929c045be413a967443b229fc20e9f624a7d42))
+
+### 📚 Documentation
+
+- Desktop-first layering rules for the two-target codebase - ([c33a928](https://github.com/vicanso/zedis/commit/c33a9280b25536f9c8d158ccd0c729251a102ba1))
+
+### ⚡ Performance
+
+- *(web)* Stop doing in a browser tab what only a desktop app should - ([363bc08](https://github.com/vicanso/zedis/commit/363bc084e66e11374181fd17621878204943972a))
+- Halve the heartbeat's commands, stretch it for large clusters, relax it when nobody is looking - ([cd1a75f](https://github.com/vicanso/zedis/commit/cd1a75f769009977cfc6db726b8c6a2d6276f7b9))
+
+### 🧪 Testing
+
+- A command newer than the oldest tested server must name its gate - ([2feff5d](https://github.com/vicanso/zedis/commit/2feff5d698d4a32fd03dfc8db74e9168c55edf7f))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(ci)* A script for triggering the nightly by hand - ([19cb2e6](https://github.com/vicanso/zedis/commit/19cb2e6e10e496456177a616206c6fbd69c4ce54))
+- Close the browser build's CI gap and the loose ends around it - ([19dcc66](https://github.com/vicanso/zedis/commit/19dcc66a7698358d8484fe4175b8bfc78699a0d1))
+- Version 0.11.0 - ([16270b5](https://github.com/vicanso/zedis/commit/16270b5d35df0c5c026288042537a06e2c492643))
 
 ### Build
 
+- *(deps)* Gpui-kit 0.6.4, and raise the floors to what already ships - ([4346882](https://github.com/vicanso/zedis/commit/4346882d453f0be1dac294fcb37601a962633e90))
+- *(deps)* Bump the minor-and-patch group with 2 updates ([#150](https://github.com/orhun/git-cliff/issues/150)) - ([d4bc6dd](https://github.com/vicanso/zedis/commit/d4bc6ddedc33dbad240cec27961fc1308a6776b3))
+- *(deps)* Bump tray-icon from 0.24.2 to 0.25.1 ([#151](https://github.com/orhun/git-cliff/issues/151)) - ([679170b](https://github.com/vicanso/zedis/commit/679170bb41196626de8c557832ed007ad36cf11f))
 - *(deps)* Bump gpui-kit from 0.6.0 to 0.6.1 in the gpui group ([#143](https://github.com/orhun/git-cliff/issues/143)) - ([38d0ff5](https://github.com/vicanso/zedis/commit/38d0ff540bd9a8059ee10205e6ac391199e10a1e))
 - *(deps)* Bump the minor-and-patch group with 11 updates ([#144](https://github.com/orhun/git-cliff/issues/144)) - ([0af2c8b](https://github.com/vicanso/zedis/commit/0af2c8b9d9405003a39eceec62d7440f60a9a241))
 - *(deps)* Bump signpath/github-action-submit-signing-request ([#142](https://github.com/orhun/git-cliff/issues/142)) - ([4d1b3d0](https://github.com/vicanso/zedis/commit/4d1b3d00b85a5aa897404eabf7531173022ac547))
+- Make lint checks formatting, because CI does - ([1f9a26f](https://github.com/vicanso/zedis/commit/1f9a26fe10dc304446bb5b00293558de60000261))
+
 
 ## [0.10.0](https://github.com/vicanso/zedis/compare/v0.9.0..v0.10.0) - 2026-09-12
 

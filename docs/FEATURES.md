@@ -166,7 +166,7 @@ Multi-select to delete dozens of keys at once; set / remove TTL across a whole s
 ### Privacy-First
 **Your data and credentials stay on your machine; the only request you didn't ask for is the update check.**
 
-Tags, notes, favorites and search history live in a **local redb file** — zero Redis cost, never sent anywhere. Connection secrets are **encrypted at rest**, and sharing a connection as JSON **strips credentials** by default. The optional AI analysis sends only key **names, sizes and TTLs — never your values**, and only to the OpenAI-compatible endpoint *you* configure. The custom script viewer runs locally through your own shell. **No telemetry, no accounts, no cloud.** The one unprompted request Zedis makes is the **startup update check** — at most once every two days, carrying nothing but the app version, and switchable off in Settings (see *Staying Current* below). On Windows the binaries are **Authenticode-signed** through SignPath Foundation, so the installer you run is verifiably the one GitHub Actions built from this repository.
+Tags, notes, favorites and search history live in a **local redb file** — zero Redis cost, never sent anywhere. Connection secrets are **encrypted at rest**, and sharing a connection as JSON **strips credentials** by default. The optional AI analysis sends only key **names, sizes and TTLs — never your values**, and only to the OpenAI-compatible endpoint *you* configure. The custom script viewer runs locally through your own shell. **No telemetry, no accounts, no cloud.** The one unprompted request Zedis makes is the **startup update check** — at most once every two days, carrying nothing but the app version, sent to GitHub and, when GitHub cannot be reached, to the Gitee mirror instead, and switchable off in Settings (see *Staying Current* below). On Windows the binaries are **Authenticode-signed** through SignPath Foundation, so the installer you run is verifiably the one GitHub Actions built from this repository.
 
 ### Connection Safety
 **Environment tags + confirm dialogs that escalate on production.**
@@ -200,6 +200,25 @@ Proxies (Twemproxy / Codis / Envoy) answer `unknown command` outside their white
 Everything downstream reads that matrix. A panel whose hard dependency is missing renders an explanatory placeholder instead of the panel; a button whose command is unusable is disabled with a suffix naming it (`CONFIG GET · not supported by this server`, `SLOWLOG GET · denied for this user (NOPERM)`). The key editor keeps working on a server without `SCAN` — type an exact key name and press Enter, and recent keys (**⌘P**) still work. A runtime `NOPERM` / `unknown command` reply feeds back into the same matrix: one localized notice, then the UI quietly degrades instead of repeating the error.
 
 **Tools → Server capabilities** shows the full matrix — every probed command with its verdict — plus a **Re-probe** button for when an administrator has just granted you the permission.
+
+---
+
+## 🌐 Web Version (Self-Hosted)
+
+### The Same App in a Browser Tab
+**Compiled to WebAssembly and served by one small Docker image — host it once and the whole team reaches your Redis from a tab, with nothing to install.**
+
+A browser cannot open a TCP socket, so the page never talks to Redis directly: a small HTTP server — **`zedis-bridge`** — serves the WebAssembly bundle and forwards RESP frames on the browser's behalf. That forwarding is the whole protocol, so a panel built for the desktop arrives in the browser with it instead of waiting for an endpoint of its own. The image is `vicanso/zedis-web` (linux/amd64 and linux/arm64, ~26 MB); its `/data` volume holds the server list — secrets encrypted at rest with the `master.key` beside it — and the saved logins, so a restart signs nobody out. When the host name is not Zedis's alone, `ZEDIS_BRIDGE_BASE_PATH` moves the page, its files and the API under a path of their own, with the login cookie scoped to it so the neighbouring applications never receive it. The README's [Web version](../README.md#-web-version-self-hosted) has the `docker run` lines and a reverse-proxy example.
+
+### Accounts & Ownership
+**Sign-in is required, an entry is private until you share it, and Redis passwords never reach the browser.**
+
+`ZEDIS_BRIDGE_USERS` (`name@password,name2@password2`) is mandatory — the bridge refuses to start without it. The page asks for a username and password; scripts use HTTP Basic against the same accounts. A **server entry belongs to the account that added it** and nobody else sees it, until its **Shared** box is ticked — then it is everyone's. There are no roles: any account may edit or delete a shared entry. Redis credentials stay on the bridge; the browser is handed a placeholder, never the secret, and an edit that changes only settings keeps the stored one. Over plain http the account password crosses the network in the clear, so anything past a trial belongs behind an HTTPS reverse proxy — with a rate limit if the bridge is reachable from outside your own network.
+
+### What the Browser Leaves Out
+**Everything that is a request and a reply works; the streaming panels and anything that needs disk stay on the desktop.**
+
+The key tree, every value editor, the terminal, metrics, slow log, CONFIG, clients, memory analysis and value search all work unchanged. Left out: the streaming panels (`MONITOR`, Pub/Sub, keyspace events), Topology and Sentinel administration, the Lua script library and the Protobuf schema editor, multi-database key search, migration (file import / export) and cross-server compare, connection diagnostics, the recycle bin and the 1h / 24h / 7d metrics history — the last two need storage that survives a reload — plus the shortcuts a browser keeps for itself (⌘N / ⌘T / ⌘W). Tags, notes, favorites and saved scripts do work, but live in the page only: a reload clears them, and a notice on first connect says so once. A panel that is left out renders the same explanatory placeholder a missing server command gets, rather than failing. A page left in a background tab slows its own polling down. The desktop app remains the complete client.
 
 ---
 
@@ -243,7 +262,7 @@ The title-bar menu's **Export Diagnostics** writes one zip to Downloads: a summa
 ### Staying Current & System Integration
 **An opt-out update check with a checksum-verified download, a system tray, and your own proxy.**
 
-Zedis checks GitHub for a newer release on startup — at most once every two days, skippable per version, and switchable off entirely in Settings (there is also a manual **Check for Updates**). When one is found, a chip appears in the title bar; downloading it verifies the asset's **SHA-256** against the release manifest before anything runs. On **macOS the install then completes in place** — the DMG mounts silently, the bundle identifier is verified, the new app is copied over the old one (which is parked in temp, never deleted under the running process) and a **one-click Restart** relaunches into the new version; anything that blocks that path falls back to the classic drag window. Windows hands the verified MSI to its installer, Linux to the desktop handler. Progress shows both in the dialog and as a percentage on the chip.
+Zedis checks GitHub for a newer release on startup — at most once every two days, skippable per version, and switchable off entirely in Settings (there is also a manual **Check for Updates**). GitHub's release CDN is slow to unreachable from mainland China, so every request — the check, the manifest, the release notes and the download itself — falls back to the **[Gitee mirror](https://gitee.com/vicanso/zedis)**, which carries the same files copied from the same release. When one is found, a chip appears in the title bar; downloading it verifies the asset's **SHA-256** against the release manifest before anything runs, whichever host served the bytes. On **macOS the install then completes in place** — the DMG mounts silently, the bundle identifier is verified, the new app is copied over the old one (which is parked in temp, never deleted under the running process) and a **one-click Restart** relaunches into the new version; anything that blocks that path falls back to the classic drag window. Windows hands the verified MSI to its installer, Linux to the desktop handler. Progress shows both in the dialog and as a percentage on the chip.
 
 An **Include pre-releases** switch in Settings adds pre-release versions and the rolling **nightly** build to the check (on by default for a nightly build, which compares by build time, so a fresh nightly is offered as soon as it lands).
 
