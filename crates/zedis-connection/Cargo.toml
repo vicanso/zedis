@@ -62,7 +62,7 @@ webpki-roots = { workspace = true }
 # the bridge transport implements. No runtime, no TLS, no cluster routing —
 # the bridge does all of that on the other side.
 [target.'cfg(target_family = "wasm")'.dependencies]
-redis = { version = "1.6.0", default-features = false, features = [
+redis = { version = "1.7.0", default-features = false, features = [
     # Same set redis enables by default, minus the runtimes: `num-bigint` in
     # particular keeps `Value::BigNumber` the same type on both targets, so
     # the reply formatter needs no cfg of its own.
