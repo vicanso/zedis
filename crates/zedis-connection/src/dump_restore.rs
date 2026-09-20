@@ -143,7 +143,8 @@ pub enum RestoreStatus {
 // ---------------------------------------------------------------------------
 
 /// Dumps a slice of keys with bounded concurrency. Missing or expired keys are skipped.
-pub async fn dump_keys_chunk(conn: &mut RedisAsyncConn, keys: &[String]) -> Result<Vec<DumpEntry>> {
+pub async fn dump_keys_chunk(at: &ServerDb, keys: &[String]) -> Result<Vec<DumpEntry>> {
+    let conn = &mut at.connection().await?;
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -198,10 +199,11 @@ pub async fn restore_key(at: &ServerDb, key: &str, pttl_ms: i64, payload: &[u8])
 
 /// Restores a slice of entries. Concurrency is bounded by the slice length.
 pub async fn restore_keys_chunk(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     entries: &[DumpEntry],
     conflict: ConflictMode,
 ) -> Result<Vec<RestoreStatus>> {
+    let conn = &mut at.connection().await?;
     if entries.is_empty() {
         return Ok(Vec::new());
     }
@@ -324,16 +326,11 @@ pub async fn copy_key(
     key: String,
     conflict: ConflictMode,
 ) -> Result<Option<RestoreStatus>> {
-    let mut src = super::get_connection_manager()
-        .get_connection(&source_id, source_db)
-        .await?;
-    let entries = dump_keys_chunk(&mut src, std::slice::from_ref(&key)).await?;
+    let entries = dump_keys_chunk(&ServerDb::new(source_id, source_db), std::slice::from_ref(&key)).await?;
     let Some(entry) = entries.into_iter().next() else {
         return Ok(None);
     };
-    let mut dst = super::get_connection_manager()
-        .get_connection(&target_id, target_db)
-        .await?;
-    let mut statuses = restore_keys_chunk(&mut dst, std::slice::from_ref(&entry), conflict).await?;
+    let target = ServerDb::new(target_id, target_db);
+    let mut statuses = restore_keys_chunk(&target, std::slice::from_ref(&entry), conflict).await?;
     Ok(statuses.pop())
 }

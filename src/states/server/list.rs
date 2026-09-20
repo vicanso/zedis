@@ -17,39 +17,30 @@ use super::{
     element::KvElement,
     value::{RedisListValue, RedisValue, RedisValueStatus},
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager, remove_list_indexes},
+    connection::{ServerDb, list_len, list_push, list_range, list_set_if_unchanged, remove_list_indexes},
     error::Error,
     states::ServerEvent,
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
-use redis::{cmd, pipe};
 use std::sync::Arc;
-use uuid::Uuid;
 use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Fetch a range of elements from a Redis List, bytes kept as answered.
-async fn get_redis_list_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    start: usize,
-    stop: usize,
-) -> Result<Vec<KvElement>> {
-    let value: Vec<Vec<u8>> = cmd("LRANGE").arg(key).arg(start).arg(stop).query_async(conn).await?;
+async fn get_redis_list_value(at: &ServerDb, key: &str, start: usize, stop: usize) -> Result<Vec<KvElement>> {
+    let value = list_range(at, key, start, stop).await?;
     Ok(value.into_iter().map(KvElement::from_raw).collect())
 }
 
 /// Initial load for a List key.
 /// Fetches the total length (LLEN) and the first 100 items.
-pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
-    let size: usize = cmd("LLEN").arg(key).query_async(conn).await?;
-    let values = get_redis_list_value(conn, key, 0, 99).await?;
+pub(crate) async fn first_load_list_value(at: &ServerDb, key: &str) -> Result<RedisValue> {
+    let size = list_len(at, key).await?;
+    let values = get_redis_list_value(at, key, 0, 99).await?;
     Ok(RedisValue {
         key_type: KeyType::List,
         data: Some(RedisValueData::List(Arc::new(RedisListValue {
@@ -80,8 +71,7 @@ impl ZedisServerState {
         // so a failed write never appears in it.
         on_success: impl FnOnce(&mut Self, &mut Context<Self>) + Send + 'static,
     ) where
-        // Corrected: Removed 'mut' keyword from the type definition
-        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
     {
         let Some((key, value)) = self.try_get_mut_key_value() else {
@@ -97,16 +87,13 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // Step 2: Spawn background task for Redis operation
         self.spawn(
             task,
             move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                // Pass conn directly; 'mut' is handled inside the closure implementation
-                redis_op(key_str, conn).await?;
+                redis_op(key_str, at).await?;
                 Ok(())
             },
             move |this, result, cx| {
@@ -164,20 +151,10 @@ impl ZedisServerState {
                     list.values.remove(index);
                 }
             },
-            move |key, mut conn| async move {
-                let marker = Uuid::new_v4().to_string();
-                let _: () = pipe()
-                    .atomic()
-                    .cmd("LSET")
-                    .arg(&key)
-                    .arg(index)
-                    .arg(&marker)
-                    .cmd("LREM")
-                    .arg(&key)
-                    .arg(1)
-                    .arg(&marker)
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                // Redis cannot remove by position; `remove_list_indexes` is
+                // the marker workaround, in one MULTI.
+                remove_list_indexes(&at, &key, &[index]).await?;
                 Ok(())
             },
             |_list| { /* Optional: Re-fetch or re-insert if critical */ },
@@ -234,8 +211,8 @@ impl ZedisServerState {
                     }
                 }
             },
-            move |key, mut conn| async move {
-                remove_list_indexes(&mut conn, &key, &indexes).await?;
+            move |key, at| async move {
+                remove_list_indexes(&at, &key, &indexes).await?;
                 Ok(())
             },
             |_list| {},
@@ -270,13 +247,8 @@ impl ZedisServerState {
                     list.values.push(val_clone);
                 }
             },
-            move |key, mut conn| async move {
-                let cmd_name = if is_lpush { "LPUSH" } else { "RPUSH" };
-                let _: () = cmd(cmd_name)
-                    .arg(&key)
-                    .arg(new_value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                list_push(&at, &key, new_value.as_bytes(), is_lpush).await?;
                 Ok(())
             },
             move |list| {
@@ -319,20 +291,14 @@ impl ZedisServerState {
                     list.values[index] = new_val;
                 }
             },
-            move |key, mut conn| async move {
-                // Optimistic check: Ensure value hasn't changed on server
-                let current: Vec<u8> = cmd("LINDEX").arg(&key).arg(index).query_async(&mut conn).await?;
-                if current.as_slice() != original.raw().as_ref() {
+            move |key, at| async move {
+                // Optimistic check: the row is only written while it still
+                // holds what the editor loaded.
+                if !list_set_if_unchanged(&at, &key, index, original.raw(), new.raw()).await? {
                     return Err(Error::Invalid {
                         message: "Value changed on server".into(),
                     });
                 }
-                let _: () = cmd("LSET")
-                    .arg(&key)
-                    .arg(index)
-                    .arg(new.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
                 Ok(())
             },
             move |list| {
@@ -369,8 +335,7 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         // Calculate pagination
         let start = current_len;
         let stop = start + 99; // Load 100 items
@@ -379,9 +344,8 @@ impl ZedisServerState {
             ServerTask::LoadMoreValue,
             key.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 // Fetch only the new items
-                let new_values = get_redis_list_value(&mut conn, &key, start, stop).await?;
+                let new_values = get_redis_list_value(&at, &key, start, stop).await?;
                 Ok(new_values)
             },
             move |this, result, cx| {

@@ -23,6 +23,7 @@
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::{cmd, pipe};
 use zedis_core::csv::build_csv_record;
 
@@ -271,11 +272,8 @@ async fn read_stream(conn: &mut RedisAsyncConn, key: &str, limits: ReadLimits) -
 /// SCAN and the fetch (`TYPE` = none) are silently dropped, matching the
 /// binary exporter. Cluster-safe: every command is keyed. Collections are
 /// paged and capped per `limits` — see [`ReadLimits`].
-pub async fn read_readable_chunk(
-    conn: &mut RedisAsyncConn,
-    keys: &[String],
-    limits: ReadLimits,
-) -> Result<Vec<ReadableEntry>> {
+pub async fn read_readable_chunk(at: &ServerDb, keys: &[String], limits: ReadLimits) -> Result<Vec<ReadableEntry>> {
+    let conn = &mut at.connection().await?;
     if keys.is_empty() {
         return Ok(Vec::new());
     }

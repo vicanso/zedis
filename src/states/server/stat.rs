@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{ReplicationInfo, get_connection_manager, get_server};
+use crate::connection::{
+    ReplicationInfo, ServerDb, dbsize, forget_client, get_server, heartbeat_probe, master_infos, slow_logs,
+};
 use crate::db::list_metrics_samples;
 use crate::helpers::{pacing, unix_ts, unix_ts_millis};
 use crate::states::{
@@ -21,7 +23,6 @@ use crate::states::{
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
-use redis::cmd;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
@@ -651,7 +652,7 @@ impl ZedisServerState {
             return;
         }
         self.manually_offline = true;
-        get_connection_manager().remove_client(&self.server_id, self.db);
+        forget_client(&self.at());
         self.ping_failures = Self::PING_OFFLINE_THRESHOLD;
         if self.connection_health != ConnectionHealth::Offline {
             self.connection_health = ConnectionHealth::Offline;
@@ -735,18 +736,18 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::RefreshRedisInfo,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let at = ServerDb::new(server_id.as_str(), db);
                 // One command when it can be: with a single master the probe
                 // is the `INFO` itself (`RedisClient::heartbeat_probe`).
                 let start = Instant::now();
-                let probed_info = client.heartbeat_probe().await?;
+                let probed_info = heartbeat_probe(&at).await?;
                 let latency = start.elapsed();
                 let now = unix_ts();
                 let slow_logs = if now - last_slow_logs_checked_at >= slow_logs_check_interval {
                     // A denied / missing SLOWLOG is normal on restricted
                     // servers — the feature matrix greys the panel — so this
                     // only leaves a trace, never a notice.
-                    let slow_logs = client.get_slow_logs().await.unwrap_or_else(|e| {
+                    let slow_logs = slow_logs(&at).await.unwrap_or_else(|e| {
                         debug!(error = %e, "slowlog sample skipped");
                         Vec::new()
                     });
@@ -761,7 +762,7 @@ impl ZedisServerState {
                 // number of distinct commands and were parsed into nothing —
                 // on every heartbeat tick, per master.
                 let dbsize = if refresh_dbsize {
-                    match client.dbsize().await {
+                    match dbsize(&at).await {
                         Ok(dbsize) => Some(dbsize),
                         // Denied on a restricted proxy: keep the last known
                         // total rather than guessing zero, and try again in a
@@ -774,10 +775,7 @@ impl ZedisServerState {
                 } else {
                     None
                 };
-                let (servers, list): (_, Vec<String>) = match probed_info {
-                    Some(info) => (client.master_servers(), vec![info]),
-                    None => client.query_async_masters(vec![cmd("INFO")]).await?,
-                };
+                let (servers, list): (Vec<_>, Vec<String>) = master_infos(&at, probed_info).await?.into_iter().unzip();
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 // Cluster only: keep a per-master persistence row so the
                 // Persistence panel can show which node is still forking.
@@ -819,7 +817,7 @@ impl ZedisServerState {
                                 server_id = server_id_clone.as_str(),
                                 "sentinel master demoted; re-resolving"
                             );
-                            get_connection_manager().remove_client(&server_id_clone, db);
+                            forget_client(&ServerDb::new(server_id_clone.as_str(), db));
                             let now = unix_ts();
                             if now.saturating_sub(this.last_link_notice) >= 10 {
                                 this.last_link_notice = now;
@@ -851,7 +849,7 @@ impl ZedisServerState {
                     }
                     Err(e) => {
                         // Connection is invalid, remove cached client
-                        get_connection_manager().remove_client(&server_id_clone, db);
+                        forget_client(&ServerDb::new(server_id_clone.as_str(), db));
                         error!(error = %e, "Ping failed, client connection removed");
                         // Remember *why* so the offline tooltip can name it. Set
                         // before note_ping_result, which emits the health

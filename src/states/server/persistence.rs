@@ -21,10 +21,9 @@
 //! command to all masters and kicks an immediate `INFO` refresh so the
 //! in-progress flag flips into the UI without waiting for the heartbeat.
 
-use crate::connection::{Capability, get_connection_manager};
+use crate::connection::{Capability, bgrewriteaof, bgsave};
 use crate::states::{ServerTask, ZedisServerState, i18n_persistence};
 use gpui::prelude::*;
-use redis::cmd;
 
 impl ZedisServerState {
     /// Fan-out `BGSAVE` to every master in the cluster (single-node
@@ -42,19 +41,13 @@ impl ZedisServerState {
             return;
         }
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn(
             ServerTask::Bgsave,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                // Type the response loosely — Redis returns "Background
-                // saving started" but some forks/replicas can return
-                // slightly different status strings. We only need it to
-                // succeed; the user-visible state comes from the next
-                // `INFO` poll.
-                let (_, _replies): (_, Vec<String>) = client.query_async_masters(vec![cmd("BGSAVE")]).await?;
-                Ok(())
+                // The reply is not read: the user-visible state comes from
+                // the next `INFO` poll.
+                Ok(bgsave(&at).await?)
             },
             |this, result, cx| {
                 if result.is_ok() {
@@ -82,15 +75,10 @@ impl ZedisServerState {
             return;
         }
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn(
             ServerTask::Bgrewriteaof,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let (_, _replies): (_, Vec<String>) = client.query_async_masters(vec![cmd("BGREWRITEAOF")]).await?;
-                Ok(())
-            },
+            move || async move { Ok(bgrewriteaof(&at).await?) },
             |this, result, cx| {
                 if result.is_ok() {
                     this.emit_success_notification(

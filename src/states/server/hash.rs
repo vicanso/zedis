@@ -26,20 +26,17 @@ use super::{
     element::KvElement,
     value::{RedisHashValue, RedisValue, RedisValueStatus},
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
     connection::{
-        CommandStatus, FieldTtl, RedisAsyncConn, ServerCommand, get_connection_manager, rename_hash_field,
-        write_hash_field,
+        CommandStatus, FieldTtl, ServerCommand, ServerDb, hash_delete_fields, hash_field_ttls, hash_len, hash_scan,
+        rename_hash_field, write_hash_field,
     },
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_hash_editor},
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
-use redis::cmd;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::debug;
@@ -47,13 +44,10 @@ use zedis_core::change_log::ChangeEntry;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Type alias for HSCAN result: (cursor, vec of (field, value) pairs as bytes)
-type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
-
 /// Retrieves HASH field-value pairs using Redis HSCAN command for cursor-based pagination.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The HASH key to scan
 /// * `keyword` - Optional filter keyword for field names (will be wrapped with wildcards)
 /// * `cursor` - Current cursor position (0 to start, returned cursor to continue)
@@ -62,33 +56,14 @@ type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
 /// # Returns
 /// A tuple of (next_cursor, field-value pairs) where next_cursor is 0 when scan is complete
 async fn get_redis_hash_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
 ) -> Result<(u64, Vec<(KvElement, KvElement)>)> {
-    // Build pattern: wrap keyword with wildcards or match all fields
-    let pattern = keyword
-        .as_ref()
-        .map(|kw| format!("*{}*", kw))
-        .unwrap_or_else(|| "*".to_string());
-
-    // Execute HSCAN with MATCH and COUNT options
-    let (next_cursor, raw_values): HashScanValue = cmd("HSCAN")
-        .arg(key)
-        .arg(cursor)
-        .arg("MATCH")
-        .arg(pattern)
-        .arg("COUNT")
-        .arg(count)
-        .query_async(conn)
-        .await?;
-
-    // Early return if no values found
-    if raw_values.is_empty() {
-        return Ok((next_cursor, vec![]));
-    }
+    // HSCAN with MATCH `*keyword*` (or everything) and COUNT.
+    let (next_cursor, raw_values) = hash_scan(at, key, keyword.as_deref(), cursor, count).await?;
 
     // The bytes stay as answered; the text each shows is decoded from them.
     let values = raw_values
@@ -103,20 +78,9 @@ async fn get_redis_hash_value(
 ///
 /// Only available on Redis 7.4+. Returns a map of field → TTL (seconds).
 /// Fields with no expiry (HTTL returns -1) are omitted from the map.
-async fn get_hash_field_ttls(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    fields: &[KvElement],
-) -> Result<HashMap<SharedString, i64>> {
-    if fields.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let mut c = cmd("HTTL");
-    c.arg(key).arg("FIELDS").arg(fields.len());
-    for field in fields {
-        c.arg(field.raw().as_ref());
-    }
-    let ttls: Vec<i64> = c.query_async(conn).await?;
+async fn get_hash_field_ttls(at: &ServerDb, key: &str, fields: &[KvElement]) -> Result<HashMap<SharedString, i64>> {
+    let names: Vec<&[u8]> = fields.iter().map(|field| field.raw().as_ref()).collect();
+    let ttls = hash_field_ttls(at, key, &names).await?;
     let map = fields
         .iter()
         .zip(ttls.iter())
@@ -132,29 +96,25 @@ async fn get_hash_field_ttls(
 /// pairs (up to 100). This is called when a HASH key is first opened in the editor.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The HASH key to load
 /// * `supports_field_ttl` - Whether the server supports per-field TTL (Redis 7.4+)
 ///
 /// # Returns
 /// A `RedisValue` containing HASH metadata and initial field-value pairs
-pub(crate) async fn first_load_hash_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    supports_field_ttl: bool,
-) -> Result<RedisValue> {
+pub(crate) async fn first_load_hash_value(at: &ServerDb, key: &str, supports_field_ttl: bool) -> Result<RedisValue> {
     // Get total number of fields in the HASH
-    let size: usize = cmd("HLEN").arg(key).query_async(conn).await?;
+    let size = hash_len(at, key).await?;
 
     // Load first batch of field-value pairs (up to 100)
-    let (cursor, values) = get_redis_hash_value(conn, key, None, 0, 100).await?;
+    let (cursor, values) = get_redis_hash_value(at, key, None, 0, 100).await?;
 
     // If cursor is 0, all values have been loaded in one iteration
     let done = cursor == 0;
 
     let field_ttls = if supports_field_ttl {
         let field_names: Vec<KvElement> = values.iter().map(|(f, _)| f.clone()).collect();
-        get_hash_field_ttls(conn, key, &field_names).await.unwrap_or_else(|e| {
+        get_hash_field_ttls(at, key, &field_names).await.unwrap_or_else(|e| {
             debug!(error = %e, "hash field TTLs unavailable, showing none");
             HashMap::new()
         })
@@ -193,7 +153,7 @@ impl ZedisServerState {
         redis_op: F,
         on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
     ) where
-        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
@@ -210,16 +170,12 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // Step 2: Spawn background task
         self.spawn(
             task,
-            move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis_op(key_str, conn).await
-            },
+            move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
@@ -278,9 +234,9 @@ impl ZedisServerState {
             ServerTask::AddHashField,
             cx,
             |_| {}, // Wait for server confirmation to avoid duplicate UI entries during scan
-            move |key, mut conn| async move {
+            move |key, at| async move {
                 let created =
-                    write_hash_field(&mut conn, &key, field.as_bytes(), value.as_bytes(), field_ttl, atomic).await?;
+                    write_hash_field(&at, &key, field.as_bytes(), value.as_bytes(), field_ttl, atomic).await?;
                 Ok(usize::from(created))
             },
             move |this, count, cx| {
@@ -381,10 +337,10 @@ impl ZedisServerState {
                     }
                 }
             },
-            move |key, mut conn| async move {
+            move |key, at| async move {
                 if is_rename {
                     rename_hash_field(
-                        &mut conn,
+                        &at,
                         &key,
                         old_field.raw(),
                         new_field.raw(),
@@ -394,7 +350,7 @@ impl ZedisServerState {
                     )
                     .await?;
                 } else {
-                    write_hash_field(&mut conn, &key, new_field.raw(), new_value.raw(), field_ttl, atomic).await?;
+                    write_hash_field(&at, &key, new_field.raw(), new_value.raw(), field_ttl, atomic).await?;
                 }
                 Ok(())
             },
@@ -474,14 +430,7 @@ impl ZedisServerState {
                 hash.size = hash.size.saturating_sub(1);
                 hash.values.retain(|(f, _)| f.raw() != remove_field_clone.raw());
             },
-            move |key, mut conn| async move {
-                let count: usize = cmd("HDEL")
-                    .arg(&key)
-                    .arg(remove_field.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
-            },
+            move |key, at| async move { Ok(hash_delete_fields(&at, &key, &[remove_field.raw().as_ref()]).await?) },
             move |this, removed, cx| {
                 if removed > 0
                     && let Some(log_key) = log_key
@@ -528,14 +477,9 @@ impl ZedisServerState {
                 hash.values.retain(|(field, _)| !gone.contains(field.raw()));
                 hash.size = hash.size.saturating_sub(before - hash.values.len());
             },
-            move |key, mut conn| async move {
-                let mut command = cmd("HDEL");
-                command.arg(&key);
-                for field in &remove_fields {
-                    command.arg(field.raw().as_ref());
-                }
-                let count: usize = command.query_async(&mut conn).await?;
-                Ok(count)
+            move |key, at| async move {
+                let fields: Vec<&[u8]> = remove_fields.iter().map(|field| field.raw().as_ref()).collect();
+                Ok(hash_delete_fields(&at, &key, &fields).await?)
             },
             move |this, _, cx| {
                 if let Some(log_key) = log_key {
@@ -572,8 +516,7 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let supports_field_ttl = self.supports_hash_field_ttl();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
@@ -582,16 +525,14 @@ impl ZedisServerState {
             key.clone(),
             // Async operation: fetch next batch using HSCAN (+ optional HTTL)
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
                 // Use larger batch size when filtering to reduce round trips
                 let count = if keyword.is_some() { 1000 } else { 100 };
 
-                let (new_cursor, new_values) = get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await?;
+                let (new_cursor, new_values) = get_redis_hash_value(&at, &key, keyword, cursor, count).await?;
 
                 let ttls = if supports_field_ttl && !new_values.is_empty() {
                     let fields: Vec<KvElement> = new_values.iter().map(|(f, _)| f.clone()).collect();
-                    get_hash_field_ttls(&mut conn, &key, &fields).await.unwrap_or_else(|e| {
+                    get_hash_field_ttls(&at, &key, &fields).await.unwrap_or_else(|e| {
                         debug!(error = %e, "hash field TTLs unavailable, showing none");
                         HashMap::new()
                     })

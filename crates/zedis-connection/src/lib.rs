@@ -48,6 +48,8 @@ native_only!(
 );
 mod bitmap;
 mod bridge;
+#[cfg(not(target_family = "wasm"))]
+mod cluster_ops;
 mod command;
 #[cfg(not(target_family = "wasm"))]
 mod compare;
@@ -63,6 +65,7 @@ mod hotkeys;
 mod hyperloglog;
 mod import_clients;
 mod key_ops;
+mod keyspace;
 mod latency;
 mod list_ops;
 mod lua_script;
@@ -77,13 +80,18 @@ mod readable_export;
 mod search;
 mod server_config;
 mod server_db;
+mod server_ops;
 mod server_report;
+mod set_ops;
 mod slot_stats;
+mod stream_ops;
 mod stream_tail;
+mod string_ops;
 #[cfg(not(target_family = "wasm"))]
 mod subscription;
 mod terminal;
 mod vector_set;
+mod zset_ops;
 
 pub use acl::{
     AclDryRun, AclLogEntry, AclSelector, AclUser, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user,
@@ -109,6 +117,13 @@ pub use bridge::{BridgePipeline, BridgeQuery};
 pub use clients::{
     KillFilter, PauseMode, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
     kill_filter_commands, kill_filter_summary, pause_args,
+};
+/// Cluster surgery: node-addressed commands, which need a socket per node.
+#[cfg(not(target_family = "wasm"))]
+pub use cluster_ops::{
+    ClusterNode, NodeLoad, SlotMove, cluster_forget, cluster_meet, master_addrs, migrate_slot, node_add_slots,
+    node_cancel_slot_migrations, node_failover, node_load, node_migrate_slots, node_replicate, node_slot_migrations,
+    node_stabilize_slot,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use compare::{
@@ -150,14 +165,21 @@ pub use functions::{
     function_stats, validate_library_source,
 };
 pub use geo::{GeoMember, GeoSample, GeoShape, geo_add, geo_dist, geo_sample, geo_search, zset_looks_geo};
-pub use hash_fields::{FieldTtl, rename_hash_field, write_hash_field};
+pub use hash_fields::{
+    FieldTtl, hash_delete_fields, hash_field_ttls, hash_len, hash_scan, rename_hash_field, write_hash_field,
+};
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};
 pub use key_ops::{FromEnd, KeyOp, KeyOpOutcome, run_key_op};
+pub use keyspace::{
+    KeySnapshot, ScanPage, create_key, delete_key, delete_keys, delete_keys_matching, dump_key, expire_key,
+    expire_key_at, key_memory_usage, key_object_meta, key_type_and_ttl, key_types, publish, rename_key, scan_page,
+    set_keys_ttl, set_ttl_matching, snapshot_key,
+};
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
-pub use list_ops::remove_list_indexes;
+pub use list_ops::{list_len, list_push, list_range, list_set_if_unchanged, remove_list_indexes};
 pub use lua_script::{
     ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1,
 };
@@ -201,11 +223,23 @@ pub use server_config::{
     config_set, info_everything,
 };
 pub use server_db::ServerDb;
+pub use server_ops::{
+    ServerSummary, bgrewriteaof, bgsave, dbsize, failover, failover_abort, flush_all, flush_db, forget_client,
+    heartbeat_probe, master_infos, replicaof, replicaof_no_one, server_summary, server_supports, slow_logs,
+};
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
+pub use set_ops::{set_add, set_card, set_remove, set_replace_member, set_scan};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 #[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, install_crypto_provider, set_host_key_approver};
+pub use stream_ops::{
+    PENDING_PAGE, StreamConsumer, StreamEntry, StreamGroup, StreamIdmp, StreamInfo, StreamPending, StreamRefPolicy,
+    StreamSummary, StreamTrim, consumer_create, consumer_delete, group_create, group_destroy, group_set_id,
+    pending_page, stream_ack, stream_ack_delete, stream_add, stream_autoclaim, stream_claim, stream_delete,
+    stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
+};
 pub use stream_tail::{StreamTail, StreamTailEntry};
+pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_set};
 /// A held socket the server pushes on — Pub/Sub, `MONITOR` — has no
 /// equivalent over the HTTP bridge, and the panels that read one are left out
 /// of the web build (ADR 9).
@@ -271,6 +305,9 @@ pub use search::{
 pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
+pub use zset_ops::{
+    ScoredMember, zset_card, zset_count_by_score, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
+};
 /// Sweep what has gone stale. The client cache is swept on both targets; the
 /// socket pool and the SSH session store exist only where there are sockets.
 pub fn clear_expired_cache() {

@@ -60,15 +60,29 @@ bridge cheap: one endpoint that never learns a command.
 
 ## Progress
 
-2026-09-20 — the baseline is empty: no file under `src/views` builds or runs
-a command, takes a connection, or names `redis::`. The test stays, as a rule.
-Two shapes had to be found that the first views did not need. What the server
-*pushes* (Pub/Sub, `MONITOR`, a blocking `XREAD`) became types that own their
-connection and hand out the next item — `ChannelSubscription`, `MonitorFeed`,
-`StreamTail` — so the view keeps its loop and nothing else. And the terminal,
-whose job is to show a raw reply, holds an opaque `TerminalReply` it can ask
-questions of and render, with `TerminalSession` owning the dedicated
-connection; its tests write replies as RESP bytes. The state layer is next.
+2026-09-20 — done, in two steps on the same day.
+
+The views reached an empty baseline first. Two shapes had to be found that
+the earlier views did not need. What the server *pushes* (Pub/Sub, `MONITOR`,
+a blocking `XREAD`) became types that own their connection and hand out the
+next item — `ChannelSubscription`, `MonitorFeed`, `StreamTail` — so the view
+keeps its loop and nothing else. And the terminal, whose job is to show a raw
+reply, holds an opaque `TerminalReply` it can ask questions of and render,
+with `TerminalSession` owning the dedicated connection; its tests write
+replies as RESP bytes.
+
+The scan was then widened to all of `src` and the state layer followed, which
+took two more shapes. A **cluster** command is not a `ServerDb` operation:
+`REPLICATE`, `FAILOVER`, `ADDSLOTS` and `SETSLOT` are not gossiped, so they
+take a `ClusterNode` — which node of which cluster — while `MEET` and
+`FORGET`, which are told to every master, keep the `ServerDb`. And the
+connection crate has no gpui, so its structs are `String` where the views
+want `SharedString`: the conversion is one function on the way in, not a
+`SharedString` dragged into a lib crate.
+
+The baseline is now empty for the whole GUI crate, and its manifest no longer
+lists `redis` on either target. The test stays, as a rule rather than a
+ratchet: a failure means the new code belongs in `zedis-connection`.
 
 ## Consequences
 

@@ -12005,7 +12005,6 @@ dependencies = [
  "os_info",
  "parking_lot",
  "pretty-hex",
- "redis",
  "regex",
  "rmp-serde",
  "rust-embed",

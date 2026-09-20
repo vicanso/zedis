@@ -1107,7 +1107,7 @@ impl ZedisStreamEditor {
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
                 let (trim, mut message) = if raw.contains('-') {
                     let message = t!("stream_editor.trim_confirm_minid", id = raw.as_str(), locale = locale);
-                    (StreamTrim::MinId(raw.clone().into()), message.to_string())
+                    (StreamTrim::MinId(raw.clone()), message.to_string())
                 } else if let Ok(n) = raw.parse::<u64>() {
                     let message = t!("stream_editor.trim_confirm_maxlen", n = n, locale = locale);
                     (StreamTrim::MaxLen(n), message.to_string())

@@ -39,18 +39,16 @@
 //!   * `ADDSLOTS` — the repair for a cluster that lost slot coverage.
 
 use crate::connection::{
-    AtomicSlotMigration, Capability, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
-    cluster_migrate_slots, get_connection_manager, get_server, group_slot_ranges, open_node_connection,
-    open_node_connection_cached, plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots,
+    AtomicSlotMigration, Capability, ClusterNode, ServerDb, SlotMove, cluster_forget, cluster_meet, group_slot_ranges,
+    master_addrs, migrate_slot, node_add_slots, node_cancel_slot_migrations, node_failover, node_load,
+    node_migrate_slots, node_replicate, node_slot_migrations, node_stabilize_slot,
+    plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots,
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
 use crate::helpers::channel;
 use crate::states::{ServerTask, ZedisServerState, i18n_common};
 use futures::future::try_join_all;
 use gpui::{SharedString, prelude::*};
-use redis::cmd;
 use tracing::warn;
 
 /// Per-master load sample for the Topology heatmap (memory + OPS).
@@ -91,14 +89,7 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::ClusterFailover,
             move || async move {
-                let mut conn = open_node_connection(server_id.as_ref(), target_addr.as_ref()).await?;
-                let mut c = cmd("CLUSTER");
-                c.arg("FAILOVER");
-                if force {
-                    c.arg("FORCE");
-                }
-                let _: String = c.query_async(&mut conn).await?;
-                Ok(())
+                Ok(node_failover(&ClusterNode::new(server_id.as_ref(), target_addr.as_ref()), force).await?)
             },
             move |this, result, cx| {
                 if result.is_ok() {
@@ -128,18 +119,11 @@ impl ZedisServerState {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let host_for_op = host.clone();
         self.spawn(
             ServerTask::ClusterMeet,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut c = cmd("CLUSTER");
-                c.arg("MEET").arg(host_for_op.as_ref()).arg(port);
-                let (_, _replies): (_, Vec<String>) = client.query_async_masters(vec![c]).await?;
-                Ok(())
-            },
+            move || async move { Ok(cluster_meet(&at, host_for_op.as_ref(), port).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     this.emit_success_notification(
@@ -163,18 +147,11 @@ impl ZedisServerState {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let id_for_op = node_id.clone();
         self.spawn(
             ServerTask::ClusterForget,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut c = cmd("CLUSTER");
-                c.arg("FORGET").arg(id_for_op.as_ref());
-                let (_, _replies): (_, Vec<String>) = client.query_async_masters(vec![c]).await?;
-                Ok(())
-            },
+            move || async move { Ok(cluster_forget(&at, id_for_op.as_ref()).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     this.emit_success_notification(
@@ -211,13 +188,8 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::ClusterReplicate,
             move || async move {
-                let mut conn = open_node_connection(server_id.as_ref(), target_addr.as_ref()).await?;
-                let _: String = cmd("CLUSTER")
-                    .arg("REPLICATE")
-                    .arg(master_node_id.as_ref())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(())
+                let node = ClusterNode::new(server_id.as_ref(), target_addr.as_ref());
+                Ok(node_replicate(&node, master_node_id.as_ref()).await?)
             },
             move |this, result, cx| {
                 if result.is_ok() {
@@ -258,16 +230,7 @@ impl ZedisServerState {
             slot.to_string(),
             move || async move {
                 for addr in &addrs {
-                    let mut conn = open_node_connection(server_id.as_ref(), addr.as_ref()).await?;
-                    let _: String = cmd("CLUSTER")
-                        .arg("SETSLOT")
-                        .arg(slot)
-                        .arg("STABLE")
-                        .query_async(&mut conn)
-                        .await
-                        .map_err(|e| Error::Invalid {
-                            message: format!("SETSLOT {slot} STABLE on {addr}: {e}"),
-                        })?;
+                    node_stabilize_slot(&ClusterNode::new(server_id.as_ref(), addr.as_ref()), slot).await?;
                 }
                 Ok(())
             },
@@ -301,8 +264,6 @@ impl ZedisServerState {
         if slots.is_empty() {
             return;
         }
-        /// Slots per `CLUSTER ADDSLOTS` call.
-        const CHUNK: usize = 1024;
         let server_id = self.server_id.clone();
         let count = slots.len();
         let target_for_msg = target_addr.clone();
@@ -310,18 +271,8 @@ impl ZedisServerState {
             ServerTask::ClusterAddSlots,
             target_addr.clone(),
             move || async move {
-                let mut conn = open_node_connection(server_id.as_ref(), target_addr.as_ref()).await?;
-                for chunk in slots.chunks(CHUNK) {
-                    let mut c = cmd("CLUSTER");
-                    c.arg("ADDSLOTS");
-                    for slot in chunk {
-                        c.arg(*slot);
-                    }
-                    let _: String = c.query_async(&mut conn).await.map_err(|e| Error::Invalid {
-                        message: format!("CLUSTER ADDSLOTS on {target_addr}: {e}"),
-                    })?;
-                }
-                Ok(())
+                let node = ClusterNode::new(server_id.as_ref(), target_addr.as_ref());
+                Ok(node_add_slots(&node, &slots).await?)
             },
             move |this, result, cx| {
                 if result.is_ok() {
@@ -372,12 +323,8 @@ impl ZedisServerState {
             target_id.clone(),
             move || async move {
                 for (source_addr, ranges) in &jobs {
-                    let mut conn = open_node_connection(server_id.as_ref(), source_addr.as_ref()).await?;
-                    cluster_migrate_slots(&mut conn, ranges, target_id.as_ref())
-                        .await
-                        .map_err(|e| Error::Invalid {
-                            message: format!("CLUSTER MIGRATESLOTS on {source_addr}: {e}"),
-                        })?;
+                    let source = ClusterNode::new(server_id.as_ref(), source_addr.as_ref());
+                    node_migrate_slots(&source, ranges, target_id.as_ref()).await?;
                 }
                 Ok(())
             },
@@ -412,12 +359,7 @@ impl ZedisServerState {
             ServerTask::ClusterCancelSlotMigrations,
             move || async move {
                 for addr in &source_addrs {
-                    let mut conn = open_node_connection(server_id.as_ref(), addr.as_ref()).await?;
-                    cluster_cancel_slot_migrations(&mut conn)
-                        .await
-                        .map_err(|e| Error::Invalid {
-                            message: format!("CLUSTER CANCELSLOTMIGRATIONS on {addr}: {e}"),
-                        })?;
+                    node_cancel_slot_migrations(&ClusterNode::new(server_id.as_ref(), addr.as_ref())).await?;
                 }
                 Ok(())
             },
@@ -486,9 +428,9 @@ impl ZedisServerState {
                 let mut errors: Vec<String> = Vec::new();
                 for leg in &legs {
                     if atomic {
-                        let mut conn = open_node_connection(server_id.as_ref(), &leg.source_addr).await?;
+                        let source = ClusterNode::new(server_id.as_ref(), &leg.source_addr);
                         let ranges = group_slot_ranges(&leg.slots);
-                        match cluster_migrate_slots(&mut conn, &ranges, &leg.target_id).await {
+                        match node_migrate_slots(&source, &ranges, &leg.target_id).await {
                             Ok(()) => moved += leg.slots.len() as u32,
                             Err(e) => errors.push(format!("{} → {}: {e}", leg.source_addr, leg.target_id)),
                         }
@@ -672,8 +614,7 @@ impl ZedisServerState {
 /// not blank the list.
 pub async fn fetch_slot_migrations(server_id: &str, masters: &[String]) -> Vec<(String, AtomicSlotMigration)> {
     let tasks = masters.iter().map(|addr| async move {
-        let mut conn = open_node_connection_cached(server_id, addr).await.ok()?;
-        let migrations = cluster_get_slot_migrations(&mut conn).await.ok()?;
+        let migrations = node_slot_migrations(&ClusterNode::new(server_id, addr)).await.ok()?;
         Some(
             migrations
                 .into_iter()
@@ -706,27 +647,13 @@ pub async fn fetch_cluster_node_loads(
     let tasks = masters
         .iter()
         .map(|(node_id, addr, slot_count, color_index)| async move {
-            let mut conn = open_node_connection_cached(server_id, addr).await?;
-            let info: String = cmd("INFO").query_async(&mut conn).await?;
-            let mut used_memory = 0u64;
-            let mut ops_per_sec = 0u64;
-            let mut connected_clients = 0u64;
-            for line in info.lines() {
-                if let Some((k, v)) = line.split_once(':') {
-                    match k {
-                        "used_memory" => used_memory = v.parse().unwrap_or(0),
-                        "instantaneous_ops_per_sec" => ops_per_sec = v.parse().unwrap_or(0),
-                        "connected_clients" => connected_clients = v.parse().unwrap_or(0),
-                        _ => {}
-                    }
-                }
-            }
+            let load = node_load(&ClusterNode::new(server_id, addr)).await?;
             Ok::<ClusterNodeLoad, Error>(ClusterNodeLoad {
                 node_id: node_id.clone().into(),
                 addr: addr.clone().into(),
-                used_memory,
-                ops_per_sec,
-                connected_clients,
+                used_memory: load.used_memory,
+                ops_per_sec: load.ops_per_sec,
+                connected_clients: load.connected_clients,
                 slot_count: *slot_count,
                 color_index: *color_index,
             })
@@ -802,25 +729,14 @@ async fn reshard_slots(
     source_by_slot: &[(u16, String, String)],
     progress: channel::Sender<(u32, u32)>,
 ) -> Result<ClusterReshardResult, Error> {
-    let password = get_server(server_id).ok().and_then(|s| s.password);
-    let (target_host, target_port) = target_addr.rsplit_once(':').ok_or_else(|| Error::Invalid {
-        message: format!("invalid target addr {target_addr}"),
-    })?;
-    let target_port: u16 = target_port.parse().map_err(|e| Error::Invalid {
-        message: format!("invalid target port: {e}"),
-    })?;
-
-    // All master addrs for the final SETSLOT NODE fan-out.
-    let client = get_connection_manager().get_client(server_id, 0).await?;
-    let master_servers = client.master_servers();
-    let master_addrs: Vec<String> = master_servers
-        .iter()
-        .map(|s| format!("{}:{}", s.host, s.port))
-        .collect();
+    let at = ServerDb::new(server_id, 0);
+    // Every master: where each slot's new ownership is committed.
+    let master_addrs = master_addrs(&at).await?;
+    let target = ClusterNode::new(server_id, target_addr);
 
     let mut source_lookup: std::collections::HashMap<u16, (String, String)> = source_by_slot
         .iter()
-        .map(|(s, a, i)| (*s, (a.clone(), i.clone())))
+        .map(|(slot, addr, id)| (*slot, (addr.clone(), id.clone())))
         .collect();
 
     let mut moved = 0u32;
@@ -833,13 +749,10 @@ async fn reshard_slots(
         let report = |processed: u32| {
             let _ = progress.try_send((processed, total));
         };
-        let (source_addr, source_id) = match source_lookup.remove(&slot) {
-            Some(v) => v,
-            None => {
-                errors.push(format!("slot {slot}: missing source mapping"));
-                report(index as u32 + 1);
-                continue;
-            }
+        let Some((source_addr, source_id)) = source_lookup.remove(&slot) else {
+            errors.push(format!("slot {slot}: missing source mapping"));
+            report(index as u32 + 1);
+            continue;
         };
         if source_id == target_id {
             // Already on target — skip.
@@ -847,17 +760,13 @@ async fn reshard_slots(
             report(index as u32 + 1);
             continue;
         }
-
-        if let Err(e) = migrate_one_slot(MigrateSlotArgs {
-            server_id,
+        let source = ClusterNode::new(server_id, &source_addr);
+        if let Err(e) = migrate_slot(SlotMove {
             slot,
-            source_addr: &source_addr,
+            source: &source,
             source_id: &source_id,
-            target_addr,
+            target: &target,
             target_id,
-            target_host,
-            target_port,
-            password: password.as_deref(),
             master_addrs: &master_addrs,
         })
         .await
@@ -876,108 +785,4 @@ async fn reshard_slots(
         total: slots.len() as u32,
         errors,
     })
-}
-
-struct MigrateSlotArgs<'a> {
-    server_id: &'a str,
-    slot: u16,
-    source_addr: &'a str,
-    source_id: &'a str,
-    target_addr: &'a str,
-    target_id: &'a str,
-    target_host: &'a str,
-    target_port: u16,
-    password: Option<&'a str>,
-    master_addrs: &'a [String],
-}
-
-async fn migrate_one_slot(args: MigrateSlotArgs<'_>) -> Result<(), Error> {
-    let MigrateSlotArgs {
-        server_id,
-        slot,
-        source_addr,
-        source_id,
-        target_addr,
-        target_id,
-        target_host,
-        target_port,
-        password,
-        master_addrs,
-    } = args;
-
-    let mut source_conn = open_node_connection(server_id, source_addr).await?;
-    let mut target_conn = open_node_connection(server_id, target_addr).await?;
-
-    // Mark migration intent.
-    let _: String = cmd("CLUSTER")
-        .arg("SETSLOT")
-        .arg(slot)
-        .arg("IMPORTING")
-        .arg(source_id)
-        .query_async(&mut target_conn)
-        .await?;
-    let _: String = cmd("CLUSTER")
-        .arg("SETSLOT")
-        .arg(slot)
-        .arg("MIGRATING")
-        .arg(target_id)
-        .query_async(&mut source_conn)
-        .await?;
-
-    // Drain keys in batches.
-    const BATCH: usize = 100;
-    const MIGRATE_TIMEOUT_MS: i64 = 10_000;
-    loop {
-        let keys: Vec<String> = cmd("CLUSTER")
-            .arg("GETKEYSINSLOT")
-            .arg(slot)
-            .arg(BATCH)
-            .query_async(&mut source_conn)
-            .await?;
-        if keys.is_empty() {
-            break;
-        }
-        let mut migrate = cmd("MIGRATE");
-        migrate
-            .arg(target_host)
-            .arg(target_port)
-            .arg("")
-            .arg(0)
-            .arg(MIGRATE_TIMEOUT_MS);
-        if let Some(pw) = password {
-            migrate.arg("AUTH").arg(pw);
-        }
-        migrate.arg("KEYS");
-        for k in &keys {
-            migrate.arg(k);
-        }
-        // MIGRATE may return "NOKEY" when a key vanished mid-flight — treat
-        // as success for that batch.
-        match migrate.query_async::<String>(&mut source_conn).await {
-            Ok(_) => {}
-            Err(e) => {
-                let msg = e.to_string();
-                if !msg.contains("NOKEY") {
-                    return Err(Error::Invalid { message: msg });
-                }
-            }
-        }
-    }
-
-    // Commit ownership on every known master (source/target included).
-    for addr in master_addrs {
-        let mut conn = open_node_connection(server_id, addr).await?;
-        let _: String = cmd("CLUSTER")
-            .arg("SETSLOT")
-            .arg(slot)
-            .arg("NODE")
-            .arg(target_id)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| Error::Invalid {
-                message: format!("SETSLOT NODE on {addr}: {e}"),
-            })?;
-    }
-
-    Ok(())
 }

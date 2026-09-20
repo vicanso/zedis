@@ -150,10 +150,6 @@ tray-icon = "0.24.1"
 # build — cargo resolves this block for every non-wasm target — so this file
 # stays the single description of what `zedis` links.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-# The full Redis client: runtimes, TLS, cluster routing. In the browser the
-# same crate is a codec and nothing more (see the wasm block below), because
-# the dialling happens in `zedis-bridge`.
-redis = { workspace = true }
 # Provides the `ring` crypto backend for rustls 0.23+ (used transitively by redis TLS)
 rustls = { workspace = true }
 # `tree-sitter` is asked for here, not in `[workspace.dependencies]`, so it
@@ -234,14 +230,6 @@ rust-embed = { version = "8.12.0", default-features = false, features = [
     "debug-embed",
     "include-exclude",
 ] }
-redis = { version = "1.6.0", default-features = false, features = [
-    "num-bigint",
-    "acl",
-    "streams",
-    "geospatial",
-    "script",
-] }
-
 
 [dev-dependencies]
 # `TestAppContext` (headless fake platform) for state/route logic tests —

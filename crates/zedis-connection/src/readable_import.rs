@@ -24,6 +24,7 @@
 use crate::conn::RedisAsyncConn;
 use crate::dump_restore::{ConflictMode, ConflictPreview, keys_exist, preview_dump_conflicts};
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use crate::manager::get_connection_manager;
 use crate::readable_export::{ReadableEntry, ReadableValue};
 use futures::future::try_join_all;
@@ -323,10 +324,11 @@ pub enum ReadableWriteStatus {
 /// Write a chunk of parsed entries, one future per entry (mirrors
 /// `restore_keys_chunk`). Statuses come back in entry order.
 pub async fn write_readable_chunk(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     entries: &[ReadableEntry],
     conflict: ConflictMode,
 ) -> Result<Vec<ReadableWriteStatus>> {
+    let conn = &mut at.connection().await?;
     if entries.is_empty() {
         return Ok(Vec::new());
     }

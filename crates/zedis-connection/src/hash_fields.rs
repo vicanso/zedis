@@ -22,10 +22,10 @@
 //! server rule since 7.4), so *keeping* a TTL across a value edit is only
 //! possible through `HSETEX KEEPTTL`.
 
-use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
-use crate::bridge::BridgePipeline as _;
+use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::{Cmd, Pipeline, Value, cmd, pipe};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -91,13 +91,14 @@ fn push_fallback(p: &mut Pipeline, key: &str, field: &[u8], value: &[u8], ttl: F
 /// has `HSETEX`) that is one MULTI — `HEXISTS` for the created flag, then
 /// the `HSETEX` — otherwise `HSET` plus its TTL command in one pipeline.
 pub async fn write_hash_field(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     field: &[u8],
     value: &[u8],
     ttl: FieldTtl,
     atomic: bool,
 ) -> Result<bool> {
+    let conn = &mut at.connection().await?;
     if atomic {
         let mut p = pipe();
         p.atomic().cmd("HEXISTS").arg(key).arg(field);
@@ -115,7 +116,7 @@ pub async fn write_hash_field(
 /// the TTL decision and the old one deleted, in one MULTI. A rename cannot
 /// carry the old field's TTL over — `Keep` leaves the new field without one.
 pub async fn rename_hash_field(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     old_field: &[u8],
     new_field: &[u8],
@@ -123,6 +124,7 @@ pub async fn rename_hash_field(
     ttl: FieldTtl,
     atomic: bool,
 ) -> Result<()> {
+    let conn = &mut at.connection().await?;
     let mut p = pipe();
     p.atomic();
     if atomic {
@@ -133,6 +135,70 @@ pub async fn rename_hash_field(
     p.cmd("HDEL").arg(key).arg(old_field);
     let _: Vec<Value> = p.query_async(conn).await?;
     Ok(())
+}
+
+/// `HLEN`.
+pub async fn hash_len(at: &ServerDb, key: &str) -> Result<usize> {
+    Ok(cmd("HLEN").arg(key).query_async(&mut at.connection().await?).await?)
+}
+
+/// One `HSCAN` round: the next cursor (0 when the scan is complete) and the
+/// field → value pairs, bytes kept as answered. `keyword` filters field
+/// names by substring ([`contains_pattern`]).
+pub async fn hash_scan(
+    at: &ServerDb,
+    key: &str,
+    keyword: Option<&str>,
+    cursor: u64,
+    count: usize,
+) -> Result<(u64, Vec<(Vec<u8>, Vec<u8>)>)> {
+    Ok(cmd("HSCAN")
+        .arg(key)
+        .arg(cursor)
+        .arg("MATCH")
+        .arg(contains_pattern(keyword))
+        .arg("COUNT")
+        .arg(count)
+        .query_async(&mut at.connection().await?)
+        .await?)
+}
+
+/// `HTTL key FIELDS n field…` (`floors::HASH_FIELD_TTL`): one answer per
+/// field, in order, in seconds — `-1` for a field without a TTL, `-2` for a
+/// field that is not there.
+pub async fn hash_field_ttls(at: &ServerDb, key: &str, fields: &[&[u8]]) -> Result<Vec<i64>> {
+    if fields.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut c = cmd("HTTL");
+    c.arg(key).arg("FIELDS").arg(fields.len());
+    for field in fields {
+        c.arg(*field);
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
+}
+
+/// `HDEL key field…`; answers how many were there to delete.
+pub async fn hash_delete_fields(at: &ServerDb, key: &str, fields: &[&[u8]]) -> Result<usize> {
+    if fields.is_empty() {
+        return Ok(0);
+    }
+    let mut c = cmd("HDEL");
+    c.arg(key);
+    for field in fields {
+        c.arg(*field);
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
+}
+
+/// The `MATCH` pattern of a collection scan: everything, or everything that
+/// contains the keyword. The keyword is used as typed — a `*` or `?` in it
+/// is a glob, which is what the filter box has always meant.
+pub(crate) fn contains_pattern(keyword: Option<&str>) -> String {
+    match keyword {
+        Some(keyword) => format!("*{keyword}*"),
+        None => "*".to_string(),
+    }
 }
 
 #[cfg(test)]

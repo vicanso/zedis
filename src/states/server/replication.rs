@@ -21,7 +21,7 @@
 //! `refresh_redis_info` so the page shows the new roles before the next
 //! tick. The view routes each one through a confirm dialog first.
 
-use crate::connection::{Capability, FAILOVER_TIMEOUT_MS, get_connection_manager};
+use crate::connection::{Capability, FAILOVER_TIMEOUT_MS, failover, failover_abort, replicaof, replicaof_no_one};
 use crate::states::{ServerTask, ZedisGlobalStore, ZedisServerState, i18n_topology};
 use gpui::{SharedString, prelude::*};
 use rust_i18n::t;
@@ -47,17 +47,13 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let addr: SharedString = format!("{host}:{port}").into();
         let addr_for_msg = addr.clone();
         self.spawn_with_arg(
             ServerTask::Replicaof,
             addr,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client.replicaof(&host, port).await?)
-            },
+            move || async move { Ok(replicaof(&at, &host, port).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     let locale = this.replication_locale(cx);
@@ -76,15 +72,11 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn_with_arg(
             ServerTask::Replicaof,
             "NO ONE",
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client.replicaof_no_one().await?)
-            },
+            move || async move { Ok(replicaof_no_one(&at).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     let message = i18n_topology(cx, "repl_promoted");
@@ -103,17 +95,13 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let addr: SharedString = format!("{host}:{port}").into();
         let addr_for_msg = addr.clone();
         self.spawn_with_arg(
             ServerTask::Failover,
             addr,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client.failover(Some((&host, port)), force, FAILOVER_TIMEOUT_MS).await?)
-            },
+            move || async move { Ok(failover(&at, Some((&host, port)), force, FAILOVER_TIMEOUT_MS).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     let locale = this.replication_locale(cx);
@@ -131,15 +119,11 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn_with_arg(
             ServerTask::Failover,
             "ABORT",
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client.failover_abort().await?)
-            },
+            move || async move { Ok(failover_abort(&at).await?) },
             move |this, result, cx| {
                 if result.is_ok() {
                     let message = i18n_topology(cx, "repl_failover_aborted");

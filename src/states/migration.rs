@@ -19,9 +19,9 @@
 
 use crate::connection::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
-    ReadableWriteStatus, RedisAsyncConn, RestoreStatus, csv_header, detect_import_format, dump_keys_chunk,
-    entry_to_csv, entry_to_json, get_connection_manager, get_server, parse_readable_entries, read_readable_chunk,
-    restore_keys_chunk, write_readable_chunk,
+    ReadableWriteStatus, RestoreStatus, ServerDb, csv_header, detect_import_format, dump_keys_chunk, entry_to_csv,
+    entry_to_json, get_server, parse_readable_entries, read_readable_chunk, restore_keys_chunk, server_summary,
+    write_readable_chunk,
 };
 use crate::error::Error;
 use chrono::Utc;
@@ -337,9 +337,8 @@ async fn export_worker(
         .map(|s| s.name)
         .unwrap_or_else(|_| server_id.to_string());
 
-    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
-    let redis_version = client.version().to_string();
-    let mut conn = client.connection();
+    let at = ServerDb::new(server_id.as_str(), db);
+    let redis_version = server_summary(&at).await?.version;
 
     let header = DumpHeader {
         format_version: 1,
@@ -365,7 +364,7 @@ async fn export_worker(
             break;
         }
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let entries = dump_keys_chunk(&mut conn, &chunk).await?;
+        let entries = dump_keys_chunk(&at, &chunk).await?;
         let chunk_total = chunk.len();
         let dumped_count = entries.len();
         let bytes_in_chunk: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
@@ -441,8 +440,7 @@ async fn readable_export_worker(
         output_path,
         format,
     } = spec;
-    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
-    let mut conn = client.connection();
+    let at = ServerDb::new(server_id.as_str(), db);
 
     let path_for_open = output_path.clone();
     let mut writer = smol::unblock(move || -> Result<BufWriter<File>> {
@@ -462,7 +460,7 @@ async fn readable_export_worker(
             break;
         }
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let entries = read_readable_chunk(&mut conn, &chunk, ReadLimits::default()).await?;
+        let entries = read_readable_chunk(&at, &chunk, ReadLimits::default()).await?;
 
         // Serialize on this side so log lines can carry the byte counts.
         let mut payload = String::new();
@@ -613,8 +611,7 @@ async fn import_binary_worker(
     conflict: ConflictMode,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
-    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
-    let mut conn = client.connection();
+    let at = ServerDb::new(server_id.as_str(), db);
 
     // Open + parse the header on a blocking thread (sync I/O).
     let path_for_open = input_path.clone();
@@ -654,7 +651,7 @@ async fn import_binary_worker(
         if batch.is_empty() {
             break;
         }
-        flush_restore_batch(&handle, cx, &mut conn, &mut batch, conflict).await?;
+        flush_restore_batch(&handle, cx, &at, &mut batch, conflict).await?;
         if eof {
             break;
         }
@@ -690,14 +687,13 @@ async fn import_readable_worker(
         cx.notify();
     });
 
-    let client = get_connection_manager().get_client(server_id.as_str(), db).await?;
-    let mut conn = client.connection();
+    let at = ServerDb::new(server_id.as_str(), db);
 
     for chunk in entries.chunks(RESTORE_BATCH_SIZE) {
         if cancel.load(Ordering::Acquire) {
             break;
         }
-        let statuses = write_readable_chunk(&mut conn, chunk, conflict).await?;
+        let statuses = write_readable_chunk(&at, chunk, conflict).await?;
         let mut written = 0u64;
         let mut skipped = 0u64;
         let mut failed = 0u64;
@@ -811,21 +807,15 @@ async fn copy_worker(
         s.progress.keys_total = total;
         cx.notify();
     });
-    let source = get_connection_manager()
-        .get_client(source_id.as_str(), source_db)
-        .await?;
-    let target = get_connection_manager()
-        .get_client(target_id.as_str(), target_db)
-        .await?;
-    let mut src = source.connection();
-    let mut dst = target.connection();
+    let src = ServerDb::new(source_id.as_str(), source_db);
+    let dst = ServerDb::new(target_id.as_str(), target_db);
 
     for chunk in keys.chunks(DUMP_BATCH_SIZE) {
         if cancel.load(Ordering::Acquire) {
             break;
         }
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let mut entries = dump_keys_chunk(&mut src, &chunk).await?;
+        let mut entries = dump_keys_chunk(&src, &chunk).await?;
         // Keys gone from the source since they were listed.
         let dumped: ahash::AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
         let missing: Vec<LogLine> = chunk
@@ -838,7 +828,7 @@ async fn copy_worker(
                 message: Some("missing".into()),
             })
             .collect();
-        flush_restore_batch(&handle, cx, &mut dst, &mut entries, conflict).await?;
+        flush_restore_batch(&handle, cx, &dst, &mut entries, conflict).await?;
         if !missing.is_empty() {
             let count = missing.len() as u64;
             handle
@@ -857,12 +847,12 @@ async fn copy_worker(
 async fn flush_restore_batch(
     handle: &gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     buffer: &mut Vec<DumpEntry>,
     conflict: ConflictMode,
 ) -> Result<()> {
     let entries = std::mem::take(buffer);
-    let statuses = restore_keys_chunk(conn, &entries, conflict).await?;
+    let statuses = restore_keys_chunk(at, &entries, conflict).await?;
     let mut written = 0u64;
     let mut skipped = 0u64;
     let mut failed = 0u64;

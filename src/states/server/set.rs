@@ -17,17 +17,14 @@ use super::{
     element::KvElement,
     value::{RedisSetValue, RedisValue, RedisValueStatus},
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{ServerDb, set_add, set_card, set_remove, set_replace_member, set_scan},
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_set_editor},
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
-use redis::cmd;
 use std::collections::HashSet;
 use std::sync::Arc;
 use zedis_core::change_log::ChangeEntry;
@@ -37,7 +34,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// Retrieves SET members using Redis SSCAN command for cursor-based pagination.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The SET key to scan
 /// * `keyword` - Optional filter keyword (will be wrapped with wildcards for pattern matching)
 /// * `cursor` - Current cursor position (0 to start, returned cursor to continue)
@@ -46,33 +43,14 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// # Returns
 /// A tuple of (next_cursor, values) where next_cursor is 0 when scan is complete
 async fn get_redis_set_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     keyword: Option<SharedString>,
     cursor: u64,
     count: usize,
 ) -> Result<(u64, Vec<KvElement>)> {
-    // Build pattern: wrap keyword with wildcards or match all
-    let pattern = keyword
-        .as_ref()
-        .map(|kw| format!("*{}*", kw))
-        .unwrap_or_else(|| "*".to_string());
-
-    // Execute SSCAN with MATCH and COUNT options
-    let (next_cursor, raw_values): (u64, Vec<Vec<u8>>) = cmd("SSCAN")
-        .arg(key)
-        .arg(cursor)
-        .arg("MATCH")
-        .arg(pattern)
-        .arg("COUNT")
-        .arg(count)
-        .query_async(conn)
-        .await?;
-
-    // Early return if no values found
-    if raw_values.is_empty() {
-        return Ok((next_cursor, vec![]));
-    }
+    // SSCAN with MATCH `*keyword*` (or everything) and COUNT.
+    let (next_cursor, raw_values) = set_scan(at, key, keyword.as_deref(), cursor, count).await?;
 
     // The bytes stay as answered; the text each shows is decoded from them.
     let values = raw_values.into_iter().map(KvElement::from_raw).collect();
@@ -86,17 +64,17 @@ async fn get_redis_set_value(
 /// This is called when a SET key is first opened in the editor.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The SET key to load
 ///
 /// # Returns
 /// A `RedisValue` containing SET metadata and initial member values
-pub(crate) async fn first_load_set_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
+pub(crate) async fn first_load_set_value(at: &ServerDb, key: &str) -> Result<RedisValue> {
     // Get total number of members in the SET
-    let size: usize = cmd("SCARD").arg(key).query_async(conn).await?;
+    let size = set_card(at, key).await?;
 
     // Load first batch of values (up to 100 members)
-    let (cursor, values) = get_redis_set_value(conn, key, None, 0, 100).await?;
+    let (cursor, values) = get_redis_set_value(at, key, None, 0, 100).await?;
 
     // If cursor is 0, all values have been loaded in one iteration
     let done = cursor == 0;
@@ -125,7 +103,7 @@ impl ZedisServerState {
         redis_op: F,
         on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
     ) where
-        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
@@ -142,16 +120,12 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // Step 2: Spawn background task
         self.spawn(
             task,
-            move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis_op(key_str, conn).await
-            },
+            move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
@@ -187,18 +161,9 @@ impl ZedisServerState {
                     set.values[pos] = new_value_clone;
                 }
             },
-            move |key, mut conn| async move {
-                // Use pipeline for atomic-like sequence of SREM and SADD
-                let (_, count): (usize, usize) = redis::pipe()
-                    .cmd("SREM")
-                    .arg(&key)
-                    .arg(old_value.raw().as_ref())
-                    .cmd("SADD")
-                    .arg(&key)
-                    .arg(new_value.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
+            move |key, at| async move {
+                // SREM + SADD in one pipeline.
+                Ok(set_replace_member(&at, &key, old_value.raw(), new_value.raw()).await?)
             },
             move |this, _, cx| {
                 if let Some(log_key) = log_key {
@@ -232,29 +197,20 @@ impl ZedisServerState {
             ServerTask::AddSetValue,
             cx,
             |_| {}, // No optimistic update for add to prevent duplicate UI entries before confirmation
-            move |key, mut conn| async move {
-                let count: usize = cmd("SADD")
-                    .arg(&key)
-                    .arg(new_value.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
-            },
-            move |this, count, cx| {
-                // `SADD` answering 0 means the member was already there.
-                if count > 0
-                    && let Some(log_key) = log_key
-                {
+            move |key, at| async move { Ok(set_add(&at, &key, new_value.as_bytes()).await?) },
+            move |this, added, cx| {
+                // `false`: `SADD` answered 0, the member was already there.
+                if added && let Some(log_key) = log_key {
                     this.record_changes(
                         log_key,
                         vec![ChangeEntry::element(unix_ts(), log_member, None, Some(""))],
                     );
                 }
-                if count == 0 {
+                if !added {
                     this.emit_warning_notification(i18n_set_editor(cx, "add_value_exists_tips"), cx);
                 } else if let Some(RedisValueData::Set(set_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let set = Arc::make_mut(set_data);
-                    set.size += count;
+                    set.size += 1;
                     // Only append to UI if scan is complete to maintain consistency
                     if set.done && !set.values.iter().any(|v| v.raw() == val_clone.raw()) {
                         set.values.push(val_clone);
@@ -320,8 +276,7 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         let keyword_clone = keyword.clone().unwrap_or_default();
@@ -331,12 +286,10 @@ impl ZedisServerState {
             key.clone(),
             // Async operation: fetch next batch using SSCAN
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
                 // Use larger batch size when filtering to reduce round trips
                 let count = if keyword.is_some() { 1000 } else { 100 };
 
-                get_redis_set_value(&mut conn, &key, keyword, cursor, count).await
+                get_redis_set_value(&at, &key, keyword, cursor, count).await
             },
             // UI callback: merge results and handle auto-loading for filters
             move |this, result, cx| {
@@ -401,14 +354,7 @@ impl ZedisServerState {
                 set.size -= 1;
                 set.values.retain(|v| v.raw() != val_clone.raw());
             },
-            move |key, mut conn| async move {
-                let count: usize = cmd("SREM")
-                    .arg(&key)
-                    .arg(remove_value.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(count)
-            },
+            move |key, at| async move { Ok(set_remove(&at, &key, &[remove_value.raw().as_ref()]).await?) },
             move |this, removed, cx| {
                 if removed > 0
                     && let Some(log_key) = log_key
@@ -442,14 +388,9 @@ impl ZedisServerState {
                 set.values.retain(|v| !gone.contains(v.raw()));
                 set.size = set.size.saturating_sub(before - set.values.len());
             },
-            move |key, mut conn| async move {
-                let mut command = cmd("SREM");
-                command.arg(&key);
-                for value in &remove_values {
-                    command.arg(value.raw().as_ref());
-                }
-                let count: usize = command.query_async(&mut conn).await?;
-                Ok(count)
+            move |key, at| async move {
+                let members: Vec<&[u8]> = remove_values.iter().map(|value| value.raw().as_ref()).collect();
+                Ok(set_remove(&at, &key, &members).await?)
             },
             move |this, _, cx| {
                 if let Some(log_key) = log_key {

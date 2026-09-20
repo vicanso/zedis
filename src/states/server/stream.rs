@@ -19,295 +19,102 @@ use super::{
         StreamIdmpInfo, StreamInfoData, StreamPendingEntry, StreamRefPolicy, StreamSummary, StreamTrim,
     },
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_stream_editor;
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager, next_stream_id},
+    connection::{
+        PENDING_PAGE, ServerDb, StreamGroup, StreamInfo, StreamPending, consumer_create, consumer_delete, group_create,
+        group_destroy, group_set_id, next_stream_id, pending_page, stream_ack, stream_ack_delete, stream_add,
+        stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_nack, stream_page,
+        stream_set_id, stream_trim,
+    },
     error::Error,
 };
 use gpui::{SharedString, prelude::*};
-use redis::cmd;
 use rust_i18n::t;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-type RawStreamData = Vec<(String, Vec<String>)>;
-
-/// XPENDING page size — both the initial per-group load and every
-/// "load more" click fetch this many entries.
-const PENDING_PAGE: usize = 100;
-
-// ── XINFO / XPENDING parsing helpers ─────────────────────────────────────────
-
-/// Converts a flat alternating-key/value Redis array into a map.
-fn xinfo_flat_to_map(arr: &[redis::Value]) -> HashMap<String, &redis::Value> {
-    let mut map = HashMap::with_capacity(arr.len() / 2);
-    let mut i = 0;
-    while i + 1 < arr.len() {
-        let key = match &arr[i] {
-            redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
-            redis::Value::SimpleString(s) => s.clone(),
-            _ => {
-                i += 2;
-                continue;
-            }
-        };
-        map.insert(key, &arr[i + 1]);
-        i += 2;
-    }
-    map
-}
-
-fn redis_to_string(v: &redis::Value) -> SharedString {
-    match v {
-        redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string().into(),
-        redis::Value::SimpleString(s) => s.clone().into(),
-        redis::Value::Int(n) => n.to_string().into(),
-        _ => SharedString::default(),
+/// `zedis-connection`'s stream structs, in the `SharedString` the views draw
+/// from. The connection crate has no gpui, so the two shapes are kept apart
+/// and converted here — one place, on the way in (ADR 10).
+fn project_info(info: StreamInfo) -> StreamInfoData {
+    StreamInfoData {
+        summary: info.summary.map(|summary| StreamSummary {
+            groups_count: summary.groups_count,
+            first_entry_id: summary.first_entry_id.into(),
+            last_entry_id: summary.last_entry_id.into(),
+            last_generated_id: summary.last_generated_id.into(),
+            radix_tree_keys: summary.radix_tree_keys,
+            radix_tree_nodes: summary.radix_tree_nodes,
+            idmp: summary.idmp.map(|idmp| StreamIdmpInfo {
+                pids_tracked: idmp.pids_tracked,
+                iids_tracked: idmp.iids_tracked,
+                iids_added: idmp.iids_added,
+                iids_duplicates: idmp.iids_duplicates,
+            }),
+        }),
+        groups: info.groups.into_iter().map(project_group).collect(),
     }
 }
 
-fn redis_to_i64(v: &redis::Value) -> i64 {
-    match v {
-        redis::Value::Int(n) => *n,
-        redis::Value::BulkString(b) => String::from_utf8_lossy(b).parse().unwrap_or(0),
-        _ => 0,
+fn project_group(group: StreamGroup) -> StreamGroupDetail {
+    StreamGroupDetail {
+        name: group.name.into(),
+        consumers_count: group.consumers_count,
+        pending_count: group.pending_count,
+        last_delivered_id: group.last_delivered_id.into(),
+        lag: group.lag,
+        consumers: group
+            .consumers
+            .into_iter()
+            .map(|consumer| StreamConsumerDetail {
+                name: consumer.name.into(),
+                pending: consumer.pending,
+                idle_ms: consumer.idle_ms,
+            })
+            .collect(),
+        pending_entries: group.pending_entries.into_iter().map(project_pending).collect(),
+        pending_done: group.pending_done,
     }
 }
 
-fn redis_to_usize(v: &redis::Value) -> usize {
-    redis_to_i64(v).max(0) as usize
-}
-
-fn map_get_string(map: &HashMap<String, &redis::Value>, key: &str) -> SharedString {
-    map.get(key).map(|v| redis_to_string(v)).unwrap_or_default()
-}
-
-fn map_get_usize(map: &HashMap<String, &redis::Value>, key: &str) -> usize {
-    map.get(key).map(|v| redis_to_usize(v)).unwrap_or(0)
-}
-
-fn map_get_i64(map: &HashMap<String, &redis::Value>, key: &str) -> i64 {
-    map.get(key).map(|v| redis_to_i64(v)).unwrap_or(0)
-}
-
-// ── Async fetch ──────────────────────────────────────────────────────────────
-
-/// Extracts the entry ID from the first element of an XINFO first/last-entry array.
-fn extract_entry_id(v: &redis::Value) -> SharedString {
-    match v {
-        redis::Value::Array(arr) if !arr.is_empty() => redis_to_string(&arr[0]),
-        _ => SharedString::default(),
+fn project_pending(entry: StreamPending) -> StreamPendingEntry {
+    StreamPendingEntry {
+        id: entry.id.into(),
+        consumer: entry.consumer.into(),
+        idle_ms: entry.idle_ms,
+        delivery_count: entry.delivery_count,
     }
 }
 
-/// Fetches XINFO STREAM, XINFO GROUPS, XINFO CONSUMERS, and XPENDING for every group.
-async fn load_stream_info_data(conn: &mut RedisAsyncConn, key: &str) -> Result<StreamInfoData> {
-    // ── XINFO STREAM ──────────────────────────────────────────────────────────
-    let stream_raw: redis::Value = cmd("XINFO")
-        .arg("STREAM")
-        .arg(key)
-        .query_async(conn)
-        .await
-        .unwrap_or(redis::Value::Array(vec![]));
-
-    let summary = if let redis::Value::Array(arr) = stream_raw {
-        let map = xinfo_flat_to_map(&arr);
-        // Idempotent-producer counters (8.6+) — presence-gated, so no
-        // version check: older servers simply don't report the fields.
-        let idmp = map.contains_key("pids-tracked").then(|| StreamIdmpInfo {
-            pids_tracked: map_get_usize(&map, "pids-tracked"),
-            iids_tracked: map_get_usize(&map, "iids-tracked"),
-            iids_added: map_get_usize(&map, "iids-added"),
-            iids_duplicates: map_get_usize(&map, "iids-duplicates"),
-        });
-        Some(StreamSummary {
-            groups_count: map_get_usize(&map, "groups"),
-            first_entry_id: map.get("first-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
-            last_entry_id: map.get("last-entry").map(|v| extract_entry_id(v)).unwrap_or_default(),
-            last_generated_id: map
-                .get("last-generated-id")
-                .map(|v| redis_to_string(v))
-                .unwrap_or_default(),
-            radix_tree_keys: map_get_usize(&map, "radix-tree-keys"),
-            radix_tree_nodes: map_get_usize(&map, "radix-tree-nodes"),
-            idmp,
+fn project_entries(entries: Vec<(String, Vec<(String, String)>)>) -> Vec<RedisStreamEntry> {
+    entries
+        .into_iter()
+        .map(|(id, fields)| {
+            let fields = fields.into_iter().map(|(f, v)| (f.into(), v.into())).collect();
+            (id.into(), fields)
         })
-    } else {
-        None
-    };
-
-    // ── XINFO GROUPS ─────────────────────────────────────────────────────────
-    let groups_raw: redis::Value = cmd("XINFO").arg("GROUPS").arg(key).query_async(conn).await?;
-
-    let mut groups = Vec::new();
-
-    let group_entries = match &groups_raw {
-        redis::Value::Array(v) => v.clone(),
-        _ => vec![],
-    };
-
-    for group_entry in group_entries {
-        let fields = match group_entry {
-            redis::Value::Array(v) => v,
-            _ => continue,
-        };
-        let map = xinfo_flat_to_map(&fields);
-        let name = map_get_string(&map, "name");
-        let consumers_count = map_get_usize(&map, "consumers");
-        let pending_count = map_get_usize(&map, "pending");
-        let last_delivered_id = map_get_string(&map, "last-delivered-id");
-        let lag = map_get_i64(&map, "lag");
-
-        // XINFO CONSUMERS key group
-        let consumers = {
-            let raw: redis::Value = cmd("XINFO")
-                .arg("CONSUMERS")
-                .arg(key)
-                .arg(name.as_ref())
-                .query_async(conn)
-                .await
-                .unwrap_or(redis::Value::Array(vec![]));
-            let mut list = Vec::new();
-            if let redis::Value::Array(entries) = raw {
-                for entry in entries {
-                    if let redis::Value::Array(f) = entry {
-                        let m = xinfo_flat_to_map(&f);
-                        list.push(StreamConsumerDetail {
-                            name: map_get_string(&m, "name"),
-                            pending: map_get_usize(&m, "pending"),
-                            idle_ms: map_get_i64(&m, "idle"),
-                        });
-                    }
-                }
-            }
-            list
-        };
-
-        // First XPENDING page. Tolerant (`unwrap_or`) on purpose: a NOPERM
-        // on XPENDING must not blank the whole info view — the per-entry
-        // actions surface real errors when actually used.
-        let pending_entries = fetch_pending_page(conn, key, name.as_ref(), "-")
-            .await
-            .unwrap_or_default();
-        let pending_done = pending_entries.len() < PENDING_PAGE;
-
-        groups.push(StreamGroupDetail {
-            name,
-            consumers_count,
-            pending_count,
-            last_delivered_id,
-            lag,
-            consumers,
-            pending_entries,
-            pending_done,
-        });
-    }
-
-    Ok(StreamInfoData { summary, groups })
+        .collect()
 }
 
-/// One `XPENDING key group start + PENDING_PAGE` page, oldest first.
-async fn fetch_pending_page(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    group: &str,
-    start: &str,
-) -> Result<Vec<StreamPendingEntry>> {
-    let raw: redis::Value = cmd("XPENDING")
-        .arg(key)
-        .arg(group)
-        .arg(start)
-        .arg("+")
-        .arg(PENDING_PAGE)
-        .query_async(conn)
-        .await?;
-    let mut list = Vec::new();
-    if let redis::Value::Array(entries) = raw {
-        for entry in entries {
-            if let redis::Value::Array(f) = entry
-                && f.len() >= 4
-            {
-                list.push(StreamPendingEntry {
-                    id: redis_to_string(&f[0]),
-                    consumer: redis_to_string(&f[1]),
-                    idle_ms: redis_to_i64(&f[2]),
-                    delivery_count: redis_to_i64(&f[3]),
-                });
-            }
-        }
-    }
-    Ok(list)
-}
-
-/// Fetches a page of stream entries using XRANGE (ascending) or XREVRANGE (descending).
-///
-/// `cursor` is the exclusive lower/upper bound ID from the previous page; `None`
-/// starts from the beginning of the requested direction.  Returns the next cursor
-/// (empty string when the end of the stream has been reached) and the loaded entries.
+/// A page of entries, oldest-first (`XRANGE`) or newest-first (`XREVRANGE`).
 async fn get_redis_stream_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     cursor: Option<String>,
     count: usize,
     reverse: bool,
 ) -> Result<(String, Vec<RedisStreamEntry>)> {
-    // XRANGE  key start end   COUNT n  (oldest → newest, cursor = last seen high ID)
-    // XREVRANGE key end start COUNT n  (newest → oldest, cursor = last seen low ID)
-    let entries: RawStreamData = if reverse {
-        let end = cursor.map_or_else(|| "+".to_string(), |c| format!("({c}"));
-        cmd("XREVRANGE")
-            .arg(key)
-            .arg(&end)
-            .arg("-")
-            .arg("COUNT")
-            .arg(count)
-            .query_async(conn)
-            .await?
-    } else {
-        let start = cursor.map_or_else(|| "-".to_string(), |c| format!("({c}"));
-        cmd("XRANGE")
-            .arg(key)
-            .arg(&start)
-            .arg("+")
-            .arg("COUNT")
-            .arg(count)
-            .query_async(conn)
-            .await?
-    };
-
-    let done = entries.len() < count;
-
-    let values: Vec<RedisStreamEntry> = entries
-        .into_iter()
-        .map(|(id, flat_fields)| {
-            let mut field_values = Vec::with_capacity(flat_fields.len() / 2);
-            let mut iter = flat_fields.into_iter();
-            while let Some(field) = iter.next() {
-                if let Some(val) = iter.next() {
-                    field_values.push((field.into(), val.into()));
-                }
-            }
-            (id.into(), field_values)
-        })
-        .collect();
-
-    let cursor = if done {
-        String::new()
-    } else {
-        values.last().map(|(id, _)| id.to_string()).unwrap_or_default()
-    };
-
-    Ok((cursor, values))
+    let (cursor, entries) = stream_page(at, key, cursor.as_deref(), count, reverse).await?;
+    Ok((cursor, project_entries(entries)))
 }
 
-pub(crate) async fn first_load_stream_value(conn: &mut RedisAsyncConn, key: &str, reverse: bool) -> Result<RedisValue> {
-    let size: usize = cmd("XLEN").arg(key).query_async(conn).await?;
-    let (cursor, values) = get_redis_stream_value(conn, key, None, 100, reverse).await?;
+pub(crate) async fn first_load_stream_value(at: &ServerDb, key: &str, reverse: bool) -> Result<RedisValue> {
+    let size = stream_len(at, key).await?;
+    let (cursor, values) = get_redis_stream_value(at, key, None, 100, reverse).await?;
     let done = cursor.is_empty();
 
     Ok(RedisValue {
@@ -334,7 +141,7 @@ impl ZedisServerState {
         redis_op: F,
         on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
     ) where
-        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
@@ -349,15 +156,11 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         self.spawn(
             task,
-            move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis_op(key_str, conn).await
-            },
+            move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
@@ -376,17 +179,13 @@ impl ZedisServerState {
     /// completion so the stream editor can re-render.
     pub fn fetch_stream_info(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.key.clone() else { return };
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let guard_key = key.clone();
 
         self.spawn_with_arg(
             ServerTask::FetchStreamInfo,
             key.clone(),
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                load_stream_info_data(&mut conn, key.as_str()).await
-            },
+            move || async move { Ok(project_info(stream_info(&at, key.as_str()).await?)) },
             move |this, result, cx| {
                 // Drop a result that arrived after the user switched keys — it
                 // would otherwise be written into the newly selected key.
@@ -416,8 +215,7 @@ impl ZedisServerState {
     /// `first_load_stream_value` directly, since the key type is already known.
     pub fn reload_stream_value(&mut self, reverse: bool, cx: &mut Context<Self>) {
         let Some(key) = self.key.clone() else { return };
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let guard_key = key.clone();
 
         if let Some(value) = self.value.as_mut() {
@@ -428,10 +226,7 @@ impl ZedisServerState {
         self.spawn_with_arg(
             ServerTask::ReloadValue,
             key.clone(),
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                first_load_stream_value(&mut conn, key.as_str(), reverse).await
-            },
+            move || async move { first_load_stream_value(&at, key.as_str(), reverse).await },
             move |this, result, cx| {
                 // Drop a result that arrived after the user switched keys — it
                 // would otherwise overwrite the newly selected key's value.
@@ -489,18 +284,14 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let guard_key = key.clone();
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         self.spawn_with_arg(
             ServerTask::LoadMoreValue,
             key.clone(),
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                get_redis_stream_value(&mut conn, key.as_str(), Some(cursor), 100, reverse).await
-            },
+            move || async move { get_redis_stream_value(&at, key.as_str(), Some(cursor), 100, reverse).await },
             // UI callback: merge results into local state
             move |this, result, cx| {
                 // Drop results for a key the user already navigated away from —
@@ -557,14 +348,12 @@ impl ZedisServerState {
             ServerTask::AddStreamEntry,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let mut currend_cmd = cmd("XADD");
-                let mut current_cmd = currend_cmd.arg(&key).arg(id.as_str());
-                for (field, value) in values {
-                    current_cmd = current_cmd.arg(field.as_str()).arg(value.as_str());
-                }
-                let id: String = current_cmd.query_async(&mut conn).await?;
-                Ok(id)
+            move |key, at| async move {
+                let fields: Vec<(String, String)> = values
+                    .into_iter()
+                    .map(|(field, value)| (field.to_string(), value.to_string()))
+                    .collect();
+                Ok(stream_add(&at, &key, id.as_str(), &fields).await?)
             },
             |this, id, cx| {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
@@ -586,12 +375,8 @@ impl ZedisServerState {
             move |stream| {
                 stream.values.retain(|(id, _)| id != &entry_id);
             },
-            move |key, mut conn| async move {
-                let _: () = cmd("XDEL")
-                    .arg(&key)
-                    .arg(entry_id_clone.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                stream_delete(&at, &key, &[entry_id_clone.as_str()]).await?;
                 Ok(())
             },
             |this, _, cx| {
@@ -619,14 +404,9 @@ impl ZedisServerState {
             move |stream| {
                 stream.values.retain(|(id, _)| !gone.contains(id));
             },
-            move |key, mut conn| async move {
-                let mut command = cmd("XDEL");
-                command.arg(&key);
-                for id in &entry_ids {
-                    command.arg(id.as_str());
-                }
-                let removed: u64 = command.query_async(&mut conn).await?;
-                Ok(removed)
+            move |key, at| async move {
+                let ids: Vec<&str> = entry_ids.iter().map(|id| id.as_str()).collect();
+                Ok(stream_delete(&at, &key, &ids).await?)
             },
             |this, removed, cx| {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
@@ -648,14 +428,8 @@ impl ZedisServerState {
             ServerTask::CreateStreamGroup,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: () = cmd("XGROUP")
-                    .arg("CREATE")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(start_id.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                group_create(&at, &key, group.as_str(), start_id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -669,14 +443,8 @@ impl ZedisServerState {
             ServerTask::SetStreamGroupId,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: () = cmd("XGROUP")
-                    .arg("SETID")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(id.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                group_set_id(&at, &key, group.as_str(), id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -731,13 +499,8 @@ impl ZedisServerState {
             ServerTask::DestroyStreamGroup,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: () = cmd("XGROUP")
-                    .arg("DESTROY")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                group_destroy(&at, &key, group.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -751,13 +514,8 @@ impl ZedisServerState {
             ServerTask::AckStreamEntry,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: i64 = cmd("XACK")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(entry_id.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                stream_ack(&at, &key, group.as_str(), entry_id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -774,18 +532,8 @@ impl ZedisServerState {
             ServerTask::AckDelStreamEntry,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                // Per-id status codes: 1 deleted, -1 not found, 2 refused
-                // (dangling references under ACKED) — KEEPREF never yields 2.
-                let _: redis::Value = cmd("XACKDEL")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg("KEEPREF")
-                    .arg("IDS")
-                    .arg(1)
-                    .arg(entry_id.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                stream_ack_delete(&at, &key, group.as_str(), entry_id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| {
@@ -811,17 +559,8 @@ impl ZedisServerState {
             ServerTask::NackStreamEntry,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                // Reply: how many ids were released (0 = not pending).
-                let _: i64 = cmd("XNACK")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg("FAIL")
-                    .arg("IDS")
-                    .arg(1)
-                    .arg(entry_id.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                stream_nack(&at, &key, group.as_str(), entry_id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -836,16 +575,7 @@ impl ZedisServerState {
             ServerTask::CreateStreamConsumer,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let created: i64 = cmd("XGROUP")
-                    .arg("CREATECONSUMER")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(consumer.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(created == 1)
-            },
+            move |key, at| async move { Ok(consumer_create(&at, &key, group.as_str(), consumer.as_str()).await?) },
             |this, created, cx| {
                 if !created {
                     this.emit_warning_notification(i18n_stream_editor(cx, "consumer_exists"), cx);
@@ -868,16 +598,7 @@ impl ZedisServerState {
             ServerTask::DeleteStreamConsumer,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let pending: i64 = cmd("XGROUP")
-                    .arg("DELCONSUMER")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(consumer.as_str())
-                    .query_async(&mut conn)
-                    .await?;
-                Ok(pending.max(0) as usize)
-            },
+            move |key, at| async move { Ok(consumer_delete(&at, &key, group.as_str(), consumer.as_str()).await?) },
             |this, pending, cx| {
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                 let message = t!("stream_editor.consumer_deleted", count = pending, locale = locale);
@@ -900,8 +621,8 @@ impl ZedisServerState {
             ServerTask::SetStreamId,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: () = cmd("XSETID").arg(&key).arg(id.as_str()).query_async(&mut conn).await?;
+            move |key, at| async move {
+                stream_set_id(&at, &key, id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| {
@@ -924,16 +645,8 @@ impl ZedisServerState {
             ServerTask::ClaimStreamEntry,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let _: redis::Value = cmd("XCLAIM")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(consumer.as_str())
-                    .arg(0)
-                    .arg(entry_id.as_str())
-                    .arg("JUSTID")
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                stream_claim(&at, &key, group.as_str(), consumer.as_str(), entry_id.as_str()).await?;
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
@@ -956,26 +669,9 @@ impl ZedisServerState {
             ServerTask::AutoclaimStreamEntries,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let raw: redis::Value = cmd("XAUTOCLAIM")
-                    .arg(&key)
-                    .arg(group.as_str())
-                    .arg(consumer.as_str())
-                    .arg(min_idle_ms)
-                    .arg("0-0")
-                    .arg("COUNT")
-                    .arg(count)
-                    .arg("JUSTID")
-                    .query_async(&mut conn)
-                    .await?;
-                // Reply: [next-cursor, [claimed ids…], [deleted ids…]].
-                let claimed = match &raw {
-                    redis::Value::Array(parts) => match parts.get(1) {
-                        Some(redis::Value::Array(ids)) => ids.len(),
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
+            move |key, at| async move {
+                let claimed =
+                    stream_autoclaim(&at, &key, group.as_str(), consumer.as_str(), min_idle_ms, count).await?;
                 Ok(claimed)
             },
             |this, claimed, cx| {
@@ -1002,19 +698,7 @@ impl ZedisServerState {
             ServerTask::TrimStream,
             cx,
             |_| {},
-            move |key, mut conn| async move {
-                let mut command = cmd("XTRIM");
-                command.arg(&key);
-                match &trim {
-                    StreamTrim::MaxLen(n) => command.arg("MAXLEN").arg(*n),
-                    StreamTrim::MinId(id) => command.arg("MINID").arg(id.as_str()),
-                };
-                if let Some(policy) = policy {
-                    command.arg(policy.word());
-                }
-                let removed: i64 = command.query_async(&mut conn).await?;
-                Ok(removed)
-            },
+            move |key, at| async move { Ok(stream_trim(&at, &key, &trim, policy).await?) },
             |this, removed, cx| {
                 let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                 let message: SharedString = t!("stream_editor.trim_done", count = removed, locale = locale)
@@ -1051,7 +735,10 @@ impl ZedisServerState {
             ServerTask::LoadStreamPending,
             cx,
             |_| {},
-            move |key, mut conn| async move { fetch_pending_page(&mut conn, &key, group.as_ref(), &start).await },
+            move |key, at| async move {
+                let entries = pending_page(&at, &key, group.as_ref(), &start).await?;
+                Ok(entries.into_iter().map(project_pending).collect::<Vec<_>>())
+            },
             move |this, entries: Vec<StreamPendingEntry>, cx| {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let stream = Arc::make_mut(stream_data);

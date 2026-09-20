@@ -27,18 +27,18 @@ use super::{
     KeyType, RedisValueData, ServerTask, ZedisServerState,
     value::{RedisValue, RedisValueStatus, RedisZsetValue, SortOrder},
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{RedisAsyncConn, get_connection_manager},
+    connection::{
+        ScoredMember, ServerDb, zset_card, zset_count_by_score, zset_put, zset_range, zset_range_by_score, zset_remove,
+        zset_scan,
+    },
     error::Error,
     helpers::normalize_score_bound,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_zset_editor},
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
-use redis::cmd;
 use std::collections::HashSet;
 use std::sync::Arc;
 use zedis_core::change_log::ChangeEntry;
@@ -51,7 +51,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// rank position in the sorted set.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The ZSET key to query
 /// * `sort_order` - Ascending (ZRANGE) or Descending (ZREVRANGE)
 /// * `start` - Starting rank index (0-based)
@@ -60,143 +60,49 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// # Returns
 /// A vector of (member, score) tuples in the specified sort order
 async fn get_redis_zset_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     sort_order: SortOrder,
     start: usize,
     stop: usize,
 ) -> Result<Vec<(KvElement, f64)>> {
-    // Choose command based on sort order
-    let cmd_name = if sort_order == SortOrder::Asc {
-        "ZRANGE"
-    } else {
-        "ZREVRANGE"
-    };
-
-    // Execute range query with scores
-    let raw_values: Vec<(Vec<u8>, f64)> = cmd(cmd_name)
-        .arg(key)
-        .arg(start)
-        .arg(stop)
-        .arg("WITHSCORES")
-        .query_async(conn)
-        .await?;
-
-    // Early return if no values found
-    if raw_values.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // The bytes stay as answered; the text each shows is decoded from them.
-    let values = raw_values
-        .into_iter()
-        .map(|(name, score)| (KvElement::from_raw(name), score))
-        .collect();
-
-    Ok(values)
+    // ZRANGE / ZREVRANGE … WITHSCORES, by the editor's sort order.
+    let raw = zset_range(at, key, sort_order == SortOrder::Desc, start, stop).await?;
+    Ok(scored_elements(raw))
 }
 
-/// Searches ZSET members using cursor-based ZSCAN command with pattern matching.
-///
-/// This function is used when filtering is active, allowing users to search for
-/// members matching a specific pattern.
-///
-/// # Arguments
-/// * `conn` - Redis async connection
-/// * `key` - The ZSET key to scan
-/// * `cursor` - Current cursor position (0 to start, returned cursor to continue)
-/// * `pattern` - Pattern to match members against (supports wildcards)
-/// * `count` - Hint for number of items to return per iteration
-///
-/// # Returns
-/// A tuple of (next_cursor, values) where next_cursor is 0 when scan is complete
+/// One ZSCAN round over the members matching `pattern`.
 async fn search_redis_zset_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     cursor: u64,
     pattern: &str,
     count: u64,
 ) -> Result<(u64, Vec<(KvElement, f64)>)> {
-    // Execute ZSCAN with MATCH and COUNT options
-    let (next_cursor, raw_values): (u64, Vec<Vec<u8>>) = cmd("ZSCAN")
-        .arg(key)
-        .arg(cursor)
-        .arg("MATCH")
-        .arg(pattern)
-        .arg("COUNT")
-        .arg(count)
-        .query_async(conn)
-        .await?;
-
-    // Early return if no values found
-    if raw_values.is_empty() {
-        return Ok((next_cursor, vec![]));
-    }
-
-    // ZSCAN returns alternating member/score pairs, process in chunks of 2
-    let mut values = Vec::with_capacity(raw_values.len() / 2);
-    for pair in raw_values.as_chunks::<2>().0 {
-        let [member, score_bytes] = pair;
-        let score = String::from_utf8_lossy(score_bytes).parse::<f64>().unwrap_or_default();
-        values.push((KvElement::from_raw(member.clone()), score));
-    }
-
-    Ok((next_cursor, values))
+    let (next_cursor, raw) = zset_scan(at, key, cursor, pattern, count).await?;
+    Ok((next_cursor, scored_elements(raw)))
 }
 
-/// Reads one page of a score window with `ZRANGEBYSCORE` /
-/// `ZREVRANGEBYSCORE`.
-///
-/// The classic pair rather than 6.2's unified `ZRANGE … BYSCORE`: these have
-/// been there since 2.2, so the filter needs no version floor. Note the
-/// argument order flips with the direction — the reversed form takes max
-/// first, and passing them the other way round silently returns nothing.
+/// A page of the members whose score is within `min..=max`, in the editor's
+/// sort order.
 async fn get_redis_zset_by_score(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     key: &str,
     sort_order: SortOrder,
-    min: &str,
-    max: &str,
+    (min, max): (&str, &str),
     offset: usize,
     count: usize,
 ) -> Result<Vec<(KvElement, f64)>> {
     let descending = matches!(sort_order, SortOrder::Desc);
-    let mut command = cmd(if descending {
-        "ZREVRANGEBYSCORE"
-    } else {
-        "ZRANGEBYSCORE"
-    });
-    command.arg(key);
-    if descending {
-        command.arg(max).arg(min);
-    } else {
-        command.arg(min).arg(max);
-    }
-    let raw: Vec<Vec<u8>> = command
-        .arg("WITHSCORES")
-        .arg("LIMIT")
-        .arg(offset)
-        .arg(count)
-        .query_async(conn)
-        .await?;
-
-    let mut values = Vec::with_capacity(raw.len() / 2);
-    for chunk in raw.chunks(2) {
-        let Some(member) = chunk.first() else {
-            continue;
-        };
-        let score = chunk
-            .get(1)
-            .map(|bytes| String::from_utf8_lossy(bytes).parse::<f64>().unwrap_or_default())
-            .unwrap_or_default();
-        values.push((KvElement::from_raw(member.clone()), score));
-    }
-    Ok(values)
+    let raw = zset_range_by_score(at, key, descending, (min, max), offset, count).await?;
+    Ok(scored_elements(raw))
 }
 
-/// How many members the window holds — the total the footer counts against.
-async fn count_redis_zset_by_score(conn: &mut RedisAsyncConn, key: &str, min: &str, max: &str) -> Result<usize> {
-    Ok(cmd("ZCOUNT").arg(key).arg(min).arg(max).query_async(conn).await?)
+/// The bytes stay as answered; the text each shows is decoded from them.
+fn scored_elements(raw: Vec<ScoredMember>) -> Vec<(KvElement, f64)> {
+    raw.into_iter()
+        .map(|(member, score)| (KvElement::from_raw(member), score))
+        .collect()
 }
 
 /// Performs initial load of a Redis ZSET value.
@@ -205,22 +111,18 @@ async fn count_redis_zset_by_score(conn: &mut RedisAsyncConn, key: &str, min: &s
 /// This is called when a ZSET key is first opened in the editor.
 ///
 /// # Arguments
-/// * `conn` - Redis async connection
+/// * `at` - Where the key lives
 /// * `key` - The ZSET key to load
 /// * `sort_order` - Initial sort order (Ascending or Descending)
 ///
 /// # Returns
 /// A `RedisValue` containing ZSET metadata and initial member/score pairs
-pub(crate) async fn first_load_zset_value(
-    conn: &mut RedisAsyncConn,
-    key: &str,
-    sort_order: SortOrder,
-) -> Result<RedisValue> {
+pub(crate) async fn first_load_zset_value(at: &ServerDb, key: &str, sort_order: SortOrder) -> Result<RedisValue> {
     // Get total number of members in the ZSET
-    let size: usize = cmd("ZCARD").arg(key).query_async(conn).await?;
+    let size = zset_card(at, key).await?;
 
     // Load first batch (ranks 0-99, i.e., 100 members)
-    let values = get_redis_zset_value(conn, key, sort_order, 0, 99).await?;
+    let values = get_redis_zset_value(at, key, sort_order, 0, 99).await?;
 
     Ok(RedisValue {
         key_type: KeyType::Zset,
@@ -246,7 +148,7 @@ impl ZedisServerState {
         redis_op: F,
         on_success: impl FnOnce(&mut Self, R, &mut Context<Self>) + Send + 'static,
     ) where
-        F: FnOnce(String, RedisAsyncConn) -> Fut + Send + 'static,
+        F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
@@ -263,15 +165,11 @@ impl ZedisServerState {
         }
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         self.spawn(
             task,
-            move || async move {
-                let conn = get_connection_manager().get_connection(&server_id, db).await?;
-                redis_op(key_str, conn).await
-            },
+            move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
@@ -374,25 +272,15 @@ impl ZedisServerState {
                     }
                 }
             },
-            move |key, mut conn| async move {
-                let count: usize = cmd("ZADD")
-                    .arg(&key)
-                    .arg(score)
-                    .arg(new_value.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
                 // A rename drops the old member; the same member just
                 // changed its score.
-                if let Some(old) = old_value
-                    && !same_member
-                {
-                    let _: () = cmd("ZREM")
-                        .arg(&key)
-                        .arg(old.raw().as_ref())
-                        .query_async(&mut conn)
-                        .await?;
-                }
-                Ok(count)
+                let replaces = old_value
+                    .as_ref()
+                    .filter(|_| !same_member)
+                    .map(|old| old.raw().as_ref());
+                let added = zset_put(&at, &key, new_value.raw(), score, replaces).await?;
+                Ok(usize::from(added))
             },
             move |this, count, cx| {
                 if let Some(log_key) = log_key {
@@ -542,15 +430,13 @@ impl ZedisServerState {
         cx.emit(ServerEvent::ValueUpdated);
         cx.notify();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn_with_arg(
             ServerTask::LoadMoreValue,
             key.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let size = count_redis_zset_by_score(&mut conn, &key, &min, &max).await?;
-                let values = get_redis_zset_by_score(&mut conn, &key, sort_order, &min, &max, 0, 100).await?;
+                let size = zset_count_by_score(&at, &key, &min, &max).await?;
+                let values = get_redis_zset_by_score(&at, &key, sort_order, (&min, &max), 0, 100).await?;
                 Ok((size, values))
             },
             move |this, result, cx| {
@@ -625,8 +511,7 @@ impl ZedisServerState {
         let cursor = zset.cursor;
         let score_range = zset.score_range.clone();
 
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // Calculate range for pagination (load 100 items)
         let start = current_len;
@@ -640,21 +525,19 @@ impl ZedisServerState {
             key.clone(),
             // Async operation: fetch next batch using appropriate strategy
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-
                 if let Some((min, max)) = score_range {
                     // Score window: page by LIMIT offset, since the window is
                     // a range read and has no cursor either.
-                    let values = get_redis_zset_by_score(&mut conn, &key, sort_order, &min, &max, start, 100).await?;
+                    let values = get_redis_zset_by_score(&at, &key, sort_order, (&min, &max), start, 100).await?;
                     Ok((0, values))
                 } else if keyword.is_empty() {
                     // No filter: use range-based pagination
-                    let values = get_redis_zset_value(&mut conn, &key, sort_order, start, stop).await?;
+                    let values = get_redis_zset_value(&at, &key, sort_order, start, stop).await?;
                     Ok((0, values)) // Cursor is irrelevant for range queries
                 } else {
                     // With filter: use scan-based pagination with pattern matching
                     let pattern = format!("*{keyword}*");
-                    let result = search_redis_zset_value(&mut conn, &key, cursor, &pattern, 1000).await?;
+                    let result = search_redis_zset_value(&at, &key, cursor, &pattern, 1000).await?;
                     Ok(result)
                 }
             },
@@ -730,12 +613,8 @@ impl ZedisServerState {
                 zset.size = zset.size.saturating_sub(1);
                 zset.values.retain(|(name, _)| name.raw() != remove_value_clone.raw());
             },
-            move |key, mut conn| async move {
-                let _: () = cmd("ZREM")
-                    .arg(&key)
-                    .arg(remove_value.raw().as_ref())
-                    .query_async(&mut conn)
-                    .await?;
+            move |key, at| async move {
+                zset_remove(&at, &key, &[remove_value.raw().as_ref()]).await?;
                 Ok(())
             },
             move |this, _, cx| {
@@ -787,13 +666,9 @@ impl ZedisServerState {
                 zset.values.retain(|(name, _)| !gone.contains(name.raw()));
                 zset.size = zset.size.saturating_sub(before - zset.values.len());
             },
-            move |key, mut conn| async move {
-                let mut command = cmd("ZREM");
-                command.arg(&key);
-                for value in &remove_values {
-                    command.arg(value.raw().as_ref());
-                }
-                let _: () = command.query_async(&mut conn).await?;
+            move |key, at| async move {
+                let members: Vec<&[u8]> = remove_values.iter().map(|value| value.raw().as_ref()).collect();
+                zset_remove(&at, &key, &members).await?;
                 Ok(())
             },
             move |this, _, cx| {

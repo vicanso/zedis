@@ -16,17 +16,17 @@ use super::{
     KeyType, RedisValueData,
     value::{DataFormat, RedisBytesValue, RedisValue},
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
-use crate::{connection::RedisAsyncConn, error::Error};
+use crate::{
+    connection::{ServerDb, json_get},
+    error::Error,
+};
 use bytes::Bytes;
-use redis::cmd;
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub(crate) async fn get_redis_json_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
-    let value: String = cmd("JSON.GET").arg(key).query_async(conn).await?;
+pub(crate) async fn get_redis_json_value(at: &ServerDb, key: &str) -> Result<RedisValue> {
+    let value = json_get(at, key).await?;
     let value = serde_json::from_str::<serde_json::Value>(&value)?;
     let data = serde_json::to_string_pretty(&value)?;
 

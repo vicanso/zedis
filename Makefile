@@ -78,8 +78,8 @@ bench:
 check-locales:
 	cargo test --test locale_keys
 
-# What src/views knows about Redis (tests/view_layering.rs): nothing, since
-# the baseline reached empty — a failure here means the new code belongs in
+# What the GUI crate knows about Redis (tests/view_layering.rs): nothing, the
+# baseline being empty — a failure here means the new code belongs in
 # zedis-connection as a typed operation, not that the baseline wants rewriting.
 check-layering:
 	cargo test --test view_layering

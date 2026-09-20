@@ -17,9 +17,9 @@ use crate::connection::SentinelMaster;
 use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
-    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerFeatures, SlowLogEntry,
-    get_connection_manager, get_server, get_server_features, get_servers, invalidate_server_features,
-    note_server_command_error, probe_server_features,
+    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerDb, ServerFeatures,
+    ServerSummary, SlowLogEntry, forget_client, get_server, get_server_features, get_servers,
+    invalidate_server_features, note_server_command_error, probe_server_features, server_summary,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
@@ -440,7 +440,7 @@ impl ZedisServerState {
         if still_exists {
             return;
         }
-        get_connection_manager().remove_client(&self.server_id, self.db);
+        forget_client(&self.at());
         get_metrics_cache().remove_server(self.server_id.as_str());
         self.reset(cx);
     }
@@ -835,11 +835,11 @@ impl ZedisServerState {
                 if server_type != "Sentinel" && server_type != "Cluster" {
                     return false;
                 }
-                get_connection_manager().remove_client(&self.server_id, self.db);
+                forget_client(&self.at());
                 i18n_status_bar(cx, "conn_master_changed")
             }
             K::Network => {
-                get_connection_manager().remove_client(&self.server_id, self.db);
+                forget_client(&self.at());
                 // The status bar already shows "reconnecting" — no toast per
                 // failed click on top of it.
                 if self.connection_health != ConnectionHealth::Connected {
@@ -1113,6 +1113,11 @@ impl ZedisServerState {
     pub fn server_id(&self) -> &str {
         &self.server_id
     }
+    /// Where this state's operations run: the selected database of the
+    /// selected server, as the connection layer takes it (ADR 10).
+    pub fn at(&self) -> ServerDb {
+        ServerDb::new(self.server_id.as_str(), self.db)
+    }
     /// Get the currently selected database
     pub fn db(&self) -> usize {
         self.db
@@ -1308,27 +1313,9 @@ impl ZedisServerState {
             self.spawn(
                 ServerTask::SelectServer,
                 move || async move {
-                    let client = get_connection_manager().get_client(&server_id_clone, db).await?;
-
-                    // Gather server metadata
-                    let dbsize = client.dbsize().await?;
-                    let version = client.version().to_string();
-                    let nodes = client.nodes();
-                    let nodes_description = client.nodes_description();
-                    let databases = client.databases();
-                    let access_mode = client.access_mode();
-                    let supports_rejson = client.supports_rejson();
-                    let supports_search = client.supports_search();
-                    Ok((
-                        dbsize,
-                        nodes,
-                        nodes_description,
-                        version,
-                        databases,
-                        access_mode,
-                        supports_rejson,
-                        supports_search,
-                    ))
+                    // Connects (or reuses the pooled client) and gathers the
+                    // server's metadata.
+                    Ok(server_summary(&ServerDb::new(server_id_clone.as_str(), db)).await?)
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -1337,16 +1324,16 @@ impl ZedisServerState {
                     }
 
                     match result {
-                        Ok((
+                        Ok(ServerSummary {
                             dbsize,
                             nodes,
-                            nodes_description,
+                            description: nodes_description,
                             version,
                             databases,
                             access_mode,
                             supports_rejson,
                             supports_search,
-                        )) => {
+                        }) => {
                             this.dbsize = Some(dbsize);
                             this.nodes = nodes;
                             this.nodes_description = Arc::new(nodes_description);

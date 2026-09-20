@@ -64,10 +64,4 @@ macro_rules! via_connection {
         }
     )+};
 }
-via_connection!(
-    redis::RedisError,
-    std::io::Error,
-    serde_json::Error,
-    toml::de::Error,
-    toml::ser::Error,
-);
+via_connection!(std::io::Error, serde_json::Error, toml::de::Error, toml::ser::Error,);

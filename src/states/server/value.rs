@@ -14,13 +14,10 @@
 
 use super::element::KvElement;
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
-use crate::connection::{HeatMetric, floors, get_connection_manager};
+use crate::connection::{HeatMetric, StringWrite, json_merge, json_set, string_set};
 use bytes::Bytes;
 use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*};
-use redis::cmd;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -357,39 +354,10 @@ pub struct StreamGroupDetail {
     pub pending_done: bool,
 }
 
-/// XTRIM strategy chosen in the stream editor's trim dialog.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamTrim {
-    /// Keep only the newest `n` entries (`XTRIM MAXLEN n`).
-    MaxLen(u64),
-    /// Drop every entry with an id lower than `id` (`XTRIM MINID id`).
-    MinId(SharedString),
-}
-
-/// Reference policy for stream removals (`XTRIM` / `XDELEX` / `XACKDEL`,
-/// Redis 8.2+): what happens to consumer groups' PEL references of the
-/// removed entries.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum StreamRefPolicy {
-    /// Server default — references stay behind (classic XDEL/XTRIM).
-    #[default]
-    KeepRef,
-    /// Also remove the references from every group's PEL.
-    DelRef,
-    /// Only remove entries every group has acknowledged.
-    Acked,
-}
-
-impl StreamRefPolicy {
-    /// The option word as sent on the wire.
-    pub fn word(self) -> &'static str {
-        match self {
-            StreamRefPolicy::KeepRef => "KEEPREF",
-            StreamRefPolicy::DelRef => "DELREF",
-            StreamRefPolicy::Acked => "ACKED",
-        }
-    }
-}
+/// How `XTRIM` decides what to drop, and what happens to the groups' PEL
+/// references of what it removed: both are spelled on the wire, so both live
+/// in the connection crate (ADR 10).
+pub use crate::connection::{StreamRefPolicy, StreamTrim};
 
 /// Idempotent-producer counters (`XINFO STREAM`, Redis 8.6+ with IDMP in
 /// use or configured). Absent from older servers' replies.
@@ -1000,15 +968,6 @@ pub(crate) fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonVa
     }
 }
 
-/// Background result of a string save: written (with the fresh
-/// `MEMORY USAGE` when available), or refused by the CAS guard.
-enum StringSaveOutcome {
-    Saved(Option<u64>),
-    /// `SET … IFEQ` answered nil — the server-side value no longer matches
-    /// the bytes this client loaded, so nothing was written.
-    Conflict,
-}
-
 impl ZedisServerState {
     /// Updates a new value for a Redis string key
     ///
@@ -1022,8 +981,7 @@ impl ZedisServerState {
     /// the winner's value and emits [`ServerEvent::ValueSaveConflict`] so
     /// the editor can offer an explicit overwrite.
     pub fn update_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // Inspection phase: pull everything we need out of `self.value`
         // before mutating any state, so we can also call
@@ -1089,67 +1047,25 @@ impl ZedisServerState {
             ServerTask::SaveValue,
             key.clone(),
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut conn = client.connection();
                 if is_redis_json {
                     match json_merge_patch {
-                        Some(Some(patch)) => {
-                            // Partial update: only send changed fields
-                            let _: () = cmd("JSON.MERGE")
-                                .arg(key.as_str())
-                                .arg("$")
-                                .arg(patch.as_str())
-                                .query_async(&mut conn)
-                                .await?;
-                        }
-                        Some(None) => {
-                            // No changes, skip write
-                        }
-                        None => {
-                            // Parse failed or root type changed, full replace
-                            let _: () = cmd("JSON.SET")
-                                .arg(key.as_str())
-                                .arg("$")
-                                .arg(new_value.as_str())
-                                .query_async(&mut conn)
-                                .await?;
-                        }
+                        // Partial update: only send the changed fields.
+                        Some(Some(patch)) => json_merge(&at, key.as_str(), patch.as_str()).await?,
+                        // No changes, skip the write.
+                        Some(None) => {}
+                        // Parse failed or the root type changed: full replace.
+                        None => json_set(&at, key.as_str(), new_value.as_str()).await?,
                     }
-                } else {
-                    let mut binding = cmd("SET");
-                    let mut new_cmd = binding.arg(key.as_str()).arg(wire_text.as_str());
-                    // KEEPTTL where the server has it; otherwise re-apply the TTL by hand
-                    new_cmd = if client.supports(floors::SET_KEEPTTL) {
-                        new_cmd.arg("KEEPTTL")
-                    } else if ttl > 0 {
-                        new_cmd.arg("PX").arg(ttl)
-                    } else {
-                        new_cmd
-                    };
-                    // Compare-and-set against the loaded bytes where the
-                    // server offers it, so a concurrent writer's change is
-                    // refused (nil) instead of silently clobbered.
-                    let cas = client.supports_set_ifeq();
-                    if cas {
-                        new_cmd = new_cmd.arg("IFEQ").arg(cas_baseline.as_ref());
-                    }
-                    let reply: redis::Value = new_cmd.query_async(&mut conn).await?;
-                    if cas && matches!(reply, redis::Value::Nil) {
-                        return Ok(StringSaveOutcome::Conflict);
-                    }
+                    return Ok(StringWrite::Saved(None));
                 }
-
-                let mut size = None;
-                if let Ok(memory_usage) = cmd("MEMORY")
-                    .arg("USAGE")
-                    .arg(key.as_str())
-                    .query_async::<u64>(&mut conn)
-                    .await
-                {
-                    size = Some(memory_usage);
-                }
-
-                Ok(StringSaveOutcome::Saved(size))
+                Ok(string_set(
+                    &at,
+                    key.as_str(),
+                    wire_text.as_bytes(),
+                    ttl,
+                    Some(cas_baseline.as_ref()),
+                )
+                .await?)
             },
             move |this, result, cx| {
                 this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);
@@ -1164,25 +1080,25 @@ impl ZedisServerState {
     /// [`ServerEvent::ValueSaveConflict`].
     fn finish_string_save(
         &mut self,
-        result: Result<StringSaveOutcome>,
+        result: Result<StringWrite>,
         key: SharedString,
         draft: Bytes,
         original_size: u64,
         original_bytes_value: Arc<RedisBytesValue>,
         cx: &mut Context<Self>,
     ) {
-        let conflict = matches!(result, Ok(StringSaveOutcome::Conflict));
+        let conflict = matches!(result, Ok(StringWrite::Conflict));
         if let Some(value) = self.value.as_mut() {
             value.status = RedisValueStatus::Idle;
             match result {
-                Ok(StringSaveOutcome::Saved(result_size)) => {
+                Ok(StringWrite::Saved(result_size)) => {
                     if let Some(size) = result_size {
                         value.size = size;
                     }
                 }
                 // Refused or failed: the optimistic display is wrong either
                 // way — recover what was loaded.
-                Ok(StringSaveOutcome::Conflict) | Err(_) => {
+                Ok(StringWrite::Conflict) | Err(_) => {
                     value.size = original_size;
                     value.data = Some(RedisValueData::Bytes(original_bytes_value));
                 }
@@ -1206,8 +1122,7 @@ impl ZedisServerState {
     /// `force` skips the `SET … IFEQ` compare-and-set guard — the
     /// save-conflict dialog's explicit "overwrite anyway" re-dispatch.
     pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, force: bool, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
 
         // See update_value for the borrow-split rationale.
         let (format, original_size, original_bytes_value, ttl) = {
@@ -1242,37 +1157,10 @@ impl ZedisServerState {
             ServerTask::SaveValue,
             key.clone(),
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut conn = client.connection();
-                let mut binding = cmd("SET");
-                let mut new_cmd = binding.arg(key.as_str()).arg(new_bytes.as_slice());
-                new_cmd = if client.supports(floors::SET_KEEPTTL) {
-                    new_cmd.arg("KEEPTTL")
-                } else if ttl > 0 {
-                    new_cmd.arg("PX").arg(ttl)
-                } else {
-                    new_cmd
-                };
-                // See update_value: refuse-instead-of-clobber where offered.
-                let cas = !force && client.supports_set_ifeq();
-                if cas {
-                    new_cmd = new_cmd.arg("IFEQ").arg(cas_baseline.as_ref());
-                }
-                let reply: redis::Value = new_cmd.query_async(&mut conn).await?;
-                if cas && matches!(reply, redis::Value::Nil) {
-                    return Ok(StringSaveOutcome::Conflict);
-                }
-
-                let mut size = None;
-                if let Ok(memory_usage) = cmd("MEMORY")
-                    .arg("USAGE")
-                    .arg(key.as_str())
-                    .query_async::<u64>(&mut conn)
-                    .await
-                {
-                    size = Some(memory_usage);
-                }
-                Ok(StringSaveOutcome::Saved(size))
+                // `force` is the user saving again over a refused CAS: the
+                // guard is then deliberately not sent.
+                let cas_baseline = (!force).then_some(cas_baseline);
+                Ok(string_set(&at, key.as_str(), &new_bytes, ttl, cas_baseline.as_deref()).await?)
             },
             move |this, result, cx| {
                 this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);

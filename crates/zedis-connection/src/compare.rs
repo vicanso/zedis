@@ -24,6 +24,7 @@
 
 use super::readable_export::{ReadLimits, ReadableEntry, ReadableValue, read_readable_chunk};
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -221,24 +222,16 @@ pub async fn compare_prefix(
     }
 
     if !to_read.is_empty() {
-        let source_client = super::get_connection_manager()
-            .get_client(&source.server_id, source.db)
-            .await?;
-        let target_client = super::get_connection_manager()
-            .get_client(&target.server_id, target.db)
-            .await?;
-        let mut source_conn = source_client.connection();
-        let mut target_conn = target_client.connection();
+        let source_at = ServerDb::new(source.server_id.as_str(), source.db);
+        let target_at = ServerDb::new(target.server_id.as_str(), target.db);
         for chunk in to_read.chunks(COMPARE_CHUNK) {
             if cancel.load(Ordering::Acquire) {
                 report.cancelled = true;
                 break;
             }
             let keys: Vec<String> = chunk.iter().map(|(key, _)| key.clone()).collect();
-            let source_entries =
-                index_entries(read_readable_chunk(&mut source_conn, &keys, ReadLimits::default()).await?);
-            let target_entries =
-                index_entries(read_readable_chunk(&mut target_conn, &keys, ReadLimits::default()).await?);
+            let source_entries = index_entries(read_readable_chunk(&source_at, &keys, ReadLimits::default()).await?);
+            let target_entries = index_entries(read_readable_chunk(&target_at, &keys, ReadLimits::default()).await?);
             for (key, key_type) in chunk {
                 match (source_entries.get(key), target_entries.get(key)) {
                     (Some(a), Some(b)) => match compare_entries(a, b) {

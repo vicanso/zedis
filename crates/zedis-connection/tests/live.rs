@@ -30,27 +30,37 @@ use std::sync::atomic::AtomicBool;
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
-    AclDryRun, BitOpKind, ChannelSubscription, CommandLogKind, CommandStatus, CompareOptions, CompareSide,
+    AclDryRun, BitOpKind, ChannelSubscription, ClusterNode, CommandLogKind, CommandStatus, CompareOptions, CompareSide,
     ConflictMode, ExpireCondition, FAILOVER_TIMEOUT_MS, FieldTtl, FromEnd, GeoShape, HeatMetric, HeatProbe,
     HllEncoding, ImportFormat, KeyDifference, KeyOp, KeyOpOutcome, KillFilter, KillOutcome, KillTarget, PauseMode,
     ProbKind, ProbeOutcome, PubsubChannel, ReadLimits, ReadableValue, ReadableWriteStatus, RedisAsyncConn, RedisServer,
     ReplicationInfo, ReplicationRole, ReplyFormat, RestoreStatus, SERVER_TYPE_SENTINEL, SearchOptions, ServerCommand,
-    ServerDb, ServerFlavor, SlotStatMetric, StreamTail, SubscribeKind, TerminalSession, TsAlter, TsMRange,
-    VectorSimOptions, acl_del_user, acl_dryrun, acl_file, acl_genpass, acl_get_user, acl_log, acl_log_reset, acl_save,
-    acl_set_user, acl_whoami, bit_field, bit_op, bitmap_info, client_kill_by, client_kill_id, client_list,
-    client_pause, client_unpause, cluster_get_slot_migrations, cluster_migrate_slots, command_log_reset, command_logs,
-    compare_prefix, config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite,
-    config_set, csv_header, dump_keys_chunk, entry_to_csv, entry_to_json, ft_explain, ft_info, ft_search,
-    ft_spellcheck, ft_tagvals, geo_add, geo_dist, geo_sample, geo_search, get_connection_manager, get_server,
-    get_server_heat_probe, get_servers, hll_info, info_everything, key_bytes, kill_filter_commands, kill_running,
-    latency_history, latency_latest, latency_monitor_threshold, latency_reset, maxmemory_policy, open_monitor_feeds,
-    open_single_connection, parse_readable_entries, pf_add, pf_merge, plan_cluster_rebalance, preview_key_conflicts,
-    prob_info, prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field,
-    restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, script_exists, script_load, script_sha1,
-    sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names, sentinel_masters, sentinel_monitor,
-    sentinel_remove, sentinel_set, set_bit, sniff_import_format, split_acl_rules, test_connection, ts_add, ts_alter,
-    ts_create_rule, ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info,
-    vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_looks_geo,
+    ServerDb, ServerFlavor, SlotStatMetric, StreamGroup, StreamTail, StreamTrim, StringWrite, SubscribeKind,
+    TerminalSession, TsAlter, TsMRange, VectorSimOptions, acl_del_user, acl_dryrun, acl_file, acl_genpass,
+    acl_get_user, acl_log, acl_log_reset, acl_save, acl_set_user, acl_whoami, bgrewriteaof, bgsave, bit_field, bit_op,
+    bitmap_info, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
+    cluster_get_slot_migrations, cluster_migrate_slots, command_log_reset, command_logs, compare_prefix,
+    config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite, config_set,
+    consumer_create, consumer_delete, create_key, csv_header, dbsize, delete_key, delete_keys, delete_keys_matching,
+    dump_key, dump_keys_chunk, entry_to_csv, entry_to_json, expire_key, expire_key_at, forget_client, ft_explain,
+    ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist, geo_sample, geo_search, get_connection_manager,
+    get_server, get_server_heat_probe, get_servers, group_create, group_destroy, group_set_id, hash_delete_fields,
+    hash_field_ttls, hash_len, hash_scan, heartbeat_probe, hll_info, info_everything, key_bytes, key_memory_usage,
+    key_object_meta, key_type_and_ttl, key_types, kill_filter_commands, kill_running, latency_history, latency_latest,
+    latency_monitor_threshold, latency_reset, list_len, list_push, list_range, list_set_if_unchanged, master_addrs,
+    master_infos, maxmemory_policy, node_add_slots, node_cancel_slot_migrations, node_failover, node_load,
+    node_replicate, node_slot_migrations, node_stabilize_slot, open_monitor_feeds, open_single_connection,
+    parse_readable_entries, pending_page, pf_add, pf_merge, plan_cluster_rebalance, preview_key_conflicts, prob_info,
+    prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field, rename_key,
+    restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, scan_page, script_exists, script_load,
+    script_sha1, sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names, sentinel_masters, sentinel_monitor,
+    sentinel_remove, sentinel_set, server_summary, server_supports, set_add, set_bit, set_card, set_keys_ttl,
+    set_remove, set_replace_member, set_scan, set_ttl_matching, slow_logs, snapshot_key, sniff_import_format,
+    split_acl_rules, stream_ack, stream_add, stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len,
+    stream_page, stream_set_id, stream_trim, string_get, string_set, test_connection, ts_add, ts_alter, ts_create_rule,
+    ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr,
+    vset_sim, write_hash_field, write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put,
+    zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -400,6 +410,7 @@ fn standalone_bulk_delete_removes_every_key() {
 fn standalone_dump_restore_round_trips_a_key() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
         let key = unique("dump");
         cmd("HSET")
@@ -417,11 +428,11 @@ fn standalone_dump_restore_round_trips_a_key() {
             .exec_async(&mut c)
             .await
             .expect("expire");
-        let entries = dump_keys_chunk(&mut c, std::slice::from_ref(&key)).await.expect("dump");
+        let entries = dump_keys_chunk(&at, std::slice::from_ref(&key)).await.expect("dump");
         assert_eq!(entries.len(), 1);
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
 
-        let statuses = restore_keys_chunk(&mut c, &entries, ConflictMode::Skip)
+        let statuses = restore_keys_chunk(&at, &entries, ConflictMode::Skip)
             .await
             .expect("restore");
         assert!(matches!(statuses[0], RestoreStatus::Written), "{statuses:?}");
@@ -438,11 +449,11 @@ fn standalone_dump_restore_round_trips_a_key() {
             .exec_async(&mut c)
             .await
             .expect("hset");
-        let statuses = restore_keys_chunk(&mut c, &entries, ConflictMode::Skip)
+        let statuses = restore_keys_chunk(&at, &entries, ConflictMode::Skip)
             .await
             .expect("restore");
         assert!(matches!(statuses[0], RestoreStatus::Skipped), "{statuses:?}");
-        let statuses = restore_keys_chunk(&mut c, &entries, ConflictMode::Overwrite)
+        let statuses = restore_keys_chunk(&at, &entries, ConflictMode::Overwrite)
             .await
             .expect("restore");
         assert!(matches!(statuses[0], RestoreStatus::Written), "{statuses:?}");
@@ -460,6 +471,7 @@ fn standalone_dump_restore_round_trips_a_key() {
 fn standalone_readable_export_pages_and_caps_collections() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
 
         let small_list = unique("rd-small");
@@ -533,7 +545,7 @@ fn standalone_readable_export_pages_and_caps_collections() {
             page: 10,
             max_elems: 20,
         };
-        let entries = read_readable_chunk(&mut c, &keys, limits).await.expect("read chunk");
+        let entries = read_readable_chunk(&at, &keys, limits).await.expect("read chunk");
         assert_eq!(entries.len(), keys.len());
         let entry = |key: &str| entries.iter().find(|e| e.key == key).expect("entry for key");
 
@@ -637,6 +649,7 @@ fn standalone_readable_export_pages_and_caps_collections() {
 fn standalone_readable_export_imports_back() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
 
         let s_key = unique("ri-s");
@@ -706,7 +719,7 @@ fn standalone_readable_export_imports_back() {
                 .expect("xadd");
         }
 
-        let exported = read_readable_chunk(&mut c, &keys, ReadLimits::default())
+        let exported = read_readable_chunk(&at, &keys, ReadLimits::default())
             .await
             .expect("export");
         assert_eq!(exported.len(), keys.len());
@@ -733,7 +746,7 @@ fn standalone_readable_export_imports_back() {
             ImportFormat::Json
         );
         let entries = parse_readable_entries(&json_doc, ImportFormat::Json).expect("parse json");
-        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+        let statuses = write_readable_chunk(&at, &entries, ConflictMode::Skip)
             .await
             .expect("write");
         assert!(
@@ -784,7 +797,7 @@ fn standalone_readable_export_imports_back() {
         assert_eq!(imported_ids, original_stream_ids, "XADD must preserve original ids");
 
         // Skip must leave existing keys alone — especially no RPUSH append.
-        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+        let statuses = write_readable_chunk(&at, &entries, ConflictMode::Skip)
             .await
             .expect("write again");
         assert!(
@@ -795,7 +808,7 @@ fn standalone_readable_export_imports_back() {
         assert_eq!(llen, 3, "Skip must not append to the existing list");
 
         // Overwrite replaces (DEL first), it must not append either.
-        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Overwrite)
+        let statuses = write_readable_chunk(&at, &entries, ConflictMode::Overwrite)
             .await
             .expect("overwrite");
         assert!(
@@ -816,7 +829,7 @@ fn standalone_readable_export_imports_back() {
             ImportFormat::Csv
         );
         let entries = parse_readable_entries(&csv_doc, ImportFormat::Csv).expect("parse csv");
-        let statuses = write_readable_chunk(&mut c, &entries, ConflictMode::Skip)
+        let statuses = write_readable_chunk(&at, &entries, ConflictMode::Skip)
             .await
             .expect("write csv");
         assert!(
@@ -2105,6 +2118,7 @@ fn standalone_compare_prefix_reports_each_side() {
 fn standalone_key_ops_run_and_report_their_result() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
 
         // LTRIM answers with the length that is left.
@@ -2115,7 +2129,7 @@ fn standalone_key_ops_run_and_report_their_result() {
             .query_async(&mut c)
             .await
             .expect("rpush");
-        let outcome = run_key_op(&mut c, &list, KeyOp::ListTrim { start: 1, stop: 3 })
+        let outcome = run_key_op(&at, &list, KeyOp::ListTrim { start: 1, stop: 3 })
             .await
             .expect("ltrim");
         assert_eq!(outcome, KeyOpOutcome::Count(3));
@@ -2130,7 +2144,7 @@ fn standalone_key_ops_run_and_report_their_result() {
 
         // One pop uses the countless form every supported server has.
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &list,
             KeyOp::ListPop {
                 end: FromEnd::Head,
@@ -2143,7 +2157,7 @@ fn standalone_key_ops_run_and_report_their_result() {
         // Several needs the 6.2 count argument.
         if supports(&id, floors::POP_COUNT).await {
             let outcome = run_key_op(
-                &mut c,
+                &at,
                 &list,
                 KeyOp::ListPop {
                     end: FromEnd::Tail,
@@ -2158,7 +2172,7 @@ fn standalone_key_ops_run_and_report_their_result() {
         }
         // Popping an empty list is not an error, just nothing.
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &unique("op-list-absent"),
             KeyOp::ListPop {
                 end: FromEnd::Head,
@@ -2181,7 +2195,7 @@ fn standalone_key_ops_run_and_report_their_result() {
             .await
             .expect("zadd");
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &zset,
             KeyOp::ZsetIncrBy {
                 member: "m1".to_string(),
@@ -2195,7 +2209,7 @@ fn standalone_key_ops_run_and_report_their_result() {
         // ZPOPMIN answers member, score, member, score — only the members
         // are named back.
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &zset,
             KeyOp::ZsetPop {
                 end: FromEnd::Head,
@@ -2213,7 +2227,7 @@ fn standalone_key_ops_run_and_report_their_result() {
         // HINCRBY on a field that does not exist yet starts from zero.
         let hash = unique("op-hash");
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &hash,
             KeyOp::HashIncrBy {
                 field: "hits".to_string(),
@@ -2228,16 +2242,16 @@ fn standalone_key_ops_run_and_report_their_result() {
         // integer increment still works — INCRBYFLOAT would not.
         let counter = unique("op-counter");
         let _: () = cmd("SET").arg(&counter).arg(5).query_async(&mut c).await.expect("set");
-        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 2.0 })
+        let outcome = run_key_op(&at, &counter, KeyOp::StringIncrBy { delta: 2.0 })
             .await
             .expect("incrby");
         assert_eq!(outcome, KeyOpOutcome::Number("7".to_string()));
-        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 1.0 })
+        let outcome = run_key_op(&at, &counter, KeyOp::StringIncrBy { delta: 1.0 })
             .await
             .expect("a second integer increment");
         assert_eq!(outcome, KeyOpOutcome::Number("8".to_string()));
         // A fractional delta switches command and the value stops being an int.
-        let outcome = run_key_op(&mut c, &counter, KeyOp::StringIncrBy { delta: 0.5 })
+        let outcome = run_key_op(&at, &counter, KeyOp::StringIncrBy { delta: 0.5 })
             .await
             .expect("incrbyfloat");
         assert_eq!(outcome, KeyOpOutcome::Number("8.5".to_string()));
@@ -2246,7 +2260,7 @@ fn standalone_key_ops_run_and_report_their_result() {
         let text = unique("op-text");
         let _: () = cmd("SET").arg(&text).arg("ab").query_async(&mut c).await.expect("set");
         let outcome = run_key_op(
-            &mut c,
+            &at,
             &text,
             KeyOp::StringAppend {
                 text: "cde".to_string(),
@@ -2258,12 +2272,12 @@ fn standalone_key_ops_run_and_report_their_result() {
 
         // GETEX sets and clears the expiry without touching the value.
         if supports(&id, floors::GETEX).await {
-            run_key_op(&mut c, &text, KeyOp::StringGetEx { ttl: Some(120) })
+            run_key_op(&at, &text, KeyOp::StringGetEx { ttl: Some(120) })
                 .await
                 .expect("getex ex");
             let ttl: i64 = cmd("TTL").arg(&text).query_async(&mut c).await.expect("ttl");
             assert!((100..=120).contains(&ttl), "ttl after GETEX EX: {ttl}");
-            run_key_op(&mut c, &text, KeyOp::StringGetEx { ttl: None })
+            run_key_op(&at, &text, KeyOp::StringGetEx { ttl: None })
                 .await
                 .expect("getex persist");
             let ttl: i64 = cmd("TTL").arg(&text).query_async(&mut c).await.expect("ttl");
@@ -2295,6 +2309,7 @@ fn standalone_key_ops_run_and_report_their_result() {
 fn standalone_batch_delete_removes_exactly_the_selected_entries() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
 
         // List: delete positions 1, 3 and 4 of six. Every index is taken from
@@ -2306,9 +2321,7 @@ fn standalone_batch_delete_removes_exactly_the_selected_entries() {
             .query_async(&mut c)
             .await
             .expect("rpush");
-        let removed = remove_list_indexes(&mut c, &list, &[1, 3, 4])
-            .await
-            .expect("batch list");
+        let removed = remove_list_indexes(&at, &list, &[1, 3, 4]).await.expect("batch list");
         assert_eq!(removed, 3);
         let rest: Vec<String> = cmd("LRANGE")
             .arg(&list)
@@ -2321,11 +2334,9 @@ fn standalone_batch_delete_removes_exactly_the_selected_entries() {
 
         // A repeated index must not remove a second element, and an empty
         // selection must not touch the list.
-        let removed = remove_list_indexes(&mut c, &list, &[0, 0])
-            .await
-            .expect("duplicate index");
+        let removed = remove_list_indexes(&at, &list, &[0, 0]).await.expect("duplicate index");
         assert_eq!(removed, 1);
-        assert_eq!(remove_list_indexes(&mut c, &list, &[]).await.expect("empty"), 0);
+        assert_eq!(remove_list_indexes(&at, &list, &[]).await.expect("empty"), 0);
         let rest: Vec<String> = cmd("LRANGE")
             .arg(&list)
             .arg(0)
@@ -2870,6 +2881,606 @@ fn standalone_dedicated_connection_keeps_select_to_itself() {
         );
 
         let _: () = cmd("DEL").arg(&key).query_async(&mut dedicated).await.expect("cleanup");
+    });
+}
+
+/// The collection editors' paging and writes (ADR 10): every one of these
+/// sat inline in `src/states` and so had no test at all until it moved.
+/// Bytes are kept as the server answered them — a member that is not UTF-8
+/// is a row to draw, not a row to drop.
+#[test]
+#[ignore]
+fn standalone_collections_page_and_write_through_their_operations() {
+    smol::block_on(async {
+        let id = register(server("it-collections", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        let prefix = unique("coll");
+        let binary = b"\xffb".as_slice();
+
+        // ── list ───────────────────────────────────────────────────────────
+        let list = format!("{prefix}:list");
+        for (n, item) in ["a", "b", "c"].iter().enumerate() {
+            assert_eq!(
+                list_push(&at, &list, item.as_bytes(), false).await.expect("rpush"),
+                n + 1
+            );
+        }
+        assert_eq!(list_push(&at, &list, binary, true).await.expect("lpush"), 4);
+        assert_eq!(list_len(&at, &list).await.expect("llen"), 4);
+        assert_eq!(
+            list_range(&at, &list, 0, 1).await.expect("lrange"),
+            vec![binary.to_vec(), b"a".to_vec()],
+            "the page is inclusive on both ends, bytes as answered"
+        );
+        // The row is written only while it still holds what was loaded.
+        assert!(
+            list_set_if_unchanged(&at, &list, 1, b"a", b"A").await.expect("lset"),
+            "unchanged: written"
+        );
+        assert!(
+            !list_set_if_unchanged(&at, &list, 1, b"a", b"Z").await.expect("lset"),
+            "somebody else changed it: refused"
+        );
+        assert_eq!(list_range(&at, &list, 1, 1).await.expect("lrange"), vec![b"A".to_vec()]);
+        assert_eq!(remove_list_indexes(&at, &list, &[0, 2]).await.expect("remove"), 2);
+        assert_eq!(list_len(&at, &list).await.expect("llen"), 2);
+
+        // ── set ────────────────────────────────────────────────────────────
+        let set = format!("{prefix}:set");
+        assert!(set_add(&at, &set, b"one").await.expect("sadd"), "new member");
+        assert!(!set_add(&at, &set, b"one").await.expect("sadd"), "already there");
+        for member in [b"two".as_slice(), b"three".as_slice(), binary] {
+            set_add(&at, &set, member).await.expect("sadd");
+        }
+        assert_eq!(set_card(&at, &set).await.expect("scard"), 4);
+        let (cursor, members) = set_scan(&at, &set, None, 0, 100).await.expect("sscan");
+        assert_eq!((cursor, members.len()), (0, 4), "one round covers a small set");
+        assert!(members.contains(&binary.to_vec()), "bytes as answered");
+        let (_, filtered) = set_scan(&at, &set, Some("t"), 0, 100).await.expect("sscan");
+        let mut filtered: Vec<Vec<u8>> = filtered;
+        filtered.sort();
+        assert_eq!(
+            filtered,
+            [b"three".to_vec(), b"two".to_vec()],
+            "the keyword is a substring"
+        );
+        assert!(
+            set_replace_member(&at, &set, b"one", b"uno").await.expect("edit"),
+            "the new member is new"
+        );
+        assert!(
+            !set_replace_member(&at, &set, b"uno", b"two").await.expect("edit"),
+            "edited onto an existing member: the two merged"
+        );
+        assert_eq!(set_remove(&at, &set, &[b"two", binary]).await.expect("srem"), 2);
+        assert_eq!(set_remove(&at, &set, &[]).await.expect("nothing"), 0);
+
+        // ── hash ───────────────────────────────────────────────────────────
+        let hash = format!("{prefix}:hash");
+        for (field, value) in [("f1", "v1"), ("f2", "v2"), ("other", "v3")] {
+            write_hash_field(&at, &hash, field.as_bytes(), value.as_bytes(), FieldTtl::Persist, false)
+                .await
+                .expect("hset");
+        }
+        assert_eq!(hash_len(&at, &hash).await.expect("hlen"), 3);
+        let (cursor, pairs) = hash_scan(&at, &hash, Some("f"), 0, 100).await.expect("hscan");
+        assert_eq!(cursor, 0);
+        let mut names: Vec<Vec<u8>> = pairs.iter().map(|(field, _)| field.clone()).collect();
+        names.sort();
+        assert_eq!(names, [b"f1".to_vec(), b"f2".to_vec()]);
+        if supports(&id, floors::HASH_FIELD_TTL).await {
+            write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Expire(120), false)
+                .await
+                .expect("hset with ttl");
+            let ttls = hash_field_ttls(&at, &hash, &[b"f1", b"f2", b"gone"])
+                .await
+                .expect("httl");
+            assert!((1..=120).contains(&ttls[0]), "{ttls:?}");
+            assert_eq!((ttls[1], ttls[2]), (-1, -2), "no TTL, and no field");
+        }
+        assert!(hash_field_ttls(&at, &hash, &[]).await.expect("no fields").is_empty());
+        assert_eq!(
+            hash_delete_fields(&at, &hash, &[b"f2", b"gone"]).await.expect("hdel"),
+            1
+        );
+        assert_eq!(hash_delete_fields(&at, &hash, &[]).await.expect("nothing"), 0);
+
+        // ── sorted set ─────────────────────────────────────────────────────
+        let zset = format!("{prefix}:zset");
+        for (member, score) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
+            assert!(
+                zset_put(&at, &zset, member.as_bytes(), score, None)
+                    .await
+                    .expect("zadd"),
+                "new member"
+            );
+        }
+        assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3);
+        assert_eq!(
+            zset_range(&at, &zset, false, 0, 1).await.expect("zrange"),
+            vec![(b"a".to_vec(), 1.0), (b"b".to_vec(), 2.0)]
+        );
+        assert_eq!(
+            zset_range(&at, &zset, true, 0, 0).await.expect("zrevrange"),
+            vec![(b"c".to_vec(), 3.0)],
+            "descending starts at the top score"
+        );
+        assert_eq!(zset_count_by_score(&at, &zset, "2", "+inf").await.expect("zcount"), 2);
+        // A score window pages by LIMIT; its min and max are passed the same
+        // way round in both directions.
+        assert_eq!(
+            zset_range_by_score(&at, &zset, false, ("2", "+inf"), 0, 1)
+                .await
+                .expect("window"),
+            vec![(b"b".to_vec(), 2.0)]
+        );
+        assert_eq!(
+            zset_range_by_score(&at, &zset, true, ("2", "+inf"), 0, 1)
+                .await
+                .expect("window"),
+            vec![(b"c".to_vec(), 3.0)]
+        );
+        let (cursor, scanned) = zset_scan(&at, &zset, 0, "[ab]", 100).await.expect("zscan");
+        assert_eq!(cursor, 0);
+        assert_eq!(scanned.len(), 2, "the pattern is a glob, as typed: {scanned:?}");
+        // An edit that renames a member adds the new one and drops the old;
+        // re-scoring the same member adds nothing.
+        assert!(
+            zset_put(&at, &zset, b"A", 9.0, Some(b"a")).await.expect("rename"),
+            "the renamed-to member is new to the set"
+        );
+        assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3, "renamed, not added");
+        assert!(
+            !zset_put(&at, &zset, b"A", 0.5, Some(b"A")).await.expect("rescore"),
+            "the same member, a new score"
+        );
+        assert_eq!(
+            zset_range(&at, &zset, false, 0, 0).await.expect("zrange"),
+            vec![(b"A".to_vec(), 0.5)],
+            "the new score put it first"
+        );
+        assert_eq!(zset_remove(&at, &zset, &[b"A", b"gone"]).await.expect("zrem"), 1);
+        assert_eq!(zset_remove(&at, &zset, &[]).await.expect("nothing"), 0);
+
+        // ── string ─────────────────────────────────────────────────────────
+        let string = format!("{prefix}:string");
+        assert!(matches!(
+            string_set(&at, &string, binary, 0, None).await.expect("set"),
+            StringWrite::Saved(Some(size)) if size > 0
+        ));
+        assert_eq!(string_get(&at, &string).await.expect("get"), binary, "bytes, not text");
+        // The TTL survives a save: KEEPTTL where the server has it, a
+        // re-applied PX where it does not.
+        let _: () = cmd("EXPIRE")
+            .arg(&string)
+            .arg(120)
+            .query_async(&mut c)
+            .await
+            .expect("expire");
+        string_set(&at, &string, b"second", 120_000, None).await.expect("set");
+        let ttl: i64 = cmd("TTL").arg(&string).query_async(&mut c).await.expect("ttl");
+        assert!((1..=120).contains(&ttl), "the save must not drop the expiry: {ttl}");
+        if supports(&id, floors::SET_IFEQ).await {
+            assert!(matches!(
+                string_set(&at, &string, b"third", 0, Some(b"second"))
+                    .await
+                    .expect("cas"),
+                StringWrite::Saved(_)
+            ));
+            assert_eq!(
+                string_set(&at, &string, b"fourth", 0, Some(b"second"))
+                    .await
+                    .expect("cas"),
+                StringWrite::Conflict,
+                "the value moved under us: refused, not clobbered"
+            );
+            assert_eq!(string_get(&at, &string).await.expect("get"), b"third");
+        }
+
+        let _: () = cmd("DEL")
+            .arg(&[&list, &set, &hash, &zset, &string])
+            .query_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}
+
+/// What the key tree and the key header ask of a key: scanned, typed, sized,
+/// renamed, expired, created, deleted.
+#[test]
+#[ignore]
+fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
+    smol::block_on(async {
+        let id = register(server("it-keyspace", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        let prefix = unique("ks");
+
+        // Created by its type's first write, and never over an existing key.
+        assert!(
+            create_key(&at, &format!("{prefix}:s"), "SET", &["v".to_string()], Some(120))
+                .await
+                .expect("create"),
+            "a name nobody has"
+        );
+        assert!(
+            !create_key(&at, &format!("{prefix}:s"), "SET", &["other".to_string()], None)
+                .await
+                .expect("create"),
+            "taken: nothing sent"
+        );
+        assert_eq!(
+            string_get(&at, &format!("{prefix}:s")).await.expect("get"),
+            b"v",
+            "the refused create wrote nothing"
+        );
+        create_key(&at, &format!("{prefix}:h"), "HSET", &["f".into(), "v".into()], None)
+            .await
+            .expect("create");
+
+        let (t, ttl) = key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("type + ttl");
+        assert_eq!(t, "string");
+        assert!((1..=120).contains(&ttl), "the create applied the TTL: {ttl}");
+        assert_eq!(
+            key_type_and_ttl(&at, &format!("{prefix}:gone")).await.expect("missing"),
+            ("none".to_string(), -2),
+            "-2 is the server saying the key is not there"
+        );
+        assert_eq!(
+            key_types(
+                &at,
+                vec![format!("{prefix}:s"), format!("{prefix}:h"), "no-such".into()]
+            )
+            .await
+            .expect("types"),
+            ["string", "hash", "none"],
+            "one answer per key, in order"
+        );
+        assert!(key_types(&at, Vec::new()).await.expect("no keys").is_empty());
+        assert!(
+            key_memory_usage(&at, &format!("{prefix}:s"), "string")
+                .await
+                .expect("size")
+                > 0
+        );
+        let (encoding, _heat) = key_object_meta(&at, &format!("{prefix}:s"), true, HeatProbe::None).await;
+        assert!(!encoding.is_empty(), "OBJECT ENCODING answers on a standalone");
+
+        // The scan is what the key tree pages with.
+        let (cursors, rows) = scan_page(&at, None, &format!("{prefix}:*"), 100, true, None)
+            .await
+            .expect("scan");
+        assert_eq!(cursors.iter().sum::<u64>(), 0, "one round covered two keys");
+        let mut names: Vec<&str> = rows.iter().map(|(key, _, _)| key.as_str()).collect();
+        names.sort();
+        assert_eq!(names, [format!("{prefix}:h"), format!("{prefix}:s")]);
+        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, false, Some("hash"))
+            .await
+            .expect("scan")
+            .1;
+        assert_eq!(typed.len(), 1, "the TYPE filter is the server's: {typed:?}");
+
+        // Renamed, with and without the overwrite the dialog offers.
+        assert!(
+            rename_key(&at, &format!("{prefix}:h"), &format!("{prefix}:hash"), false)
+                .await
+                .expect("renamenx")
+        );
+        assert!(
+            !rename_key(&at, &format!("{prefix}:hash"), &format!("{prefix}:s"), false)
+                .await
+                .expect("renamenx"),
+            "the new name is taken: nothing moved"
+        );
+        assert!(
+            rename_key(&at, &format!("{prefix}:hash"), &format!("{prefix}:s"), true)
+                .await
+                .expect("rename"),
+            "overwrite says so"
+        );
+        assert_eq!(
+            key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("type").0,
+            "hash"
+        );
+
+        // TTLs: one key, then a whole prefix with its condition.
+        expire_key(&at, &format!("{prefix}:s"), 300).await.expect("expire");
+        assert!((1..=300).contains(&key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("ttl").1));
+        let deadline = chrono::Utc::now().timestamp() + 600;
+        expire_key_at(&at, &format!("{prefix}:s"), deadline)
+            .await
+            .expect("expireat");
+        assert!((300..=600).contains(&key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("ttl").1));
+        for n in 0..3 {
+            create_key(&at, &format!("{prefix}:b{n}"), "SET", &["v".to_string()], None)
+                .await
+                .expect("create");
+        }
+        let applied = set_keys_ttl(
+            &at,
+            vec![format!("{prefix}:b0"), format!("{prefix}:b1")],
+            Some(60),
+            None,
+        )
+        .await
+        .expect("batch ttl");
+        assert_eq!(applied, [true, true]);
+        if supports(&id, floors::EXPIRE_CONDITIONS).await {
+            let (changed, skipped) =
+                set_ttl_matching(&at, &format!("{prefix}:b*"), Some(90), Some(ExpireCondition::Nx))
+                    .await
+                    .expect("prefix ttl");
+            assert_eq!(
+                (changed.len(), skipped),
+                (1, 2),
+                "NX only touches the one key without a TTL: {changed:?}"
+            );
+        }
+
+        // Deleted: one key, a list of them, and a whole prefix.
+        delete_key(&at, &format!("{prefix}:b0")).await.expect("del");
+        delete_keys(&at, vec![format!("{prefix}:b1"), format!("{prefix}:gone")])
+            .await
+            .expect("del keys");
+        delete_keys_matching(&at, &format!("{prefix}:*"))
+            .await
+            .expect("del prefix");
+        assert!(
+            scan_page(&at, None, &format!("{prefix}:*"), 1000, false, None)
+                .await
+                .expect("scan")
+                .1
+                .is_empty(),
+            "the prefix is gone"
+        );
+
+        // The recycle bin's snapshot, and what it refuses to keep.
+        let bin = format!("{prefix}:bin");
+        let _: () = cmd("SET")
+            .arg(&bin)
+            .arg("keepme")
+            .arg("EX")
+            .arg(120)
+            .query_async(&mut c)
+            .await
+            .expect("set");
+        let snapshot = snapshot_key(&at, &bin, 1 << 20, 1 << 20).await.expect("a small value");
+        assert!((1..=120_000).contains(&snapshot.pttl_ms), "{}", snapshot.pttl_ms);
+        assert!(
+            snapshot_key(&at, &bin, 1, 1 << 20).await.is_none(),
+            "over the memory cap"
+        );
+        assert!(
+            snapshot_key(&at, &bin, 1 << 20, 1).await.is_none(),
+            "over the payload cap"
+        );
+        assert!(
+            snapshot_key(&at, &format!("{prefix}:never"), 1 << 20, 1 << 20)
+                .await
+                .is_none()
+        );
+        // What it kept is what RESTORE takes back.
+        delete_key(&at, &bin).await.expect("del");
+        restore_key(&at, &bin, snapshot.pttl_ms, &snapshot.payload)
+            .await
+            .expect("restore");
+        assert_eq!(string_get(&at, &bin).await.expect("get"), b"keepme");
+        assert_eq!(dump_key(&at, &bin).await.expect("dump"), snapshot.payload);
+        delete_key(&at, &bin).await.expect("cleanup");
+    });
+}
+
+/// The stream editor's page, its `XINFO` panel and its writes.
+#[test]
+#[ignore]
+fn standalone_stream_operations_page_describe_and_administer() {
+    smol::block_on(async {
+        let id = register(server("it-stream-ops", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        let key = unique("stream-ops");
+
+        for n in 1..=3 {
+            let entry = stream_add(&at, &key, "*", &[("n".to_string(), n.to_string())])
+                .await
+                .expect("xadd");
+            assert!(entry.contains('-'), "the server minted an id: {entry}");
+        }
+        assert_eq!(stream_len(&at, &key).await.expect("xlen"), 3);
+
+        // Paging: a full page hands back a cursor, the last one does not.
+        let (cursor, first) = stream_page(&at, &key, None, 2, false).await.expect("xrange");
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].1, vec![("n".to_string(), "1".to_string())]);
+        assert!(!cursor.is_empty(), "more to come");
+        let (next, rest) = stream_page(&at, &key, Some(&cursor), 2, false).await.expect("xrange");
+        assert_eq!(rest.len(), 1, "the cursor is exclusive");
+        assert!(next.is_empty(), "the end of the stream");
+        let (_, newest) = stream_page(&at, &key, None, 1, true).await.expect("xrevrange");
+        assert_eq!(
+            newest[0].1,
+            vec![("n".to_string(), "3".to_string())],
+            "reverse starts at the top"
+        );
+
+        // The info panel: the stream, its group, its consumer, its PEL.
+        let group = "g1";
+        group_create(&at, &key, group, "0").await.expect("xgroup create");
+        assert!(consumer_create(&at, &key, group, "c1").await.expect("createconsumer"));
+        assert!(
+            !consumer_create(&at, &key, group, "c1").await.expect("again"),
+            "already there"
+        );
+        // Read two entries so the group has a pending list to describe.
+        let _: redis::Value = cmd("XREADGROUP")
+            .arg("GROUP")
+            .arg(group)
+            .arg("c1")
+            .arg("COUNT")
+            .arg(2)
+            .arg("STREAMS")
+            .arg(&key)
+            .arg(">")
+            .query_async(&mut c)
+            .await
+            .expect("xreadgroup");
+
+        let info = stream_info(&at, &key).await.expect("xinfo");
+        let summary = info.summary.expect("XINFO STREAM answers on a standalone");
+        assert_eq!(summary.groups_count, 1);
+        assert!(summary.first_entry_id.contains('-') && summary.last_entry_id.contains('-'));
+        assert_eq!(
+            summary.last_generated_id, summary.last_entry_id,
+            "nothing has been deleted from the top yet"
+        );
+        assert!(summary.radix_tree_keys > 0);
+        let [described]: [StreamGroup; 1] = info.groups.try_into().expect("one group");
+        assert_eq!((described.name.as_str(), described.pending_count), (group, 2));
+        assert_eq!(described.lag, 1, "one entry nobody has been delivered");
+        assert_eq!(described.consumers.len(), 1);
+        assert_eq!(described.consumers[0].name, "c1");
+        assert_eq!(described.consumers[0].pending, 2);
+        assert_eq!(described.pending_entries.len(), 2);
+        assert!(described.pending_done, "a PEL of two is the whole page");
+        let pending = &described.pending_entries[0];
+        assert_eq!((pending.consumer.as_str(), pending.delivery_count), ("c1", 1));
+
+        // A page of the PEL on its own, which is what "load more" asks for.
+        let page = pending_page(&at, &key, group, "-").await.expect("xpending");
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].id, pending.id);
+
+        // Claiming, acknowledging, releasing.
+        consumer_create(&at, &key, group, "c2").await.expect("createconsumer");
+        stream_claim(&at, &key, group, "c2", &page[0].id).await.expect("xclaim");
+        let claimed = stream_info(&at, &key).await.expect("xinfo").groups.remove(0);
+        let owner = claimed
+            .pending_entries
+            .iter()
+            .find(|entry| entry.id == page[0].id)
+            .expect("still pending");
+        assert_eq!(owner.consumer, "c2", "the claim moved it");
+        stream_ack(&at, &key, group, &page[0].id).await.expect("xack");
+        assert_eq!(
+            stream_info(&at, &key).await.expect("xinfo").groups[0].pending_count,
+            1,
+            "the acknowledged entry left the PEL"
+        );
+        if supports(&id, floors::XAUTOCLAIM).await {
+            let count = stream_autoclaim(&at, &key, group, "c2", 0, 10)
+                .await
+                .expect("xautoclaim");
+            assert_eq!(count, 1, "min-idle 0 claims what is left");
+        }
+        assert_eq!(consumer_delete(&at, &key, group, "c2").await.expect("delconsumer"), 1);
+        assert_eq!(consumer_delete(&at, &key, group, "c1").await.expect("delconsumer"), 0);
+
+        // The group's read position, and dropping it.
+        group_set_id(&at, &key, group, "0").await.expect("xgroup setid");
+        assert_eq!(
+            stream_info(&at, &key).await.expect("xinfo").groups[0].last_delivered_id,
+            "0-0",
+            "rewound to the start"
+        );
+        group_destroy(&at, &key, group).await.expect("xgroup destroy");
+        assert!(stream_info(&at, &key).await.expect("xinfo").groups.is_empty());
+
+        // Deleting and trimming entries.
+        let ids: Vec<String> = stream_page(&at, &key, None, 10, false)
+            .await
+            .expect("page")
+            .1
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            stream_delete(&at, &key, &[ids[0].as_str(), "9999999-0"])
+                .await
+                .expect("xdel"),
+            1
+        );
+        assert_eq!(stream_delete(&at, &key, &[]).await.expect("nothing"), 0);
+        assert_eq!(
+            stream_trim(&at, &key, &StreamTrim::MaxLen(1), None)
+                .await
+                .expect("xtrim"),
+            1
+        );
+        assert_eq!(stream_len(&at, &key).await.expect("xlen"), 1);
+        // XSETID moves last-generated-id, which is not the last entry's.
+        stream_set_id(&at, &key, "9999999999999-0").await.expect("xsetid");
+        let summary = stream_info(&at, &key).await.expect("xinfo").summary.expect("summary");
+        assert_eq!(summary.last_generated_id, "9999999999999-0");
+        assert_ne!(
+            summary.last_entry_id, "9999999999999-0",
+            "the entry itself did not move"
+        );
+        assert_eq!(
+            stream_trim(&at, &key, &StreamTrim::MinId("9999999999999-0".to_string()), None)
+                .await
+                .expect("xtrim minid"),
+            1
+        );
+
+        let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
+    });
+}
+
+/// The server-wide operations behind the status bar and the admin panels:
+/// what a connect learns, what a heartbeat asks, and the forks.
+#[test]
+#[ignore]
+fn standalone_server_operations_describe_and_administer_the_server() {
+    smol::block_on(async {
+        let id = register(server("it-server-ops", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+
+        let summary = server_summary(&at).await.expect("summary");
+        assert!(!summary.version.is_empty());
+        // Replica count is not asserted: `replication_pair_…` attaches one to
+        // a server of its own, and the suite runs in parallel.
+        assert_eq!(summary.nodes.0, 1, "a standalone is one master");
+        assert_eq!(summary.description.server_type, "Standalone");
+        assert!(summary.databases >= 1);
+        // Not compared against `summary.dbsize`: the suite runs in parallel
+        // against this server, so two reads of a live counter differ.
+        dbsize(&at).await.expect("dbsize");
+        assert!(server_supports(&at, floors::MEMORY_USAGE).await.expect("floor"));
+
+        // The heartbeat: with one master the probe *is* the INFO.
+        let probed = heartbeat_probe(&at).await.expect("probe");
+        let info = probed.clone().expect("a standalone answers the INFO itself");
+        assert!(
+            info.contains("redis_version:") || info.contains("valkey_version:"),
+            "{info:.60}"
+        );
+        // Which is then not asked for a second time.
+        let infos = master_infos(&at, probed).await.expect("infos");
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].1, info);
+        // Without one, it is fetched per master.
+        let fetched = master_infos(&at, None).await.expect("infos");
+        assert_eq!(fetched.len(), 1);
+        assert!(fetched[0].1.contains("# Server"));
+        assert!(slow_logs(&at).await.is_ok(), "the slow log is sampled with the beat");
+
+        // The forks. The reply is a status line that differs between forks
+        // and is not read; what is checked is that the server took it. In
+        // this order: an AOF rewrite asked for while a BGSAVE runs is
+        // *scheduled*, while a BGSAVE asked for during a rewrite is refused.
+        bgsave(&at).await.expect("bgsave");
+        bgrewriteaof(&at).await.expect("bgrewriteaof");
+        let saved = master_infos(&at, None).await.expect("infos");
+        assert!(
+            saved[0].1.contains("rdb_last_bgsave_status"),
+            "the persistence panel reads this back"
+        );
+
+        // Dropping the pooled client sends nothing and costs nothing: the
+        // next call rebuilds it, which is how a failover is followed.
+        forget_client(&at);
+        assert_eq!(server_summary(&at).await.expect("reconnect").nodes.0, 1);
     });
 }
 
@@ -4826,6 +5437,7 @@ fn standalone_hash_field_writes_carry_their_ttl() {
             .expect("probe")
             .status(ServerCommand::HSetEx)
             == CommandStatus::Available;
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
         let key = unique("hf");
 
@@ -4842,24 +5454,24 @@ fn standalone_hash_field_writes_carry_their_ttl() {
         }
 
         // Fallback path, available on every 7.4+ server.
-        let created = write_hash_field(&mut c, &key, b"f", b"v1", FieldTtl::Expire(1000), false)
+        let created = write_hash_field(&at, &key, b"f", b"v1", FieldTtl::Expire(1000), false)
             .await
             .expect("hset+hexpire");
         assert!(created, "first write creates the field");
         assert!((900..=1000).contains(&ttl_of(&mut c, &key, "f").await));
-        let created = write_hash_field(&mut c, &key, b"f", b"v2", FieldTtl::Persist, false)
+        let created = write_hash_field(&at, &key, b"f", b"v2", FieldTtl::Persist, false)
             .await
             .expect("hset+hpersist");
         assert!(!created, "second write overwrites");
         assert_eq!(ttl_of(&mut c, &key, "f").await, -1, "Persist removed the TTL");
 
         if atomic {
-            let created = write_hash_field(&mut c, &key, b"f", b"v3", FieldTtl::Expire(500), true)
+            let created = write_hash_field(&at, &key, b"f", b"v3", FieldTtl::Expire(500), true)
                 .await
                 .expect("hsetex ex");
             assert!(!created, "HSETEX on an existing field reports an overwrite");
             assert!((450..=500).contains(&ttl_of(&mut c, &key, "f").await));
-            write_hash_field(&mut c, &key, b"f", b"v4", FieldTtl::Keep, true)
+            write_hash_field(&at, &key, b"f", b"v4", FieldTtl::Keep, true)
                 .await
                 .expect("hsetex keepttl");
             let value: String = cmd("HGET").arg(&key).arg("f").query_async(&mut c).await.expect("hget");
@@ -4868,7 +5480,7 @@ fn standalone_hash_field_writes_carry_their_ttl() {
                 (450..=500).contains(&ttl_of(&mut c, &key, "f").await),
                 "KEEPTTL: the value changed, the TTL did not"
             );
-            rename_hash_field(&mut c, &key, b"f", b"g", b"v5", FieldTtl::Expire(300), true)
+            rename_hash_field(&at, &key, b"f", b"g", b"v5", FieldTtl::Expire(300), true)
                 .await
                 .expect("rename");
             let old: i64 = cmd("HEXISTS")
@@ -5211,6 +5823,135 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
     });
 }
 
+/// The node-addressed cluster commands (ADR 10). `CLUSTER REPLICATE`,
+/// `FAILOVER`, `ADDSLOTS` and `SETSLOT` are not gossiped — they do what they
+/// say on the node they reach — so they take a [`ClusterNode`], and this is
+/// what proves the address is the one they land on.
+///
+/// Every step here is reversible on a healthy cluster: a slot is marked and
+/// stabilised again, and the only write is to a slot holding no keys.
+#[test]
+#[ignore]
+fn cluster_node_operations_address_the_node_they_name() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-nodes", addr)).await;
+        let _slots = CLUSTER_SLOTS.lock().await;
+        let at = ServerDb::new(&id, 0);
+        let map = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("client")
+            .nodes_description()
+            .slot_map;
+
+        let addrs = master_addrs(&at).await.expect("masters");
+        assert_eq!(addrs.len(), map.masters.len(), "one address per master: {addrs:?}");
+        assert!(
+            addrs.iter().all(|addr| map.masters.iter().any(|m| m.addr == *addr)),
+            "the addresses are the ones the slot map names: {addrs:?}"
+        );
+
+        // Each master answers for itself: the load sample and the migration
+        // list are per node, not per cluster.
+        for addr in &addrs {
+            let node = ClusterNode::new(&*id, addr);
+            assert_eq!(node.addr(), addr);
+            let load = node_load(&node).await.expect("INFO on the node");
+            assert!(load.used_memory > 0, "{addr} reported no memory: {load:?}");
+            assert!(load.connected_clients > 0, "we are connected to {addr}");
+            // Runs whatever the server's answer is: a build without atomic
+            // slot migration has no list, which is not this test's business.
+            let _ = node_slot_migrations(&node).await;
+        }
+
+        // A slot with no keys, so nothing this test marks can redirect
+        // another test's traffic.
+        let mut owners = map.owners.clone();
+        owners.sort_by_key(|range| range.start);
+        let source = owners.first().expect("a master owns slots").clone();
+        let target = map
+            .masters
+            .iter()
+            .find(|master| master.node_id != source.node_id)
+            .expect("a second master")
+            .clone();
+        let source_node = ClusterNode::new(&*id, &source.addr);
+        let mut source_conn = {
+            let (host, port) = source.addr.rsplit_once(':').expect("host:port");
+            let entry = protected_server("it-cluster-nodes-src", (host.to_string(), port.parse().expect("port")));
+            open_single_connection(&entry, 0, false).await.expect("connect")
+        };
+        let mut empty_slot = None;
+        for slot in source.start..=source.end.min(source.start.saturating_add(200)) {
+            let keys: u64 = cmd("CLUSTER")
+                .arg("COUNTKEYSINSLOT")
+                .arg(slot)
+                .query_async(&mut source_conn)
+                .await
+                .expect("countkeysinslot");
+            if keys == 0 {
+                empty_slot = Some(slot);
+                break;
+            }
+        }
+        let slot = empty_slot.expect("an empty slot in the first master's range");
+
+        // Mark it as a half-finished migration would, then stabilise it
+        // through the operation — the one the Topology panel's repair uses.
+        let _: String = cmd("CLUSTER")
+            .arg("SETSLOT")
+            .arg(slot)
+            .arg("MIGRATING")
+            .arg(&target.node_id)
+            .query_async(&mut source_conn)
+            .await
+            .expect("setslot migrating");
+        node_stabilize_slot(&source_node, slot).await.expect("setslot stable");
+        let settled = get_connection_manager()
+            .get_client_without_cache(&id, 0)
+            .await
+            .expect("re-read the cluster")
+            .nodes_description()
+            .slot_map
+            .migrations;
+        assert!(
+            !settled.iter().any(|entry| entry.slot == slot),
+            "the operation settled it on the node it named: {settled:?}"
+        );
+
+        // `ADDSLOTS` on a slot that already has an owner is refused, which
+        // is what makes it safe to send only the coverage gaps — and proves
+        // the command reached the node rather than being gossiped away.
+        let err = node_add_slots(&source_node, &[slot])
+            .await
+            .expect_err("the slot has an owner");
+        assert!(err.to_string().contains("CLUSTER ADDSLOTS on "), "{err}");
+        assert!(node_add_slots(&source_node, &[]).await.is_ok(), "nothing to add");
+
+        // A master refuses `CLUSTER FAILOVER`: only a replica is promoted.
+        // The error is the proof it ran on the node, not on the cluster.
+        let failover = node_failover(&source_node, false).await;
+        assert!(failover.is_err(), "a master cannot fail over to itself");
+        // Likewise `REPLICATE`: a master with slots cannot become a replica.
+        let replicate = node_replicate(&source_node, &target.node_id).await;
+        assert!(replicate.is_err(), "a master holding slots stays one");
+
+        // A node with no migration running answers `CANCELSLOTMIGRATIONS`
+        // where it has the command, and says so where it does not.
+        match node_cancel_slot_migrations(&source_node).await {
+            Ok(()) => {}
+            Err(e) => assert!(
+                e.to_string().contains("CLUSTER CANCELSLOTMIGRATIONS on "),
+                "the error names the node it was sent to: {e}"
+            ),
+        }
+    });
+}
+
+/// A half-finished reshard leaves a slot marked importing on one node and
+/// migrating on the other; `SETSLOT … STABLE` on both is the repair, and
+/// what the Topology panel offers once it can see the pair.
 #[test]
 #[ignore]
 fn cluster_slot_repairs_clear_a_stuck_migration() {
@@ -5421,6 +6162,7 @@ fn stack_json_path_ops_run_and_report_their_result() {
             assert_eq!(features.status(c), CommandStatus::Available, "{c:?} on the stack image");
         }
 
+        let at = ServerDb::new(&id, 0);
         let mut c = conn(&id, 0).await;
         let key = unique("json-ops");
         cmd("JSON.SET")
@@ -5435,43 +6177,39 @@ fn stack_json_path_ops_run_and_report_their_result() {
             op,
         };
         assert_eq!(
-            run_key_op(&mut c, &key, json("$.n", JsonPathOp::NumIncrBy(2.0)))
+            run_key_op(&at, &key, json("$.n", JsonPathOp::NumIncrBy(2.0)))
                 .await
                 .expect("numincrby"),
             KeyOpOutcome::Number("7".into()),
             "a `$` path answers `[7]`, read back as the number"
         );
         assert_eq!(
-            run_key_op(&mut c, &key, json(".n", JsonPathOp::NumIncrBy(0.5)))
+            run_key_op(&at, &key, json(".n", JsonPathOp::NumIncrBy(0.5)))
                 .await
                 .expect("numincrby, legacy path"),
             KeyOpOutcome::Number("7.5".into())
         );
         assert_eq!(
-            run_key_op(&mut c, &key, json("$.ok", JsonPathOp::Toggle))
+            run_key_op(&at, &key, json("$.ok", JsonPathOp::Toggle))
                 .await
                 .expect("toggle"),
             KeyOpOutcome::Number("true".into())
         );
         assert_eq!(
-            run_key_op(
-                &mut c,
-                &key,
-                json("$.arr", JsonPathOp::ArrAppend(serde_json::json!("x")))
-            )
-            .await
-            .expect("arrappend"),
+            run_key_op(&at, &key, json("$.arr", JsonPathOp::ArrAppend(serde_json::json!("x"))))
+                .await
+                .expect("arrappend"),
             KeyOpOutcome::Count(2)
         );
         assert_eq!(
-            run_key_op(&mut c, &key, json("$.s", JsonPathOp::StrAppend("cd".into())))
+            run_key_op(&at, &key, json("$.s", JsonPathOp::StrAppend("cd".into())))
                 .await
                 .expect("strappend"),
             KeyOpOutcome::Count(4)
         );
         assert_eq!(
             run_key_op(
-                &mut c,
+                &at,
                 &key,
                 json("$.o.k2", JsonPathOp::Set(serde_json::json!({"deep": true})))
             )
@@ -5480,13 +6218,13 @@ fn stack_json_path_ops_run_and_report_their_result() {
             KeyOpOutcome::Done
         );
         assert_eq!(
-            run_key_op(&mut c, &key, json("$.o", JsonPathOp::Clear))
+            run_key_op(&at, &key, json("$.o", JsonPathOp::Clear))
                 .await
                 .expect("clear"),
             KeyOpOutcome::Count(1)
         );
         assert_eq!(
-            run_key_op(&mut c, &key, json("$.arr[0]", JsonPathOp::Del))
+            run_key_op(&at, &key, json("$.arr[0]", JsonPathOp::Del))
                 .await
                 .expect("del"),
             KeyOpOutcome::Count(1)

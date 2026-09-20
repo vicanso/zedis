@@ -111,6 +111,9 @@ pub const EVAL_RO: Floor = Floor::since_fork("7.0.0");
 /// Valkey forked from 7.2, so every Valkey has it.
 pub const GETEX: Floor = Floor::since_fork("6.2.0");
 
+/// `XAUTOCLAIM` — claim a batch of idle pending entries (Redis 6.2).
+pub const XAUTOCLAIM: Floor = Floor::since_fork("6.2.0");
+
 /// The `count` argument of `LPOP` / `RPOP`. Redis 6.2 — the commands
 /// themselves are ancient, so only popping *several* is gated.
 pub const POP_COUNT: Floor = Floor::since_fork("6.2.0");

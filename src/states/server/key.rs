@@ -26,10 +26,11 @@ use super::{
     },
     zset::first_load_zset_value,
 };
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 use crate::connection::{
-    ExpireCondition, KeyOp, KeyOpOutcome, ServerCommand, floors, get_server_features, get_server_heat_probe, run_key_op,
+    ExpireCondition, KeyOp, KeyOpOutcome, ServerCommand, create_key, delete_key, delete_keys, delete_keys_matching,
+    dump_key, expire_key, expire_key_at, floors, flush_all, flush_db, get_server_features, get_server_heat_probe,
+    key_memory_usage, key_object_meta, key_type_and_ttl, key_types, publish, rename_key, run_key_op, scan_page,
+    server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
 };
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
@@ -37,16 +38,14 @@ use crate::db::{
 };
 use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar};
 use crate::{
-    connection::{Capability, RedisAsyncConn, get_connection_manager},
+    connection::{Capability, ServerDb},
     error::Error,
     helpers::{parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::AHashSet;
 use bytes::Bytes;
 use futures::future::join;
-use futures::stream::{self, StreamExt};
 use gpui::{SharedString, prelude::*};
-use redis::{cmd, pipe};
 use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,52 +74,17 @@ struct ScanPrefixPage {
 /// the bin must never turn a working delete into an error. Oversized
 /// payloads (> [`TRASH_MAX_PAYLOAD`]) are skipped: the bin is a safety net
 /// for fat-finger deletes, not a big-key backup store.
-async fn stash_key_to_trash(server_id: &str, db: usize, key: &str, conn: &mut RedisAsyncConn) {
-    // Size gate BEFORE the DUMP: `MEMORY USAGE` (sampled estimate, Redis
-    // 4.0+) is cheap, while running DUMP on a huge value makes the server
-    // serialize and ship it just for us to throw it away. Estimate errors
-    // (older Redis, restricted command) fall through to the exact
-    // post-DUMP cap below.
-    match cmd("MEMORY")
-        .arg("USAGE")
-        .arg(key)
-        .query_async::<Option<i64>>(conn)
-        .await
-    {
-        Ok(Some(estimated)) if estimated > TRASH_MAX_VALUE_MEMORY => {
-            warn!(key, estimated, "trash: value too large, deleting permanently");
-            return;
-        }
-        // Nil: the key is already gone; the DUMP below settles it.
-        Ok(_) => {}
-        Err(e) => debug!(key, error = %e, "trash: MEMORY USAGE unavailable, relying on post-DUMP cap"),
-    }
-    let payload: Option<Vec<u8>> = match cmd("DUMP").arg(key).query_async(conn).await {
-        Ok(payload) => payload,
-        Err(e) => {
-            warn!(key, error = %e, "trash: DUMP failed, deleting permanently");
-            return;
-        }
-    };
-    // Nil reply: the key vanished between the delete request and now.
-    let Some(payload) = payload else {
+async fn stash_key_to_trash(at: &ServerDb, key: &str) {
+    let Some(snapshot) = snapshot_key(at, key, TRASH_MAX_VALUE_MEMORY, TRASH_MAX_PAYLOAD).await else {
         return;
     };
-    if payload.len() > TRASH_MAX_PAYLOAD {
-        warn!(
-            key,
-            size = payload.len(),
-            "trash: payload too large, deleting permanently"
-        );
-        return;
-    }
-    let pttl_ms: i64 = cmd("PTTL").arg(key).query_async(conn).await.unwrap_or(-1);
+    let server_id = at.server_id();
     let entry = TrashEntry {
         key: key.to_string(),
-        db,
-        pttl_ms,
+        db: at.db(),
+        pttl_ms: snapshot.pttl_ms,
         deleted_at_ms: unix_ts_millis(),
-        payload,
+        payload: snapshot.payload,
     };
     if let Err(e) = insert_trash_entry(server_id, &entry) {
         warn!(key, error = %e, "trash: stash failed, deleting permanently");
@@ -186,49 +150,15 @@ impl ZedisServerState {
         if keys.is_empty() {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         keys.sort_unstable();
         // Spawn a background task to fetch types
         self.spawn(
             ServerTask::FillKeyTypes,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut types = Vec::with_capacity(keys.len());
-                if client.is_cluster() {
-                    // Cluster mode: keys may be on different nodes, use concurrent requests
-                    let conn = client.connection().clone();
-                    let results: Vec<(SharedString, String)> = stream::iter(keys.iter().cloned())
-                        .map(|key| {
-                            let mut conn_clone = conn.clone();
-                            async move {
-                                let t: String = cmd("TYPE")
-                                    .arg(key.as_str())
-                                    .query_async(&mut conn_clone)
-                                    .await
-                                    .unwrap_or_default();
-                                (key, t)
-                            }
-                        })
-                        .buffer_unordered(100)
-                        .collect()
-                        .await;
-                    types = results;
-                } else {
-                    // Non-cluster: use pipeline to batch TYPE commands, reducing RTT
-                    let mut conn = client.connection().clone();
-                    for chunk in keys.chunks(500) {
-                        let mut pipeline = pipe();
-                        for key in chunk {
-                            pipeline.cmd("TYPE").arg(key.as_str());
-                        }
-                        let results: Vec<String> = pipeline.query_async(&mut conn).await?;
-                        for (key, t) in chunk.iter().zip(results) {
-                            types.push((key.clone(), t));
-                        }
-                    }
-                }
-                Ok(types)
+                let names: Vec<String> = keys.iter().map(|key| key.to_string()).collect();
+                let types = key_types(&at, names).await?;
+                Ok(keys.into_iter().zip(types).collect::<Vec<(SharedString, String)>>())
             },
             move |this, result, cx| {
                 if let Ok(types) = result {
@@ -251,6 +181,7 @@ impl ZedisServerState {
     /// It handles pagination via cursors and recursive calls to fetch more data
     /// if the result set is too small.
     pub(crate) fn scan_keys(&mut self, server_id: SharedString, keyword: SharedString, cx: &mut Context<Self>) {
+        let at = self.at();
         // Guard clause: ignore if the context has changed (e.g., switched server)
         if self.server_id != server_id || self.keyword != keyword {
             return;
@@ -268,7 +199,6 @@ impl ZedisServerState {
         let masters = self.nodes.0.max(1);
         let per_page = key_scan_count.saturating_mul(masters).min(SCAN_RESULT_MAX_CAP);
         let max = (self.scan_times + 1) * per_page;
-        let db = self.db;
         // Describe this scan round in the task log: per-round COUNT and how many
         // keys are already loaded (the effective offset into the overall scan),
         // plus the match pattern when a keyword filter is active.
@@ -290,7 +220,6 @@ impl ZedisServerState {
             ServerTask::ScanKeys,
             scan_arg,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
                 let pattern = if keyword.is_empty() {
                     "*".to_string()
                 } else {
@@ -300,11 +229,7 @@ impl ZedisServerState {
                 // and keyword search; the accumulation target (`max`) stops the
                 // auto-paging loop after roughly one batch per master.
                 let count = key_scan_count as u64;
-                if let Some(cursors) = cursors {
-                    Ok(client.scan(Some(cursors), &pattern, count, with_ttl, type_arg).await?)
-                } else {
-                    Ok(client.first_scan(&pattern, count, with_ttl, type_arg).await?)
-                }
+                Ok(scan_page(&at, cursors, &pattern, count, with_ttl, type_arg).await?)
             },
             move |this, result, cx| {
                 // Abandon a page whose keyword filter no longer matches the
@@ -375,8 +300,7 @@ impl ZedisServerState {
             QueryMode::Prefix => format!("{keyword}*"),
             _ => format!("*{keyword}*"),
         };
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         // Refresh roughly the keys currently shown, spread across cluster
         // masters (first_scan sends COUNT=count to *each* master), so
         // auto-refresh keeps the loaded view fresh instead of pulling a fixed
@@ -391,11 +315,7 @@ impl ZedisServerState {
         self.spawn_with_arg(
             ServerTask::AutoRefresh,
             pattern.clone(),
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-
-                Ok(client.first_scan(&pattern, count as u64, with_ttl, type_arg).await?)
-            },
+            move || async move { Ok(scan_page(&at, None, &pattern, count as u64, with_ttl, type_arg).await?) },
             move |this, result, cx| {
                 // This refresh diffs against the live key set and *removes*
                 // keys missing from its result. If the active filter changed
@@ -558,26 +478,19 @@ impl ZedisServerState {
         if self.server_id != server_id {
             return;
         }
-        let db = self.db;
         let pattern = format!("{}*", prefix);
         let key_scan_count = self.key_scan_count() as u64;
         let with_ttl = self.show_key_tree_ttl();
         // Stop this batch once accumulated matches reach ~80% of key_scan_count.
         let threshold = key_scan_count as usize * SCAN_PREFIX_FILL_PERCENT / 100;
-        let task_server_id = server_id.clone();
+        let task_at = self.at();
         let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
         self.spawn_with_arg(
             ServerTask::ScanPrefix,
             prefix.clone(),
             move || async move {
-                let client = get_connection_manager().get_client(&task_server_id, db).await?;
-                let (new_cursor, keys) = if let Some(cursors) = cursors {
-                    client
-                        .scan(Some(cursors), &pattern, key_scan_count, with_ttl, type_arg)
-                        .await?
-                } else {
-                    client.first_scan(&pattern, key_scan_count, with_ttl, type_arg).await?
-                };
+                let (new_cursor, keys) =
+                    scan_page(&task_at, cursors, &pattern, key_scan_count, with_ttl, type_arg).await?;
                 let done = new_cursor.iter().sum::<u64>() == 0;
                 Ok((keys, new_cursor, done))
             },
@@ -703,8 +616,8 @@ impl ZedisServerState {
         if key.is_empty() {
             return;
         }
+        let at = self.at();
         let server_id = self.server_id.clone();
-        let db = self.db;
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
         let bypass_size_gate = self.size_gate_bypassed.as_ref() == Some(&key);
@@ -718,15 +631,7 @@ impl ZedisServerState {
         self.spawn(
             task,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let mut conn = client.connection().clone();
-                let (t, ttl): (String, i64) = pipe()
-                    .cmd("TYPE")
-                    .arg(key.as_str())
-                    .cmd("TTL")
-                    .arg(key.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+                let (t, ttl) = key_type_and_ttl(&at, key.as_str()).await?;
                 if ttl == -2 {
                     return Ok(RedisValue {
                         expire_at: Some(-2),
@@ -748,7 +653,7 @@ impl ZedisServerState {
                 // the gate is skipped rather than blocking the load.
                 if !bypass_size_gate
                     && matches!(key_type, KeyType::String | KeyType::Json)
-                    && let Ok(size) = client.memory_usage(key.as_str(), key_type.as_str()).await
+                    && let Ok(size) = key_memory_usage(&at, key.as_str(), key_type.as_str()).await
                     && size > MAX_INLINE_VALUE_SIZE
                 {
                     return Ok(RedisValue {
@@ -761,7 +666,7 @@ impl ZedisServerState {
                 }
                 let mut redis_value = match key_type {
                     KeyType::String => {
-                        let mut data = get_redis_bytes_value(&mut conn, &key).await?;
+                        let mut data = get_redis_bytes_value(&at, &key).await?;
                         data.detect_and_update(server_id.as_str(), key.as_str(), max_truncate_length);
                         Ok(RedisValue {
                             key_type: KeyType::String,
@@ -769,14 +674,15 @@ impl ZedisServerState {
                             ..Default::default()
                         })
                     }
-                    KeyType::List => first_load_list_value(&mut conn, &key).await,
-                    KeyType::Set => first_load_set_value(&mut conn, &key).await,
-                    KeyType::Zset => first_load_zset_value(&mut conn, &key, SortOrder::Asc).await,
+                    KeyType::List => first_load_list_value(&at, &key).await,
+                    KeyType::Set => first_load_set_value(&at, &key).await,
+                    KeyType::Zset => first_load_zset_value(&at, &key, SortOrder::Asc).await,
                     KeyType::Hash => {
-                        first_load_hash_value(&mut conn, &key, client.supports(floors::HASH_FIELD_TTL)).await
+                        let field_ttl = server_supports(&at, floors::HASH_FIELD_TTL).await?;
+                        first_load_hash_value(&at, &key, field_ttl).await
                     }
-                    KeyType::Stream => first_load_stream_value(&mut conn, &key, true).await,
-                    KeyType::Json => get_redis_json_value(&mut conn, &key).await,
+                    KeyType::Stream => first_load_stream_value(&at, &key, true).await,
+                    KeyType::Json => get_redis_json_value(&at, &key).await,
                     // The chart + metadata are loaded lazily by
                     // ZedisTimeSeriesEditor (it drives its own TS.INFO /
                     // TS.RANGE with range controls), so here we only need
@@ -803,16 +709,8 @@ impl ZedisServerState {
                     // A module type without a viewer: its DUMP bytes,
                     // behind the size gates — see `load_module_value`.
                     KeyType::Module(_) => {
-                        let size = client.memory_usage(key.as_str(), key_type.as_str()).await.ok();
-                        load_module_value(
-                            &mut conn,
-                            server_id.as_str(),
-                            key.as_str(),
-                            key_type,
-                            size,
-                            bypass_size_gate,
-                        )
-                        .await
+                        let size = key_memory_usage(&at, key.as_str(), key_type.as_str()).await.ok();
+                        load_module_value(&at, server_id.as_str(), key.as_str(), key_type, size, bypass_size_gate).await
                     }
                     KeyType::Unknown | KeyType::Channel => Err(Error::Invalid {
                         message: format!("unsupported key type: {}", key_type.as_str()),
@@ -822,8 +720,8 @@ impl ZedisServerState {
                 // calls on the same multiplexed connection, so they go out
                 // together — the chip costs no round trip of its own.
                 let (memory_usage, (encoding, heat)) = join(
-                    client.memory_usage(key.as_str(), key_type.as_str()),
-                    client.object_meta(key.as_str(), with_encoding, heat_probe),
+                    key_memory_usage(&at, key.as_str(), key_type.as_str()),
+                    key_object_meta(&at, key.as_str(), with_encoding, heat_probe),
                 )
                 .await;
                 if let Ok(memory_usage) = memory_usage {
@@ -900,8 +798,7 @@ impl ZedisServerState {
     /// the new counter, or what was taken out — because these are the
     /// operations whose *result* is the point.
     pub fn run_key_operation(&mut self, key: SharedString, op: KeyOp, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let key_arg = key.clone();
         // Taken before `op` moves into the task. `None` for the String
         // operations, whose history is before-and-after snapshots instead.
@@ -921,10 +818,7 @@ impl ZedisServerState {
         self.spawn_with_arg(
             ServerTask::RunKeyOperation,
             key.clone(),
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                Ok(run_key_op(&mut conn, key_arg.as_str(), op).await?)
-            },
+            move || async move { Ok(run_key_op(&at, key_arg.as_str(), op).await?) },
             move |this, result, cx| {
                 let Ok(outcome) = result else {
                     // The error already surfaced through `spawn_with_arg`.
@@ -1019,18 +913,12 @@ impl ZedisServerState {
         sharded: bool,
         cx: &mut Context<Self>,
     ) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         self.spawn_with_arg(
             ServerTask::PublishMessage,
             channel.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: u64 = cmd(if sharded { "SPUBLISH" } else { "PUBLISH" })
-                    .arg(channel.as_str())
-                    .arg(message.as_str())
-                    .query_async(&mut conn)
-                    .await?;
+                publish(&at, channel.as_str(), message.as_str(), sharded).await?;
                 Ok(())
             },
             |_this, _result, cx| {
@@ -1078,20 +966,17 @@ impl ZedisServerState {
         self.get_value(key, ServerTask::Selectkey, cx);
     }
     pub fn delete_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let soft_delete = cx.global::<ZedisGlobalStore>().read(cx).soft_delete();
         let remove_key = key.clone();
         self.spawn_with_arg(
             ServerTask::DeleteKey,
             key.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
                 if soft_delete {
-                    stash_key_to_trash(&server_id, db, key.as_str(), &mut conn).await;
+                    stash_key_to_trash(&at, key.as_str()).await;
                 }
-                let _: () = cmd("DEL").arg(key.as_str()).query_async(&mut conn).await?;
-                Ok(())
+                Ok(delete_key(&at, key.as_str()).await?)
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
@@ -1120,30 +1005,14 @@ impl ZedisServerState {
     }
 
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let separator = self.key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
         self.spawn_with_arg(
             ServerTask::DeleteKeys,
             prefix.clone(),
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let count = 10_000;
-                let mut cursors: Option<Vec<u64>> = None;
-                for _ in 0..20 {
-                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
-                    client.unlike_keys(keys_per_node).await?;
-
-                    if new_cursors.iter().sum::<u64>() == 0 {
-                        break;
-                    }
-                    cursors = Some(new_cursors);
-                }
-
-                Ok(())
-            },
+            move || async move { Ok(delete_keys_matching(&at, &pattern).await?) },
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
@@ -1174,18 +1043,12 @@ impl ZedisServerState {
             self.emit_warning_notification(i18n_status_bar(cx, "flush_readonly_blocked"), cx);
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let task = if all { ServerTask::FlushAll } else { ServerTask::FlushDb };
         self.spawn(
             task,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                if all {
-                    client.flush_all().await?;
-                } else {
-                    client.flush_db().await?;
-                }
+                if all { flush_all(&at).await } else { flush_db(&at).await }?;
                 Ok(())
             },
             move |this, result, cx| {
@@ -1215,18 +1078,12 @@ impl ZedisServerState {
     }
 
     pub fn unlink_keys(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let remove_keys = keys.clone();
         self.spawn_with_arg(
             ServerTask::DeleteKeys,
             format!("{} keys", remove_keys.len()),
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client
-                    .unlike_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect())
-                    .await?)
-            },
+            move || async move { Ok(delete_keys(&at, keys.into_iter().map(|k| k.to_string()).collect()).await?) },
             move |this, result, cx| {
                 if let Ok(()) = result {
                     this.keys.retain(|key, _| !remove_keys.contains(key));
@@ -1260,32 +1117,14 @@ impl ZedisServerState {
         if new.is_empty() || new == old {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let key_type = self.keys.get(&old).copied();
         let old_done = old.clone();
         let new_done = new.clone();
         self.spawn_with_arg(
             ServerTask::RenameKey,
             new.clone(),
-            move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                if overwrite {
-                    let _: () = cmd("RENAME")
-                        .arg(old.as_str())
-                        .arg(new.as_str())
-                        .query_async(&mut conn)
-                        .await?;
-                    Ok(true)
-                } else {
-                    let renamed: i64 = cmd("RENAMENX")
-                        .arg(old.as_str())
-                        .arg(new.as_str())
-                        .query_async(&mut conn)
-                        .await?;
-                    Ok(renamed == 1)
-                }
-            },
+            move || async move { Ok(rename_key(&at, old.as_str(), new.as_str(), overwrite).await?) },
             move |this, result, cx| {
                 match result {
                     Ok(true) => {
@@ -1331,8 +1170,7 @@ impl ZedisServerState {
         if ttl.is_empty() {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -1361,12 +1199,7 @@ impl ZedisServerState {
                         message: parse_fail_error,
                     });
                 }
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: () = cmd("EXPIRE")
-                    .arg(key.as_str())
-                    .arg(new_ttl.as_secs())
-                    .query_async(&mut conn)
-                    .await?;
+                expire_key(&at, key.as_str(), new_ttl.as_secs()).await?;
                 Ok(ttl)
             },
             move |this, result, cx| {
@@ -1392,8 +1225,7 @@ impl ZedisServerState {
     /// happily delete the key, which is a destructive act that belongs to
     /// the delete button, not to a typo in a date field.
     pub fn update_key_expire_at(&mut self, key: SharedString, at: i64, cx: &mut Context<Self>) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let server_db = self.at();
         let Some(value) = self.value.as_mut() else {
             return;
         };
@@ -1405,8 +1237,7 @@ impl ZedisServerState {
             ServerTask::UpdateKeyTtl,
             key.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let _: () = cmd("EXPIREAT").arg(key.as_str()).arg(at).query_async(&mut conn).await?;
+                expire_key_at(&server_db, key.as_str(), at).await?;
                 Ok(at)
             },
             move |this, result, cx| {
@@ -1438,17 +1269,14 @@ impl ZedisServerState {
         if keys.is_empty() {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let affected = keys.clone();
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             format!("{} keys", keys.len()),
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                Ok(client
-                    .set_ttl_keys_scattered(keys.into_iter().map(|k| k.to_string()).collect(), ttl_secs, condition)
-                    .await?)
+                let keys = keys.into_iter().map(|k| k.to_string()).collect();
+                Ok(set_keys_ttl(&at, keys, ttl_secs, condition).await?)
             },
             move |this, result, cx| {
                 if let Ok(applied) = result {
@@ -1481,38 +1309,14 @@ impl ZedisServerState {
         condition: Option<ExpireCondition>,
         cx: &mut Context<Self>,
     ) {
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let separator = self.key_separator().to_string();
         let prefix = format!("{folder}{separator}");
         let pattern = format!("{prefix}*");
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             prefix,
-            move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
-                let count = 10_000;
-                let mut cursors: Option<Vec<u64>> = None;
-                let mut changed: Vec<String> = Vec::new();
-                let mut skipped = 0usize;
-                for _ in 0..20 {
-                    let (new_cursors, keys_per_node) = client.scan_nodes(cursors, &pattern, count, None).await?;
-                    let flat: Vec<String> = keys_per_node.into_iter().flatten().collect();
-                    let applied = client.set_ttl_keys_scattered(flat.clone(), ttl_secs, condition).await?;
-                    for (key, done) in flat.into_iter().zip(applied) {
-                        if done {
-                            changed.push(key);
-                        } else {
-                            skipped += 1;
-                        }
-                    }
-                    if new_cursors.iter().sum::<u64>() == 0 {
-                        break;
-                    }
-                    cursors = Some(new_cursors);
-                }
-                Ok((changed, skipped))
-            },
+            move || async move { Ok(set_ttl_matching(&at, &pattern, ttl_secs, condition).await?) },
             move |this, result, cx| {
                 if let Ok((changed, skipped)) = result {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
@@ -1567,8 +1371,7 @@ impl ZedisServerState {
         if key.is_empty() {
             return;
         }
-        let server_id = self.server_id.clone();
-        let db = self.db;
+        let at = self.at();
         let key_type = KeyType::from(category.to_lowercase().as_str());
         let key_clone = key.clone();
         // Remaining TTL in seconds for the optimistic local cache (-1 = none),
@@ -1586,45 +1389,26 @@ impl ZedisServerState {
             ServerTask::AddKey,
             key.clone(),
             move || async move {
-                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
-                let exists: bool = cmd("EXISTS").arg(key.as_str()).query_async(&mut conn).await?;
-                let ttl_duration = if ttl.is_empty() {
+                let ttl_secs = if ttl.is_empty() {
                     None
                 } else if let Ok(secs) = ttl.parse::<u64>() {
-                    Some(Duration::from_secs(secs))
+                    Some(secs)
                 } else {
                     let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid { message: e.to_string() })?;
-                    Some(ttl)
+                    Some(ttl.as_secs())
                 };
-
-                if exists {
-                    return Err(Error::Invalid {
-                        message: "Key already exists".to_string(),
-                    });
-                }
-
                 let command = key_type.create_command();
                 if command.is_empty() {
                     return Err(Error::Invalid {
                         message: "Invalid key type".to_string(),
                     });
                 }
-
-                let mut c = cmd(command);
-                c.arg(key.as_str());
-                for a in &args {
-                    c.arg(a.as_str());
+                let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+                if !create_key(&at, key.as_str(), command, &args, ttl_secs).await? {
+                    return Err(Error::Invalid {
+                        message: "Key already exists".to_string(),
+                    });
                 }
-                let _: () = c.query_async(&mut conn).await?;
-
-                if let Some(ttl_duration) = ttl_duration {
-                    let _: () = cmd("EXPIRE")
-                        .arg(key.as_str())
-                        .arg(ttl_duration.as_secs())
-                        .query_async(&mut conn)
-                        .await?;
-                }
-
                 Ok(())
             },
             move |this, result, cx| {
@@ -1655,7 +1439,7 @@ impl ZedisServerState {
 /// unknown never gets a DUMP. A value the card cannot show still carries
 /// its type, size and TTL, so rename / TTL / delete / copy keep working.
 async fn load_module_value(
-    conn: &mut RedisAsyncConn,
+    at: &ServerDb,
     server_id: &str,
     key: &str,
     key_type: KeyType,
@@ -1681,7 +1465,7 @@ async fn load_module_value(
     if !get_server_features(server_id).is_usable(ServerCommand::Dump) {
         return Ok(value);
     }
-    let payload: Vec<u8> = cmd("DUMP").arg(key).query_async(conn).await?;
+    let payload = dump_key(at, key).await?;
     value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
         bytes: Bytes::from(payload),
         view_mode: ViewMode::Hex,

@@ -29,6 +29,7 @@
 use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
+use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 use zedis_core::json::JsonPathOp;
 
@@ -119,7 +120,8 @@ impl KeyOp {
 ///
 /// The caller has already checked the version floors the two 6.2 forms need
 /// (`LPOP … count`, `GETEX`); nothing here guesses at a server version.
-pub async fn run_key_op(conn: &mut RedisAsyncConn, key: &str, op: KeyOp) -> Result<KeyOpOutcome> {
+pub async fn run_key_op(at: &ServerDb, key: &str, op: KeyOp) -> Result<KeyOpOutcome> {
+    let conn = &mut at.connection().await?;
     match op {
         KeyOp::ListTrim { start, stop } => {
             let _: () = cmd("LTRIM").arg(key).arg(start).arg(stop).query_async(conn).await?;

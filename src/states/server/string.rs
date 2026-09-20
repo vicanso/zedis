@@ -13,19 +13,19 @@
 // limitations under the License.
 
 use super::value::{DataFormat, RedisBytesValue, detect_format};
-#[cfg(target_family = "wasm")]
-use crate::connection::{BridgePipeline as _, BridgeQuery as _};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::decompress_zstd;
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
-use crate::{connection::RedisAsyncConn, error::Error};
+use crate::{
+    connection::{ServerDb, string_get},
+    error::Error,
+};
 use bytes::Bytes;
 use chrono::DateTime;
 use flate2::read::GzDecoder;
 use gpui::SharedString;
 use lz4_flex::block::decompress_size_prepended;
-use redis::cmd;
 use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
@@ -352,8 +352,8 @@ fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
     Some(SharedString::from(text))
 }
 
-pub(crate) async fn get_redis_bytes_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisBytesValue> {
-    let value_bytes: Vec<u8> = cmd("GET").arg(key).query_async(conn).await?;
+pub(crate) async fn get_redis_bytes_value(at: &ServerDb, key: &str) -> Result<RedisBytesValue> {
+    let value_bytes = string_get(at, key).await?;
     Ok(RedisBytesValue {
         format: DataFormat::Text,
         bytes: Bytes::from(value_bytes),

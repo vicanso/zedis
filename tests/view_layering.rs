@@ -33,18 +33,20 @@
 //!   Rewrite it with `ZEDIS_VIEW_LAYERING_WRITE=1 make check-layering`, which
 //!   refuses to record an increase.
 //!
-//! Done is an empty baseline, which it has been since 2026-09-20 — so the
-//! ratchet now reads as a plain rule: **no file under `src/views` does any of
-//! this**, and the mechanism stays because it costs nothing and says where
-//! the new code belongs. Test modules (`#[cfg(test)]` onwards) and comment
-//! lines are not counted.
+//! The views reached an empty baseline on 2026-09-20, so for `src/views` this
+//! reads as a plain rule: **no file there does any of this**. The scan was
+//! then widened to all of `src`, because the state layer is the second half
+//! of ADR 10: `src/states` still builds its commands inline, and they go the
+//! same way, one file at a time. Done is an empty baseline for the whole
+//! crate — the point at which its manifest can drop `redis`. Test modules
+//! (`#[cfg(test)]` onwards) and comment lines are not counted.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const VIEWS: &str = "src/views";
+const SOURCES: &str = "src";
 const BASELINE: &str = "tests/view_layering.baseline";
 const KINDS: [&str; 4] = ["cmd", "exec", "conn", "redis"];
 
@@ -116,7 +118,7 @@ fn count(source: &str) -> Counts {
 
 fn measure(root: &Path) -> BTreeMap<String, Counts> {
     let mut files = Vec::new();
-    rust_files(&root.join(VIEWS), &mut files);
+    rust_files(&root.join(SOURCES), &mut files);
     let mut measured = BTreeMap::new();
     for file in files {
         let counts = count(&fs::read_to_string(&file).unwrap_or_default());
@@ -158,7 +160,7 @@ fn render(measured: &BTreeMap<String, Counts>) -> String {
         }
     }
     let mut out = String::from(
-        "# What src/views still knows about Redis — see tests/view_layering.rs.\n\
+        "# What the GUI crate (src/) still knows about Redis — see tests/view_layering.rs.\n\
          # cmd = commands built, exec = commands run, conn = connections taken, redis = `redis::` paths.\n\
          # Only ever shrinks. Rewrite with: ZEDIS_VIEW_LAYERING_WRITE=1 make check-layering\n",
     );
@@ -214,8 +216,8 @@ fn the_view_layer_knows_no_more_about_redis_than_it_did() {
     }
     assert!(
         grew.is_empty(),
-        "the view layer took on more Redis — move it into zedis-connection as a typed operation \
-         (reached through a `ServerDb`) instead:\n  {}",
+        "the GUI crate took on more Redis — move it into zedis-connection as a typed operation \
+         (reached through a `ServerDb`) instead; under src/views that is a rule, not a count:\n  {}",
         grew.join("\n  ")
     );
     if write {
@@ -224,7 +226,7 @@ fn the_view_layer_knows_no_more_about_redis_than_it_did() {
     }
     assert!(
         shrank.is_empty(),
-        "good — the view layer got cleaner; record it so it stays that way \
+        "good — the GUI crate got cleaner; record it so it stays that way \
          (ZEDIS_VIEW_LAYERING_WRITE=1 make check-layering):\n  {}",
         shrank.join("\n  ")
     );
