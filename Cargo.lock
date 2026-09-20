@@ -851,9 +851,6 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "bitstream-io"
@@ -2074,6 +2071,15 @@ name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys 0.5.0",
+]
+
+[[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys 0.5.0",
 ]
@@ -4755,13 +4761,12 @@ dependencies = [
 
 [[package]]
 name = "keyboard-types"
-version = "0.7.0"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -5512,9 +5517,9 @@ dependencies = [
 
 [[package]]
 name = "muda"
-version = "0.19.3"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dd04e60bc0b07438a6771710ee1698f98f6ebbc7f89b61264af1563b8aeb878"
+checksum = "cca139e57da4383727f189e43e66e84fa372347027fc996f9f1a007ec0a37996"
 dependencies = [
  "crossbeam-channel",
  "dpi",
@@ -9860,12 +9865,12 @@ dependencies = [
 
 [[package]]
 name = "tray-icon"
-version = "0.24.2"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "045979e3f037cd18ad1cb2a419dfda133c5c29c9f3453370079f2255d46c257e"
+checksum = "b2b9c52859a94554803ccd4a24b98f74148ebc73b90676d783f3490b1bff9d72"
 dependencies = [
  "crossbeam-channel",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "libappindicator",
  "muda",
  "objc2 0.6.4",
