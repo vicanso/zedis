@@ -68,14 +68,17 @@ impl ClusterNode {
     /// A connection of this call's own. Crate private like
     /// [`ServerDb::connection`], and for the same reason.
     async fn connection(&self) -> Result<MultiplexedConnection> {
-        open_node_connection(&self.server_id, &self.addr).await
+        // Boxed for the same reason as `ServerDb::connection`: dialing is a
+        // large future, and a caller that opens several nodes in a loop
+        // would carry all of them on one stack frame.
+        Box::pin(open_node_connection(&self.server_id, &self.addr)).await
     }
 
     /// The pooled per-node connection, for traffic that *recurs* — a poll
     /// that samples every master on an interval, where a fresh handshake per
     /// node per tick is pure churn. Never for connection-scoped state.
     async fn cached_connection(&self) -> Result<MultiplexedConnection> {
-        open_node_connection_cached(&self.server_id, &self.addr).await
+        Box::pin(open_node_connection_cached(&self.server_id, &self.addr)).await
     }
 }
 

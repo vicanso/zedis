@@ -664,58 +664,67 @@ impl ZedisServerState {
                         ..Default::default()
                     });
                 }
-                let mut redis_value = match key_type {
-                    KeyType::String => {
-                        let mut data = get_redis_bytes_value(&at, &key).await?;
-                        data.detect_and_update(server_id.as_str(), key.as_str(), max_truncate_length);
-                        Ok(RedisValue {
-                            key_type: KeyType::String,
-                            data: Some(RedisValueData::Bytes(Arc::new(data))),
+                // Boxed: this match inlines every type's first-load future
+                // into one state machine, and each of those awaits a
+                // connection of its own. Unboxed in a debug build the frame
+                // outgrew a background thread's 512 KB stack and selecting a
+                // key crashed with a stack-guard fault.
+                let mut redis_value = Box::pin(async {
+                    match key_type {
+                        KeyType::String => {
+                            let mut data = get_redis_bytes_value(&at, &key).await?;
+                            data.detect_and_update(server_id.as_str(), key.as_str(), max_truncate_length);
+                            Ok(RedisValue {
+                                key_type: KeyType::String,
+                                data: Some(RedisValueData::Bytes(Arc::new(data))),
+                                ..Default::default()
+                            })
+                        }
+                        KeyType::List => first_load_list_value(&at, &key).await,
+                        KeyType::Set => first_load_set_value(&at, &key).await,
+                        KeyType::Zset => first_load_zset_value(&at, &key, SortOrder::Asc).await,
+                        KeyType::Hash => {
+                            let field_ttl = server_supports(&at, floors::HASH_FIELD_TTL).await?;
+                            first_load_hash_value(&at, &key, field_ttl).await
+                        }
+                        KeyType::Stream => first_load_stream_value(&at, &key, true).await,
+                        KeyType::Json => get_redis_json_value(&at, &key).await,
+                        // The chart + metadata are loaded lazily by
+                        // ZedisTimeSeriesEditor (it drives its own TS.INFO /
+                        // TS.RANGE with range controls), so here we only need
+                        // to classify the key so the editor dispatch routes
+                        // to that viewer.
+                        KeyType::TimeSeries => Ok(RedisValue {
+                            key_type: KeyType::TimeSeries,
                             ..Default::default()
-                        })
+                        }),
+                        // RedisBloom structures (Bloom / Cuckoo / CMS / Top-K
+                        // / t-digest) — classify only; ZedisProbabilisticEditor
+                        // fetches its own *.INFO + extras. `key_type` keeps the
+                        // ProbKind so the dispatch knows which one.
+                        KeyType::Probabilistic(_) => Ok(RedisValue {
+                            key_type,
+                            ..Default::default()
+                        }),
+                        // Redis 8 Vector Set — classify only; the viewer drives
+                        // its own VINFO / VCARD / VDIM / VRANDMEMBER / VSIM.
+                        KeyType::Vectorset => Ok(RedisValue {
+                            key_type: KeyType::Vectorset,
+                            ..Default::default()
+                        }),
+                        // A module type without a viewer: its DUMP bytes,
+                        // behind the size gates — see `load_module_value`.
+                        KeyType::Module(_) => {
+                            let size = key_memory_usage(&at, key.as_str(), key_type.as_str()).await.ok();
+                            load_module_value(&at, server_id.as_str(), key.as_str(), key_type, size, bypass_size_gate)
+                                .await
+                        }
+                        KeyType::Unknown | KeyType::Channel => Err(Error::Invalid {
+                            message: format!("unsupported key type: {}", key_type.as_str()),
+                        }),
                     }
-                    KeyType::List => first_load_list_value(&at, &key).await,
-                    KeyType::Set => first_load_set_value(&at, &key).await,
-                    KeyType::Zset => first_load_zset_value(&at, &key, SortOrder::Asc).await,
-                    KeyType::Hash => {
-                        let field_ttl = server_supports(&at, floors::HASH_FIELD_TTL).await?;
-                        first_load_hash_value(&at, &key, field_ttl).await
-                    }
-                    KeyType::Stream => first_load_stream_value(&at, &key, true).await,
-                    KeyType::Json => get_redis_json_value(&at, &key).await,
-                    // The chart + metadata are loaded lazily by
-                    // ZedisTimeSeriesEditor (it drives its own TS.INFO /
-                    // TS.RANGE with range controls), so here we only need
-                    // to classify the key so the editor dispatch routes
-                    // to that viewer.
-                    KeyType::TimeSeries => Ok(RedisValue {
-                        key_type: KeyType::TimeSeries,
-                        ..Default::default()
-                    }),
-                    // RedisBloom structures (Bloom / Cuckoo / CMS / Top-K
-                    // / t-digest) — classify only; ZedisProbabilisticEditor
-                    // fetches its own *.INFO + extras. `key_type` keeps the
-                    // ProbKind so the dispatch knows which one.
-                    KeyType::Probabilistic(_) => Ok(RedisValue {
-                        key_type,
-                        ..Default::default()
-                    }),
-                    // Redis 8 Vector Set — classify only; the viewer drives
-                    // its own VINFO / VCARD / VDIM / VRANDMEMBER / VSIM.
-                    KeyType::Vectorset => Ok(RedisValue {
-                        key_type: KeyType::Vectorset,
-                        ..Default::default()
-                    }),
-                    // A module type without a viewer: its DUMP bytes,
-                    // behind the size gates — see `load_module_value`.
-                    KeyType::Module(_) => {
-                        let size = key_memory_usage(&at, key.as_str(), key_type.as_str()).await.ok();
-                        load_module_value(&at, server_id.as_str(), key.as_str(), key_type, size, bypass_size_gate).await
-                    }
-                    KeyType::Unknown | KeyType::Channel => Err(Error::Invalid {
-                        message: format!("unsupported key type: {}", key_type.as_str()),
-                    }),
-                }?;
+                })
+                .await?;
                 // Size and the OBJECT header decorations are both O(1) tail
                 // calls on the same multiplexed connection, so they go out
                 // together — the chip costs no round trip of its own.

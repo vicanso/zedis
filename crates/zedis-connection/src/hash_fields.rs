@@ -71,18 +71,19 @@ fn hsetex_cmd(key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) -> Cmd {
     c
 }
 
-/// The pre-8.0 shape: `HSET`, then whichever TTL command the decision
-/// needs (none for `Keep` — nothing can be kept once `HSET` ran).
+/// The pre-8.0 shape: `HSET`, then `HEXPIRE` if a TTL was asked for.
+///
+/// Neither `Keep` nor `Persist` sends a second command, and for the same
+/// reason: `HSET` discards the field's TTL, so after it the field has none
+/// — nothing to keep, nothing left to persist. `Persist` used to send an
+/// `HPERSIST` that could only ever be a no-op, and on a server without
+/// field TTLs at all (Redis < 7.4, Valkey < 9.0) that is an *unknown
+/// command*, so the write reported a failure for every field added without
+/// one.
 fn push_fallback(p: &mut Pipeline, key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) {
     p.cmd("HSET").arg(key).arg(field).arg(value);
-    match ttl {
-        FieldTtl::Expire(secs) => {
-            p.cmd("HEXPIRE").arg(key).arg(secs).arg("FIELDS").arg(1).arg(field);
-        }
-        FieldTtl::Persist => {
-            p.cmd("HPERSIST").arg(key).arg("FIELDS").arg(1).arg(field);
-        }
-        FieldTtl::Keep => {}
+    if let FieldTtl::Expire(secs) = ttl {
+        p.cmd("HEXPIRE").arg(key).arg(secs).arg("FIELDS").arg(1).arg(field);
     }
 }
 
@@ -254,11 +255,13 @@ mod tests {
                 vec!["HEXPIRE", "k", "60", "FIELDS", "1", "f"]
             ]
         );
-        let mut p = pipe();
-        push_fallback(&mut p, "k", b"f", b"v", FieldTtl::Persist);
-        assert_eq!(pipeline_words(&p)[1], ["HPERSIST", "k", "FIELDS", "1", "f"]);
-        let mut p = pipe();
-        push_fallback(&mut p, "k", b"f", b"v", FieldTtl::Keep);
-        assert_eq!(pipeline_words(&p).len(), 1, "nothing can keep a TTL after HSET");
+        // `HSET` discards the field's TTL, so neither of these has anything
+        // left to do — and on a server without field TTLs at all, sending
+        // `HPERSIST` anyway failed every write that asked for no TTL.
+        for ttl in [FieldTtl::Persist, FieldTtl::Keep] {
+            let mut p = pipe();
+            push_fallback(&mut p, "k", b"f", b"v", ttl);
+            assert_eq!(pipeline_words(&p), [vec!["HSET", "k", "f", "v"]], "{ttl:?}");
+        }
     }
 }

@@ -52,22 +52,20 @@ impl ServerDb {
     /// private on purpose: a caller with a connection in hand is a caller
     /// that builds commands.
     pub(crate) async fn connection(&self) -> Result<RedisAsyncConn, Error> {
-        get_connection_manager().get_connection(&self.server_id, self.db).await
+        Box::pin(get_connection_manager().get_connection(&self.server_id, self.db)).await
     }
 
     /// The pooled client, for an operation that fans out to every master
     /// (`CLIENT LIST`, `CONFIG SET`, …). Crate private like
     /// [`Self::connection`], and for the same reason.
     pub(crate) async fn client(&self) -> Result<RedisClient, Error> {
-        get_connection_manager().get_client(&self.server_id, self.db).await
+        Box::pin(get_connection_manager().get_client(&self.server_id, self.db)).await
     }
 
     /// A connection of the caller's own, built from the pooled client's
     /// topology — the terminal's, where `SELECT` and `MULTI` must not leak
     /// into the pool (ADR 4). A bridge session in the browser.
     pub(crate) async fn dedicated_connection(&self) -> Result<RedisAsyncConn, Error> {
-        get_connection_manager()
-            .open_dedicated_connection(&self.server_id, self.db)
-            .await
+        Box::pin(get_connection_manager().open_dedicated_connection(&self.server_id, self.db)).await
     }
 }

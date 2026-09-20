@@ -114,6 +114,11 @@ pub const GETEX: Floor = Floor::since_fork("6.2.0");
 /// `XAUTOCLAIM` — claim a batch of idle pending entries (Redis 6.2).
 pub const XAUTOCLAIM: Floor = Floor::since_fork("6.2.0");
 
+/// `entries-read` and `lag` in `XINFO GROUPS` — how far a consumer group is
+/// behind (Redis 7.0). An older server omits the fields entirely, which the
+/// lenient `XINFO` reader shows as a blank, not as a zero it measured.
+pub const STREAM_GROUP_LAG: Floor = Floor::since_fork("7.0.0");
+
 /// The `count` argument of `LPOP` / `RPOP`. Redis 6.2 — the commands
 /// themselves are ancient, so only popping *several* is gated.
 pub const POP_COUNT: Floor = Floor::since_fork("6.2.0");

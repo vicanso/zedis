@@ -2978,6 +2978,16 @@ fn standalone_collections_page_and_write_through_their_operations() {
                 .expect("httl");
             assert!((1..=120).contains(&ttls[0]), "{ttls:?}");
             assert_eq!((ttls[1], ttls[2]), (-1, -2), "no TTL, and no field");
+            // Writing it again without one takes the TTL away: `HSET`
+            // discards it, which is why `Persist` sends nothing extra.
+            write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Persist, false)
+                .await
+                .expect("hset without ttl");
+            assert_eq!(
+                hash_field_ttls(&at, &hash, &[b"f1"]).await.expect("httl")[0],
+                -1,
+                "the plain write dropped the TTL"
+            );
         }
         assert!(hash_field_ttls(&at, &hash, &[]).await.expect("no fields").is_empty());
         assert_eq!(
@@ -3337,7 +3347,9 @@ fn standalone_stream_operations_page_describe_and_administer() {
         assert!(summary.radix_tree_keys > 0);
         let [described]: [StreamGroup; 1] = info.groups.try_into().expect("one group");
         assert_eq!((described.name.as_str(), described.pending_count), (group, 2));
-        assert_eq!(described.lag, 1, "one entry nobody has been delivered");
+        if supports(&id, floors::STREAM_GROUP_LAG).await {
+            assert_eq!(described.lag, 1, "one entry nobody has been delivered");
+        }
         assert_eq!(described.consumers.len(), 1);
         assert_eq!(described.consumers[0].name, "c1");
         assert_eq!(described.consumers[0].pending, 2);
