@@ -1526,16 +1526,27 @@ fn stack_timeseries_write_operations() {
             .await
             .expect("ts.create");
 
-        // A sample at an explicit timestamp, and one at "now".
+        // A sample at an explicit timestamp, and one at "now" — so the series
+        // spans from 1970 to today and the window has to bucket coarsely.
         assert_eq!(ts_add(&at, &key, Some(1000), 1.5).await.expect("ts.add"), 1000);
         let now_ts = ts_add(&at, &key, None, 2.5).await.expect("ts.add now");
         // What the series viewer reads: the metadata and the samples of the
-        // window — all of it here, and too short a span to be bucketed.
+        // window.
         let window = ts_window(&at, &key, None, 240).await.expect("ts window");
         assert_eq!(window.info.total_samples, 2);
         assert_eq!((window.info.first_ts, window.info.last_ts), (1000, now_ts));
-        assert_eq!(window.samples.first(), Some(&(1000, 1.5)));
         assert_eq!(window.samples.len(), 2);
+        // The property the alignment exists for: a bucketed sample is stamped
+        // inside the window that was asked for. Without `ALIGN` the buckets
+        // align to timestamp 0, the first one starts decades before the first
+        // sample, and this comes back as `(0, 1.5)` — a point plotted at 1970.
+        assert!(
+            window.samples.iter().all(|(ts, _)| (1000..=now_ts).contains(ts)),
+            "every sample belongs to the window {}..={now_ts}: {:?}",
+            1000,
+            window.samples
+        );
+        assert_eq!(window.samples.first(), Some(&(1000, 1.5)));
         // A window that ends at the last sample and is one millisecond long
         // holds that sample only.
         let last_only = ts_window(&at, &key, Some(1), 240).await.expect("narrow window");
@@ -3613,7 +3624,11 @@ fn standalone_stream_tail_returns_only_what_arrives_after_it_opened() {
         let quiet = tail.next_batch(50, 10).await.expect("a timed-out block");
         assert!(quiet.is_empty(), "nothing arrived yet: {quiet:?}");
 
-        // The entries are written while the tail is blocked, as in the app.
+        // The entries are written while the tail is blocked, and that is not
+        // incidental: `XREAD … $` resolves `$` when the command is *sent*, so
+        // anything written beforehand is already in the past and a tail that
+        // reads after the writes sees nothing. The concurrency is what
+        // exercises the cursor at all.
         let writer = smol::spawn({
             let key = key.clone();
             let mut c = c.clone();

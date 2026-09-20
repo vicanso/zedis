@@ -154,32 +154,52 @@ pub struct TsWindow {
     pub samples: Vec<(i64, f64)>,
 }
 
+/// The `TS.RANGE` a window asks for: `(from, to, bucket_ms)`, or `None` when
+/// the series has nothing to plot. A `bucket_ms` of 1 means "send no
+/// aggregation at all" — the span is already short enough that one bucket per
+/// millisecond would not reduce anything.
+fn window_bounds(first_ts: i64, last_ts: i64, window_ms: Option<i64>, target_points: i64) -> Option<(i64, i64, i64)> {
+    if last_ts <= 0 {
+        return None;
+    }
+    let to = last_ts;
+    let from = match window_ms {
+        Some(window) => (to - window).max(first_ts),
+        None => first_ts,
+    }
+    .min(to);
+    Some((from, to, ((to - from).max(1) / target_points.max(1)).max(1)))
+}
+
 /// `TS.INFO` plus a `TS.RANGE` over the last `window_ms` of the series (all of
 /// it for `None`), bucketed with a server-side `avg` so that about
 /// `target_points` come back however dense the series is. An empty series is
 /// its info and no samples, not an error.
+///
+/// The aggregation is aligned to the window's start (`ALIGN from`;
+/// RedisTimeSeries 1.6+, and `ALIGN` sits immediately before `AGGREGATION`).
+/// Without it buckets align to timestamp 0, and a
+/// series holding one backfilled sample next to live ones spans decades — so
+/// the bucket is billions of milliseconds wide and the first sample comes
+/// back stamped `0`, i.e. *outside* the window that was asked for, plotted at
+/// 1970. The samples a window returns have to lie inside that window.
 pub async fn ts_window(at: &ServerDb, key: &str, window_ms: Option<i64>, target_points: i64) -> Result<TsWindow> {
     let mut conn = at.connection().await?;
     let info_raw: Value = cmd("TS.INFO").arg(key).query_async(&mut conn).await?;
     let info = parse_ts_info(&info_raw);
-    if info.total_samples <= 0 || info.last_ts <= 0 {
+    let bounds = (info.total_samples > 0)
+        .then(|| window_bounds(info.first_ts, info.last_ts, window_ms, target_points))
+        .flatten();
+    let Some((from, to, bucket)) = bounds else {
         return Ok(TsWindow {
             info,
             samples: Vec::new(),
         });
-    }
-    let to = info.last_ts;
-    let from = match window_ms {
-        Some(window) => (to - window).max(info.first_ts),
-        None => info.first_ts,
-    }
-    .min(to);
-    // Skip aggregation for a span too short or sparse to need it.
-    let bucket = ((to - from).max(1) / target_points.max(1)).max(1);
+    };
     let mut range = cmd("TS.RANGE");
     range.arg(key).arg(from).arg(to);
     if bucket > 1 {
-        range.arg("AGGREGATION").arg("avg").arg(bucket);
+        range.arg("ALIGN").arg(from).arg("AGGREGATION").arg("avg").arg(bucket);
     }
     let samples: Vec<(i64, f64)> = range.query_async(&mut conn).await?;
     Ok(TsWindow { info, samples })
@@ -420,7 +440,7 @@ fn value_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TsAlter, TsSeries, has_positive_matcher, parse_mrange};
+    use super::{TsAlter, TsSeries, has_positive_matcher, parse_mrange, window_bounds};
 
     #[test]
     fn ts_info_is_read_from_both_protocols_and_survives_an_odd_field() {
@@ -564,5 +584,40 @@ mod tests {
             vec![(2, 3.5)],
             "the unparsable sample is skipped, not zeroed"
         );
+    }
+
+    #[test]
+    fn a_window_buckets_to_about_the_points_asked_for_and_starts_where_it_says() {
+        // A dense minute, 240 points wanted: 250ms buckets.
+        assert_eq!(window_bounds(0, 60_000, None, 240), Some((0, 60_000, 250)));
+        // A window narrower than the series starts `window_ms` before the end.
+        assert_eq!(window_bounds(0, 60_000, Some(10_000), 100), Some((50_000, 60_000, 100)));
+        // …but never before the first sample.
+        assert_eq!(
+            window_bounds(55_000, 60_000, Some(10_000), 100),
+            Some((55_000, 60_000, 50))
+        );
+
+        // The shape the redis-stack suite caught: one sample backfilled at
+        // ts 1000 beside a live one. The span is decades, so the bucket is
+        // billions of milliseconds — which is exactly why the range has to
+        // carry `ALIGN from`. Epoch-aligned, the 1000 sample would come back
+        // stamped 0, outside the window.
+        let live = 1_758_000_000_000;
+        let (from, to, bucket) = window_bounds(1000, live, None, 240).expect("two samples");
+        assert_eq!((from, to), (1000, live));
+        assert!(bucket > 7_000_000_000, "a decades-wide span buckets coarsely: {bucket}");
+        assert!(
+            from % bucket != 0,
+            "the window start is not on an epoch-aligned boundary, which is what makes ALIGN matter"
+        );
+
+        // A span too short to reduce: no aggregation clause at all.
+        assert_eq!(window_bounds(1000, 1001, None, 240), Some((1000, 1001, 1)));
+        assert_eq!(window_bounds(1000, 1000, None, 240), Some((1000, 1000, 1)));
+        // `target_points` of 0 must not divide by zero.
+        assert_eq!(window_bounds(0, 60_000, None, 0), Some((0, 60_000, 60_000)));
+        // Nothing ever written: no range to ask for.
+        assert_eq!(window_bounds(0, 0, None, 240), None);
     }
 }

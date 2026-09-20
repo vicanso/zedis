@@ -86,6 +86,13 @@ SENTINEL_AUTH=(-a "$SENTINEL_PASSWORD" --no-auth-warning)
 
 "$HERE/down.sh" >/dev/null 2>&1 || true
 mkdir -p "$IT_DIR"
+# Recorded for down.sh, which otherwise cannot know the topology was
+# containerised: it needs the image to remove what a server wrote as its own
+# user, and it runs from a shell that never saw REDIS_IMAGE (a bare
+# `make it-down`, or a CI step that only set the variable on `up.sh`).
+# `if`, not `&&`: under `set -e` a false test would end the script, which is
+# the local (no-image) path.
+if [ -n "$IMAGE" ]; then printf '%s\n' "$IMAGE" > "$IT_DIR/image"; fi
 # World-writable on purpose: the official images run the server as their own
 # `redis` / `valkey` user (the entrypoint re-execs under gosu), while this
 # bind-mounted directory keeps the *host* owner. Cluster nodes are the only
