@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use zedis_connection::{
     BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport, RedisServer,
-    get_servers,
+    get_servers, set_account_read_only,
 };
 
 /// Talks to one `zedis-bridge`.
@@ -108,9 +108,20 @@ impl HttpBridgeTransport {
             server: RedisServer,
             #[serde(default)]
             secrets_set: Vec<String>,
+            /// Whether the signed-in *account* is read-only. The bridge
+            /// repeats it on every entry, and every entry of one reply says
+            /// the same thing — it is a fact about the caller, not the entry.
+            #[serde(default)]
+            account_read_only: bool,
         }
         let list = serde_json::from_slice::<Vec<Entry>>(&bytes)
             .map_err(|e| BridgeError::transport(format!("the bridge's server list is not JSON: {e}")))?;
+        // Before anything is connected, so the first `get_client` already
+        // knows: a read-only account's connections are StrictReadOnly, which
+        // is the one access mode the UI cannot switch off. The bridge refuses
+        // the write regardless — this is what keeps the app from offering a
+        // button whose only possible outcome is a 403.
+        set_account_read_only(list.iter().any(|entry| entry.account_read_only));
         Ok(list
             .into_iter()
             .map(|entry| show_stored_secrets(entry.server, &entry.secrets_set))

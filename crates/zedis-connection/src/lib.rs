@@ -76,6 +76,7 @@ mod multi_search;
 mod panel_ops;
 mod probabilistic;
 mod probe;
+mod read_only;
 mod readable_export;
 mod search;
 mod server_config;
@@ -183,6 +184,9 @@ pub use list_ops::{list_len, list_push, list_range, list_set_if_unchanged, remov
 pub use lua_script::{
     ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1,
 };
+/// Only the browser has an account in front of the Redis user — see
+/// `manager::pool::set_account_read_only`.
+pub use manager::set_account_read_only;
 #[cfg(not(target_family = "wasm"))]
 pub use master_key::disable_keychain;
 pub use module_ops::{
@@ -200,6 +204,7 @@ pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
 };
+pub use read_only::is_read_only_command;
 pub use readable_export::{
     ReadLimits, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, next_stream_id,
     read_readable_chunk,

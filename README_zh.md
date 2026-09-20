@@ -159,7 +159,7 @@ docker run -d --name zedis-web -p 7379:7379 \
 
 打开 <http://localhost:7379>，用 `admin` / `change-me` 登录。
 
-- **`ZEDIS_BRIDGE_USERS` 必填** —— 格式为 `用户名@密码,用户名2@密码2`，未设置则 bridge 拒绝启动。每一项按第一个 `@` 切分，因此用户名不能包含 `@` 或 `:`，密码不能包含逗号。脚本可以用 HTTP Basic（`curl -u admin:change-me …/v1/servers`）。
+- **必须配置账号** —— 要么 `ZEDIS_BRIDGE_USERS="用户名@密码,用户名2@密码2"`，要么 `--users-file`（见[账号与共享](#账号与共享)）。两者都不给，bridge 拒绝启动；两者都给，同样拒绝启动。行内写法按第一个 `@` 切分，因此用户名不能包含 `@` 或 `:`，密码不能包含逗号。脚本可以用 HTTP Basic（`curl -u admin:change-me …/v1/servers`）。
 - **`/data`** 保存服务器列表（其中的密码由同目录的 `master.key` 加密）和已保存的登录状态。请保留这个卷，否则每次重启都是空的。
 - **`--insecure-cookie` 仅用于纯 http 的试用。** 登录 cookie 默认带 `Secure`，而浏览器会静默丢弃通过纯 http 收到的 `Secure` cookie —— 只有 `localhost` 例外（部分浏览器连 `localhost` 也不例外）。不加这个参数时，现象是登录成功、紧接着的请求返回 `401`。
 - **Redis 跑在 Docker 宿主机上**时，容器内的 `127.0.0.1` 指的是容器自己。请使用 `host.docker.internal`（Linux 上需加 `--add-host=host.docker.internal:host-gateway`）或 `--network host`。
@@ -209,7 +209,34 @@ tools.example.com {
 
 ### 账号与共享
 
-服务器条目属于添加它的账号，其他人看不到；勾选 **Shared** 后则对所有账号可见。没有角色之分：任何账号都可以编辑或删除共享条目。
+服务器条目属于添加它的账号，其他人看不到；勾选 **Shared** 后则对所有账号可见。能看到共享条目的账号都可以编辑或删除它。
+
+账号来自两处之一，不能同时使用：
+
+```bash
+# 行内：名字后加 ":ro" 即为只读账号
+-e ZEDIS_BRIDGE_USERS="alice@secret,bob:ro@hunter2"
+```
+
+```toml
+# 或者用文件：--users-file /data/users.toml（ZEDIS_BRIDGE_USERS_FILE）
+[[users]]
+name = "alice"
+password = "secret"
+
+[[users]]
+name = "bob"
+password = "hunter2"
+read_only = true
+```
+
+用文件可以让密码不出现在每次 `docker inspect` 都会打印的环境变量里，也是唯一一种改动账号时不必重写整份列表的写法。行内写法把角色放在**名字**一侧，是因为密码里允许出现 `:`，而名字里不允许。
+
+**只读账号**可以查看它能看到的一切，但什么都改不了：不能写 Redis，也不能新增、编辑或删除服务器条目。拒绝由 bridge 做出，而不是由页面做出 —— 任何不是读的请求都会收到 `403`，所以直接向 `/v1/exec` 发请求的脚本和页面被一视同仁地拒绝，确认参数也换不来放行。判定用的是**读命令的白名单**，而不是"要避开的写命令"清单：`EVAL` 能执行任意脚本，`BITFIELD` 名字像读实际会写，`GETDEL` 与 `GETEX` 是写成 get 样子的写，而所有模块命令都是核心命令表从未见过的 —— 因此不认识的一律拒绝；漏掉某个读命令的表现是某个面板提示不可用。
+
+修改账号的密码**或角色**都会让它已有的登录失效，所以把某个账号降为只读，对已经登录的浏览器同样立即生效。
+
+这是纵深防御，不能替代 Redis 自己的 ACL：带 `-@write` 的 Redis ACL 用户由服务端在每条连接上强制执行，无论谁来连；而这里的限制由 bridge 强制执行，它是浏览器唯一能碰到的东西。两者一起用 —— ACL 是保证，账号角色是让按钮在请求发出之前就变灰的那一层。
 
 ### Web 版不包含的功能
 

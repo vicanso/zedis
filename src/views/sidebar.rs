@@ -101,6 +101,25 @@ pub struct ZedisSidebar {
     _subscriptions: Vec<Subscription>,
 }
 
+/// Whether the Home control belongs to the sidebar's top band.
+///
+/// It does on the desktop, where it has always been. The browser puts it in
+/// the title bar instead (`views::title_bar::left_slot`): a tab has no
+/// window chrome, so that bar's left edge is empty and a wordmark there is
+/// read as "back to the list" — while the sidebar's narrow band is better
+/// spent on the connections themselves. Two functions rather than a gate
+/// inside the row, so that changing the browser's answer cannot reach the
+/// desktop's.
+#[cfg(not(target_family = "wasm"))]
+fn home_lives_in_the_sidebar() -> bool {
+    true
+}
+
+#[cfg(target_family = "wasm")]
+fn home_lives_in_the_sidebar() -> bool {
+    false
+}
+
 impl ZedisSidebar {
     /// Create a new sidebar component with event subscriptions
     ///
@@ -374,40 +393,46 @@ impl ZedisSidebar {
         // content pane's top bar instead of sitting a couple px off.
         let home_tooltip = i18n_sidebar(cx, "home");
         let collapse_label = i18n_sidebar(cx, "collapse");
-        rows.push(
-            h_flex()
-                .id("sidebar-home-row")
-                .mx_2()
-                .h(EDITOR_KEY_BAR_HEIGHT)
-                .items_center()
-                .gap_1()
-                .child(div().flex_1().min_w_0().h_full().child(home_item))
-                // Collapse control at the band's right edge (the sidebar's
-                // top-right). Icon-only: a label would fight the ZEDIS
-                // heading for this narrow strip — the tooltip carries the
-                // word. The expand control (collapsed state) stays in the
-                // fixed bottom bar rendered by `render`.
-                .when(!sidebar_collapsed, |this| {
-                    this.child(
-                        Button::new("sidebar-collapse-toggle")
-                            .ghost()
-                            .small()
-                            .icon(IconName::ChevronLeft)
-                            .tooltip(collapse_label)
-                            .on_click(move |_, _window, cx| {
-                                update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
-                                    state.toggle_sidebar_collapsed();
-                                });
-                            }),
-                    )
-                })
-                .border_b_1()
-                .border_color(divider_color)
-                .when(sidebar_collapsed, |this| {
-                    this.tooltip(move |window, cx| Tooltip::new(home_tooltip.clone()).build(window, cx))
-                })
-                .into_any_element(),
-        );
+        // Without the Home pill this band holds one chevron and a lot of
+        // nothing, which reads as a gap rather than a row — so where Home has
+        // moved out, the band goes with it and the rail's toggle moves to the
+        // bottom bar that already carries it when collapsed (see `render`).
+        if home_lives_in_the_sidebar() {
+            rows.push(
+                h_flex()
+                    .id("sidebar-home-row")
+                    .mx_2()
+                    .h(EDITOR_KEY_BAR_HEIGHT)
+                    .items_center()
+                    .gap_1()
+                    .child(div().flex_1().min_w_0().h_full().child(home_item))
+                    // Collapse control at the band's right edge (the sidebar's
+                    // top-right). Icon-only: a label would fight the ZEDIS
+                    // heading for this narrow strip — the tooltip carries the
+                    // word. The expand control (collapsed state) stays in the
+                    // fixed bottom bar rendered by `render`.
+                    .when(!sidebar_collapsed, |this| {
+                        this.child(
+                            Button::new("sidebar-collapse-toggle")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ChevronLeft)
+                                .tooltip(collapse_label)
+                                .on_click(move |_, _window, cx| {
+                                    update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
+                                        state.toggle_sidebar_collapsed();
+                                    });
+                                }),
+                        )
+                    })
+                    .border_b_1()
+                    .border_color(divider_color)
+                    .when(sidebar_collapsed, |this| {
+                        this.tooltip(move |window, cx| Tooltip::new(home_tooltip.clone()).build(window, cx))
+                    })
+                    .into_any_element(),
+            );
+        }
 
         // --- Group sections ---
         for (section_idx, section) in self.state.sections.iter().enumerate() {
@@ -712,7 +737,13 @@ impl Render for ZedisSidebar {
         // fixed (non-scrolling) bottom bar — present on every route so the
         // rail can always be expanded again. Between the two, one toggle is
         // always visible in either state.
+        //
+        // Where the Home band is gone (the browser, which keeps Home in the
+        // title bar) there is no top-right to sit in, so the bottom bar
+        // carries both directions and is the toggle's one fixed place.
         let sidebar_collapsed = cx.global::<ZedisGlobalStore>().read(cx).sidebar_collapsed();
+        let toggle_at_the_bottom = sidebar_collapsed || !home_lives_in_the_sidebar();
+        let collapse_label = i18n_sidebar(cx, "collapse");
         let border = cx.theme().border;
         v_flex()
             .size_full()
@@ -727,7 +758,7 @@ impl Render for ZedisSidebar {
                     .min_h_0()
                     .child(self.render_server_list(window, cx)),
             )
-            .when(sidebar_collapsed, |this| {
+            .when(toggle_at_the_bottom, |this| {
                 this.child(
                     h_flex()
                         .flex_none()
@@ -741,9 +772,15 @@ impl Render for ZedisSidebar {
                         .justify_center()
                         .child(
                             // The collapsed rail is too narrow for text — icon-only.
-                            Button::new("sidebar-expand-toggle")
+                            // The chevron points the way the click moves the rail.
+                            Button::new("sidebar-rail-toggle")
                                 .ghost()
-                                .icon(IconName::ChevronRight)
+                                .icon(if sidebar_collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronLeft
+                                })
+                                .when(!sidebar_collapsed, |this| this.tooltip(collapse_label.clone()))
                                 .on_click(move |_, _window, cx| {
                                     update_app_state_and_save(cx, "toggle_sidebar_collapsed", |state, _| {
                                         state.toggle_sidebar_collapsed();

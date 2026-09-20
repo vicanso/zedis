@@ -14,7 +14,21 @@
 
 //! Who may call the bridge: named accounts, and nothing else.
 //!
-//! `ZEDIS_BRIDGE_USERS="alice@secret,bob@hunter2"` is the whole configuration.
+//! `ZEDIS_BRIDGE_USERS="alice@secret,bob@hunter2"` is the short form, and
+//! [`USERS_FILE_ENV`] / `--users-file` the long one — a TOML file of
+//! `[[users]]` tables, for a deployment that would rather not put its
+//! passwords in an environment variable every `docker inspect` prints, and
+//! the only form that can be edited without restating the whole list.
+//! Exactly one of the two is configured; both is an error, because a bridge
+//! that silently preferred one would be the worst kind of auth
+//! misconfiguration to have.
+//!
+//! An account may be **read-only** (`read_only = true`, or `alice:ro@secret`
+//! in the short form). That is enforced where the commands are — see
+//! `policy` and `zedis_connection::is_read_only_command` — not here; this
+//! module only carries the flag, because "who" and "may they" are different
+//! questions and only the routes can ask the second one.
+//!
 //! There used to be a second mode — one generated bearer token shared by
 //! everyone — and it was removed when server entries became owned: a private
 //! entry needs an owner, and a caller who is "whoever holds the token" cannot
@@ -42,31 +56,109 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use zedis_core::fs::write_file_atomic;
 
-/// The accounts: `ZEDIS_BRIDGE_USERS="alice@secret,bob@hunter2"`.
+/// The accounts, inline: `ZEDIS_BRIDGE_USERS="alice@secret,bob:ro@hunter2"`.
 pub const USERS_ENV: &str = "ZEDIS_BRIDGE_USERS";
 
-/// The accounts that may sign in, name → password.
+/// The accounts, as a file: `ZEDIS_BRIDGE_USERS_FILE=/data/users.toml`.
+pub const USERS_FILE_ENV: &str = "ZEDIS_BRIDGE_USERS_FILE";
+
+/// One account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub password: String,
+    /// May look at everything it can see, and change none of it. Enforced by
+    /// the routes, not here.
+    pub read_only: bool,
+}
+
+/// The file `--users-file` names.
+#[derive(Deserialize)]
+struct UsersFile {
+    #[serde(default)]
+    users: Vec<UserEntry>,
+}
+
+/// One `[[users]]` table. `read_only` defaults to false, so an account that
+/// does not mention it is a full one — the same answer the short form gives.
+#[derive(Deserialize)]
+struct UserEntry {
+    name: String,
+    password: String,
+    #[serde(default)]
+    read_only: bool,
+}
+
+/// The accounts that may sign in, name → account.
 #[derive(Clone)]
-pub struct Accounts(HashMap<String, String>);
+pub struct Accounts(HashMap<String, Account>);
 
 impl Accounts {
-    /// From [`USERS_ENV`]. Unset, empty or malformed is an error that stops
-    /// the bridge: there is no other way in to fall back to, and an auth
-    /// setting that silently meant something else would be the worst kind of
+    /// From [`USERS_FILE_ENV`] / `--users-file`, or [`USERS_ENV`]. Missing,
+    /// empty, malformed or *both at once* is an error that stops the bridge:
+    /// there is no other way in to fall back to, and an auth setting that
+    /// silently meant something else would be the worst kind of
     /// misconfiguration to have.
-    pub fn load() -> Result<Self, String> {
-        match env::var(USERS_ENV) {
-            Ok(spec) => parse_users(&spec).map(Self).map_err(|e| format!("{USERS_ENV}: {e}")),
-            Err(env::VarError::NotPresent) => Err(format!(
-                "{USERS_ENV} is not set. The bridge signs callers in by name: \
-                 {USERS_ENV}=\"alice@secret,bob@hunter2\""
+    pub fn load(file: Option<&Path>) -> Result<Self, String> {
+        let inline = match env::var(USERS_ENV) {
+            Ok(spec) => Some(spec),
+            Err(env::VarError::NotPresent) => None,
+            Err(env::VarError::NotUnicode(_)) => return Err(format!("{USERS_ENV} is not valid UTF-8")),
+        };
+        match (file, inline) {
+            (Some(path), None) => Self::from_file(path),
+            (None, Some(spec)) => parse_users(&spec).map(Self).map_err(|e| format!("{USERS_ENV}: {e}")),
+            (Some(path), Some(_)) => Err(format!(
+                "both {USERS_ENV} and a users file ({}) are set — pick one, \
+                 so that what the bridge accepts is what you can read",
+                path.display()
             )),
-            Err(env::VarError::NotUnicode(_)) => Err(format!("{USERS_ENV} is not valid UTF-8")),
+            (None, None) => Err(format!(
+                "no accounts are configured. Either {USERS_ENV}=\"alice@secret,bob:ro@hunter2\" \
+                 or {USERS_FILE_ENV}=/path/to/users.toml (--users-file)"
+            )),
         }
+    }
+
+    /// The TOML form. The path is named in every error: a file that is
+    /// missing or unreadable is the one misconfiguration an operator cannot
+    /// diagnose from "unauthorized" alone.
+    fn from_file(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let file: UsersFile = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut users = HashMap::new();
+        for (index, entry) in file.users.into_iter().enumerate() {
+            let position = index + 1;
+            let name = entry.name.trim().to_string();
+            check_name(&name, position).map_err(|e| format!("{}: {e}", path.display()))?;
+            if entry.password.is_empty() {
+                return Err(format!(
+                    "{}: user \"{name}\" (entry {position}) has an empty password",
+                    path.display()
+                ));
+            }
+            let account = Account {
+                password: entry.password,
+                read_only: entry.read_only,
+            };
+            if users.insert(name.clone(), account).is_some() {
+                return Err(format!("{}: user \"{name}\" is listed twice", path.display()));
+            }
+        }
+        if users.is_empty() {
+            return Err(format!("{}: no [[users]] entries", path.display()));
+        }
+        Ok(Self(users))
     }
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// How many of them may change nothing — worth a line in the startup log,
+    /// because a read-only account that was meant to be a full one shows up
+    /// as a button that does nothing and no error anybody reads.
+    pub fn read_only_count(&self) -> usize {
+        self.0.values().filter(|a| a.read_only).count()
     }
 
     /// The account an `Authorization: Basic …` header signs in as, if its
@@ -80,33 +172,66 @@ impl Accounts {
     pub fn accepts_password(&self, name: &str, password: &str) -> bool {
         self.0
             .get(name)
-            .is_some_and(|expected| same(password.as_bytes(), expected.as_bytes()))
+            .is_some_and(|account| same(password.as_bytes(), account.password.as_bytes()))
+    }
+
+    /// Whether `name` may change anything. An account that is not there is
+    /// read-only: a caller whose account was deleted mid-session must not
+    /// fall through to full rights on the way to being refused.
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.0.get(name).is_none_or(|account| account.read_only)
     }
 
     /// What ties a stored login to the password it was opened with: changing
     /// an account's password changes this, and every login saved under the
     /// old one stops being accepted — which is what changing a password is
     /// for. Salted per file, so the stored value is not a bare hash of it.
+    ///
+    /// The read-only flag is in it too, so *demoting* an account to read-only
+    /// also ends its open sessions. Otherwise a browser signed in before the
+    /// change would keep the rights it signed in with, for up to thirty days.
     fn credential_tag(&self, salt: &str, name: &str) -> Option<String> {
-        let password = self.0.get(name)?;
-        Some(hex(&Sha256::digest(format!("{salt}:{name}:{password}"))))
+        let account = self.0.get(name)?;
+        let role = if account.read_only { "ro" } else { "rw" };
+        Some(hex(&Sha256::digest(format!(
+            "{salt}:{name}:{role}:{}",
+            account.password
+        ))))
     }
+}
+
+/// The rules a name obeys whichever form it was written in.
+fn check_name(name: &str, position: usize) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!("entry {position} has an empty user name"));
+    }
+    if name.contains(':') {
+        return Err(format!("user \"{name}\" (entry {position}): a name cannot contain ':'"));
+    }
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `alice@secret,bob@hunter2` → the accounts.
+/// `alice@secret,bob:ro@hunter2` → the accounts.
 ///
 /// An entry splits at its *first* `@`, so a password may contain one and a
 /// name may not; entries split at `,`, so a password may not contain that.
-/// Names may not contain `:` either — HTTP Basic splits `name:password` at
-/// the first one, and such a name could never be presented. Empty entries
-/// (a trailing comma) are skipped; anything else wrong is an error that
-/// names the entry by position, never by content, because the content is a
-/// password.
-pub fn parse_users(spec: &str) -> Result<HashMap<String, String>, String> {
+///
+/// The role rides on the **name** side, `alice:ro`, and not as a suffix on
+/// the password: a password may contain `:` (only `,` and the leading `@`
+/// are barred), so `alice@secret:ro` cannot be told apart from the password
+/// `secret:ro`. A name never could contain one — HTTP Basic splits
+/// `name:password` at the first `:`, so such a name could not be presented
+/// and has always been rejected here — which leaves it free to mean this,
+/// and leaves every spelling that worked before working unchanged.
+///
+/// Empty entries (a trailing comma) are skipped; anything else wrong is an
+/// error that names the entry by position, never by content, because the
+/// content is a password.
+pub fn parse_users(spec: &str) -> Result<HashMap<String, Account>, String> {
     let mut users = HashMap::new();
     for (index, entry) in spec.split(',').map(str::trim).enumerate() {
         if entry.is_empty() {
@@ -116,17 +241,22 @@ pub fn parse_users(spec: &str) -> Result<HashMap<String, String>, String> {
         let Some((name, password)) = entry.split_once('@') else {
             return Err(format!("entry {position} is not user@password"));
         };
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(format!("entry {position} has an empty user name"));
-        }
-        if name.contains(':') {
-            return Err(format!("user \"{name}\" (entry {position}): a name cannot contain ':'"));
-        }
+        let (name, read_only) = match name.trim().split_once(':') {
+            Some((name, "ro")) => (name.trim(), true),
+            // A name with a `:` that is not the role is the old error, and
+            // its wording still fits: the name is what cannot hold one.
+            Some(_) => (name.trim(), false),
+            None => (name.trim(), false),
+        };
+        check_name(name, position)?;
         if password.is_empty() {
             return Err(format!("user \"{name}\" (entry {position}) has an empty password"));
         }
-        if users.insert(name.to_string(), password.to_string()).is_some() {
+        let account = Account {
+            password: password.to_string(),
+            read_only,
+        };
+        if users.insert(name.to_string(), account).is_some() {
             return Err(format!("user \"{name}\" is listed twice"));
         }
     }
@@ -593,18 +723,124 @@ mod tests {
         assert!(!remembered.live_at(1_000_000 + 31 * 86400), "thirty days");
     }
 
+    /// The short form's role marker. It rides on the name because a password
+    /// may contain `:` and a name may not — see `parse_users`.
+    #[test]
+    fn the_short_form_marks_a_read_only_account_on_the_name() {
+        let users = parse_users("alice@secret,bob:ro@hunter2").expect("two accounts");
+        assert!(!users["alice"].read_only);
+        assert!(users["bob"].read_only);
+        assert_eq!(users["bob"].password, "hunter2", "the role is not part of the password");
+
+        let users = parse_users("carol:ro@p:ss").expect("a role and a colon in the password");
+        assert!(users["carol"].read_only);
+        assert_eq!(users["carol"].password, "p:ss");
+    }
+
+    #[test]
+    fn a_read_only_account_is_the_one_the_routes_ask_about() {
+        let accounts = accounts("alice@secret,bob:ro@hunter2");
+        assert!(!accounts.is_read_only("alice"));
+        assert!(accounts.is_read_only("bob"));
+        assert_eq!(accounts.read_only_count(), 1);
+        assert!(
+            accounts.is_read_only("nobody"),
+            "an account that is not there cannot be a full one on the way to being refused"
+        );
+    }
+
+    /// Demoting an account has to end the logins it already has, or a browser
+    /// signed in before the change keeps writing for up to thirty days.
+    #[test]
+    fn demoting_an_account_to_read_only_ends_its_saved_logins() {
+        let path = scratch_file("demote");
+        let before = accounts("alice@secret");
+        let logins = Logins::load(path.clone(), &before);
+        let alice = logins.open("alice", &before, true).expect("login");
+        assert_eq!(logins.account(&alice).as_deref(), Some("alice"));
+
+        let after = accounts("alice:ro@secret");
+        let restarted = Logins::load(path.clone(), &after);
+        assert_eq!(restarted.account(&alice), None, "same password, different rights");
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn accounts_are_read_from_a_toml_file() {
+        let path = scratch_file("users").with_file_name("users.toml");
+        std::fs::write(
+            &path,
+            "[[users]]\nname = \"alice\"\npassword = \"secret\"\n\n\
+             [[users]]\nname = \"bob\"\npassword = \"hunter2\"\nread_only = true\n",
+        )
+        .expect("write users.toml");
+        let accounts = Accounts::from_file(&path).expect("two accounts");
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts.accepts_password("alice", "secret"));
+        assert!(accounts.accepts_password("bob", "hunter2"));
+        assert!(!accounts.is_read_only("alice"), "read_only defaults to false");
+        assert!(accounts.is_read_only("bob"));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    /// `expect_err` would want `Debug` on `Accounts`, and `Accounts` holds
+    /// every password — one stray `{:?}` in a log line and they are in it.
+    /// The error is what these tests want anyway.
+    fn file_error(path: &Path) -> String {
+        match Accounts::from_file(path) {
+            Ok(accounts) => panic!("expected an error, got {} accounts", accounts.len()),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn a_users_file_that_is_wrong_says_which_file_and_not_which_password() {
+        let path = scratch_file("bad").with_file_name("users.toml");
+        let write = |text: &str| std::fs::write(&path, text).expect("write users.toml");
+
+        write("[[users]]\nname = \"alice\"\npassword = \"\"\n");
+        let err = file_error(&path);
+        assert!(err.contains("users.toml") && err.contains("entry 1"), "{err}");
+
+        write("users = []\n");
+        let err = file_error(&path);
+        assert!(err.contains("no [[users]] entries"), "{err}");
+
+        write(
+            "[[users]]\nname = \"alice\"\npassword = \"first-hunter2\"\n\n\
+             [[users]]\nname = \"alice\"\npassword = \"second-hunter2\"\n",
+        );
+        let err = file_error(&path);
+        assert!(err.contains("listed twice"), "{err}");
+        assert!(!err.contains("hunter2"), "an error never echoes a password: {err}");
+
+        write("this is not toml {{{\n");
+        let err = file_error(&path);
+        assert!(err.contains("users.toml"), "{err}");
+
+        let missing = path.with_file_name("gone.toml");
+        let err = file_error(&missing);
+        assert!(err.contains("gone.toml"), "{err}");
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
     #[test]
     fn accounts_are_read_from_the_environment_shape() {
         let users = parse_users("alice@secret,bob@hunter2").expect("two accounts");
         assert_eq!(users.len(), 2);
-        assert_eq!(users["alice"], "secret");
-        assert_eq!(users["bob"], "hunter2");
+        assert_eq!(users["alice"].password, "secret");
+        assert_eq!(users["bob"].password, "hunter2");
+        assert!(!users["alice"].read_only, "a plain entry is a full account");
 
         let users = parse_users(" alice@secret , bob@hunter2 , ").expect("spaces and a trailing comma");
         assert_eq!(users.len(), 2, "empty entries are skipped");
 
         let users = parse_users("alice@p@ss:w0rd").expect("a password may hold @ and :");
-        assert_eq!(users["alice"], "p@ss:w0rd", "the first @ is the separator");
+        assert_eq!(users["alice"].password, "p@ss:w0rd", "the first @ is the separator");
+        assert!(
+            !users["alice"].read_only,
+            "a ':' in the password is not a role — that is why the role is on the name"
+        );
     }
 
     #[test]

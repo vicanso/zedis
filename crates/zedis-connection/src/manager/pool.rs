@@ -86,6 +86,35 @@ fn cluster_enabled(reply: Value) -> Result<bool> {
     Ok(info.get("cluster_enabled").unwrap_or(0i64) == 1)
 }
 
+/// Whether the *caller* may write at all, before any Redis user is asked.
+///
+/// There is only a caller to ask about in the browser. On the desktop the
+/// person running the app is the account, so nothing ever sets this and the
+/// question is entirely the Redis user's; through a bridge there is a second
+/// one in front of it, and an account marked read-only there is refused
+/// whatever its Redis user may do (`zedis-bridge`'s `auth::Account`).
+///
+/// Ungated on purpose, even though only `zedis-web` ever writes it: a
+/// `cfg(target_family = "wasm")` export here is invisible to `make lint`,
+/// which builds every crate — `zedis-web` included — for the host.
+static ACCOUNT_READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn account_is_read_only() -> bool {
+    ACCOUNT_READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Record that the signed-in bridge account may not write. Set once from the
+/// server list, before anything is connected.
+///
+/// It makes every connection [`AccessMode::StrictReadOnly`] — the one the UI
+/// cannot switch off — rather than the entry-level `SafeMode`, because this
+/// is not a setting the user chose and so is not one they can revoke. The
+/// bridge refuses the write either way; this is what stops the app offering
+/// a button whose only possible outcome is a `403`.
+pub fn set_account_read_only(read_only: bool) {
+    ACCOUNT_READ_ONLY.store(read_only, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What a permission probe learned about the connected ACL user's right to
 /// write. Only [`CommandDenied`](Self::CommandDenied) makes the connection
 /// [`AccessMode::StrictReadOnly`]; everything uncertain leans writable,
@@ -535,7 +564,7 @@ impl ConnectionManager {
             #[cfg(not(target_family = "wasm"))]
             rclient,
         } = reached;
-        let access_mode = if safe_check_user_readonly(connection.clone()).await {
+        let access_mode = if account_is_read_only() || safe_check_user_readonly(connection.clone()).await {
             AccessMode::StrictReadOnly
         } else if config.readonly.unwrap_or(false) {
             AccessMode::SafeMode

@@ -221,15 +221,36 @@ impl ZedisServers {
         let global_state = cx.global::<ZedisGlobalStore>().state();
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&global_state, |this, state, event, cx| {
-            if let GlobalEvent::RouteChanged(Route::Home) = event
-                && state
-                    .read(cx)
-                    .get_route_query()
-                    .map(|query| query.contains_key("new"))
-                    .unwrap_or(false)
-            {
-                this.should_popup_new_server = true;
-                cx.notify();
+            match event {
+                // The card grid reads `get_servers()` in `render` and holds no
+                // copy, so it is correct as soon as it is drawn — and until this
+                // arm existed, nothing here ever asked for it to be.
+                //
+                // It worked anyway, by borrowing. `upsert_server_then` calls
+                // `cx.notify()` on the *app state*, which is not a view and
+                // repaints nothing on its own; what actually repaints is the
+                // sidebar's own `cx.notify()` in its `ServerListUpdated` handler,
+                // which marks a view dirty and takes the whole window with it.
+                // Depending on another view's repaint is not a thing to rely on,
+                // and in the browser there is nothing else to fall back on:
+                // measured idle, the desktop redraws this page about three times
+                // a second while the browser redraws it **zero** times in ten
+                // seconds — `helpers::pacing` slows every unprompted timer and
+                // stops them outright when nobody is looking. So a save whose
+                // repaint went missing left the new connection invisible until
+                // the page was clicked or reloaded.
+                GlobalEvent::ServerListUpdated => cx.notify(),
+                GlobalEvent::RouteChanged(Route::Home)
+                    if state
+                        .read(cx)
+                        .get_route_query()
+                        .map(|query| query.contains_key("new"))
+                        .unwrap_or(false) =>
+                {
+                    this.should_popup_new_server = true;
+                    cx.notify();
+                }
+                _ => {}
             }
         }));
         if let Some(query) = global_state.read(cx).get_route_query()

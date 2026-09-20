@@ -128,9 +128,17 @@ pub fn normalize_base_path(raw: &str) -> Result<String, String> {
 /// unauthenticated caller learns whether the bridge is up and nothing else.
 pub enum ApiError {
     Unauthorized,
+    /// Signed in, and not allowed to do this: a read-only account asked to
+    /// change something. Distinct from [`ApiError::Unauthorized`] on purpose
+    /// — re-authenticating would not help, and a page that retried the login
+    /// on a 401 would loop.
+    Forbidden(String),
     BadRequest(String),
     UnknownServer(String),
-    ConfirmationRequired { kind: String, strictness: &'static str },
+    ConfirmationRequired {
+        kind: String,
+        strictness: &'static str,
+    },
     Upstream(String),
 }
 
@@ -157,6 +165,7 @@ impl IntoResponse for ApiError {
         // wrong password on a busy deployment is not an error of this process.
         let (status, error, message, kind, strictness) = match &self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", String::new(), None, None),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone(), None, None),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone(), None, None),
             ApiError::UnknownServer(m) => (StatusCode::NOT_FOUND, "unknown_server", m.clone(), None, None),
             ApiError::ConfirmationRequired { kind, strictness } => (
@@ -197,6 +206,25 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
     auth::cookie_value(cookie)
         .and_then(|id| state.logins.account(id))
         .ok_or(ApiError::Unauthorized)
+}
+
+/// What a read-only account is told, wherever it is refused. One wording,
+/// because the page shows it verbatim and the CLI prints it.
+const READ_ONLY_REFUSAL: &str = "this account is read-only";
+
+/// Who is calling, for a route that *changes* something — the server list,
+/// or Redis itself. Same check as [`authorize`], plus the account's role.
+///
+/// Every mutating route goes through this one rather than through
+/// [`authorize`] with a flag test bolted on, so adding a route and
+/// forgetting the test is a compile error's worth of obvious: the route
+/// either asks this function or it does not change anything.
+fn authorize_write(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
+    let account = authorize(state, headers)?;
+    if state.accounts.is_read_only(&account) {
+        return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()));
+    }
+    Ok(account)
 }
 
 /// Whether `account` may see `server` — and so use, edit and delete it: its
@@ -407,12 +435,25 @@ struct ServerEntry {
     /// Which secrets hold a value here — enough for a form to show that a
     /// password is stored, and for an edit to ask that it be kept.
     secrets_set: Vec<&'static str>,
+    /// Whether the *account* asking is read-only, as opposed to the entry
+    /// being marked read-only — which `readonly` says, and which the page
+    /// lets the user switch off. The page cannot switch this one off.
+    ///
+    /// A fact about the caller, repeated on every entry, because the list is
+    /// a bare array and a caller reads it one entry at a time. An account
+    /// with no entries needs no answer: there is nothing to grey out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    account_read_only: bool,
 }
 
 impl ServerEntry {
-    fn new(mut server: RedisServer) -> Self {
+    fn new(mut server: RedisServer, account_read_only: bool) -> Self {
         let secrets_set = server.take_secrets();
-        Self { server, secrets_set }
+        Self {
+            server,
+            secrets_set,
+            account_read_only,
+        }
     }
 }
 
@@ -429,11 +470,22 @@ impl ServerEntry {
 /// the page knows whether its form's *shared* box starts ticked.
 async fn servers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<ServerEntry>>> {
     let account = authorize(&state, &headers)?;
+    // A read-only account gets every entry marked read-only, which is the
+    // signal the page already understands (`RedisServer::readonly` — the
+    // desktop's own "safe mode" switch). The refusal does not depend on it:
+    // the bridge refuses the write whatever the page believes. This is so
+    // that the buttons are grey *before* the round trip rather than after it.
+    let read_only = state.accounts.is_read_only(&account);
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
     Ok(Json(
         list.into_iter()
             .filter(|server| visible_to(server, &account))
-            .map(ServerEntry::new)
+            .map(|mut server| {
+                if read_only {
+                    server.readonly = Some(true);
+                }
+                ServerEntry::new(server, read_only)
+            })
             .collect(),
     ))
 }
@@ -480,7 +532,7 @@ async fn add_server(
     headers: HeaderMap,
     Json(req): Json<AddServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let account = authorize(&state, &headers)?;
+    let account = authorize_write(&state, &headers)?;
     let (mut server, shared) = match (req.url, req.server) {
         (Some(url), None) => {
             let server = RedisServer::from_import(&url)
@@ -609,7 +661,7 @@ async fn update_server(
     Path(id): Path<String>,
     Json(req): Json<UpdateServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let account = authorize(&state, &headers)?;
+    let account = authorize_write(&state, &headers)?;
     let stored = visible_server(&id, &account)?;
     let mut server = merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?;
     assign_owner(&mut server, &account, req.shared, Some(&stored));
@@ -623,7 +675,7 @@ async fn delete_server(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let account = authorize(&state, &headers)?;
+    let account = authorize_write(&state, &headers)?;
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
     // Someone else's entry is left alone and answered like one already gone.
     let kept: Vec<_> = list
@@ -754,6 +806,10 @@ async fn exec(
     Json(req): Json<ExecRequest>,
 ) -> ApiResult<Json<ExecResponse>> {
     let account = authorize(&state, &headers)?;
+    // Not `authorize_write`: most of what reaches this route *is* a read, and
+    // a read-only account has to keep running those. The role is carried down
+    // to `policy::check`, which judges each command.
+    let read_only = state.accounts.is_read_only(&account);
     if req.commands.is_empty() {
         return Err(ApiError::BadRequest("no commands".to_string()));
     }
@@ -770,14 +826,18 @@ async fn exec(
     // Every command in a batch is judged. Gating only the first would let a
     // pipeline smuggle a FLUSHALL in behind a GET.
     for args in &decoded {
-        if let policy::Verdict::Confirm { kind, strictness } = policy::check(&server, args, req.confirm.as_deref()) {
-            return Err(ApiError::ConfirmationRequired {
-                kind: kind.i18n_key().to_string(),
-                strictness: match strictness {
-                    zedis_connection::ConfirmStrictness::Click => "click",
-                    zedis_connection::ConfirmStrictness::TypeName => "type_name",
-                },
-            });
+        match policy::check(&server, args, req.confirm.as_deref(), read_only) {
+            policy::Verdict::Allow => {}
+            policy::Verdict::Deny => return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string())),
+            policy::Verdict::Confirm { kind, strictness } => {
+                return Err(ApiError::ConfirmationRequired {
+                    kind: kind.i18n_key().to_string(),
+                    strictness: match strictness {
+                        zedis_connection::ConfirmStrictness::Click => "click",
+                        zedis_connection::ConfirmStrictness::TypeName => "type_name",
+                    },
+                });
+            }
         }
     }
 
@@ -1042,13 +1102,25 @@ mod server_tests {
 
     #[test]
     fn a_listed_entry_carries_its_settings_and_no_secret() {
-        let json = serde_json::to_value(ServerEntry::new(stored())).expect("json");
+        let json = serde_json::to_value(ServerEntry::new(stored(), false)).expect("json");
         assert_eq!(json["host"], "10.0.0.5");
         assert_eq!(json["port"], 6379);
         assert_eq!(json["username"], "app");
         assert_eq!(json["secrets_set"], serde_json::json!(["password", "ssh_key"]));
         let text = json.to_string();
         assert!(!text.contains("hunter2") && !text.contains("BEGIN KEY"), "{text}");
+    }
+
+    /// The account's role reaches the page as its own field, and is absent
+    /// for a full account — an older page reading a newer bridge then sees
+    /// exactly what it saw before.
+    #[test]
+    fn a_read_only_account_is_told_so_on_every_entry() {
+        let full = serde_json::to_value(ServerEntry::new(stored(), false)).expect("json");
+        assert!(full.get("account_read_only").is_none(), "absent for a full account");
+
+        let limited = serde_json::to_value(ServerEntry::new(stored(), true)).expect("json");
+        assert_eq!(limited["account_read_only"], true);
     }
 
     #[test]

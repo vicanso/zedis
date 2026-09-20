@@ -36,7 +36,7 @@ mod resp;
 mod session;
 mod static_files;
 
-use auth::{Accounts, USERS_ENV};
+use auth::{Accounts, USERS_ENV, USERS_FILE_ENV};
 use session::Sessions;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -70,7 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     if std::env::args().any(|a| a == "--help" || a == "-h") {
-        println!("zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] [--insecure-cookie]");
+        println!(
+            "zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] \
+             [--users-file <file>] [--insecure-cookie]"
+        );
         println!();
         println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
         println!("frames to the Redis servers in redis-servers.toml. --static <dir> serves that");
@@ -78,7 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("--base-path /zedis (or {BASE_PATH_ENV}) mounts the page and the API under that");
         println!("path, for a host name shared with other applications; the reverse proxy then");
         println!("forwards /zedis/ with the prefix kept.");
-        println!("Callers sign in by name: {USERS_ENV}=\"alice@secret,bob@hunter2\" is required.");
+        println!("Callers sign in by name. Either {USERS_ENV}=\"alice@secret,bob:ro@hunter2\" or");
+        println!("--users-file <file> ({USERS_FILE_ENV}), a TOML file of [[users]] tables with");
+        println!("name / password / read_only — one of the two, never both. `:ro` (short form) or");
+        println!("read_only = true makes an account read-only: it may look at everything it can");
+        println!("see and change none of it, refused by the bridge rather than by the page.");
         println!("The page asks for the username and password, scripts send HTTP Basic. A server");
         println!("entry is private to the account that added it unless it is marked shared.");
         println!("Secrets are encrypted with the master.key file there, never the OS keychain.");
@@ -97,8 +104,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // anything reads the server list, because the key is resolved once.
     disable_keychain();
 
-    let accounts = Accounts::load()?;
-    tracing::info!(accounts = accounts.len(), env = USERS_ENV, "accounts loaded");
+    // The flag first, then the environment — the one a container sets, since
+    // arguments there replace the image's whole command line.
+    let users_file = flag("--users-file")
+        .or_else(|| std::env::var(USERS_FILE_ENV).ok())
+        .map(std::path::PathBuf::from);
+    let accounts = Accounts::load(users_file.as_deref())?;
+    tracing::info!(
+        accounts = accounts.len(),
+        read_only = accounts.read_only_count(),
+        source = users_file.as_ref().map_or(USERS_ENV, |_| USERS_FILE_ENV),
+        "accounts loaded"
+    );
 
     // A plain-http local run has to say so: the login cookie is `Secure` by
     // default, so a deployment that forgets TLS sees a login that visibly

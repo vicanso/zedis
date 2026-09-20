@@ -14,6 +14,8 @@
 
 // The multi-database search entry is the desktop's (the browser build has no
 // handler for it), and it is the only user of these two.
+#[cfg(target_family = "wasm")]
+use crate::assets::Assets;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::MultiSearchAction;
 use crate::helpers::{
@@ -31,8 +33,11 @@ use crate::{
     },
 };
 use gpui::{
-    Anchor, App, Context, Decorations, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, px, rgb,
+    Anchor, App, Context, Decorations, Div, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, px,
+    rgb,
 };
+#[cfg(target_family = "wasm")]
+use gpui::{Image, ImageFormat, img};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
@@ -41,6 +46,8 @@ use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
 };
+#[cfg(target_family = "wasm")]
+use std::sync::Arc;
 
 /// Centered title-bar identity for the active connection (hidden on Home).
 struct TitleBarServerInfo {
@@ -279,6 +286,92 @@ impl ZedisTitleBar {
     }
 }
 
+/// The title bar's left slot.
+///
+/// A spacer, and only that: it balances `right_actions` so the centred title
+/// stays centred between them.
+#[cfg(not(target_family = "wasm"))]
+fn left_slot(_cx: &mut App) -> Div {
+    h_flex().flex_1()
+}
+
+/// The app mark, decoded once. The theme picks which of the two: the logo is
+/// a bitmap and takes no tint, so a dark theme needs the light artwork.
+#[cfg(target_family = "wasm")]
+fn logo(dark: bool) -> Arc<Image> {
+    use std::sync::OnceLock;
+    static LIGHT_ART: OnceLock<Arc<Image>> = OnceLock::new();
+    static DARK_ART: OnceLock<Arc<Image>> = OnceLock::new();
+    let (slot, name) = if dark {
+        (&LIGHT_ART, "icon-light.png")
+    } else {
+        (&DARK_ART, "icon.png")
+    };
+    slot.get_or_init(|| {
+        let bytes = Assets::get(name).map(|item| item.data).unwrap_or_default();
+        Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
+    })
+    .clone()
+}
+
+/// The browser's left slot, which carries the Home control.
+///
+/// On the desktop that control is the sidebar's top pill, and it stays
+/// there. A browser tab has no window chrome of its own, so this bar is
+/// nearly empty at its left edge — and an app mark at the top-left that
+/// returns to the connection list is what a page in a tab is read as
+/// meaning. Same command, same artwork, same wording, one place further up.
+///
+/// Built like the sidebar's pill rather than as a `Button`, for two reasons
+/// that turned out to be the same one: `ButtonIcon` takes an SVG `Icon` and
+/// the app mark is a bitmap, and a `ghost` button's label is muted where
+/// this is the one piece of branding the browser's chrome has. It reads at
+/// full `foreground` there, exactly as it did in the sidebar.
+///
+/// Still a spacer as well: `flex_1` with the pill inside it keeps the three
+/// slots equal, so the centred title does not drift.
+#[cfg(target_family = "wasm")]
+fn left_slot(cx: &mut App) -> Div {
+    let is_home = cx.global::<ZedisGlobalStore>().read(cx).route() == Route::Home;
+    let hover_bg = cx.theme().list_active;
+    let label_color = cx.theme().foreground;
+    let mark = logo(cx.theme().is_dark());
+    let tooltip = i18n_sidebar(cx, "home");
+    h_flex().flex_1().items_center().pl_2().child(
+        h_flex()
+            .id("title-bar-home")
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|this| this.bg(hover_bg))
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .child(img(mark).flex_none().size(px(18.)))
+            .child(
+                Label::new("ZEDIS")
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(label_color)
+                    .whitespace_nowrap(),
+            )
+            .on_click(move |_, _window, cx| {
+                // Already there: nothing to navigate to. The sidebar's pill
+                // answers a click on Home the same way.
+                if is_home {
+                    return;
+                }
+                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                    store.update(cx, |state, cx| {
+                        state.go_to(Route::Home, cx);
+                        state.clear_selected_server(cx);
+                    });
+                });
+            }),
+    )
+}
+
 impl Render for ZedisTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // right actions container
@@ -453,14 +546,14 @@ impl Render for ZedisTitleBar {
                 .border_color(cx.theme().title_bar_border)
                 .bg(cx.theme().tokens.title_bar)
                 .when(is_prod, |this| this.bg(prod_bg).border_t_2().border_color(prod_fg))
-                .child(h_flex().flex_1())
+                .child(left_slot(cx))
                 .child(center)
                 .child(right_actions)
                 .into_any_element()
         } else {
             TitleBar::new()
                 .when(is_prod, |this| this.bg(prod_bg).border_t_2().border_color(prod_fg))
-                .child(h_flex().flex_1())
+                .child(left_slot(cx))
                 .child(center)
                 .child(right_actions)
                 .into_any_element()

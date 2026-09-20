@@ -26,8 +26,8 @@
 //! to Zedis still changes nothing here.
 
 use zedis_connection::{
-    ConfirmStrictness, DangerKind, RedisServer, classify_dangerous, confirm_strictness, is_write_command,
-    requires_write_confirm,
+    ConfirmStrictness, DangerKind, RedisServer, classify_dangerous, confirm_strictness, is_read_only_command,
+    is_write_command, requires_write_confirm,
 };
 
 /// What the bridge will do with a command.
@@ -41,9 +41,24 @@ pub enum Verdict {
         kind: DangerKind,
         strictness: ConfirmStrictness,
     },
+    /// Refuse, full stop. A read-only account asked for something that is
+    /// not a read, and unlike [`Verdict::Confirm`] there is nothing the
+    /// caller can send back to get past it — that is the whole difference
+    /// between a question and a permission.
+    Deny,
 }
 
 /// Decide whether `args` may be forwarded to `server`.
+///
+/// `read_only` is the caller's account, and it is checked **first and
+/// separately**: the confirmation machinery below asks a question a caller
+/// answers, which is exactly what a permission must not be. A read-only
+/// account never reaches it.
+///
+/// The read test is an allowlist (`zedis_connection::is_read_only_command`),
+/// not the inverse of the danger classifier — a command nobody has
+/// classified is refused for a read-only account and merely unconfirmed for
+/// a full one, which is the right way round for each.
 ///
 /// `confirm` is what the caller sent back after being refused once: any
 /// non-empty string satisfies [`ConfirmStrictness::Click`], while
@@ -51,7 +66,10 @@ pub enum Verdict {
 /// for a destructive command — is satisfied only by the server's own name.
 /// That mirrors the desktop dialog, where the same escalation makes the user
 /// type the name rather than click once.
-pub fn check(server: &RedisServer, args: &[Vec<u8>], confirm: Option<&str>) -> Verdict {
+pub fn check(server: &RedisServer, args: &[Vec<u8>], confirm: Option<&str>, read_only: bool) -> Verdict {
+    if read_only && !reads_only(args) {
+        return Verdict::Deny;
+    }
     let Some(kind) = classify(server, args) else {
         return Verdict::Allow;
     };
@@ -66,6 +84,16 @@ pub fn check(server: &RedisServer, args: &[Vec<u8>], confirm: Option<&str>) -> V
     } else {
         Verdict::Confirm { kind, strictness }
     }
+}
+
+/// Whether this command only reads. An empty frame is not a read: the
+/// decoder refuses it anyway, and a gate must not be the place that lets an
+/// unnameable command through.
+fn reads_only(args: &[Vec<u8>]) -> bool {
+    let Some((name, rest)) = words(args) else {
+        return false;
+    };
+    is_read_only_command(&name, rest.first().map(String::as_str))
 }
 
 /// The desktop's rule, in the desktop's order: the specific classifier first,
@@ -111,28 +139,111 @@ mod tests {
         }
     }
 
+    /// A production-tagged entry, where a destructive command has to be
+    /// confirmed by typing the name.
+    fn prod() -> RedisServer {
+        RedisServer {
+            id: "s2".to_string(),
+            name: "production".to_string(),
+            tag_color: Some("red".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// A read-only account is refused, and cannot talk its way out: unlike a
+    /// confirmation, there is no token that turns the answer round.
+    #[test]
+    fn a_read_only_account_may_read_and_nothing_else() {
+        assert_eq!(check(&plain(), &args(&["GET", "k"]), None, true), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["SCAN", "0"]), None, true), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["INFO"]), None, true), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["SET", "k", "v"]), None, true), Verdict::Deny);
+        assert_eq!(check(&plain(), &args(&["DEL", "k"]), None, true), Verdict::Deny);
+        assert_eq!(check(&plain(), &args(&["FLUSHALL"]), None, true), Verdict::Deny);
+    }
+
+    /// The confirmation is a question and the role is a permission, so the
+    /// answer to the question must not reach the permission. A confirmed
+    /// destructive command from a read-only account is still refused.
+    #[test]
+    fn a_confirmation_does_not_buy_a_read_only_account_a_write() {
+        for confirm in [None, Some(""), Some("yes"), Some("staging")] {
+            assert_eq!(
+                check(&plain(), &args(&["FLUSHALL"]), confirm, true),
+                Verdict::Deny,
+                "confirm={confirm:?}"
+            );
+        }
+        // And on a production server, where the strict token is the name.
+        assert_eq!(
+            check(&prod(), &args(&["FLUSHALL"]), Some("production"), true),
+            Verdict::Deny
+        );
+    }
+
+    /// The commands a denylist of writes would have waved through. This is
+    /// the test that says why `is_read_only_command` is an allowlist.
+    #[test]
+    fn a_read_only_account_cannot_reach_a_write_that_reads_like_one() {
+        for cmd in [
+            vec!["EVAL", "return redis.call('set', KEYS[1], '1')", "1", "k"],
+            vec!["BITFIELD", "k", "SET", "u8", "0", "1"],
+            vec!["GETDEL", "k"],
+            vec!["GETEX", "k", "EX", "1"],
+            vec!["JSON.SET", "doc", "$", "1"],
+            vec!["TS.ADD", "series", "*", "1"],
+            vec!["SOMETHING.NEW", "k"],
+        ] {
+            assert_eq!(
+                check(&plain(), &args(&cmd), Some("yes"), true),
+                Verdict::Deny,
+                "{cmd:?}"
+            );
+        }
+    }
+
+    /// A full account is unchanged by any of this: the role only ever
+    /// subtracts, so every existing verdict has to survive it.
+    #[test]
+    fn a_full_account_is_judged_exactly_as_before() {
+        assert_eq!(check(&plain(), &args(&["GETDEL", "k"]), None, false), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["EVAL", "x", "0"]), None, false), Verdict::Allow);
+        assert!(matches!(
+            check(&plain(), &args(&["FLUSHALL"]), None, false),
+            Verdict::Confirm { .. }
+        ));
+    }
+
+    /// An empty frame is not a read. The decoder refuses it anyway, but a
+    /// gate that answered "allow" to a command with no name would be the
+    /// wrong thing to have behind it.
+    #[test]
+    fn an_empty_command_is_not_a_read() {
+        assert_eq!(check(&plain(), &[], None, true), Verdict::Deny);
+    }
+
     #[test]
     fn a_read_goes_straight_through() {
-        assert_eq!(check(&plain(), &args(&["GET", "k"]), None), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["PING"]), None), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["GET", "k"]), None, false), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["PING"]), None, false), Verdict::Allow);
     }
 
     #[test]
     fn a_destructive_command_is_refused_until_confirmed() {
         let server = plain();
-        let refused = check(&server, &args(&["FLUSHALL"]), None);
+        let refused = check(&server, &args(&["FLUSHALL"]), None, false);
         let Verdict::Confirm { kind, .. } = refused else {
             panic!("FLUSHALL must be gated, got {refused:?}");
         };
         assert_eq!(kind, DangerKind::FlushAll);
         // The same command with a confirmation goes through.
-        assert_eq!(check(&server, &args(&["FLUSHALL"]), Some("yes")), Verdict::Allow);
+        assert_eq!(check(&server, &args(&["FLUSHALL"]), Some("yes"), false), Verdict::Allow);
     }
 
     #[test]
     fn an_empty_confirmation_does_not_count() {
         assert!(matches!(
-            check(&plain(), &args(&["FLUSHALL"]), Some("   ")),
+            check(&plain(), &args(&["FLUSHALL"]), Some("   "), false),
             Verdict::Confirm { .. }
         ));
     }
@@ -142,24 +253,24 @@ mod tests {
         let server = plain();
         let mut a = args(&["GET"]);
         a.push(vec![0xff, 0x00, 0xfe]);
-        assert_eq!(check(&server, &a, None), Verdict::Allow);
+        assert_eq!(check(&server, &a, None, false), Verdict::Allow);
     }
 
     #[test]
     fn an_empty_command_is_allowed_here_and_refused_by_the_decoder() {
         // `resp::decode_command` rejects an empty frame before policy runs;
         // this only pins that policy itself does not panic on one.
-        assert_eq!(check(&plain(), &[], None), Verdict::Allow);
+        assert_eq!(check(&plain(), &[], None, false), Verdict::Allow);
     }
 
     #[test]
     fn the_write_confirm_setting_gates_plain_writes() {
         let mut server = plain();
-        assert_eq!(check(&server, &args(&["SET", "k", "v"]), None), Verdict::Allow);
+        assert_eq!(check(&server, &args(&["SET", "k", "v"]), None, false), Verdict::Allow);
         server.require_confirm_writes = Some(true);
         assert!(
             matches!(
-                check(&server, &args(&["SET", "k", "v"]), None),
+                check(&server, &args(&["SET", "k", "v"]), None, false),
                 Verdict::Confirm {
                     kind: DangerKind::GenericWrite,
                     ..
@@ -168,6 +279,6 @@ mod tests {
             "require_confirm_writes must gate an ordinary write"
         );
         // Reads stay free even then.
-        assert_eq!(check(&server, &args(&["GET", "k"]), None), Verdict::Allow);
+        assert_eq!(check(&server, &args(&["GET", "k"]), None, false), Verdict::Allow);
     }
 }

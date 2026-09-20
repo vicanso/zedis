@@ -162,7 +162,7 @@ docker run -d --name zedis-web -p 7379:7379 \
 
 Open <http://localhost:7379> and sign in as `admin` / `change-me`.
 
-- **`ZEDIS_BRIDGE_USERS` is required** — `name@password,name2@password2`. The bridge does not start without it. Each entry is split at its first `@`, so a name cannot contain `@` or `:`, and a password cannot contain a comma. Scripts can use HTTP Basic (`curl -u admin:change-me …/v1/servers`).
+- **Accounts are required** — either `ZEDIS_BRIDGE_USERS="name@password,name2@password2"` or `--users-file` (see [Accounts and sharing](#accounts-and-sharing)). The bridge does not start without one of them, and refuses to start with both. Each inline entry is split at its first `@`, so a name cannot contain `@` or `:`, and a password cannot contain a comma. Scripts can use HTTP Basic (`curl -u admin:change-me …/v1/servers`).
 - **`/data`** holds the server list (secrets encrypted with the `master.key` file beside it) and the saved logins. Keep the volume, or every restart starts empty.
 - **`--insecure-cookie` is for a plain-http trial only.** The login cookie is `Secure` by default, and a browser silently drops a `Secure` cookie that arrives over plain http from anything but `localhost` (and some browsers drop it even there). Without the flag the sign-in succeeds and the very next request answers `401`.
 - **A Redis on the Docker host** is not `127.0.0.1` from inside the container. Use `host.docker.internal` (on Linux, add `--add-host=host.docker.internal:host-gateway`) or `--network host`.
@@ -212,7 +212,34 @@ Open `https://tools.example.com/zedis/`. For nginx the equivalent is `location /
 
 ### Accounts and sharing
 
-A server entry belongs to the account that added it and nobody else sees it, unless its **Shared** box is ticked — then it is everyone's. There are no roles: any account may edit or delete a shared entry.
+A server entry belongs to the account that added it and nobody else sees it, unless its **Shared** box is ticked — then it is everyone's. Any account that can see a shared entry may edit or delete it.
+
+Accounts come from one of two places, never both:
+
+```bash
+# inline: ":ro" after the name makes the account read-only
+-e ZEDIS_BRIDGE_USERS="alice@secret,bob:ro@hunter2"
+```
+
+```toml
+# or a file: --users-file /data/users.toml (ZEDIS_BRIDGE_USERS_FILE)
+[[users]]
+name = "alice"
+password = "secret"
+
+[[users]]
+name = "bob"
+password = "hunter2"
+read_only = true
+```
+
+A file keeps the passwords out of the environment every `docker inspect` prints, and is the only form you can edit without restating the whole list. The role rides on the *name* in the inline form because a password may contain `:` and a name may not.
+
+A **read-only** account may look at everything it can see and change none of it: no writes to Redis, and no adding, editing or deleting a server entry. The refusal is the bridge's, not the page's — it answers `403` to anything that is not a read, so a script posting straight to `/v1/exec` is refused exactly like the page, and a confirmation does not buy a way past it. The test is an allowlist of reads, not a list of writes to avoid: `EVAL` runs any script, `BITFIELD` writes under a name that reads, `GETDEL` and `GETEX` are writes spelled like gets, and every module command is one the core table has never heard of — so anything unrecognised is refused, and a read that was forgotten shows up as a panel saying it is unavailable.
+
+Changing an account's password **or its role** ends the logins it already has, so a demotion reaches the browsers that are already signed in.
+
+This is defence in depth and not a substitute for Redis's own: a Redis ACL user with `-@write` is enforced by the server on every connection, whatever talks to it, while this is enforced by the bridge, which is the only thing the browser can reach. Use both — the ACL is the guarantee, the account is what greys the buttons out before the round trip.
 
 ### What the web version leaves out
 
