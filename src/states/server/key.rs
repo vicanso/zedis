@@ -326,6 +326,15 @@ impl ZedisServerState {
                 if this.keyword != keyword {
                     return;
                 }
+                // A manual refresh is mid-flight and the rows on screen are
+                // the ones it is about to replace wholesale. This result is a
+                // *diff* against them, so feeding it through `extend_keys`
+                // would spend the supersede on a handful of keys and empty
+                // the tree down to them. The re-scan re-reads everything
+                // anyway — drop this round.
+                if this.keys_superseded_by_next_batch {
+                    return;
+                }
                 if let Ok((_, keys)) = result {
                     let new_keys_set: AHashSet<SharedString> =
                         keys.iter().map(|(k, _, _)| SharedString::from(k.clone())).collect();
@@ -363,6 +372,15 @@ impl ZedisServerState {
                         } else {
                             this.extend_keys(keys_to_add);
                         }
+                        // The key tree rebuilds on this event and on nothing
+                        // else: no view observes this entity, so `notify`
+                        // alone only repaints rows that were already built.
+                        // Without it an auto-refresh kept the key set current
+                        // and the panel kept showing the previous one, until
+                        // something unrelated (a scan page, opening a key)
+                        // happened to rebuild — which is to say the feature
+                        // did nothing most of the time.
+                        cx.emit(ServerEvent::KeyTreeUpdated);
                         cx.notify();
                     }
                 }
@@ -370,29 +388,84 @@ impl ZedisServerState {
             cx,
         );
     }
-    pub fn handle_filter(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        self.reset_scan(cx);
+    /// Run the key tree's query: the keyword the user typed, under the
+    /// current [`QueryMode`].
+    ///
+    /// `refresh` says this asks the *same* question the tree is already
+    /// showing (⌘R, the ⋯ menu's Reload), so the rows stay up while the scan
+    /// runs and the first batch replaces them — see
+    /// [`ZedisServerState::begin_refresh_scan`]. An exact lookup is never
+    /// refreshed that way: `select_key` inserts its one key directly and
+    /// never reaches `extend_keys`, so nothing would ever take the old rows
+    /// out.
+    pub fn handle_filter(&mut self, keyword: SharedString, refresh: bool, cx: &mut Context<Self>) {
         match self.query_mode {
-            QueryMode::Prefix => self.scan_prefix(keyword, cx),
-            QueryMode::Exact => self.select_key(keyword, cx),
-            _ => self.scan(keyword, cx),
+            QueryMode::Prefix => {
+                self.begin_or_reset_scan(refresh, cx);
+                // Record what the tree is now showing. `scan_prefix` cannot do
+                // this itself — a folder expand calls it with a folder's
+                // prefix, which is not what the user asked for — so only the
+                // whole-tree query sets it. Without it `keyword` stayed empty
+                // through a prefix search and three things read that emptiness
+                // as "no filter": the `KeyScanStarted` subscriber wiped the
+                // search box to match, auto-refresh re-scanned `*` and poured
+                // unrelated keys into the tree every interval, and the status
+                // bar's Load more scanned unfiltered.
+                self.keyword = keyword.clone();
+                // Same reason for the tree-wide scanning flag: a folder expand
+                // drives the per-prefix spinner, which is the right scope for
+                // it, but a whole-tree query has no folder row to spin and the
+                // toolbar reads this one. Safe to set here and nowhere else in
+                // `scan_prefix`: the reset just above empties `loaded_prefixes`
+                // and clears `scan_completed`, so none of that method's early
+                // returns can fire and `scan_prefix_page` always runs to a
+                // `finished` round that puts it back.
+                self.scanning = true;
+                self.scan_prefix(keyword, cx);
+            }
+            QueryMode::Exact => {
+                self.reset_scan(cx);
+                self.select_key(keyword, cx);
+            }
+            _ => {
+                self.begin_or_reset_scan(refresh, cx);
+                self.start_scan(keyword, cx);
+            }
         }
     }
+
+    fn begin_or_reset_scan(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if refresh {
+            self.begin_refresh_scan(cx);
+        } else {
+            self.reset_scan(cx);
+        }
+    }
+
     /// Set the key-type filter and re-run the current filter so the tree shows
     /// only keys of that type (`None` clears it).
     pub fn set_type_filter(&mut self, type_filter: Option<KeyType>, cx: &mut Context<Self>) {
         self.type_filter = type_filter;
         let keyword = self.keyword.clone();
-        self.handle_filter(keyword, cx);
+        // A different type filter is a different question: the rows on screen
+        // are the wrong ones and go at once.
+        self.handle_filter(keyword, false, cx);
     }
     /// Collapse all keys
     pub fn collapse_all_keys(&mut self, cx: &mut Context<Self>) {
         cx.emit(ServerEvent::KeyCollapseAll);
         cx.emit(ServerEvent::KeyTreeUpdated);
     }
-    /// Initiates a new scan for keys matching the keyword.
+    /// Initiates a new scan for keys matching the keyword, dropping whatever
+    /// the tree holds first.
     pub fn scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan(cx);
+        self.start_scan(keyword, cx);
+    }
+
+    /// The scan itself, with the reset already done by the caller (which
+    /// chose whether the old rows stay up meanwhile).
+    fn start_scan(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.scanning = true;
         self.keyword = keyword.clone();
         cx.emit(ServerEvent::KeyScanStarted);
@@ -555,8 +628,10 @@ impl ZedisServerState {
                 if finished {
                     // Prefix scan is over (completed, hit the page cap, or
                     // errored) — drop the in-flight marker so the folder
-                    // spinner clears on the rebuild emitted just below.
+                    // spinner clears on the rebuild emitted just below, and
+                    // the tree-wide one a whole-tree prefix query set.
                     this.scanning_prefixes.remove(&prefix);
+                    this.scanning = false;
                     cx.emit(ServerEvent::KeyScanFinished);
                     cx.emit(ServerEvent::KeyTreeUpdated);
                     if this.keys.len() == 1

@@ -153,8 +153,10 @@ struct KeyTreeState {
     last_scan: Option<(SharedString, QueryMode)>,
     /// Set by `handle_filter` for the duration of a same-target
     /// refresh. Read (not consumed) by both collapse paths — the
-    /// `KeyScanReset` guard and the transient-empty branch in
-    /// `update_key_tree` — and cleared on `KeyScanFinished`.
+    /// `KeyScanReset` guard and the empty-result branch in
+    /// `update_key_tree` — and cleared on `KeyScanFinished`. Also what
+    /// tells the state layer to keep the rows up while the re-scan runs
+    /// (`ZedisServerState::begin_refresh_scan`).
     preserve_expand_on_scan: bool,
     /// Single-colour tag filter applied to the visible tree. `None`
     /// shows all rows; `Some(color)` keeps only leaves with that tag
@@ -501,6 +503,9 @@ impl ZedisKeyTree {
             _subscriptions: subscriptions,
         };
 
+        // A scan that finished before this view existed left no trace it can
+        // subscribe to — read it off the state before the first build.
+        this.catch_up_with_finished_scan(window, cx);
         // Initial tree build
         this.update_key_tree(true, cx);
         this.start_auto_refresh(cx);
@@ -559,6 +564,48 @@ impl ZedisKeyTree {
             self.update_key_tree(true, cx);
         }
     }
+    /// Bring a just-created view in line with a scan that already finished.
+    ///
+    /// Auto-expansion and `last_scan` hang off `KeyScanFinished`, and an
+    /// event only reaches the views that were subscribed when it fired. The
+    /// editor suite is built once the route resolves, which on a small
+    /// database over a local link is *after* the first scan has come back:
+    /// the tree then sat fully collapsed however few keys it held, and its
+    /// first ⌘R counted as a new query instead of a refresh. Whether that
+    /// happened came down to a couple of milliseconds either way, which is
+    /// what made it look random. The state knows both facts without the
+    /// event, so ask it.
+    fn catch_up_with_finished_scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (completed, keyword, query_mode) = {
+            let server_state = self.server_state.read(cx);
+            (
+                server_state.scan_completed(),
+                server_state.keyword(),
+                server_state.query_mode(),
+            )
+        };
+        if !completed {
+            // Still paging, or never scanned: `KeyScanFinished` is still to
+            // come and this view will be there for it.
+            return;
+        }
+        self.state.query_mode = query_mode;
+        // Same mirroring the `KeyScanStarted` subscriber does for a scan
+        // started from elsewhere (the memory analyzer's "search this prefix"),
+        // whose event this view also missed.
+        self.state.keyword = keyword.clone();
+        self.current_keyword.update(cx, |state, _cx| *state = keyword.clone());
+        if self.keyword_state.read(cx).value() != keyword {
+            self.keyword_state.update(cx, |input, cx| {
+                input.set_value(keyword.clone(), window, cx);
+            });
+        }
+        self.check_and_expand_keys(cx);
+        // What the displayed tree was scanned for, so the first refresh is
+        // recognised as one (see the `KeyScanFinished` handler).
+        self.state.last_scan = Some((keyword, query_mode));
+    }
+
     fn check_and_expand_keys(&mut self, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let keys = server_state.keys();
@@ -797,10 +844,11 @@ impl ZedisKeyTree {
                     {
                         view.state.scroll_to_index = Some(IndexPath::new(index));
                     }
-                    // `reset_scan` clears keys then emits KeyTreeUpdated,
-                    // so a refresh transiently rebuilds an empty tree.
-                    // Don't collapse for that — only a real "no results"
-                    // (new query, flag not set) resets expansion.
+                    // A refresh keeps its rows until the new batch lands,
+                    // so an empty tree here is either a server that really
+                    // has nothing left or a scan still on its way — neither
+                    // is a reason to throw the reader's folders away. Only a
+                    // real "no results" (new query, flag not set) collapses.
                     if result.is_empty() && !view.state.preserve_expand_on_scan {
                         view.reset_expand(cx);
                     }
@@ -866,8 +914,12 @@ impl ZedisKeyTree {
             }
         })
         .detach();
+        // A same-target refresh keeps the rows on screen until the new ones
+        // land (the state layer drops them in `extend_keys`); a new query
+        // clears them now.
+        let refresh = self.state.preserve_expand_on_scan;
         self.server_state.update(cx, move |handle, cx| {
-            handle.handle_filter(keyword, cx);
+            handle.handle_filter(keyword, refresh, cx);
         });
     }
     fn handle_clear_history(&mut self, cx: &mut Context<Self>) {

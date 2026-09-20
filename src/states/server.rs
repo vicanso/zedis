@@ -360,6 +360,14 @@ pub struct ZedisServerState {
     /// is actually held), which is what the per-rebuild clone used to cost.
     key_ttls: Arc<AHashMap<SharedString, i64>>,
 
+    /// Set by [`Self::begin_refresh_scan`]: the rows currently on screen are
+    /// the *previous* answer to the question the new scan is asking, kept so
+    /// the tree never blanks, and owed to whichever batch lands first —
+    /// `extend_keys` takes the flag and empties them before inserting.
+    /// `false` everywhere else, including after a plain [`Self::reset_scan`],
+    /// where the rows are gone already.
+    keys_superseded_by_next_batch: bool,
+
     /// Per-key String versions and collection change logs for this
     /// connection, under one memory budget with least-recently-used
     /// eviction (`history::KeyHistories`). In memory only, never persisted.
@@ -400,16 +408,47 @@ impl ZedisServerState {
 
     /// Reset all scan-related state (clears keys, cursors, etc.)
     ///
-    /// Called when switching servers or starting a new scan
+    /// Called when switching servers or starting a new scan.
     pub fn reset_scan(&mut self, cx: &mut Context<Self>) {
+        self.reset_scan_inner(false, cx);
+    }
+
+    /// Reset for a scan that *replaces* the tree rather than emptying it first.
+    ///
+    /// A refresh asks the tree the same question it is already answering, so
+    /// its rows are still the best answer anyone has until the new ones land:
+    /// clearing up front blanks the panel for a round trip and throws away
+    /// the reader's place in it. Everything else a new scan needs is reset
+    /// exactly as [`Self::reset_scan`] does — the cursors, the epoch that
+    /// makes an in-flight page stale, the per-prefix bookkeeping — only the
+    /// rows stay, and the first batch of the new scan takes them out (see
+    /// `extend_keys`).
+    ///
+    /// Not for a *new* query: those rows answer the old question and have to
+    /// go at once, or the tree shows results for a keyword nobody typed. And
+    /// not for a scan that may never reach `extend_keys` (an exact lookup),
+    /// which would leave the old rows standing for good.
+    pub fn begin_refresh_scan(&mut self, cx: &mut Context<Self>) {
+        self.reset_scan_inner(true, cx);
+    }
+
+    fn reset_scan_inner(&mut self, keep_rows: bool, cx: &mut Context<Self>) {
         self.keyword = SharedString::default();
+        // A refresh owes its rows to the first batch back; a new query owns
+        // them outright and empties them right here.
+        self.keys_superseded_by_next_batch = keep_rows;
         self.cursors = None;
-        self.keys.clear();
-        // Fresh Arc instead of `make_mut(..).clear()` — when a build still
-        // holds the old snapshot, `make_mut` would copy the whole map just
-        // to empty it.
-        self.key_ttls = Arc::new(AHashMap::new());
-        self.key_tree_id = Uuid::now_v7().to_string().into();
+        if !keep_rows {
+            self.keys.clear();
+            // Fresh Arc instead of `make_mut(..).clear()` — when a build still
+            // holds the old snapshot, `make_mut` would copy the whole map just
+            // to empty it.
+            self.key_ttls = Arc::new(AHashMap::new());
+            // The rows changed (to none); a refresh leaves them as they are,
+            // so re-identifying the tree would only cost a rebuild of the
+            // same rows. `extend_keys` bumps it when the new batch lands.
+            self.key_tree_id = Uuid::now_v7().to_string().into();
+        }
         self.scanning = false;
         self.scan_completed = false;
         self.scan_times = 0;
@@ -421,8 +460,15 @@ impl ZedisServerState {
         self.loaded_prefixes.clear();
         self.scanning_prefixes.clear();
         self.incomplete_prefixes.clear();
-        cx.emit(ServerEvent::KeyScanReset);
-        cx.emit(ServerEvent::KeyTreeUpdated);
+        if !keep_rows {
+            // Both events describe rows that just went away: the tree
+            // collapses and scrolls back to the top, then rebuilds empty. A
+            // refresh has neither to report — the rows on screen are still
+            // the ones it was built from — and announcing it anyway would
+            // cost a full rebuild of the tree it already has.
+            cx.emit(ServerEvent::KeyScanReset);
+            cx.emit(ServerEvent::KeyTreeUpdated);
+        }
     }
 
     /// If the currently-tracked server has been removed from the
@@ -495,6 +541,15 @@ impl ZedisServerState {
     ///
     /// If any new keys were added, generates a new tree ID to trigger UI refresh
     fn extend_keys(&mut self, keys: Vec<(SharedString, SharedString, i64)>) {
+        // The first batch of a refresh is what the displayed rows were
+        // waiting for: they go now, so a key deleted on the server does not
+        // survive the refresh that should have removed it. Emptied here
+        // rather than before the scan so the panel never blanks.
+        let superseded = std::mem::take(&mut self.keys_superseded_by_next_batch);
+        if superseded {
+            self.keys.clear();
+            self.key_ttls = Arc::new(AHashMap::new());
+        }
         self.keys.reserve(keys.len());
         let key_ttls = Arc::make_mut(&mut self.key_ttls);
         key_ttls.reserve(keys.len());
@@ -518,8 +573,10 @@ impl ZedisServerState {
             key_ttls.insert(key, ttl_secs);
         }
 
-        // Update tree ID only if new keys were added
-        if insert_count != 0 {
+        // Update tree ID only if new keys were added — or if a refresh just
+        // took the old ones out, which a batch of zero would otherwise leave
+        // on screen.
+        if insert_count != 0 || superseded {
             self.key_tree_id = Uuid::now_v7().to_string().into();
         }
     }
@@ -1419,5 +1476,103 @@ impl ZedisServerState {
         let db = self.db;
         self.server_status = RedisServerStatus::Failed;
         self.select(server_id, db, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn batch(keys: &[(&str, &str)]) -> Vec<(SharedString, SharedString, i64)> {
+        keys.iter()
+            .map(|(k, t)| (SharedString::from(k.to_string()), SharedString::from(t.to_string()), -1))
+            .collect()
+    }
+
+    fn key_names(state: &ZedisServerState) -> Vec<String> {
+        let mut names: Vec<String> = state.keys.keys().map(|k| k.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    /// ⌘R must not blank the tree: the rows stay up for the whole round trip
+    /// and the first batch of the re-scan is what replaces them — including
+    /// dropping a key that has since been deleted on the server.
+    #[gpui::test]
+    fn a_refresh_keeps_the_rows_until_the_first_batch_replaces_them(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, _cx| {
+            state.extend_keys(batch(&[("a", "string"), ("b", "hash")]));
+        });
+
+        state.update(cx, |state, cx| {
+            state.begin_refresh_scan(cx);
+            assert_eq!(key_names(state), ["a", "b"], "rows stay up while the scan runs");
+            assert!(state.keys_superseded_by_next_batch);
+
+            // "b" was deleted on the server since the last scan.
+            state.extend_keys(batch(&[("a", "string"), ("c", "list")]));
+            assert_eq!(key_names(state), ["a", "c"]);
+            assert!(
+                !state.keys_superseded_by_next_batch,
+                "spent once; the scan's later pages append"
+            );
+
+            state.extend_keys(batch(&[("d", "set")]));
+            assert_eq!(key_names(state), ["a", "c", "d"]);
+        });
+    }
+
+    /// An empty first batch still takes the old rows out — a refresh of a
+    /// database someone just flushed has to end up empty, not unchanged.
+    #[gpui::test]
+    fn a_refresh_that_finds_nothing_empties_the_tree(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.extend_keys(batch(&[("a", "string")]));
+            let before = state.key_tree_id.clone();
+            state.begin_refresh_scan(cx);
+            state.extend_keys(Vec::new());
+            assert!(key_names(state).is_empty());
+            assert_ne!(state.key_tree_id, before, "the tree has to rebuild for that");
+        });
+    }
+
+    /// A new query is not a refresh: its rows answer the old question and go
+    /// at once, with nothing left owing to a later batch.
+    #[gpui::test]
+    fn a_new_query_clears_the_rows_up_front(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.extend_keys(batch(&[("a", "string")]));
+            state.reset_scan(cx);
+            assert!(key_names(state).is_empty());
+            assert!(!state.keys_superseded_by_next_batch);
+        });
+    }
+
+    /// Every query mode that scans has to leave `keyword` saying what the
+    /// tree is showing. A prefix search used to leave it empty, and the three
+    /// readers of it — the search box mirror, auto-refresh and "load more" —
+    /// each took that to mean "no filter".
+    #[gpui::test]
+    fn a_prefix_query_records_what_the_tree_is_showing(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            // Nothing here wants the scan itself, only what it records
+            // before handing off, so stop it at the offline guard rather than
+            // let it dial a server that does not exist. The guard's one-per-
+            // 3s notice needs a global store this test has no use for — a
+            // fresh timestamp keeps it throttled.
+            state.manually_offline = true;
+            state.last_offline_notice = unix_ts();
+            for mode in [QueryMode::Prefix, QueryMode::All] {
+                state.set_query_mode(mode, cx);
+                state.handle_filter("user:".into(), false, cx);
+                assert_eq!(state.keyword(), "user:", "{mode:?}");
+                assert!(state.scanning(), "{mode:?} shows the toolbar it is working");
+            }
+        });
     }
 }

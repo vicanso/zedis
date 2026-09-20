@@ -178,6 +178,14 @@ impl ZedisKeyTree {
         let sticky_bg = cx.theme().sidebar;
         let icon_color = cx.theme().foreground.alpha(0.9);
         let label_color = cx.theme().foreground;
+        // Getting here while scanning means the tree has rows to show: the
+        // skeleton above only stands in for an empty one. Those rows are the
+        // *previous* answer during a refresh (`begin_refresh_scan` keeps them
+        // until the first batch replaces them), so say so — floating over the
+        // list rather than above it, which would shift every row on ⌘R.
+        let scanning = self.server_state.read(cx).scanning();
+        let muted = cx.theme().muted_foreground;
+        let popover_bg = cx.theme().popover;
 
         div()
             .p_1()
@@ -191,6 +199,29 @@ impl ZedisKeyTree {
             // step (scrollbar drags & keyboard nav land on existing notifies).
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .child(List::new(&self.key_tree_list_state))
+            .when(scanning, |this| {
+                this.child(
+                    h_flex()
+                        .absolute()
+                        .bottom_2()
+                        .left_0()
+                        .right_0()
+                        .justify_center()
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_full()
+                                .border_1()
+                                .border_color(border_color)
+                                .bg(popover_bg)
+                                .child(Spinner::new().with_size(px(12.)).color(muted))
+                                .child(Label::new(i18n_common(cx, "loading")).text_xs().text_color(muted)),
+                        ),
+                )
+            })
             .when(!sticky.is_empty(), |this| {
                 // Pinned ancestor path as ONE breadcrumb row — the chain joined
                 // with the key separator ("bench:gui:v1:hash") instead of one
