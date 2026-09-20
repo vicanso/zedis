@@ -125,6 +125,42 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # The browser build (ADR 9). `make lint` and `make test` are native-only
+  # and see nothing of wasm, so until this job existed a desktop refactor
+  # could take the whole web build with it and nobody found out until the
+  # nightly *image* failed to build, after the merge. `cargo check`, not a
+  # bundle: what breaks is compilation, and a wasm-opt run would cost ten
+  # minutes to tell us the same thing.
+  #
+  # zedis-web pins its own nightly toolchain (see its rust-toolchain.toml —
+  # gpui's browser backend needs wasm atomics), and rustup installs it on
+  # `cd zedis-web`. That channel is unpinned by date, so this job can go red
+  # on a nightly regression nobody here caused — it is still the right
+  # signal, because that same nightly is what builds the shipped image.
+  wasm:
+    name: wasm32 (browser build)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: install build dependencies
+        # gpui's bindgen wants libclang; the same list the Dockerfile uses
+        # for this build.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev pkg-config libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-wasm
+      - name: check every crate for the browser
+        # Run from the repo root: the Makefile recipe cds into zedis-web
+        # itself, which is what makes rustup pick up the nightly pin.
+        run: make check-web
+
   # Coverage is an informational signal here, never a gate — there is no
   # threshold and the job cannot fail the workflow.
   #

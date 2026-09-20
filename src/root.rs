@@ -21,22 +21,28 @@ use crate::connection::{DangerKind, clear_expired_cache, get_server};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{TRASH_RETENTION_MS, purge_all_trash};
 use crate::dialogs::*;
+#[cfg(not(target_family = "wasm"))]
 use crate::helpers::channel;
 use crate::helpers::pacing;
 use crate::helpers::{
-    ConfigRecovery, CrashReport, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction,
-    UpdateInfo, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, get_or_create_config_dir,
-    humanize_keystroke, is_app_store_build, unix_ts_millis,
+    ConfigRecovery, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction, WindowAction,
+    WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, humanize_keystroke, unix_ts_millis,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{CrashReport, UpdateInfo, get_or_create_config_dir, is_app_store_build};
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{
     Delivery, DiagnosticsInput, download_and_verify, export_diagnostics, fetch_latest_release, install_update,
     installer_requires_quit, platform_info,
 };
-use crate::startup::{GIT_SHA, PKG_NAME, VERSION};
+use crate::startup::PKG_NAME;
+#[cfg(not(target_family = "wasm"))]
+use crate::startup::{GIT_SHA, VERSION};
+#[cfg(not(target_family = "wasm"))]
+use crate::states::i18n_update;
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, i18n_update, update_app_state_and_save,
+    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, update_app_state_and_save,
     update_app_state_and_save_quiet,
 };
 // The window placement is written to `zedis.toml`; a tab has no file (ADR 9).
@@ -63,6 +69,7 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
+#[cfg(not(target_family = "wasm"))]
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

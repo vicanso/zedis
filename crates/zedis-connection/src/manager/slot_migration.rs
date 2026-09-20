@@ -27,8 +27,6 @@
 //! [`floors::ATOMIC_SLOT_MIGRATION`](crate::floors::ATOMIC_SLOT_MIGRATION),
 //! not a replacement.
 
-#[cfg(target_family = "wasm")]
-use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
 use redis::aio::ConnectionLike;
 use redis::{Value, cmd};

@@ -20,6 +20,7 @@ use gpui::{
     App, Bounds, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px,
     size,
 };
+#[cfg(not(target_family = "wasm"))]
 use std::process::Command;
 use std::sync::Arc;
 use zedis_ui::{AboutConfig, AboutLine, AboutLink, ZedisAboutPage};

@@ -65,7 +65,7 @@ documentation = "https://github.com/vicanso/zedis"
 rust-version = "1.96.0"
 
 [dependencies]
-ahash = "0.8.12"
+ahash = { workspace = true }
 anyhow = "1.0.104"
 arc-swap = { workspace = true }
 # What `smol::channel` re-exports, named directly. smol itself reaches
@@ -238,6 +238,7 @@ rust-embed = { version = "8.12.0", default-features = false, features = [
 gpui = { workspace = true, features = ["test-support"] }
 
 [workspace.dependencies]
+ahash = "0.8.12"
 # The in-tree crates. `version` is what a published manifest keeps once
 # cargo strips `path` — it must equal [workspace.package].version, and
 # scripts/bump-version.sh moves the two together.

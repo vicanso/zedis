@@ -228,44 +228,48 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
 
     let mut cpu_sys = Vec::with_capacity(n);
     let mut cpu_user = Vec::with_capacity(n);
-    let mut max_cpu_percent = f64::MIN;
-    let mut min_cpu_percent = f64::MAX;
+    // `<f64>::MIN`, not `f64::MIN`: bare `f64::MIN` resolves to the
+    // deprecated `std::f64` module constant, which the nightly toolchain the
+    // browser build uses warns about (stable does not). The angle brackets
+    // name the primitive, so the associated constant wins — don't simplify.
+    let mut max_cpu_percent = <f64>::MIN;
+    let mut min_cpu_percent = <f64>::MAX;
 
     let mut memory = Vec::with_capacity(n);
-    let mut max_memory = f64::MIN;
-    let mut min_memory = f64::MAX;
+    let mut max_memory = <f64>::MIN;
+    let mut min_memory = <f64>::MAX;
 
     let mut latency = Vec::with_capacity(n);
-    let mut min_latency_ms = f64::MAX;
-    let mut max_latency_ms = f64::MIN;
+    let mut min_latency_ms = <f64>::MAX;
+    let mut max_latency_ms = <f64>::MIN;
 
     let mut connected_clients = Vec::with_capacity(n);
-    let mut max_connected_clients = f64::MIN;
-    let mut min_connected_clients = f64::MAX;
+    let mut max_connected_clients = <f64>::MIN;
+    let mut min_connected_clients = <f64>::MAX;
 
     let mut total_commands_processed = Vec::with_capacity(n);
-    let mut max_total_commands_processed = f64::MIN;
-    let mut min_total_commands_processed = f64::MAX;
+    let mut max_total_commands_processed = <f64>::MIN;
+    let mut min_total_commands_processed = <f64>::MAX;
 
     let mut input_kbps = Vec::with_capacity(n);
     let mut output_kbps = Vec::with_capacity(n);
-    let mut max_net_kbps = f64::MIN;
-    let mut min_net_kbps = f64::MAX;
+    let mut max_net_kbps = <f64>::MIN;
+    let mut min_net_kbps = <f64>::MAX;
 
     let mut blocked_clients = Vec::with_capacity(n);
-    let mut max_blocked_clients = f64::MIN;
+    let mut max_blocked_clients = <f64>::MIN;
 
     let mut fragmentation = Vec::with_capacity(n);
-    let mut max_fragmentation = f64::MIN;
-    let mut min_fragmentation = f64::MAX;
+    let mut max_fragmentation = <f64>::MIN;
+    let mut min_fragmentation = <f64>::MAX;
 
     let mut key_hit_rate = Vec::with_capacity(n);
-    let mut max_key_hit_rate = f64::MIN;
-    let mut min_key_hit_rate = f64::MAX;
+    let mut max_key_hit_rate = <f64>::MIN;
+    let mut min_key_hit_rate = <f64>::MAX;
 
     let mut evicted_keys = Vec::with_capacity(n);
-    let mut max_evicted_keys = f64::MIN;
-    let mut min_evicted_keys = f64::MAX;
+    let mut max_evicted_keys = <f64>::MIN;
+    let mut min_evicted_keys = <f64>::MAX;
 
     for metrics in history_metrics.iter() {
         let duration_ms = if prev_metrics.timestamp_ms != 0 {

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{error::Error, helpers::get_or_create_config_dir};
+use crate::error::Error;
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::get_or_create_config_dir;
 use arc_swap::ArcSwap;
 use gpui::{Action, App, AppContext};
 use schemars::JsonSchema;
@@ -26,7 +28,9 @@ use std::sync::LazyLock;
 use std::{fmt, str};
 #[cfg(not(target_family = "wasm"))]
 use std::{fs::read_to_string, path::PathBuf};
-use tracing::{debug, error};
+#[cfg(not(target_family = "wasm"))]
+use tracing::debug;
+use tracing::error;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 

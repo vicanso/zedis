@@ -16,7 +16,7 @@
 //! of its elements, and similarity search around one of them.
 
 #[cfg(target_family = "wasm")]
-use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::reply;

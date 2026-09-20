@@ -25,9 +25,39 @@ const REPLACE_KEYSTROKE: &str = "cmd-shift-f";
 #[cfg(not(target_os = "macos"))]
 const REPLACE_KEYSTROKE: &str = "ctrl-h";
 use crate::connection::{Capability, ServerCommand};
+use gpui::{AnyElement, App};
 
 impl ZedisEditor {
     /// Render the key information bar with actions (copy, save, TTL, delete)
+    /// The value's size, rendered just after the key name (per the design):
+    /// the value alone, prefixed with a lock glyph only when the value is
+    /// read-only (read-only connection, or a binary the editor cannot edit).
+    fn size_chip(&self, size: SharedString, cx: &App) -> Option<AnyElement> {
+        if size.is_empty() {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        let value_readonly = self.readonly
+            || self
+                .bytes_editor
+                .as_ref()
+                .map(|editor| editor.read(cx).is_readonly())
+                .unwrap_or(false);
+        let mut row = h_flex().flex_none().items_center().gap_1();
+        if value_readonly {
+            row = row.child(Icon::new(CustomIconName::Lock).xsmall().text_color(muted));
+        }
+        Some(
+            row.child(
+                Label::new(size)
+                    .text_sm()
+                    .font_family(get_mono_font_family())
+                    .text_color(muted),
+            )
+            .into_any_element(),
+        )
+    }
+
     pub(super) fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
         let Some(key) = server_state.key() else {
@@ -101,92 +131,8 @@ impl ZedisEditor {
 
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
-        // Size display, rendered just after the key name (per the design): the
-        // value alone, prefixed with a lock glyph only when the value is
-        // read-only (read-only connection or non-editable binary). Built here,
-        // placed in the header row below.
-        let size_el = (!size.is_empty()).then(|| {
-            let muted = cx.theme().muted_foreground;
-            let value_readonly = self.readonly
-                || self
-                    .bytes_editor
-                    .as_ref()
-                    .map(|editor| editor.read(cx).is_readonly())
-                    .unwrap_or(false);
-            let mut row = h_flex().flex_none().items_center().gap_1();
-            if value_readonly {
-                row = row.child(Icon::new(CustomIconName::Lock).xsmall().text_color(muted));
-            }
-            row.child(
-                Label::new(size)
-                    .text_sm()
-                    .font_family(get_mono_font_family())
-                    .text_color(muted),
-            )
-            .into_any_element()
-        });
-
-        // Storage encoding + heat, rendered next to the size as one muted
-        // mono chip. Each half explains itself on hover, and each appears
-        // only if this server answered the command behind it — so a proxy
-        // that hides `OBJECT` degrades to exactly the bar we had before.
-        let object_el = {
-            let muted = cx.theme().muted_foreground;
-            let mono = get_mono_font_family();
-            let heat_part = match heat {
-                HeatMetric::None => None,
-                HeatMetric::Freq(count) => Some((
-                    format!("{} {}", i18n_editor(cx, "object_freq_label"), count),
-                    i18n_editor(cx, "object_freq_tooltip"),
-                )),
-                HeatMetric::IdleTime(secs) => Some((
-                    format!(
-                        "{} {}",
-                        i18n_editor(cx, "object_idle_label"),
-                        format_duration_units(Duration::from_secs(secs))
-                    ),
-                    i18n_editor(cx, "object_idle_tooltip"),
-                )),
-            };
-            let mut parts: Vec<gpui::AnyElement> = Vec::new();
-            if let Some(encoding) = encoding {
-                let tip = i18n_editor(cx, "object_encoding_tooltip");
-                parts.push(
-                    div()
-                        .id("zedis-editor-encoding")
-                        .flex_none()
-                        .child(
-                            Label::new(encoding)
-                                .text_xs()
-                                .font_family(mono.clone())
-                                .text_color(muted),
-                        )
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .into_any_element(),
-                );
-            }
-            if let Some((label, tip)) = heat_part {
-                if !parts.is_empty() {
-                    parts.push(Label::new("·").text_xs().text_color(muted).into_any_element());
-                }
-                parts.push(
-                    div()
-                        .id("zedis-editor-heat")
-                        .flex_none()
-                        .child(Label::new(label).text_xs().font_family(mono).text_color(muted))
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .into_any_element(),
-                );
-            }
-            (!parts.is_empty()).then(|| {
-                h_flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_1()
-                    .children(parts)
-                    .into_any_element()
-            })
-        };
+        let size_el = self.size_chip(size, cx);
+        let object_el = object_chip(encoding, heat, cx);
 
         // Add save button for string editor if value is modified
         if let Some(bytes_editor) = &self.bytes_editor {
@@ -697,4 +643,67 @@ impl ZedisEditor {
             .children(object_el)
             .children(btns)
     }
+}
+
+/// Storage encoding + heat as one muted mono chip, for the slot next to the
+/// size. Each half explains itself on hover, and each appears only if this
+/// server answered the command behind it — so a proxy that hides `OBJECT`
+/// degrades to exactly the bar we had before, and a server that answers
+/// neither gets no chip at all.
+fn object_chip(encoding: Option<SharedString>, heat: HeatMetric, cx: &App) -> Option<AnyElement> {
+    let muted = cx.theme().muted_foreground;
+    let mono = get_mono_font_family();
+    let heat_part = match heat {
+        HeatMetric::None => None,
+        HeatMetric::Freq(count) => Some((
+            format!("{} {}", i18n_editor(cx, "object_freq_label"), count),
+            i18n_editor(cx, "object_freq_tooltip"),
+        )),
+        HeatMetric::IdleTime(secs) => Some((
+            format!(
+                "{} {}",
+                i18n_editor(cx, "object_idle_label"),
+                format_duration_units(Duration::from_secs(secs))
+            ),
+            i18n_editor(cx, "object_idle_tooltip"),
+        )),
+    };
+    let mut parts: Vec<AnyElement> = Vec::new();
+    if let Some(encoding) = encoding {
+        let tip = i18n_editor(cx, "object_encoding_tooltip");
+        parts.push(
+            div()
+                .id("zedis-editor-encoding")
+                .flex_none()
+                .child(
+                    Label::new(encoding)
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(muted),
+                )
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .into_any_element(),
+        );
+    }
+    if let Some((label, tip)) = heat_part {
+        if !parts.is_empty() {
+            parts.push(Label::new("·").text_xs().text_color(muted).into_any_element());
+        }
+        parts.push(
+            div()
+                .id("zedis-editor-heat")
+                .flex_none()
+                .child(Label::new(label).text_xs().font_family(mono).text_color(muted))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .into_any_element(),
+        );
+    }
+    (!parts.is_empty()).then(|| {
+        h_flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .children(parts)
+            .into_any_element()
+    })
 }

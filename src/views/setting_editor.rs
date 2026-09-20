@@ -27,9 +27,11 @@ use crate::{
         update_app_state_and_save_quiet,
     },
 };
+#[cfg(not(target_family = "wasm"))]
+use gpui::PathPromptOptions;
 use gpui::{
-    AnyElement, App, Bounds, Entity, FontWeight, PathPromptOptions, Subscription, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, prelude::*, px, size,
+    AnyElement, App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    prelude::*, px, size,
 };
 use gpui_kit::component::{
     ActiveTheme, Sizable, WindowExt,

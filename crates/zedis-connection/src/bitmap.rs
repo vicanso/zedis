@@ -15,7 +15,7 @@
 //! Bitmaps: what the bitmap viewer shows and does.
 
 #[cfg(target_family = "wasm")]
-use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use crate::server_db::ServerDb;
 use redis::cmd;

@@ -21,7 +21,7 @@
 //! one node that listed that client, since an id means nothing anywhere else.
 
 #[cfg(target_family = "wasm")]
-use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::bridge::BridgeQuery as _;
 use crate::config::RedisServer;
 use crate::error::Error;
 use crate::open_single_connection;

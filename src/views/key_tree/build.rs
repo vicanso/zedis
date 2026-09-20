@@ -184,81 +184,6 @@ pub(super) fn stamp_folder_tag_aggregates(
     }
 }
 
-/// Expands the user's `expanded_items` through single-child folder chains:
-/// while an expanded folder's only child is itself a folder, that child is
-/// treated as expanded too. Lets a deep single-child namespace
-/// (`app:user` → `profile` → leaves) open in one click instead of one click
-/// per level. Returns the augmented set (owned, so the caller can borrow
-/// `&str` views into it). Recomputed every rebuild, so a streaming scan that
-/// later reveals a second child stops the auto-expand at that level on the
-/// next pass. No-op (skips the child-map pass) when nothing is expanded.
-pub(super) fn single_child_expanded_set(
-    keys: &[(SharedString, KeyType)],
-    expanded_items: &AHashSet<SharedString>,
-    suppressed: &AHashSet<SharedString>,
-    keyword: &str,
-    separator: &str,
-    max_depth: usize,
-) -> AHashSet<String> {
-    let mut effective: AHashSet<String> = expanded_items.iter().map(|s| s.to_string()).collect();
-    if effective.is_empty() {
-        return effective;
-    }
-    // For each folder prefix: (sole-child id, whether that child is itself a
-    // folder, whether more than one distinct child was seen). Tracking just
-    // the first child plus a "multiple" flag avoids a per-folder child set.
-    let mut child_info: AHashMap<String, (String, bool, bool)> = AHashMap::new();
-    for (key, _) in keys {
-        if !keyword.is_empty() && !key.contains(keyword) {
-            continue;
-        }
-        let segs = split_key_segments(key, separator, max_depth);
-        // One segment = a plain leaf (no separator, or every separator sat
-        // inside a hash tag / quoted blob) — nothing to fold.
-        if segs.len() <= 1 {
-            continue;
-        }
-        let mut dir = String::new();
-        for (i, seg) in segs.iter().enumerate() {
-            let parent = dir.clone();
-            if i > 0 {
-                dir.push_str(separator);
-            }
-            dir.push_str(seg);
-            let child_is_folder = i + 1 < segs.len();
-            match child_info.entry(parent) {
-                Vacant(e) => {
-                    e.insert((dir.clone(), child_is_folder, false));
-                }
-                Occupied(mut e) => {
-                    let info = e.get_mut();
-                    if info.0 == dir {
-                        info.1 |= child_is_folder;
-                    } else {
-                        info.2 = true;
-                    }
-                }
-            }
-        }
-    }
-    // Follow single-folder-child links transitively from each expanded folder,
-    // but never auto-open a folder the user explicitly collapsed.
-    let suppressed_set: AHashSet<String> = suppressed.iter().map(|s| s.to_string()).collect();
-    let mut stack: Vec<String> = effective.iter().cloned().collect();
-    while let Some(dir) = stack.pop() {
-        let Some((child, child_is_folder, multiple)) = child_info.get(dir.as_str()) else {
-            continue;
-        };
-        if *multiple || !*child_is_folder || suppressed_set.contains(child) {
-            continue;
-        }
-        if effective.insert(child.clone()) {
-            stack.push(child.clone());
-        }
-    }
-    effective
-}
-
 /// How sibling rows are ordered. Folders always come before leaves; this
 /// decides the order inside each group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -427,10 +352,12 @@ pub(super) fn new_key_tree_items(input: KeyTreeBuildInput<'_>) -> Vec<KeyTreeIte
     // folder chains hanging off them, so drilling into a deep single-child
     // namespace (`app:user` → `profile` → leaves) opens straight through in
     // one click instead of one click per level.
+    // The pass itself is pure `&str` work and lives in `zedis-core`, where
+    // it is benched and tested; this is the `SharedString` boundary.
     let effective_expanded = single_child_expanded_set(
-        &keys,
-        &expanded_items,
-        &suppressed,
+        keys.iter().map(|(key, _)| key.as_ref()),
+        expanded_items.iter().map(SharedString::as_ref),
+        suppressed.iter().map(SharedString::as_ref),
         &keyword_substring,
         separator,
         max_key_tree_depth,

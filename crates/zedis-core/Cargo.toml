@@ -15,6 +15,7 @@ readme = "./README.md"
 rust-version.workspace = true
 
 [dependencies]
+ahash = { workspace = true }
 base64 = { workspace = true }
 dashmap = { workspace = true }
 humantime = { workspace = true }

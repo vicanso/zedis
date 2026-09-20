@@ -18,11 +18,16 @@
 use crate::connection::{RedisServer, get_servers};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{DbOpenFailure, init_database, quarantine_database};
-use crate::states::{GlobalEvent, NotificationAction, Route, ServerView, ZedisAppState, ZedisGlobalStore};
+#[cfg(not(target_family = "wasm"))]
+use crate::states::ZedisAppState;
+use crate::states::{GlobalEvent, NotificationAction, Route, ServerView, ZedisGlobalStore};
+#[cfg(not(target_family = "wasm"))]
 use crate::{init_caches, launch};
-use gpui::{App, SharedString, Window, div, prelude::*};
-// Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
-// server-side decorations — see the cfg at the open_window call).
+use gpui::App;
+#[cfg(not(target_family = "wasm"))]
+use gpui::{SharedString, Window, div, prelude::*};
+// The database-recovery window draws these, and it is desktop-only.
+#[cfg(not(target_family = "wasm"))]
 use gpui_kit::component::{
     ActiveTheme, StyledExt,
     button::{Button, ButtonVariants},
@@ -31,7 +36,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use rust_i18n::t;
-use tracing::{error, info, warn};
+#[cfg(not(target_family = "wasm"))]
+use tracing::error;
+use tracing::{info, warn};
 
 pub(crate) const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");

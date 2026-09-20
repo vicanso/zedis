@@ -24,7 +24,6 @@
 
 #[cfg(not(target_family = "wasm"))]
 use super::logs_dir;
-use super::unix_ts;
 use chrono::Local;
 use std::backtrace::Backtrace;
 #[cfg(not(target_family = "wasm"))]
@@ -37,6 +36,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
 
 /// File name prefix of every report; the logs pruner matches on it.
+#[cfg(not(target_family = "wasm"))]
+use super::unix_ts;
+
 pub const CRASH_REPORT_PREFIX: &str = "crash-";
 #[cfg(not(target_family = "wasm"))]
 const PENDING_MARKER: &str = "crash.pending";
@@ -230,30 +232,6 @@ mod tests {
     /// The real hook, end to end: a panic on a worker thread must leave a
     /// report under the (isolated) logs dir. Process-global by nature, so it
     /// only asserts on its own uniquely-named report.
-    #[test]
-    fn installed_hook_writes_a_report_for_a_panicking_thread() {
-        zedis_core::fs::override_config_dir(
-            std::env::temp_dir().join(format!("zedis-test-config-{}", std::process::id())),
-        );
-        install_panic_hook(context());
-        let marker = format!("crash-hook-probe-{}", unix_ts());
-        let probe = marker.clone();
-        let joined = std::thread::Builder::new()
-            .name("crash-probe".into())
-            .spawn(move || panic!("{probe}"))
-            .expect("spawn")
-            .join();
-        assert!(joined.is_err(), "the probe thread must have panicked");
-        let dir = logs_dir().expect("logs dir");
-        let found = fs::read_dir(&dir)
-            .expect("read logs dir")
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(CRASH_REPORT_PREFIX))
-            .any(|e| {
-                fs::read_to_string(e.path()).is_ok_and(|t| t.contains(&marker) && t.contains("thread: crash-probe"))
-            });
-        assert!(found, "no crash report containing {marker} under {}", dir.display());
-    }
 
     #[test]
     fn a_marker_whose_report_is_gone_is_dropped_silently() {

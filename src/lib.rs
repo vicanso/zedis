@@ -22,9 +22,8 @@ use crate::helpers::{
     set_configured_proxy, take_instance_server, take_pending_crash,
 };
 use crate::helpers::{
-    DiagnosticsAction, MemuAction, PaletteAction, RecentKeysAction, ShortcutsAction, WindowAction,
-    apply_default_ui_font_size, apply_fonts, load_keybinding_overrides, new_hot_keys, set_datetime_prefs,
-    take_config_recoveries, with_app_identity,
+    MemuAction, PaletteAction, RecentKeysAction, ShortcutsAction, apply_default_ui_font_size, apply_fonts,
+    load_keybinding_overrides, new_hot_keys, set_datetime_prefs, take_config_recoveries, with_app_identity,
 };
 use crate::states::{
     HINT_WELCOME, Route, ServerView, ZedisAppState, ZedisGlobalStore, flush_app_state_on_quit,
@@ -74,7 +73,10 @@ pub mod states;
 pub mod tray;
 pub mod views;
 pub mod window_setup;
+#[cfg(not(target_family = "wasm"))]
 use crate::dialogs::*;
+#[cfg(not(target_family = "wasm"))]
+use crate::helpers::{DiagnosticsAction, WindowAction};
 use crate::root::*;
 use crate::startup::*;
 use crate::window_setup::*;

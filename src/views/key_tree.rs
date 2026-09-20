@@ -13,11 +13,13 @@
 // limitations under the License.
 
 #[cfg(not(target_family = "wasm"))]
+use crate::connection::get_server;
+#[cfg(not(target_family = "wasm"))]
 use crate::views::{ExportSource, open_migration_export_window};
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
-    connection::{Capability, ExpireCondition, ServerCommand, get_server},
+    connection::{Capability, ExpireCondition, ServerCommand},
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::{
         KeyMetadata, TagColor, get_favorites_manager, get_key_metadata_manager, get_recent_keys_manager,
@@ -25,8 +27,8 @@ use crate::{
     },
     helpers::{
         EditorAction, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
-        humanize_keystroke, parse_duration, split_key_segments, theme_color_for_tag, ttl_chip_kind,
-        validate_long_string, validate_ttl,
+        humanize_keystroke, parse_duration, single_child_expanded_set, split_key_segments, theme_color_for_tag,
+        ttl_chip_kind, validate_long_string, validate_ttl,
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, ProbKind, QueryMode, ServerEvent, ServerView, ZedisGlobalStore,
@@ -60,7 +62,6 @@ use regex::Regex;
 use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tracing::{info, warn};
 use web_time::Instant;

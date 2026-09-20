@@ -48,6 +48,9 @@
 /// A key whose braces or quotes never close is rescanned with both treated as
 /// ordinary text, so one malformed key can't collapse into a single
 /// unsplittable segment.
+use ahash::{AHashMap, AHashSet};
+use std::collections::hash_map::Entry::{Occupied, Vacant};
+
 pub fn split_key_segments<'a>(key: &'a str, separator: &str, max_depth: usize) -> Vec<&'a str> {
     let depth = max_depth.max(1);
     if depth == 1 || separator.is_empty() {
@@ -197,6 +200,89 @@ pub fn folder_prefixes(key: &str, separator: &str, max_key_tree_depth: usize) ->
     prefixes
 }
 
+/// Expands `expanded` through single-child folder chains: while an expanded
+/// folder's only child is itself a folder, that child counts as expanded too.
+/// Lets a deep single-child namespace (`app:user` → `profile` → leaves) open
+/// in one click instead of one click per level, and never auto-opens a folder
+/// the user explicitly collapsed (`suppressed`).
+///
+/// Returns the augmented set, owned, so the caller can borrow `&str` views
+/// into it. Recomputed every rebuild, so a streaming scan that later reveals a
+/// second child stops the auto-expand at that level on the next pass. Nothing
+/// expanded means nothing to follow, and the whole child-map pass is skipped.
+///
+/// The second full pass over the keyspace per rebuild (after
+/// [`split_key_segments`] itself), which is why it is benched here rather
+/// than left in the view: it takes `&str`s and answers `String`s, so the
+/// caller converts its `SharedString`s at the boundary and no gpui type
+/// reaches this crate.
+pub fn single_child_expanded_set<'a>(
+    keys: impl IntoIterator<Item = &'a str>,
+    expanded: impl IntoIterator<Item = &'a str>,
+    suppressed: impl IntoIterator<Item = &'a str>,
+    keyword: &str,
+    separator: &str,
+    max_depth: usize,
+) -> AHashSet<String> {
+    let mut effective: AHashSet<String> = expanded.into_iter().map(str::to_string).collect();
+    if effective.is_empty() {
+        return effective;
+    }
+    // Per folder prefix: (sole-child id, whether that child is itself a
+    // folder, whether more than one distinct child was seen). Tracking just
+    // the first child plus a "multiple" flag avoids a per-folder child set.
+    let mut child_info: AHashMap<String, (String, bool, bool)> = AHashMap::new();
+    for key in keys {
+        if !keyword.is_empty() && !key.contains(keyword) {
+            continue;
+        }
+        let segments = split_key_segments(key, separator, max_depth);
+        // One segment = a plain leaf (no separator, or every separator sat
+        // inside a hash tag / quoted blob) — nothing to fold.
+        if segments.len() <= 1 {
+            continue;
+        }
+        let mut dir = String::new();
+        for (index, segment) in segments.iter().enumerate() {
+            let parent = dir.clone();
+            if index > 0 {
+                dir.push_str(separator);
+            }
+            dir.push_str(segment);
+            let child_is_folder = index + 1 < segments.len();
+            match child_info.entry(parent) {
+                Vacant(slot) => {
+                    slot.insert((dir.clone(), child_is_folder, false));
+                }
+                Occupied(mut slot) => {
+                    let info = slot.get_mut();
+                    if info.0 == dir {
+                        info.1 |= child_is_folder;
+                    } else {
+                        info.2 = true;
+                    }
+                }
+            }
+        }
+    }
+    // Follow single-folder-child links transitively from each expanded folder,
+    // but never auto-open a folder the user explicitly collapsed.
+    let suppressed: AHashSet<String> = suppressed.into_iter().map(str::to_string).collect();
+    let mut stack: Vec<String> = effective.iter().cloned().collect();
+    while let Some(dir) = stack.pop() {
+        let Some((child, child_is_folder, multiple)) = child_info.get(dir.as_str()) else {
+            continue;
+        };
+        if *multiple || !*child_is_folder || suppressed.contains(child) {
+            continue;
+        }
+        if effective.insert(child.clone()) {
+            stack.push(child.clone());
+        }
+    }
+    effective
+}
+
 #[cfg(test)]
 mod split_key_segments_tests {
     use super::split_key_segments;
@@ -324,5 +410,88 @@ mod folder_prefixes_tests {
             folder_prefixes("a:b:c:d", ":", 3),
             vec!["a".to_string(), "a:b".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod single_child_expanded_set_tests {
+    use super::single_child_expanded_set;
+
+    /// Keys, expanded folders and suppressed folders as the view hands them
+    /// over after converting its `SharedString`s.
+    fn expanded(keys: &[&str], open: &[&str], collapsed: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = single_child_expanded_set(
+            keys.iter().copied(),
+            open.iter().copied(),
+            collapsed.iter().copied(),
+            "",
+            ":",
+            10,
+        )
+        .into_iter()
+        .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_single_child_chain_opens_all_the_way_from_one_expanded_folder() {
+        // app:user → profile → name is a chain of sole children, so opening
+        // `app` should reach the deepest folder in one click.
+        let keys = ["app:user:profile:name", "app:user:profile:email"];
+        assert_eq!(
+            expanded(&keys, &["app"], &[]),
+            ["app", "app:user", "app:user:profile"],
+            "the chain stops at the folder whose children are leaves"
+        );
+        // Nothing expanded means nothing to follow, and the child map is not
+        // even built.
+        assert!(expanded(&keys, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_second_child_stops_the_chain_where_it_appears() {
+        let keys = ["app:user:profile:name", "app:other:x"];
+        assert_eq!(
+            expanded(&keys, &["app"], &[]),
+            ["app"],
+            "`app` has two children, so nothing is auto-opened"
+        );
+        // Deeper down, the chain resumes: `app:user` has one folder child.
+        assert_eq!(expanded(&keys, &["app:user"], &[]), ["app:user", "app:user:profile"]);
+    }
+
+    #[test]
+    fn a_folder_the_user_collapsed_is_never_auto_opened() {
+        let keys = ["app:user:profile:name"];
+        assert_eq!(
+            expanded(&keys, &["app"], &["app:user"]),
+            ["app"],
+            "the suppressed folder stops the walk, and nothing past it opens"
+        );
+    }
+
+    #[test]
+    fn only_folder_children_are_followed_and_a_keyword_narrows_the_map() {
+        // A sole child that is a *leaf* is not a folder to open.
+        assert_eq!(expanded(&["app:only"], &["app"], &[]), ["app"]);
+
+        // With a keyword, the child map is built from the matching keys only,
+        // so a folder that has two children overall can look single-child.
+        let keys = ["app:user:profile:x", "app:other:y"];
+        let mut out: Vec<String> = single_child_expanded_set(keys.iter().copied(), ["app"], [], "user", ":", 10)
+            .into_iter()
+            .collect();
+        out.sort();
+        assert_eq!(out, ["app", "app:user", "app:user:profile"]);
+    }
+
+    #[test]
+    fn a_key_with_no_levels_is_skipped_and_the_depth_cap_is_respected() {
+        // One segment: nothing to fold, and no panic.
+        assert_eq!(expanded(&["plain", "{tag:only}"], &["plain"], &[]), ["plain"]);
+        // max_depth 1 makes every key a single segment, so no chain exists.
+        let out = single_child_expanded_set(["a:b:c"], ["a"], [], "", ":", 1);
+        assert_eq!(out.into_iter().collect::<Vec<_>>(), ["a"]);
     }
 }

@@ -32,7 +32,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use zedis_core::fuzzy::{fuzzy_score_prepared, prepare_fuzzy_query};
 use zedis_core::jsonpath::run_jsonpath;
-use zedis_core::key_segments::{folder_prefixes, split_key_segments};
+use zedis_core::key_segments::{folder_prefixes, single_child_expanded_set, split_key_segments};
 use zedis_core::rdb::RdbParser;
 
 /// Realistic key names in the shapes the tree and palettes see.
@@ -168,5 +168,53 @@ fn bench_key_segments(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_fuzzy, bench_rdb, bench_jsonpath, bench_key_segments);
+/// The key tree's *second* pass over the keyspace: for every rebuild it
+/// splits each key again to find which folders have a single child, so an
+/// expand/collapse pays it on top of `key_segments_split_10k`. Benched with a
+/// realistic expanded set — an empty one short-circuits the whole thing,
+/// which is the cheap case and not the one worth watching.
+fn bench_single_child_expansion(c: &mut Criterion) {
+    // A deep single-child namespace is the shape the pass exists for: the
+    // chain walk has something to follow at every level.
+    let deep: Vec<String> = (0..10_000)
+        .map(|i| format!("app:tenant{}:user:profile:field:{i}", i % 50))
+        .collect();
+    let keys: Vec<&str> = deep.iter().map(String::as_str).collect();
+    let open: Vec<String> = (0..50).map(|i| format!("app:tenant{i}")).collect();
+    let expanded: Vec<&str> = open.iter().map(String::as_str).collect();
+
+    c.bench_function("key_tree_single_child_expansion_10k", |b| {
+        b.iter(|| {
+            let set = single_child_expanded_set(
+                black_box(keys.iter().copied()),
+                expanded.iter().copied(),
+                [],
+                "",
+                ":",
+                10,
+            );
+            black_box(set.len())
+        })
+    });
+
+    // Flat keys: no chain to follow, but the child map is still built over
+    // every key — the cost floor of having anything expanded at all.
+    let flat = key_corpus();
+    let flat_keys: Vec<&str> = flat.iter().map(String::as_str).collect();
+    c.bench_function("key_tree_single_child_expansion_10k_flat", |b| {
+        b.iter(|| {
+            let set = single_child_expanded_set(black_box(flat_keys.iter().copied()), ["user"], [], "", ":", 10);
+            black_box(set.len())
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_fuzzy,
+    bench_rdb,
+    bench_jsonpath,
+    bench_key_segments,
+    bench_single_child_expansion
+);
 criterion_main!(benches);

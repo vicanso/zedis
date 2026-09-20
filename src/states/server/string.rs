@@ -29,6 +29,7 @@ use lz4_flex::block::decompress_size_prepended;
 use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
+#[cfg(not(target_family = "wasm"))]
 use tracing::warn;
 use zedis_core::codec::{base64_text, bson, java, jwt, php, pickle, url};
 

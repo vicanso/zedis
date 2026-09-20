@@ -16,7 +16,7 @@
 //! Sketch, Top-K, t-digest: what their viewer shows and its one probe box.
 
 #[cfg(target_family = "wasm")]
-use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
 use crate::reply;
 use crate::server_db::ServerDb;
