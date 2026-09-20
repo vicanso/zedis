@@ -34,6 +34,11 @@
 //! GitHub Releases API to at least detect a new version; the UI then opens the
 //! release page instead of an in-app download.
 //!
+//! Every request has a second address: the release workflow mirrors each
+//! tagged release to Gitee asset for asset, and the check, the manifest, the
+//! notes and the download all fall back to it when GitHub cannot be reached —
+//! see [`GITEE_API`] for why a mirror does not weaken the checksum story.
+//!
 //! Network + filesystem only; the dialog/toast orchestration lives in `main.rs`.
 
 use super::proxy::app_proxy;
@@ -57,6 +62,30 @@ const MANIFEST_URL: &str = "https://github.com/vicanso/zedis/releases/latest/dow
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/vicanso/zedis/releases/latest";
 /// Browser fallback when no manifest/asset is available.
 const RELEASES_PAGE: &str = "https://github.com/vicanso/zedis/releases/latest";
+/// The Gitee mirror the release workflow copies every *tagged* release to,
+/// asset for asset. It exists for one audience: networks that cannot reach
+/// GitHub at all, where every check above would only ever fail and the user
+/// would never learn a release happened.
+///
+/// A mirror is safe only because it is not a second build. The workflow
+/// uploads the same files the GitHub release carries — `latest.json`
+/// included — so the SHA-256 that vouches for a download is unchanged
+/// whichever host served the bytes, and a mirror serving something else
+/// fails the same check a corrupted transfer would. Anonymous reads; the
+/// token in CI is for writing.
+///
+/// Only tagged releases are mirrored, which also keeps the nightly question
+/// out of it: [`fetch_from_release_list`] stays GitHub-only because the
+/// rolling build is not there to find.
+const GITEE_API: &str = "https://gitee.com/api/v5/repos/vicanso/zedis";
+/// The mirror's web root. Attachments do not live under `/api` and need no
+/// token — see [`gitee_download_url`].
+const GITEE_REPO: &str = "https://gitee.com/vicanso/zedis";
+/// The mirror has no per-release page: `/releases/tag/<tag>` and
+/// `/releases/<tag>` both redirect to a repository *archive* (measured
+/// 2026-09-20 against the live mirror), so the list is what a browser can
+/// usefully be pointed at.
+const GITEE_RELEASES_PAGE: &str = "https://gitee.com/vicanso/zedis/releases";
 /// The release list, newest first, for the pre-release channel: tagged
 /// pre-releases and the rolling `nightly` build both live here and never in
 /// `/releases/latest`.
@@ -68,6 +97,15 @@ const NIGHTLY_TAG: &str = "nightly";
 const NIGHTLY_GRACE: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long to spend *reaching* a host, as opposed to how long a transfer
+/// may take. [`DOWNLOAD_TIMEOUT`] is five minutes because a large installer
+/// over a slow link legitimately needs them — but that same budget would
+/// also cover the GitHub attempt that has to fail before the mirror is
+/// tried, so on exactly the networks the mirror exists for a blocked GitHub
+/// could sit for five minutes behind a progress bar that never moved.
+/// Splitting the two abandons an unreachable host in seconds while a slow
+/// one still gets the whole transfer window.
+const REACH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Upper bound on an installer download (guards against a runaway body).
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -175,16 +213,25 @@ pub fn fetch_latest_release(include_prerelease: bool) -> Result<Option<UpdateInf
 }
 
 fn fetch_from_manifest() -> Result<Option<UpdateInfo>> {
-    let text = http_get_string(MANIFEST_URL)?;
-    let manifest: Manifest = serde_json::from_str(&text)?;
+    // The mirror answers only where GitHub could not, and costs a request
+    // more there because Gitee has no `latest/download` shortcut.
+    let (manifest, from_mirror) = match http_get_string(MANIFEST_URL) {
+        Ok(text) => (serde_json::from_str::<Manifest>(&text)?, false),
+        Err(origin) => {
+            debug!(error = %origin, "update check: manifest unreachable, trying the mirror");
+            (fetch_from_gitee_manifest()?, true)
+        }
+    };
     let Some(latest) = newer_version(&manifest.version)? else {
         return Ok(None);
     };
     let asset = pick_asset(&manifest.assets);
-    let page_url = if manifest.notes.trim().is_empty() {
-        RELEASES_PAGE.to_string()
-    } else {
-        manifest.notes.clone()
+    // A page the user cannot reach is worse than no page: when GitHub is
+    // what failed, point the browser at the mirror instead.
+    let page_url = match (from_mirror, manifest.notes.trim().is_empty()) {
+        (true, _) => GITEE_RELEASES_PAGE.to_string(),
+        (false, true) => RELEASES_PAGE.to_string(),
+        (false, false) => manifest.notes.clone(),
     };
     Ok(Some(UpdateInfo {
         notes: fetch_release_notes(&latest),
@@ -202,7 +249,10 @@ fn fetch_from_manifest() -> Result<Option<UpdateInfo>> {
 /// per discovered update, well inside the anonymous API quota.
 fn fetch_release_notes(version: &str) -> String {
     let fetch = || -> Result<String> {
-        let text = http_get_string(LATEST_RELEASE_API)?;
+        // Both hosts name the same fields (`tag_name`, `body`), so one
+        // deserializer serves either answer — Gitee omits what it has no
+        // equivalent for and every such field is `#[serde(default)]`.
+        let (text, _) = http_get_string_mirrored(LATEST_RELEASE_API, &format!("{GITEE_API}/releases/latest"))?;
         let release: GithubRelease = serde_json::from_str(&text)?;
         // The API's "latest" can briefly disagree with the manifest (CDN
         // caching, mid-publish) — only trust the body when both name the
@@ -300,7 +350,7 @@ fn current_version_label() -> String {
 }
 
 fn fetch_from_api() -> Result<Option<UpdateInfo>> {
-    let text = http_get_string(LATEST_RELEASE_API)?;
+    let (text, from_mirror) = http_get_string_mirrored(LATEST_RELEASE_API, &format!("{GITEE_API}/releases/latest"))?;
     let release: GithubRelease = serde_json::from_str(&text)?;
     if release.draft || release.prerelease {
         return Ok(None);
@@ -308,10 +358,12 @@ fn fetch_from_api() -> Result<Option<UpdateInfo>> {
     let Some(latest) = newer_version(&release.tag_name)? else {
         return Ok(None);
     };
-    let page_url = if release.html_url.trim().is_empty() {
-        RELEASES_PAGE.to_string()
-    } else {
-        release.html_url
+    // The mirror sends no `html_url`, and a GitHub link is no use to whoever
+    // just failed to reach GitHub.
+    let page_url = match (from_mirror, release.html_url.trim().is_empty()) {
+        (true, _) => GITEE_RELEASES_PAGE.to_string(),
+        (false, true) => RELEASES_PAGE.to_string(),
+        (false, false) => release.html_url,
     };
     Ok(Some(UpdateInfo {
         version: latest,
@@ -359,6 +411,56 @@ fn pick_asset(assets: &[ManifestAsset]) -> Option<UpdateAsset> {
     })
 }
 
+/// The mirror's URL for one attachment of `tag` — spelled, not looked up.
+/// Gitee advertises exactly the shape GitHub uses, with no attachment id in
+/// it, so the two hosts differ only in their root (measured against the live
+/// mirror; a test pins the property).
+///
+/// The `latest/download/<name>` shortcut has no counterpart: on Gitee that
+/// path is a repository *archive*, so anything fetched by name needs the tag
+/// first — which is what [`fetch_from_gitee_manifest`] spends a request on.
+fn gitee_download_url(tag: &str, name: &str) -> String {
+    format!("{GITEE_REPO}/releases/download/{tag}/{name}")
+}
+
+/// The mirror's address for a GitHub release download, or `None` for a URL
+/// that is not one. `latest.json` carries absolute GitHub URLs, so this is
+/// how a download reaches the mirror without the manifest knowing it exists.
+fn gitee_mirror_of(url: &str) -> Option<String> {
+    let tail = url.split_once("/releases/download/")?.1;
+    url.starts_with("https://github.com/")
+        .then(|| format!("{GITEE_REPO}/releases/download/{tail}"))
+}
+
+/// GET `url`, and on failure the same thing from the mirror. The flag says
+/// which host answered — a page link to a host the user cannot reach is a
+/// dead button on exactly the network the mirror exists for.
+///
+/// The order is deliberate: GitHub is the origin and a reachable network
+/// pays nothing for the mirror existing. A blocked one pays
+/// [`REACH_TIMEOUT`] once before falling back — seconds, not the request
+/// budget — which is cheaper than guessing which host to prefer and being
+/// wrong.
+fn http_get_string_mirrored(url: &str, mirror: &str) -> Result<(String, bool)> {
+    match http_get_string(url) {
+        Ok(text) => Ok((text, false)),
+        Err(origin) => {
+            debug!(%url, error = %origin, "update check: origin unreachable, trying the mirror");
+            http_get_string(mirror).map(|text| (text, true))
+        }
+    }
+}
+
+/// The manifest from the mirror: its `latest` release names the tag, and the
+/// tag spells the attachment URL. Two requests, only ever on the path where
+/// GitHub already failed.
+fn fetch_from_gitee_manifest() -> Result<Manifest> {
+    let text = http_get_string(&format!("{GITEE_API}/releases/latest"))?;
+    let release: GithubRelease = serde_json::from_str(&text)?;
+    let text = http_get_string(&gitee_download_url(&release.tag_name, "latest.json"))?;
+    Ok(serde_json::from_str(&text)?)
+}
+
 fn http_get_string(url: &str) -> Result<String> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
@@ -393,6 +495,32 @@ fn http_get_string(url: &str) -> Result<String> {
     Ok(text)
 }
 
+/// One release asset, the manifest's address first and the mirror second.
+///
+/// The manifest spells GitHub URLs, so a network that cannot reach GitHub
+/// would otherwise have found an update it could never download. The bytes
+/// are checked against the manifest's SHA-256 either way, which is what lets
+/// a second *address* not become a second source of truth.
+fn fetch_asset(agent: &ureq::Agent, url: &str) -> Result<ureq::http::Response<ureq::Body>> {
+    let origin = match agent.get(url).header("User-Agent", USER_AGENT).call() {
+        Ok(response) => return Ok(response),
+        Err(e) => e,
+    };
+    let Some(mirror) = gitee_mirror_of(url) else {
+        error!(%url, error = %origin, "update: download request failed");
+        return Err(Error::Invalid {
+            message: format!("download failed: {origin}"),
+        });
+    };
+    debug!(%url, error = %origin, "update: download unreachable, trying the mirror");
+    agent.get(&mirror).header("User-Agent", USER_AGENT).call().map_err(|e| {
+        error!(%url, %mirror, error = %e, "update: download failed on both hosts");
+        Error::Invalid {
+            message: format!("download failed: {origin}; mirror: {e}"),
+        }
+    })
+}
+
 /// Download `asset` to the temp dir and verify its SHA-256 against the manifest.
 /// Returns the path to the verified file. On a checksum mismatch the partial
 /// file is removed and an error returned — the caller must never open it.
@@ -406,19 +534,14 @@ pub fn download_and_verify(asset: &UpdateAsset, mut on_progress: impl FnMut(u64,
     info!(name = %asset.name, size = asset.size, "update: downloading installer");
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        // Reaching a host and transferring from it are different questions
+        // with very different right answers — see [`REACH_TIMEOUT`].
+        .timeout_resolve(Some(REACH_TIMEOUT))
+        .timeout_connect(Some(REACH_TIMEOUT))
         .proxy(app_proxy())
         .build()
         .new_agent();
-    let resp = agent
-        .get(&asset.url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .map_err(|e| {
-            error!(url = %asset.url, error = %e, "update: download request failed");
-            Error::Invalid {
-                message: format!("download failed: {e}"),
-            }
-        })?;
+    let resp = fetch_asset(&agent, &asset.url)?;
     // Prefer the server's Content-Length for the progress total; the manifest's
     // `size` is only a fallback (it may be 0 / absent), in which case progress
     // stays indeterminate.
@@ -766,6 +889,74 @@ fn bundle_plist_value(app: &Path, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One spelling serves both hosts: everything after `/releases/download/`
+    /// is identical, which is the property that lets the mirror be a second
+    /// *address* rather than a second lookup or a second manifest.
+    #[test]
+    fn the_mirror_url_is_spelled_the_same_way_githubs_is() {
+        let github = "https://github.com/vicanso/zedis/releases/download/v1.2.3/zedis-macos-aarch64.dmg";
+        assert_eq!(
+            gitee_mirror_of(github).as_deref(),
+            Some("https://gitee.com/vicanso/zedis/releases/download/v1.2.3/zedis-macos-aarch64.dmg")
+        );
+        assert_eq!(
+            gitee_download_url("v1.2.3", "latest.json"),
+            "https://gitee.com/vicanso/zedis/releases/download/v1.2.3/latest.json"
+        );
+        let tail = |url: &str| url.split_once("/releases/download/").map(|(_, t)| t.to_string());
+        assert_eq!(
+            tail(github),
+            tail(&gitee_mirror_of(github).expect("a release download")),
+            "the two hosts differ only in their root"
+        );
+        // Anything that is not a GitHub release download has no mirror: the
+        // rewrite must not invent a Gitee address for a stranger's host, and
+        // an already-mirrored URL must not be rewritten twice.
+        assert_eq!(gitee_mirror_of("https://example.com/releases/download/v1/x"), None);
+        assert_eq!(
+            gitee_mirror_of("https://gitee.com/vicanso/zedis/releases/download/v1.2.3/x.dmg"),
+            None
+        );
+        assert_eq!(
+            gitee_mirror_of("https://github.com/vicanso/zedis/releases/latest"),
+            None
+        );
+    }
+
+    /// The mirror's release JSON deserializes with the same type the GitHub
+    /// one does — Gitee names `tag_name`, `body`, `prerelease` and
+    /// `assets[].browser_download_url` identically and simply omits the rest,
+    /// which every other field being `#[serde(default)]` absorbs. Sampled
+    /// from the live mirror of the sibling project on 2026-09-20; if this
+    /// stops holding, the fallbacks silently stop finding releases.
+    #[test]
+    fn a_gitee_release_parses_as_the_github_one_does() {
+        let body = r#"{
+          "id": 1, "tag_name": "v1.2.3", "target_commitish": "main",
+          "prerelease": false, "name": "v1.2.3", "body": "notes",
+          "created_at": "2026-09-20T00:00:00+08:00",
+          "assets": [
+            {"browser_download_url": "https://gitee.com/vicanso/zedis/releases/download/v1.2.3/zedis-macos-aarch64.dmg",
+             "name": "zedis-macos-aarch64.dmg"}
+          ]
+        }"#;
+        let release: GithubRelease = serde_json::from_str(body).expect("a Gitee release");
+        assert_eq!(release.tag_name, "v1.2.3");
+        assert_eq!(release.body, "notes");
+        assert!(!release.prerelease);
+        // Absent on Gitee, and absent is not an error.
+        assert!(release.html_url.is_empty() && release.published_at.is_empty() && !release.draft);
+        let assets = assets_from_api(&release.assets);
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            (assets[0].os.as_str(), assets[0].arch.as_str(), assets[0].kind.as_str()),
+            ("macos", "aarch64", "dmg")
+        );
+        // Gitee lists no size; the download then takes its total from the
+        // server's Content-Length instead of showing a wrong one.
+        assert_eq!(assets[0].size, 0);
+    }
 
     #[test]
     fn newer_version_is_strict() {

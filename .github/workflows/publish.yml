@@ -18,6 +18,15 @@ on:
         type: choice
         options: ["none", "test-signing"]
         default: "none"
+      mirror_tag:
+        # Re-running a failed job replays the *old* workflow file, so a fix
+        # to the mirror can never reach the release that tripped over it —
+        # and the `git push --tags` path leaves the release a draft, which
+        # the mirror refuses until it is published. Both are answered by a
+        # run that builds nothing and only copies.
+        description: "Mirror this existing release to Gitee and build nothing (e.g. v0.11.0)"
+        required: false
+        default: ""
       targets:
         # `docker` is the cheap way to try the Dockerfile from any branch: it
         # skips the three desktop jobs — and with them the macOS signing and
@@ -738,6 +747,179 @@ jobs:
         run: |
           ./.github/workflows/upload_asset.sh ./SHA256SUMS "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh ./latest.json "$GITHUB_TOKEN"
+
+  # Mirror the finished tagged release to Gitee (gitee.com/vicanso/zedis).
+  # GitHub's release CDN is slow to unreachable from mainland China, and an
+  # installer nobody can download is not a release — so the same files, with
+  # the same names, land on a mirror that is reachable there. The in-app
+  # updater falls back to it for the check, the manifest and the download
+  # (helpers/updater.rs, `GITEE_API`).
+  #
+  # Last in the chain on purpose: it copies what the GitHub release actually
+  # carries — every platform asset plus SHA256SUMS and latest.json — instead
+  # of building or hashing anything of its own, so the SHA-256 a user's
+  # updater checks is the same number whichever host served the bytes.
+  #
+  # The nightly is deliberately not mirrored: it is a rolling build, and
+  # re-uploading it every night to serve a tag that moves is not what the
+  # mirror is for. It also keeps Gitee's `releases/latest` free of the
+  # nightly question the updater would otherwise have to ask twice.
+  gitee:
+    needs: [checksums]
+    # Two ways in: the tag build that just finished, or a mirror-only
+    # dispatch. `always()` is what lets the second one through — on a
+    # dispatch `checksums` is skipped, and a skipped `needs` would otherwise
+    # take this job with it.
+    if: >-
+      always() && (
+        (startsWith(github.ref, 'refs/tags/') && needs.checksums.result == 'success')
+        || inputs.mirror_tag != ''
+      )
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      # owner/repo on Gitee.
+      GITEE_REPO: vicanso/zedis
+      # Empty on a tag build; the release to mirror on a manual run.
+      MIRROR_TAG: ${{ inputs.mirror_tag }}
+      # `gh` reads the repository from the checkout's git remote, and this
+      # job deliberately has no checkout: it copies release assets, not
+      # source. Without this every `gh` call dies on "not a git repository".
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: mirror release assets to Gitee
+        run: |
+          set -euo pipefail
+          tag="${MIRROR_TAG:-$GITHUB_REF_NAME}"
+
+          # Unset is a misconfiguration once the mirror is part of the
+          # release, not a reason to ship half of one — unlike the Docker
+          # Hub and SignPath switches, which gate a *separate* artifact.
+          # The updater tells users the mirror exists.
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "GITEE_TOKEN is not set — cannot mirror $tag to $GITEE_REPO" >&2
+            exit 1
+          fi
+
+          # A draft is not a release yet. `git push --tags` leaves one (the
+          # other path, releasing through the GitHub UI, pushes the tag and
+          # is already public by the time this runs), and pushing a draft's
+          # binaries to a public Gitee release would publish the build
+          # before GitHub does. Re-run with `mirror_tag` after publishing.
+          if [ "$(gh release view "$tag" --json isDraft -q .isDraft)" = "true" ]; then
+            echo "$tag is still a draft on GitHub; nothing to mirror yet"
+            exit 0
+          fi
+
+          gh release download "$tag" --dir assets
+          ls -l assets
+
+          # Gitee takes the token as a query parameter (`access_token`);
+          # Actions masks it in the log either way. Every call goes through
+          # here so a 4xx prints what Gitee said — a silent 403 would
+          # otherwise look exactly like a finished mirror.
+          api() {
+            local method="$1" path="$2"; shift 2
+            local body status
+            body="$(mktemp)"
+            status="$(curl -sS -X "$method" -o "$body" -w '%{http_code}' \
+              --url-query "access_token=$GITEE_TOKEN" \
+              "https://gitee.com/api/v5$path" "$@")"
+            if [ "$status" -ge 400 ]; then
+              echo "gitee $method $path -> $status" >&2
+              cat "$body" >&2
+              rm -f "$body"
+              return 1
+            fi
+            cat "$body"
+            rm -f "$body"
+          }
+
+          # "Not there yet" is the ordinary case — the release does not exist
+          # on the mirror until we make it — so this one lookup reads the
+          # status itself instead of going through `api`.
+          #
+          # **Gitee does not 404 for a release that is not there.** It answers
+          # `200` with a body of literally `null`, and `jq -r .id` on that
+          # prints the *string* `null`, which then goes into every later URL
+          # as `/releases/null/…` and comes back 404 with an HTML error page —
+          # a failure that reads like a missing repository, two steps from its
+          # cause. So the body decides, not the status, and the id is checked
+          # for being a number before it is pasted into a path.
+          rel="$(mktemp)"
+          status="$(curl -sS -o "$rel" -w '%{http_code}' \
+            --url-query "access_token=$GITEE_TOKEN" \
+            "https://gitee.com/api/v5/repos/$GITEE_REPO/releases/tags/$tag")"
+          case "$status" in
+            200) release_id="$(jq -r '.id? // empty' "$rel" 2>/dev/null || true)" ;;
+            404) release_id="" ;;
+            *) echo "gitee GET releases/tags/$tag -> $status" >&2; cat "$rel" >&2; exit 1 ;;
+          esac
+          case "$release_id" in
+            "" | *[!0-9]*) release_id="" ;;
+          esac
+
+          if [ -z "$release_id" ]; then
+            # `target_commitish` is required by the API. Read the mirror's own
+            # default branch rather than assuming main or master: on Gitee
+            # that field is whatever the repo was created with, and a wrong
+            # branch name fails the create with a 404 that reads like a
+            # missing repo.
+            branch="$(api GET "/repos/$GITEE_REPO" | jq -r .default_branch)"
+            # The GitHub release's notes, so both pages say the same thing.
+            # `body` is required and must not be empty.
+            notes="$(gh release view "$tag" --json body -q .body)"
+            if [ -z "$notes" ]; then
+              notes="$tag — https://github.com/$GH_REPO/releases/tag/$tag"
+            fi
+            release_id="$(
+              jq -nc --arg t "$tag" --arg n "$notes" --arg b "$branch" \
+                '{tag_name: $t, name: $t, body: $n, prerelease: false, target_commitish: $b}' \
+              | api POST "/repos/$GITEE_REPO/releases" \
+                  -H 'Content-Type: application/json' -d @- \
+              | jq -r '.id? // empty'
+            )"
+            case "$release_id" in
+              "" | *[!0-9]*)
+                echo "gitee accepted the create but returned no usable release id" >&2
+                exit 1
+                ;;
+            esac
+            echo "created Gitee release $release_id for $tag on $branch"
+          else
+            echo "reusing Gitee release $release_id for $tag"
+          fi
+
+          # Gitee has no --clobber: an attachment of the same name would sit
+          # beside the old one and the download page would offer two files
+          # with one name. Delete first, so a re-run replaces.
+          existing="$(api GET "/repos/$GITEE_REPO/releases/$release_id/attach_files?per_page=100")"
+          for file in assets/*; do
+            name="$(basename "$file")"
+            for old in $(printf '%s' "$existing" | jq -r --arg n "$name" '.[] | select(.name == $n) | .id'); do
+              api DELETE "/repos/$GITEE_REPO/releases/$release_id/attach_files/$old" >/dev/null
+              echo "removed previous $name ($old)"
+            done
+            api POST "/repos/$GITEE_REPO/releases/$release_id/attach_files" \
+              -F "file=@$file" >/dev/null
+            echo "uploaded $name"
+          done
+
+          # Say what the mirror ends up carrying, and fail if anything this
+          # release ships is missing from it: a partial mirror that reports
+          # success is a download link that 404s for the people it exists for.
+          uploaded="$(api GET "/repos/$GITEE_REPO/releases/$release_id/attach_files?per_page=100")"
+          echo "--- gitee attachments ---"
+          printf '%s' "$uploaded" | jq -r '.[] | "\(.name)\t\(.size)\t\(.browser_download_url)"'
+          missing=0
+          for file in assets/*; do
+            name="$(basename "$file")"
+            if ! printf '%s' "$uploaded" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+              echo "missing on Gitee: $name" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
 
   # The web build as a multi-arch image: one native build per architecture
   # (no QEMU — emulating a fat-LTO Rust build takes hours), pushed under a

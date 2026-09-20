@@ -54,7 +54,10 @@ const OLDEST_SUPPORTED: (u32, u32, u32) = (6, 2, 0);
 ///   feature simply absent. Only legitimate where nothing depends on it.
 const GATED: &[(&str, &str)] = &[
     ("ACL DRYRUN", "floors::ACL_V2, and probe.rs asks before it dryruns"),
-    ("CLIENT NO-EVICT", "best-effort: configure_client_connection logs and moves on"),
+    (
+        "CLIENT NO-EVICT",
+        "best-effort: configure_client_connection logs and moves on",
+    ),
     (
         "CLIENT NO-TOUCH",
         "floors::no_touch_is_safe — a regression window, not a floor: it crashes Redis 8.0–8.2.6",
@@ -64,13 +67,19 @@ const GATED: &[(&str, &str)] = &[
     ("FUNCTION DELETE", "floors::FUNCTIONS + ServerCommand::FunctionLoad"),
     ("FUNCTION DUMP", "floors::FUNCTIONS"),
     ("FUNCTION STATS", "floors::FUNCTIONS"),
-    ("HEXPIRE", "floors::HASH_FIELD_TTL — the editor has no TTL column below it"),
+    (
+        "HEXPIRE",
+        "floors::HASH_FIELD_TTL — the editor has no TTL column below it",
+    ),
     ("HTTL", "floors::HASH_FIELD_TTL"),
     ("HOTKEYS", "floors::HOTKEYS + ServerCommand::HotkeysStart"),
     ("HOTKEYS GET", "floors::HOTKEYS + ServerCommand::HotkeysGet"),
     ("HOTKEYS RESET", "floors::HOTKEYS"),
     ("HOTKEYS STOP", "floors::HOTKEYS"),
-    ("HSETEX", "ServerCommand::HSetEx, probed — an unprobed server takes the HSET path"),
+    (
+        "HSETEX",
+        "ServerCommand::HSetEx, probed — an unprobed server takes the HSET path",
+    ),
     ("SSUBSCRIBE", "floors::SHARDED_PUBSUB"),
     ("XACKDEL", "floors::STREAM_REF_POLICIES"),
     ("XNACK", "floors::STREAM_NACK"),
@@ -78,7 +87,11 @@ const GATED: &[(&str, &str)] = &[
 
 fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
     let mut parts = text.split('.').map(|p| p.trim().parse::<u32>().ok());
-    Some((parts.next()??, parts.next().unwrap_or(Some(0))?, parts.next().unwrap_or(Some(0))?))
+    Some((
+        parts.next()??,
+        parts.next().unwrap_or(Some(0))?,
+        parts.next().unwrap_or(Some(0))?,
+    ))
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -112,7 +125,9 @@ fn commands_sent(source: &str) -> BTreeSet<(String, Option<String>)> {
     while let Some(offset) = code[at..].find("cmd(") {
         let start = at + offset + "cmd(".len();
         at = start;
-        let Some((name, after)) = literal_at(code, start) else { continue };
+        let Some((name, after)) = literal_at(code, start) else {
+            continue;
+        };
         // The chain that follows, up to whatever ends the statement.
         let tail = &code[after..];
         let stop = tail
