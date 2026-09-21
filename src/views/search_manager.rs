@@ -1102,10 +1102,32 @@ impl ZedisSearchManager {
         cx.notify();
     }
 
+    /// Point Sort By at a KNN query's distance, unless the user has aimed it
+    /// somewhere already.
+    ///
+    /// A vector query is only in distance order if it asks. RediSearch sorts
+    /// by the *document's* score otherwise — and the `*` these templates open
+    /// with gives every document the same one, so "the 10 nearest" would come
+    /// back in an order that has nothing to do with distance, which is the
+    /// one thing a vector search is for. Filling the box rather than sorting
+    /// quietly underneath: the query says `AS vector_distance`, the box says
+    /// `vector_distance`, and both are there to be edited or cleared.
+    fn aim_sort_at_the_distance(&mut self, query: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !query.contains(KNN_DISTANCE_ALIAS) || !self.sort_by_input.read(cx).value().trim().is_empty() {
+            return;
+        }
+        self.sort_by_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(KNN_DISTANCE_ALIAS), window, cx);
+        });
+        // Ascending is nearest-first, which is what "nearest neighbours" means.
+        self.sort_desc = false;
+    }
+
     /// Insert a type-aware query fragment for `field` into the query bar
     /// (e.g. `@price:[  ]` for NUMERIC, `@brand:{}` for TAG).
     fn insert_field_query(&mut self, field: &FieldSchema, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let snippet = field_query_snippet(field);
+        self.aim_sort_at_the_distance(&snippet, window, cx);
         self.query_input.update(cx, |state, cx| {
             let cur = state.value().to_string();
             let next = if cur.trim().is_empty() {
@@ -1122,6 +1144,7 @@ impl ZedisSearchManager {
 
     /// Replace the query bar with `query` and optionally run immediately.
     fn apply_example_query(&mut self, query: &str, run: bool, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.aim_sort_at_the_distance(query, window, cx);
         self.query_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(query.to_string()), window, cx);
         });
@@ -1259,6 +1282,12 @@ impl ZedisSearchManager {
     }
 }
 
+/// What the KNN templates below name the distance, and what
+/// [`ZedisSearchManager::aim_sort_at_the_distance`] puts in Sort By. Any
+/// name would do — RediSearch also exposes `__<field>_score` — but one the
+/// query spells out is one the user can see, change and search for.
+const KNN_DISTANCE_ALIAS: &str = "vector_distance";
+
 /// Type-aware fragment for chip-click insert (cursor-friendly placeholders).
 fn field_query_snippet(field: &FieldSchema) -> String {
     match field.kind() {
@@ -1266,7 +1295,7 @@ fn field_query_snippet(field: &FieldSchema) -> String {
         FieldKind::Tag => format!("@{}:{{tag}}", field.name),
         FieldKind::Text => format!("@{}:term", field.name),
         FieldKind::Geo => format!("@{}:[0 0 1 km]", field.name),
-        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB]", field.name),
+        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB AS {KNN_DISTANCE_ALIAS}]", field.name),
         FieldKind::GeoShape | FieldKind::Unknown(_) => format!("@{}", field.name),
     }
 }
@@ -1278,7 +1307,7 @@ fn field_query_example(field: &FieldSchema) -> String {
         FieldKind::Tag => format!("@{}:{{*}}", field.name),
         FieldKind::Text => format!("@{}:*", field.name),
         FieldKind::Geo => format!("@{}:[0 0 10 km]", field.name),
-        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB]", field.name),
+        FieldKind::Vector => format!("*=>[KNN 10 @{} $BLOB AS {KNN_DISTANCE_ALIAS}]", field.name),
         FieldKind::GeoShape | FieldKind::Unknown(_) => format!("@{}", field.name),
     }
 }
@@ -1390,6 +1419,45 @@ impl gpui::Render for ZedisSearchManager {
             .child(header)
             .child(div().flex_1().w_full().min_h_0().overflow_hidden().child(body))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod knn_template_tests {
+    use super::{KNN_DISTANCE_ALIAS, field_query_example, field_query_snippet};
+    use zedis_connection::{FieldKind, FieldSchema};
+    use zedis_core::search_params::{is_vector_param, param_names};
+
+    fn vector_field() -> FieldSchema {
+        let field = FieldSchema {
+            name: "v".to_string(),
+            kind_str: "VECTOR".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(field.kind(), FieldKind::Vector, "the templates dispatch on this");
+        field
+    }
+
+    /// Both templates name the distance, and they name the *same* thing the
+    /// Sort By prefill looks for — if they drift apart the query comes back
+    /// in document-score order and nothing says why.
+    #[test]
+    fn the_vector_templates_ask_for_distance_order() {
+        let field = vector_field();
+        for query in [field_query_snippet(&field), field_query_example(&field)] {
+            assert!(query.contains(&format!("AS {KNN_DISTANCE_ALIAS}")), "{query}");
+        }
+    }
+
+    /// The alias trails `$BLOB`, and the param machinery reads backwards from
+    /// it — so the blob must still be recognised as a vector slot and still
+    /// be the one parameter. Get this wrong and the float encoding silently
+    /// becomes a text one.
+    #[test]
+    fn the_alias_does_not_hide_the_vector_parameter() {
+        let query = field_query_snippet(&vector_field());
+        assert_eq!(param_names(&query), ["BLOB"]);
+        assert!(is_vector_param(&query, "BLOB"), "{query}");
     }
 }
 

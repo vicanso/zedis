@@ -6357,6 +6357,17 @@ fn stack_search_index_size_tag_values_and_spelling() {
 /// `FT.SEARCH … PARAMS`: a KNN query bound to a FLOAT32 blob encoded by
 /// `search_params` ranks the nearest document first, and `FT.EXPLAIN`
 /// plans the same query only because the binding travels with it.
+///
+/// The `AS dist` + `SORTBY` is the whole point of the ordering assertion,
+/// not decoration. RediSearch sorts by the *document's* score unless told
+/// otherwise — "By default, the results are sorted by their document's
+/// score. To sort by vector similarity score, use `SORTBY <distance_field>`"
+/// — and with `*` as the filter every document scores the same, so the order
+/// was whatever the index happened to yield. It yielded nearest-first for
+/// months and then, on a `redis-stack-server:latest` that had moved, the
+/// other way round. Asking for the order the assertion checks is the fix;
+/// the distances below prove the blob really was bound, which is what an
+/// order alone would not.
 #[test]
 #[ignore]
 fn stack_search_params_bind_a_knn_vector() {
@@ -6401,7 +6412,7 @@ fn stack_search_params_bind_a_knn_vector() {
                 .expect("hset");
         }
 
-        let query = "*=>[KNN 2 @v $BLOB]";
+        let query = "*=>[KNN 2 @v $BLOB AS dist]";
         let params = vec![(
             "BLOB".to_string(),
             encode_param(ParamKind::Float32, "0.9, 0.1").expect("encode"),
@@ -6410,6 +6421,7 @@ fn stack_search_params_bind_a_knn_vector() {
             limit: (0, 10),
             dialect: Some(2),
             params: params.clone(),
+            sort_by: Some("dist".to_string()),
             ..Default::default()
         };
         let result = ft_search(&at, &index, query, &opts).await.expect("ft.search");
@@ -6419,6 +6431,27 @@ fn stack_search_params_bind_a_knn_vector() {
             Some(format!("{prefix}:a").as_str()),
             "(0.9, 0.1) is nearest to (1, 0)"
         );
+        // The distance itself, which is what says the blob arrived as a
+        // vector rather than as some other two numbers. Compared, never
+        // asserted to a value: `L2` has been the squared distance in some
+        // RediSearch versions and the root in others, and either way `a` is
+        // the smaller of the two.
+        let distance = |name: &str| -> f64 {
+            result
+                .hits
+                .iter()
+                .find(|h| h.doc_id == format!("{prefix}:{name}"))
+                .unwrap_or_else(|| panic!("{name} is in the hits: {:?}", result.hits))
+                .fields
+                .iter()
+                .find(|(k, _)| k == "dist")
+                .unwrap_or_else(|| panic!("{name} carries the aliased distance: {:?}", result.hits))
+                .1
+                .parse()
+                .expect("the distance is a number")
+        };
+        let (near, far) = (distance("a"), distance("b"));
+        assert!(near < far, "(1, 0) is nearer than (0, 1): {near} vs {far}");
         let plan = ft_explain(&at, &index, query, &params, Some(2))
             .await
             .expect("ft.explain");

@@ -1107,6 +1107,30 @@ mod tests {
         assert!(position(&a, "LIMIT") < p, "PARAMS comes after the option clauses");
     }
 
+    /// A KNN query is only in distance order if it asks: RediSearch sorts by
+    /// the document's score otherwise, and under a `*` filter every document
+    /// scores the same — so the order is the index's, not the metric's.
+    /// `SORTBY <distance field>` is how the caller says which it wants, and
+    /// it has to reach the wire ahead of `PARAMS` like the other clauses.
+    #[test]
+    fn a_knn_query_can_ask_for_distance_order() {
+        let opts = SearchOptions {
+            limit: (0, 10),
+            dialect: Some(2),
+            params: vec![("BLOB".to_string(), vec![0, 0, 128, 63])],
+            sort_by: Some("dist".to_string()),
+            ..Default::default()
+        };
+        let a = args(&search_cmd("idx", "*=>[KNN 2 @v $BLOB AS dist]", &opts));
+        let sort = position(&a, "SORTBY");
+        assert_eq!(a[sort + 1], b"dist");
+        assert!(sort < position(&a, "PARAMS"), "SORTBY is an option clause: {a:?}");
+        assert!(
+            !a.iter().any(|x| x == b"DESC"),
+            "ascending is nearest-first and the default: {a:?}"
+        );
+    }
+
     #[test]
     fn no_params_means_no_params_clause() {
         let search = args(&search_cmd("idx", "*", &SearchOptions::default()));

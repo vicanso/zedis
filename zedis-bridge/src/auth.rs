@@ -252,6 +252,19 @@ pub fn parse_users(spec: &str) -> Result<HashMap<String, Account>, String> {
         if password.is_empty() {
             return Err(format!("user \"{name}\" (entry {position}) has an empty password"));
         }
+        // `alice@secret:ro` is the spelling people reach for first, and it
+        // parses — as a full account whose password is `secret:ro`. Both
+        // halves of that are wrong and neither says so, which is the kind of
+        // auth misconfiguration this module exists to refuse. It cannot be
+        // an error, because a password really may end in `:ro`; so it is a
+        // warning that names the account and the spelling that works.
+        if !read_only && password.ends_with(":ro") {
+            tracing::warn!(
+                user = name,
+                "password ends in \":ro\" and this account is NOT read-only — the role goes on the name: \
+                 {name}:ro@<password>. Ignore this if the password really ends in \":ro\"."
+            );
+        }
         let account = Account {
             password: password.to_string(),
             read_only,
@@ -735,6 +748,21 @@ mod tests {
         let users = parse_users("carol:ro@p:ss").expect("a role and a colon in the password");
         assert!(users["carol"].read_only);
         assert_eq!(users["carol"].password, "p:ss");
+    }
+
+    /// The spelling people reach for first. It cannot be made to mean what
+    /// they meant — a password may genuinely end in `:ro` — so it keeps
+    /// parsing as a full account with that literal password, and the parser
+    /// says so out loud instead of leaving it to be discovered.
+    #[test]
+    fn the_role_on_the_wrong_side_stays_part_of_the_password() {
+        let users = parse_users("alice@secret:ro").expect("parses");
+        assert_eq!(users["alice"].password, "secret:ro");
+        assert!(!users["alice"].read_only, "the role is only ever on the name");
+
+        let users = parse_users("alice:ro@secret").expect("parses");
+        assert_eq!(users["alice"].password, "secret");
+        assert!(users["alice"].read_only);
     }
 
     #[test]
