@@ -1,0 +1,12 @@
+# The page's `ASSET_REV` map is build output living inside an authored file:
+# `scripts/web-bundle.sh` inlines content hashes (the wasm module's among
+# them, so it changes on every build) into `zedis-web/www/index.html`. Every
+# release path regenerates it, so a committed map is never the one served —
+# it is only churn in every diff that touches the browser build.
+#
+# The clean filter stores the empty placeholder while the worktree keeps the
+# built map. A filter cannot travel in a repository: `.gitattributes` only
+# names the driver, and `make install-git-filters` configures it. `make lint`
+# fails on a staged map, so a clone that never ran that target finds out
+# rather than quietly going back to committing the hashes.
+zedis-web/www/index.html filter=asset-rev

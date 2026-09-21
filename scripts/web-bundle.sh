@@ -127,36 +127,8 @@ else
 fi
 
 # Content hashes inlined into `index.html` so the page does not need a
-# second request for `asset-rev.json`. Kit icons are omitted: the kit
-# fetches them by name and they stay on ETag / no-cache.
-python3 - <<'PY'
-import hashlib, json, re, sys
-from pathlib import Path
-
-root = Path("zedis-web/www")
-skip_suffix = {".gz", ".br", ".d.ts"}
-skip_name = {".gitignore", "package.json", "asset-rev.json", "index.html"}
-revs = {}
-for path in sorted(root.rglob("*")):
-    if not path.is_file() or path.suffix in skip_suffix or path.name in skip_name:
-        continue
-    rel = path.relative_to(root).as_posix()
-    if rel.startswith("assets/icons/"):
-        continue
-    revs[rel] = hashlib.md5(path.read_bytes()).hexdigest()[:12]
-payload = json.dumps(revs, separators=(",", ":"), sort_keys=True)
-html_path = root / "index.html"
-html = html_path.read_text()
-updated, n = re.subn(
-    r"const ASSET_REV = /\*ASSET_REV\*/.*?/\*/ASSET_REV\*/",
-    f"const ASSET_REV = /*ASSET_REV*/{payload}/*/ASSET_REV*/",
-    html,
-    count=1,
-    flags=re.S,
-)
-if n != 1:
-    sys.exit("zedis-web/www/index.html is missing the const ASSET_REV placeholder")
-html_path.write_text(updated)
-(root / "asset-rev.json").unlink(missing_ok=True)
-print(f"asset-rev: {len(revs)} files inlined into index.html")
-PY
+# second request for `asset-rev.json`. The marker, the hashing rules and the
+# git clean filter that keeps the built map out of commits all live in one
+# script — two copies of that regex is how the builder and the filter would
+# come to disagree about what they are both editing.
+python3 scripts/asset-rev.py write
