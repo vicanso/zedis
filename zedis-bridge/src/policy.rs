@@ -93,7 +93,8 @@ fn reads_only(args: &[Vec<u8>]) -> bool {
     let Some((name, rest)) = words(args) else {
         return false;
     };
-    is_read_only_command(&name, rest.first().map(String::as_str))
+    let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+    is_read_only_command(&name, &rest)
 }
 
 /// The desktop's rule, in the desktop's order: the specific classifier first,
@@ -160,6 +161,12 @@ mod tests {
         assert_eq!(check(&plain(), &args(&["SET", "k", "v"]), None, true), Verdict::Deny);
         assert_eq!(check(&plain(), &args(&["DEL", "k"]), None, true), Verdict::Deny);
         assert_eq!(check(&plain(), &args(&["FLUSHALL"]), None, true), Verdict::Deny);
+        // Feature probe on connect (`ACL LOG 0`) is a read; RESET is not.
+        assert_eq!(check(&plain(), &args(&["ACL", "LOG", "0"]), None, true), Verdict::Allow);
+        assert_eq!(
+            check(&plain(), &args(&["ACL", "LOG", "RESET"]), None, true),
+            Verdict::Deny
+        );
     }
 
     /// The confirmation is a question and the role is a permission, so the

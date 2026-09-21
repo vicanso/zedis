@@ -38,6 +38,9 @@ screenshots/
 scripts/it/.run/
 scripts/it/.env
 
-# web bundle output (scripts/web-bundle.sh): the wasm and the kit's icons
+# web bundle output (scripts/web-bundle.sh): the wasm, the kit's icons, and
+# the locale / font / command files the page fetches instead of embedding.
 zedis-web/www/wasm/
 zedis-web/www/assets/
+zedis-web/www/locales/
+zedis-web/www/fonts/JetBrainsMono-*.ttf

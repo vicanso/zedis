@@ -438,15 +438,53 @@ impl ZedisConfigEditor {
             _subscriptions: subscriptions,
         };
         this.load_configs(cx);
+        this.ensure_config_docs(cx);
         this
     }
 
     /// Reload help JSON only when the UI language no longer matches the map.
-    fn refresh_docs_if_locale_changed(&mut self, cx: &App) {
+    fn refresh_docs_if_locale_changed(&mut self, cx: &mut Context<Self>) {
         let zh = cx.global::<ZedisGlobalStore>().read(cx).locale().starts_with("zh");
         if zh != self.config_docs_zh {
             self.config_docs = load_config_docs(zh);
             self.config_docs_zh = zh;
+            self.ensure_config_docs(cx);
+        }
+    }
+
+    /// Desktop: [`load_config_docs`] already filled the map from rust-embed.
+    /// Browser: the file is not in the wasm; GET it and notify when it lands.
+    fn ensure_config_docs(&mut self, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (self, cx);
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            if !self.config_docs.is_empty() {
+                return;
+            }
+            let zh = self.config_docs_zh;
+            let path = if zh {
+                "assets/config_docs/zh.json"
+            } else {
+                "assets/config_docs/en.json"
+            };
+            let entity = cx.entity().downgrade();
+            crate::web_fetch::get_bytes(cx, path, move |cx, bytes| {
+                let Some(this) = entity.upgrade() else {
+                    return;
+                };
+                this.update(cx, |this, cx| {
+                    if this.config_docs_zh != zh {
+                        return;
+                    }
+                    if let Some(bytes) = bytes {
+                        this.config_docs = super::config_doc::parse_config_docs(path, &bytes);
+                    }
+                    cx.notify();
+                });
+            });
         }
     }
 

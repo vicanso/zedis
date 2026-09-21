@@ -33,7 +33,7 @@
 //! or `CONFIG GET`, which touch no keys at all. Those are the second and
 //! third tables, and they are the judgement calls: a read-only account may
 //! *look* at the server (`INFO`, `CONFIG GET`, `CLIENT LIST`, `SLOWLOG
-//! GET`) because that is most of what the panels are, and may not change it
+//! GET`, `ACL LOG`) because that is most of what the panels are, and may not change it
 //! (`CONFIG SET`, `CLIENT KILL`, `SLOWLOG RESET`, `REPLICAOF`, `DEBUG`).
 //!
 //! **This is defence in depth, not the only line.** A Redis ACL user with
@@ -188,8 +188,10 @@ fn is_container_read(name: &str, sub: &str) -> bool {
             | ("LATENCY", "LATEST" | "HISTORY" | "DOCTOR" | "GRAPH" | "HELP")
             // DRYRUN simulates a command and runs none, which is what the
             // access-mode probe asks it for; it is a read however much the
-            // command it is asked about is not.
-            | ("ACL", "WHOAMI" | "CAT" | "LIST" | "USERS" | "GETUSER" | "DRYRUN" | "HELP")
+            // command it is asked about is not. `ACL LOG` (the security
+            // log) is a read; `ACL LOG RESET` is judged separately because
+            // RESET is the *second* argument.
+            | ("ACL", "WHOAMI" | "CAT" | "LIST" | "USERS" | "GETUSER" | "DRYRUN" | "HELP" | "LOG")
             | ("CLUSTER", "INFO" | "MYID" | "NODES" | "SHARDS" | "SLOTS" | "LINKS" | "SLAVES" | "REPLICAS")
             | ("CLUSTER", "COUNTKEYSINSLOT" | "GETKEYSINSLOT" | "KEYSLOT" | "COUNT-FAILURE-REPORTS")
             | ("FUNCTION", "LIST" | "DUMP" | "STATS" | "HELP")
@@ -240,20 +242,25 @@ fn is_module_read(name: &str) -> bool {
     // spellchecker:on
 }
 
-/// Whether a read-only caller may run `name` with `first_arg`.
+/// Whether a read-only caller may run `name` with the arguments after it.
 ///
-/// `first_arg` matters only for a container command (`CONFIG GET` against
-/// `CONFIG SET`); everything else ignores it. Case is folded, because RESP
-/// carries whatever the caller typed.
-pub fn is_read_only_command(name: &str, first_arg: Option<&str>) -> bool {
+/// The first argument is the subcommand for a container (`CONFIG GET`
+/// against `CONFIG SET`). A second argument is consulted only for
+/// `ACL LOG`: `ACL LOG [count]` reads, `ACL LOG RESET` writes. Case is
+/// folded, because RESP carries whatever the caller typed.
+pub fn is_read_only_command(name: &str, args: &[&str]) -> bool {
     let name = name.to_ascii_uppercase();
     if is_keyspace_read(&name) || is_server_read(&name) || is_module_read(&name) {
         return true;
     }
-    match first_arg {
-        Some(sub) => is_container_read(&name, &sub.to_ascii_uppercase()),
-        None => false,
+    let Some(sub) = args.first() else {
+        return false;
+    };
+    let sub = sub.to_ascii_uppercase();
+    if name == "ACL" && sub == "LOG" {
+        return !args.get(1).is_some_and(|word| word.eq_ignore_ascii_case("RESET"));
     }
+    is_container_read(&name, &sub)
 }
 
 #[cfg(test)]
@@ -263,7 +270,8 @@ mod tests {
     fn allowed(line: &str) -> bool {
         let mut parts = line.split_whitespace();
         let name = parts.next().expect("a command name");
-        is_read_only_command(name, parts.next())
+        let args: Vec<&str> = parts.collect();
+        is_read_only_command(name, &args)
     }
 
     #[test]
@@ -292,6 +300,9 @@ mod tests {
             "MEMORY DOCTOR",
             "CLUSTER NODES",
             "ACL WHOAMI",
+            "ACL LOG",
+            "ACL LOG 0",
+            "ACL LOG 128",
             // Opening a connection at all.
             "HELLO 3",
             "AUTH user pass",
@@ -377,6 +388,9 @@ mod tests {
         assert!(allowed("CLIENT LIST"));
         assert!(!allowed("CLIENT KILL ID 4"));
         assert!(allowed("ACL WHOAMI"));
+        assert!(allowed("ACL LOG"));
+        assert!(allowed("ACL LOG 0"));
+        assert!(!allowed("ACL LOG RESET"));
         assert!(!allowed("ACL SETUSER bob on"));
         assert!(allowed("CLUSTER NODES"));
         assert!(!allowed("CLUSTER FAILOVER"));

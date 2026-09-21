@@ -6,6 +6,7 @@ use gpui_kit::component::{Icon, ThemeRegistry};
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
@@ -15,6 +16,19 @@ use std::borrow::Cow;
 #[include = "icon-light.png"]
 #[include = "themes/*.json"]
 #[include = "fonts/*.ttf"]
+pub struct Assets;
+
+/// Browser embed: fonts, `commands.json` and CONFIG help are fetched from
+/// the bridge after start (no zstd inflater on wasm, so they would sit in
+/// the module uncompressed). What remains is small and needed on the first
+/// frame (app icons, themes).
+#[cfg(target_family = "wasm")]
+#[derive(RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/**/*.svg"]
+#[include = "icon.png"]
+#[include = "icon-light.png"]
+#[include = "themes/*.json"]
 pub struct Assets;
 
 impl AssetSource for Assets {

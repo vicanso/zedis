@@ -327,10 +327,10 @@ struct StoredFile {
 /// Two things keep the 20 MB module from being 20 MB on the wire. It is sent
 /// in the best coding the caller accepts that is stored beside it (`.br`,
 /// `.gz` — see `static_files::negotiate`), which is a quarter of the bytes.
-/// And every answer carries an `ETag`: `Cache-Control: no-cache` means
-/// "revalidate", so that a rebuilt bundle is picked up on the next load, and
-/// a validator is what lets that revalidation be a `304` with no body rather
-/// than the whole module again on every reload.
+/// And every answer carries an `ETag`. The page stays `no-cache` (it carries
+/// the content hashes) so a new bundle is noticed; a `?v=<md5>` URL is
+/// immutable for a year. The validator is what lets a `no-cache` revalidation
+/// be a `304` with no body rather than the whole module again.
 async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
@@ -396,7 +396,7 @@ async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: Uri) 
 
     let mut response = Response::builder()
         .header("etag", &etag)
-        .header("cache-control", "no-cache")
+        .header("cache-control", static_files::cache_control(uri.query()))
         .header("vary", "Accept-Encoding");
     if static_files::matches_etag(header("if-none-match"), &etag) {
         return response

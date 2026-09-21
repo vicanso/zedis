@@ -66,16 +66,23 @@ pub fn init_commands_json(bytes: Vec<u8>) {
     let _ = COMMANDS_JSON.set(bytes);
 }
 
+/// Whether [`init_commands_json`] has run. Callers that cache a derived
+/// set (slow-log two-word names) must not pin an empty result before this
+/// is true — in the browser the file arrives after the first frame.
+pub fn commands_metadata_loaded() -> bool {
+    COMMANDS_JSON.get().is_some()
+}
+
 fn get_commands() -> &'static CommandsMap {
-    COMMANDS_MAP.get_or_init(|| {
-        let Some(data) = COMMANDS_JSON.get() else {
-            return HashMap::new();
-        };
-        let Ok(commands) = serde_json::from_slice(data) else {
-            return HashMap::new();
-        };
-        commands
-    })
+    static EMPTY: OnceLock<CommandsMap> = OnceLock::new();
+    // Do not `get_or_init` COMMANDS_MAP until the bytes are in: an empty
+    // init would stick for the process, and the browser fetches the file
+    // after launch.
+    if COMMANDS_JSON.get().is_none() {
+        return EMPTY.get_or_init(HashMap::new);
+    }
+    COMMANDS_MAP
+        .get_or_init(|| serde_json::from_slice(COMMANDS_JSON.get().expect("checked is_some")).unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

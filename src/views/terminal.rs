@@ -412,7 +412,7 @@ impl ZedisTerminal {
                         this.apply_suggestion(window, cx);
                         return;
                     }
-                    this.update_suggestions(value);
+                    this.update_suggestions(value, cx);
                     cx.notify();
                 }
                 _ => {}
@@ -579,7 +579,12 @@ impl ZedisTerminal {
             .collect();
     }
 
-    fn update_suggestions(&mut self, input: String) {
+    fn update_suggestions(&mut self, input: String, cx: &mut Context<Self>) {
+        // Browser: commands.json arrives after the first frame. Refill if
+        // this view was built before that fetch landed.
+        if self.redis_commands.is_empty() {
+            self.update_redis_commands(cx);
+        }
         self.cmd_suggestions.clear();
         self.cmd_suggestion_index = None;
         if input.is_empty() {

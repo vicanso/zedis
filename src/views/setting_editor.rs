@@ -23,8 +23,8 @@ use crate::{
         get_or_create_config_dir, is_app_store_build, parse_duration, set_datetime_prefs,
     },
     states::{
-        ZedisGlobalStore, i18n_settings, update_app_state_and_save, update_app_state_and_save_debounced,
-        update_app_state_and_save_quiet,
+        ZedisGlobalStore, i18n_settings, save_ui_locale, update_app_state_and_save,
+        update_app_state_and_save_debounced, update_app_state_and_save_quiet,
     },
 };
 #[cfg(not(target_family = "wasm"))]
@@ -522,9 +522,7 @@ impl ZedisSettingEditor {
             |_view, _select, event: &ZedisSelectEvent, _window, cx| {
                 let ZedisSelectEvent::Change(index) = event;
                 let locale = index_to_locale(*index);
-                update_app_state_and_save(cx, "save_locale", move |state, _| {
-                    state.set_locale(locale.to_string());
-                });
+                save_ui_locale(cx, locale);
             },
         ));
 

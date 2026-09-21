@@ -382,3 +382,13 @@ pub fn i18n_update<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("update.{key}"), locale = locale).into()
 }
+
+/// Persist the UI language and refresh. In the browser the matching
+/// `locales/<lang>.toml` is fetched first so `t!` has something to read.
+pub fn save_ui_locale(cx: &App, locale: &'static str) {
+    crate::i18n_loader::when_locale_ready(locale, cx, move |cx| {
+        super::update_app_state_and_save(cx, "save_locale", move |state, _| {
+            state.set_locale(locale.to_string());
+        });
+    });
+}

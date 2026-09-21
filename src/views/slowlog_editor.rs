@@ -78,6 +78,12 @@ static TWO_WORD_COMMANDS: OnceLock<HashSet<String>> = OnceLock::new();
 /// Returns a reference to the lazily-initialized set of two-word Redis commands.
 /// The set is built once and reused for all subsequent slow-log entries.
 fn two_word_commands() -> &'static HashSet<String> {
+    static EMPTY: OnceLock<HashSet<String>> = OnceLock::new();
+    // Do not pin an empty set: in the browser commands.json is fetched after
+    // the first frame, and OnceLock would then keep "no two-word commands".
+    if !crate::connection::commands_metadata_loaded() {
+        return EMPTY.get_or_init(HashSet::new);
+    }
     TWO_WORD_COMMANDS.get_or_init(|| {
         list_commands("0.0.0")
             .into_iter()

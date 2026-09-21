@@ -42,8 +42,8 @@ use crate::startup::{GIT_SHA, VERSION};
 use crate::states::i18n_update;
 use crate::states::{
     GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, update_app_state_and_save,
-    update_app_state_and_save_quiet,
+    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, save_ui_locale,
+    update_app_state_and_save, update_app_state_and_save_quiet,
 };
 // The window placement is written to `zedis.toml`; a tab has no file (ADR 9).
 #[cfg(not(target_family = "wasm"))]
@@ -970,10 +970,7 @@ impl Render for Zedis {
                     LocaleAction::Es => "es",
                 };
 
-                // Save locale preference and refresh UI
-                update_app_state_and_save(cx, "save_locale", move |state, _cx| {
-                    state.set_locale(locale.to_string());
-                });
+                save_ui_locale(cx, locale);
             }))
             .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| match e {
                 SettingsAction::Editor => open_settings_window(cx),

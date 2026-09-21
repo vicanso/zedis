@@ -80,6 +80,7 @@ pub use i18n::i18n_value_search;
 pub use i18n::i18n_vector_set;
 pub use i18n::i18n_zset_editor;
 pub use i18n::key_tree_no_scan_body;
+pub use i18n::save_ui_locale;
 pub use i18n::{command_status_label, command_unavailable_message, server_view_title};
 #[cfg(not(target_family = "wasm"))]
 pub use migration::{ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};

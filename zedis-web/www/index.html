@@ -67,6 +67,13 @@
   // bar already knows it, and it stays right behind a proxy that rewrites it.
   const root = new URL(".", window.location.href).href.replace(/\/$/, "");
   const api = (path, init) => fetch(root + path, { credentials: "same-origin", ...init });
+  // Filled by `web-bundle.sh` between the ASSET_REV markers on the next
+  // line. Leave `{}` in git: an unbundled page just fetches unversioned URLs.
+  const ASSET_REV = /*ASSET_REV*/{}/*/ASSET_REV*/;
+  const url = (path) => {
+    const v = ASSET_REV[path];
+    return v ? `${root}/${path}?v=${v}` : `${root}/${path}`;
+  };
 
   // An input method's keystrokes are not the application's. gpui-pre-web
   // (through 0.3.5) decides that from `isComposing` alone, but the *first*
@@ -87,21 +94,51 @@
     true,
   );
 
+  const SUPPORTED_LOCALES = ["en", "zh", "de", "es", "fr", "ja", "pt", "ru"];
+  // The UI language the first frame will `t!`. Saved preference lives in
+  // the same `localStorage` key the wasm writes (`zedis:zedis.toml`); a
+  // first visit follows `navigator.language`. Always also load `en`, the
+  // rust-i18n fallback, so a missing key does not render as the key name.
+  function preferredLocale() {
+    try {
+      const toml = localStorage.getItem("zedis:zedis.toml") || "";
+      const m = toml.match(/^\s*locale\s*=\s*"([a-z]+)"/m);
+      if (m && SUPPORTED_LOCALES.includes(m[1])) return m[1];
+    } catch {
+      // private mode / denied storage: fall through to the browser language
+    }
+    const lang = (navigator.language || "en").split("-")[0].toLowerCase();
+    return SUPPORTED_LOCALES.includes(lang) ? lang : "en";
+  }
+
   async function start() {
     // The whole application, as the desktop builds it, compiled to wasm.
     $("login").hidden = true;
     $("loading").hidden = false;
     try {
       // The UI font rides in with the call: the web text system has no
-      // fonts of its own, and the first frame measures text.
-      const [mod, font] = await Promise.all([
-        import("./wasm/zedis_web.js"),
-        fetch(`${root}/fonts/IBMPlexSans.ttf`).then((r) => {
+      // fonts of its own, and the first frame measures text. Locales are
+      // the same kind of thing — `t!` is synchronous — so they land before
+      // `run`, not on a later frame.
+      const locale = preferredLocale();
+      const localeNames = locale === "en" ? ["en"] : ["en", locale];
+      const [mod, font, localeFiles] = await Promise.all([
+        import(url("wasm/zedis_web.js")),
+        fetch(url("fonts/IBMPlexSans.ttf")).then((r) => {
           if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
           return r.arrayBuffer();
         }),
+        Promise.all(localeNames.map(async (name) => {
+          const r = await fetch(url(`locales/${name}.toml`));
+          if (!r.ok) throw new Error(`locale ${name}: HTTP ${r.status}`);
+          return [name, await r.text()];
+        })),
       ]);
-      await mod.default();
+      // Pass the hashed wasm URL: wasm-bindgen's default `new URL(..., import.meta.url)`
+      // would drop the JS file's query string and fetch an unversioned module.
+      await mod.default(url("wasm/zedis_web_bg.wasm"));
+      mod.set_asset_revs(JSON.stringify(ASSET_REV));
+      for (const [name, text] of localeFiles) mod.install_locale(name, text);
       $("loading").hidden = true;
       // The third argument: whether shortcuts are drawn as ⌘K or Ctrl+K. The
       // module cannot know — it is the same bytes on every machine. Both

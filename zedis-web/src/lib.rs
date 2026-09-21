@@ -57,6 +57,24 @@ use zedis_gui::helpers::set_web_command_key;
 #[cfg(target_family = "wasm")]
 use zedis_gui::states::{GlobalEvent, ZedisAppState, ZedisGlobalStore};
 
+/// Install one `locales/<lang>.toml` fetched by the page. Must run before
+/// [`run`]: the first frame already calls `t!`, and that lookup is
+/// synchronous. A later language switch fetches through the same URL from
+/// inside the app (`i18n_loader::when_locale_ready`).
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn install_locale(name: String, toml: String) {
+    zedis_gui::i18n_loader::install_locale_toml(&name, &toml);
+}
+
+/// Content hashes inlined in the page, so later `web_fetch` GETs carry
+/// `?v=<md5>` and the browser can keep those files forever.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn set_asset_revs(json: String) {
+    zedis_gui::web_fetch::set_revs(&json);
+}
+
 /// The browser entry point.
 ///
 /// `origin` is `window.location.origin`: the bridge serving this page is the
@@ -109,6 +127,10 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
     ));
     let http_client = Arc::new(platform.fetch_http_client());
     let app = Application::with_platform(platform).with_http_client(http_client);
+    // Locales, JetBrains Mono, commands.json and CONFIG help are fetched
+    // from this origin (same as the kit icons). The page preloads the
+    // active locale before `run`; the rest land after the first frame.
+    zedis_gui::web_fetch::set_origin(origin.clone());
     // The kit fetches its icons from `{origin}/assets/icons/…`: it needs an
     // absolute base, not a relative one.
     let web_assets = assets::WebAssets::new(&origin);

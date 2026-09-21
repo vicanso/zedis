@@ -117,7 +117,6 @@ const WRITES: &[&str] = &[
     // The server itself. A container is named with its subcommand where its read half is allowed, so that listing the write half does not take the read half with it.
     "ACL DELUSER",
     "ACL LOAD",
-    "ACL LOG",
     "ACL SAVE",
     "BGREWRITEAOF",
     "BGSAVE",
@@ -222,9 +221,8 @@ fn every_command_this_crate_sends_is_a_known_read_or_a_declared_write() {
                 Some(sub) => format!("{name} {sub}"),
                 None => name.clone(),
             };
-            if is_read_only_command(&name, sub.as_deref())
-                || writes.contains(name.as_str())
-                || writes.contains(spelled.as_str())
+            let args: Vec<&str> = sub.iter().map(String::as_str).collect();
+            if is_read_only_command(&name, &args) || writes.contains(name.as_str()) || writes.contains(spelled.as_str())
             {
                 continue;
             }

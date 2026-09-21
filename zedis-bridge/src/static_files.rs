@@ -132,6 +132,25 @@ pub fn etag_of(bytes: &[u8]) -> String {
     etag(Sha256::digest(bytes).into())
 }
 
+/// Cache policy for a static-file request.
+///
+/// `index.html` has no `v=` and stays `no-cache` so a new bundle (and the
+/// hashes inlined in it) is noticed. A `?v=<md5>` URL is a content hash
+/// from the bundle script: that exact body never changes, so it can sit
+/// in the browser for a year (`immutable` skips the revalidation that
+/// `no-cache` would send on every load of the wasm).
+pub fn cache_control(query: Option<&str>) -> &'static str {
+    if query.is_some_and(has_asset_rev) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+fn has_asset_rev(query: &str) -> bool {
+    query.split('&').any(|pair| pair == "v" || pair.starts_with("v="))
+}
+
 /// Whether an `If-None-Match` header names `etag`.
 pub fn matches_etag(if_none_match: Option<&str>, etag: &str) -> bool {
     if_none_match.is_some_and(|header| {
@@ -363,6 +382,21 @@ mod tests {
         assert!(matches_etag(Some("*"), &tag));
         assert!(!matches_etag(Some("\"stale\""), &tag));
         assert!(!matches_etag(None, &tag));
+    }
+
+    #[test]
+    fn a_content_hash_query_is_immutable_and_the_page_is_not() {
+        assert_eq!(cache_control(None), "no-cache");
+        assert_eq!(cache_control(Some("")), "no-cache");
+        assert_eq!(cache_control(Some("foo=1")), "no-cache");
+        assert_eq!(
+            cache_control(Some("v=a1b2c3d4e5f6")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control(Some("v=a1b2c3d4e5f6&other=1")),
+            "public, max-age=31536000, immutable"
+        );
     }
 
     #[test]

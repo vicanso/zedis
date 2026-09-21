@@ -14,10 +14,11 @@
 
 //! Per-parameter help text for the CONFIG editor.
 //!
-//! Descriptions live in embedded JSON (`assets/config_docs/{en,zh}.json`),
-//! compressed by `rust-embed`'s `compression` feature. Nothing is loaded at
-//! app startup. The CONFIG editor view loads the matching language once when
-//! opened (and again only if the UI locale changes while the view is live).
+//! Descriptions live in `assets/config_docs/{en,zh}.json`. Nothing is loaded
+//! at app startup. The CONFIG editor view loads the matching language once
+//! when opened (and again only if the UI locale changes while the view is
+//! live). On the desktop that is rust-embed; in the browser the file is
+//! fetched from the bridge the first time the panel opens.
 
 use crate::assets::Assets;
 use std::collections::HashMap;
@@ -41,7 +42,13 @@ pub(crate) fn load_config_docs(zh: bool) -> ConfigDocMap {
         tracing::warn!(path, "config_docs asset missing");
         return ConfigDocMap::new();
     };
-    match serde_json::from_slice::<ConfigDocMap>(file.data.as_ref()) {
+    parse_config_docs(path, file.data.as_ref())
+}
+
+/// Parse a config-docs JSON blob. Shared by the embed path and the browser
+/// fetch, so a malformed file is the same empty map either way.
+pub(crate) fn parse_config_docs(path: &str, bytes: &[u8]) -> ConfigDocMap {
+    match serde_json::from_slice::<ConfigDocMap>(bytes) {
         Ok(map) => {
             info!(path, entries = map.len(), "loaded config_docs");
             map

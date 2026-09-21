@@ -45,9 +45,9 @@ use sys_locale::get_locale;
 use tracing::{error, info, warn};
 
 // Pointed at the empty `locales_stub/` so the macro embeds no translations at
-// compile time; the real `locales/*.toml` stay compressed until the lazy
-// backend from `i18n_loader::runtime_backend` inflates a locale on its first
-// `t!` lookup. See `src/i18n_loader.rs`.
+// compile time; the lazy backend from `i18n_loader::runtime_backend` inflates
+// a locale on its first `t!` lookup (desktop: rust-embed; browser: a fetch
+// from `/locales/<lang>.toml`). See `src/i18n_loader.rs`.
 rust_i18n::i18n!(
     "locales_stub",
     fallback = "en",
@@ -72,6 +72,8 @@ pub mod states;
 #[cfg(all(not(target_family = "wasm"), not(target_os = "linux")))]
 pub mod tray;
 pub mod views;
+#[cfg(target_family = "wasm")]
+pub mod web_fetch;
 pub mod window_setup;
 #[cfg(not(target_family = "wasm"))]
 use crate::dialogs::*;
@@ -205,11 +207,74 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Hand the embedded command metadata to the connection crate — it has no
 /// access to the app's asset bundle (see command.rs). Both entry points call
-/// this before anything can build a command.
+/// this before anything can build a command. In the browser the file is not
+/// embedded; [`fetch_commands_json`] loads it after the first frame.
 pub fn init_embedded_commands() {
     if let Some(file) = assets::Assets::get("commands.json") {
         crate::connection::init_commands_json(file.data.to_vec());
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn register_embedded_mono_fonts(cx: &mut App) {
+    let fonts = ["fonts/JetBrainsMono-Regular.ttf", "fonts/JetBrainsMono-Bold.ttf"]
+        .into_iter()
+        .filter_map(|p| assets::Assets::get(p).map(|f| f.data))
+        .collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) {
+        error!(error = %e, "failed to register bundled fonts");
+    }
+}
+
+/// Pull both JetBrains faces, then register them together so Regular/Bold
+/// land in the same `add_fonts` call. A missing file is skipped; an empty
+/// result leaves the fallback family in place.
+#[cfg(target_family = "wasm")]
+fn fetch_mono_fonts(cx: &App) {
+    use std::borrow::Cow;
+    use std::sync::{Arc, Mutex};
+
+    let collected = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let pending = Arc::new(Mutex::new(2_u8));
+    for name in ["JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"] {
+        let collected = collected.clone();
+        let pending = pending.clone();
+        web_fetch::get_bytes(cx, &format!("fonts/{name}"), move |cx, bytes| {
+            if let Some(bytes) = bytes {
+                collected.lock().unwrap_or_else(|p| p.into_inner()).push(bytes);
+            } else {
+                warn!(name, "JetBrains Mono face could not be fetched");
+            }
+            let left = {
+                let mut n = pending.lock().unwrap_or_else(|p| p.into_inner());
+                *n = n.saturating_sub(1);
+                *n
+            };
+            if left > 0 {
+                return;
+            }
+            let fonts = std::mem::take(&mut *collected.lock().unwrap_or_else(|p| p.into_inner()));
+            if fonts.is_empty() {
+                return;
+            }
+            let cows: Vec<Cow<'static, [u8]>> = fonts.into_iter().map(Cow::Owned).collect();
+            if let Err(e) = cx.text_system().add_fonts(cows) {
+                error!(error = %e, "failed to register fetched mono fonts");
+            }
+            cx.refresh_windows();
+        });
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn fetch_commands_json(cx: &App) {
+    web_fetch::get_bytes(cx, "assets/commands.json", |cx, bytes| match bytes {
+        Some(bytes) => {
+            crate::connection::init_commands_json(bytes);
+            cx.refresh_windows();
+        }
+        None => warn!("commands.json could not be fetched"),
+    });
 }
 
 /// Fills the in-memory proto / script / Lua caches from the local database.
@@ -255,12 +320,14 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
     // monospace family (`get_mono_font_family()`) renders real Regular / Bold
     // weights on every platform instead of leaning on whatever the OS ships
     // — see the "Bold needs a concrete font family" gotcha in CLAUDE.md.
-    let fonts = ["fonts/JetBrainsMono-Regular.ttf", "fonts/JetBrainsMono-Bold.ttf"]
-        .into_iter()
-        .filter_map(|p| assets::Assets::get(p).map(|f| f.data))
-        .collect();
-    if let Err(e) = cx.text_system().add_fonts(fonts) {
-        error!(error = %e, "failed to register bundled fonts");
+    // The browser fetches those files after the first frame: they are ~0.5 MiB
+    // uncompressed and would sit in the wasm (no zstd inflater there).
+    #[cfg(not(target_family = "wasm"))]
+    register_embedded_mono_fonts(cx);
+    #[cfg(target_family = "wasm")]
+    {
+        fetch_mono_fonts(cx);
+        fetch_commands_json(cx);
     }
     // Register the embedded color themes so they appear in the theme menu.
     assets::register_themes(cx);

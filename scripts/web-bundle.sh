@@ -52,6 +52,17 @@ echo "icons: $(ls zedis-web/www/assets/icons | wc -l | tr -d ' ') from $kit_dir"
 # the browser ask for `/favicon.ico` — the site root, which under a base path
 # (`--base-path`) is another application's.
 cp assets/icon.png zedis-web/www/assets/icon.png
+# Locale files stay out of the wasm (no zstd inflater there) and are fetched
+# by the page / a language switch. Same origin as the kit icons.
+mkdir -p zedis-web/www/locales
+cp locales/*.toml zedis-web/www/locales/
+echo "locales: $(ls zedis-web/www/locales | wc -l | tr -d ' ')"
+# Mono fonts, command metadata and CONFIG help: fetched after the first
+# frame so they do not sit uncompressed in the wasm.
+cp assets/fonts/JetBrainsMono-*.ttf zedis-web/www/fonts/
+mkdir -p zedis-web/www/assets/config_docs
+cp assets/commands.json zedis-web/www/assets/commands.json
+cp assets/config_docs/*.json zedis-web/www/assets/config_docs/
 
 profile=web
 if [ "$mode" = release ]; then
@@ -114,3 +125,38 @@ else
   gzip -1 -k "$wasm"
   echo "wasm ($mode): $(mib "$(size "$wasm")") raw -> $(mib "$(size "$wasm.gz")") gzip -1"
 fi
+
+# Content hashes inlined into `index.html` so the page does not need a
+# second request for `asset-rev.json`. Kit icons are omitted: the kit
+# fetches them by name and they stay on ETag / no-cache.
+python3 - <<'PY'
+import hashlib, json, re, sys
+from pathlib import Path
+
+root = Path("zedis-web/www")
+skip_suffix = {".gz", ".br", ".d.ts"}
+skip_name = {".gitignore", "package.json", "asset-rev.json", "index.html"}
+revs = {}
+for path in sorted(root.rglob("*")):
+    if not path.is_file() or path.suffix in skip_suffix or path.name in skip_name:
+        continue
+    rel = path.relative_to(root).as_posix()
+    if rel.startswith("assets/icons/"):
+        continue
+    revs[rel] = hashlib.md5(path.read_bytes()).hexdigest()[:12]
+payload = json.dumps(revs, separators=(",", ":"), sort_keys=True)
+html_path = root / "index.html"
+html = html_path.read_text()
+updated, n = re.subn(
+    r"const ASSET_REV = /\*ASSET_REV\*/.*?/\*/ASSET_REV\*/",
+    f"const ASSET_REV = /*ASSET_REV*/{payload}/*/ASSET_REV*/",
+    html,
+    count=1,
+    flags=re.S,
+)
+if n != 1:
+    sys.exit("zedis-web/www/index.html is missing the const ASSET_REV placeholder")
+html_path.write_text(updated)
+(root / "asset-rev.json").unlink(missing_ok=True)
+print(f"asset-rev: {len(revs)} files inlined into index.html")
+PY
