@@ -69,7 +69,7 @@
   const api = (path, init) => fetch(root + path, { credentials: "same-origin", ...init });
   // Filled by `web-bundle.sh` between the ASSET_REV markers on the next
   // line. Leave `{}` in git: an unbundled page just fetches unversioned URLs.
-  const ASSET_REV = /*ASSET_REV*/{}/*/ASSET_REV*/;
+  const ASSET_REV = /*ASSET_REV*/{"assets/commands.json":"a1f58c0b4949","assets/config_docs/en.json":"90b5e6e1426a","assets/config_docs/zh.json":"32d145cb21ce","assets/icon.png":"9121a3cab487","fonts/IBMPlexSans.ttf":"335a2b2a3a64","fonts/JetBrainsMono-Bold.ttf":"8658ffe39dbf","fonts/JetBrainsMono-Regular.ttf":"d09f65145228","fonts/OFL.txt":"4d4949dda4b2","locales/de.toml":"f5035840a34a","locales/en.toml":"21778e26351b","locales/es.toml":"88a007a7701a","locales/fr.toml":"c26bd1704253","locales/ja.toml":"6938ed577e18","locales/pt.toml":"acab6f5321f5","locales/ru.toml":"b893fd8e991a","locales/zh.toml":"4b037957cbde","wasm/zedis_web.d.ts":"d16fd01ce74e","wasm/zedis_web.js":"c220cd17a0f4","wasm/zedis_web_bg.wasm":"ab50d1c8301d","wasm/zedis_web_bg.wasm.d.ts":"4ac46e647f57"}/*/ASSET_REV*/;
   const url = (path) => {
     const v = ASSET_REV[path];
     return v ? `${root}/${path}?v=${v}` : `${root}/${path}`;
