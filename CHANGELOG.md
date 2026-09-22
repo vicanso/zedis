@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.1](https://github.com/vicanso/zedis/compare/v0.11.0..v0.11.1) - 2026-09-22
+
+### ⛰️  Features
+
+- *(web)* Fetch locales, fonts and command docs over HTTP, and cache-bust them - ([f09b46a](https://github.com/vicanso/zedis/commit/f09b46a9fb816de83e3810722d50d53258febc4e))
+
+### 🐛 Bug Fixes
+
+- *(search)* A KNN query is only in distance order if it asks - ([daae18f](https://github.com/vicanso/zedis/commit/daae18fbf0ebd643491c9bb2cc980b6318d96a73))
+- *(ui)* A form's focus follows its tabs, so Escape still closes the dialog - ([8cbe4a4](https://github.com/vicanso/zedis/commit/8cbe4a4ea199c156222a264b51844a494e62c4ec))
+- *(web)* The title bar's app mark stops sitting 26px from the edge - ([a5ca272](https://github.com/vicanso/zedis/commit/a5ca2727af0b9276fda27d24026f4e6d170709dd))
+- *(web)* The connection list repaints itself, and Home moves to the title bar - ([4d6646b](https://github.com/vicanso/zedis/commit/4d6646b975570d94ebadd02868f3ee262d164058))
+
+### 📚 Documentation
+
+- Update readme - ([37276c5](https://github.com/vicanso/zedis/commit/37276c5fa6edef435f01abbee4315bf732e5f906))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(web)* Refresh the inlined asset revisions - ([989cfb2](https://github.com/vicanso/zedis/commit/989cfb245d06c4ba4a5f72f5fea845dda02d5bc1))
+- Update dependencies - ([41eec84](https://github.com/vicanso/zedis/commit/41eec84d709f36b914fa0440b83b64585e1f44ba))
+
+### Build
+
+- *(deps)* Bump tray-icon from 0.24.2 to 0.25.1 ([#152](https://github.com/orhun/git-cliff/issues/152)) - ([8b5d8c9](https://github.com/vicanso/zedis/commit/8b5d8c99499322df15fd186a5d3123f655698143))
+- *(web)* Keep the page's built asset map out of commits - ([205d039](https://github.com/vicanso/zedis/commit/205d039312d47fa68076ae51fbf40823d8d1a9dc))
+
 ## [0.11.0](https://github.com/vicanso/zedis/compare/v0.10.0..v0.11.0) - 2026-09-20
 
 ### ⛰️  Features
