@@ -796,6 +796,40 @@ impl ZedisForm {
         this
     }
 
+    /// Put the keyboard inside `tab_index`'s first text field.
+    ///
+    /// Switching tabs unmounts whatever was focused, and gpui does not hand
+    /// the focus anywhere: it leaves the window. That is not only a lost
+    /// caret — a dialog's Escape is dispatched along the *focus path*, so a
+    /// form inside one stopped being dismissable the moment the user clicked
+    /// a second tab. Focus therefore moves with the tab.
+    ///
+    /// Checkboxes and radio groups are skipped because `focus_at_end` does
+    /// nothing for them, and arming a checkbox the user did not reach for
+    /// would be a worse surprise than the one being fixed. A tab with no
+    /// text field falls back to the form's always-visible fields, which is
+    /// enough to keep the focus path — and the Escape — inside the dialog.
+    fn focus_first_field_of_tab(&self, tab_index: usize, window: &mut Window, cx: &mut App) {
+        let focusable = |only_this_tab: bool| {
+            self.field_states.iter().find(|(field, state)| {
+                let on_tab = if only_this_tab {
+                    field.tab_index == Some(tab_index)
+                } else {
+                    field.tab_index.is_none()
+                };
+                on_tab
+                    && self.should_render_field(field, tab_index, cx)
+                    && !matches!(
+                        state,
+                        ZedisFormFieldState::RadioGroup(_) | ZedisFormFieldState::Checkbox(_)
+                    )
+            })
+        };
+        if let Some((_, state)) = focusable(true).or_else(|| focusable(false)) {
+            state.focus_at_end(window, cx);
+        }
+    }
+
     /// Whether this field should be rendered in the current view.
     /// Checks both tab membership (`tab_index`) and conditional dependency
     /// (`visible_on`).
@@ -1109,12 +1143,16 @@ impl Render for ZedisForm {
                 .underline()
                 .mb_3()
                 .selected_index(*tab_selected_index.read(cx))
-                .on_click(move |selected_index, _, cx| {
+                // A listener rather than a plain closure: the handler needs
+                // the form itself to move focus onto the new tab (see
+                // `focus_first_field_of_tab`).
+                .on_click(cx.listener(move |this, selected_index: &usize, window, cx| {
                     tab_selected_index.update(cx, |state, cx| {
                         *state = *selected_index;
                         cx.notify();
                     });
-                });
+                    this.focus_first_field_of_tab(*selected_index, window, cx);
+                }));
             for tab in tabs {
                 tab_bar = tab_bar.child(Tab::new().label(tab.clone()));
             }

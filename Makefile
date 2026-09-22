@@ -70,7 +70,7 @@ web-dist:
 	scripts/web-dist.sh
 
 web-serve:
-	RUST_ENV=dev ZEDIS_BRIDGE_USERS="$${ZEDIS_BRIDGE_USERS:-dev@dev}" cargo run -p zedis-bridge -- --insecure-cookie
+	RUST_ENV=dev ZEDIS_BRIDGE_USERS="$${ZEDIS_BRIDGE_USERS:-zedis@123123}" cargo run -p zedis-bridge -- --insecure-cookie
 
 # Dependency gate (advisories / licenses / bans / sources); the config is
 # deny.toml. `cargo install cargo-deny --locked` once.

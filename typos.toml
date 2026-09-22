@@ -2,6 +2,11 @@
 extend-ignore-re = [
     "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",
     "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on",
+    # The page's built cache-bust map (scripts/asset-rev.py): a line of md5
+    # prefixes, and hex spells words often enough to matter — `1dcfa9afe98c`
+    # cost a red `make lint` on a file nobody had typed in. The map only
+    # exists in a worktree that has been built; git stores the placeholder.
+    "(?s)/\\*ASSET_REV\\*/.*?/\\*/ASSET_REV\\*/",
 ]
 
 [default.extend-words]
