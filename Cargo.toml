@@ -142,7 +142,7 @@ shlex = { workspace = true }
 # browser is "not linux", so this used to follow the build into the page
 # (ADR 9). The family gate is the outer one.
 [target.'cfg(all(not(target_family = "wasm"), not(target_os = "linux")))'.dependencies]
-tray-icon = "0.24.1"
+tray-icon = "0.25.1"
 # The desktop half of the application. Everything here is either unreachable
 # from a browser tab or has no wasm port at all, and keeping it out of the
 # shared list is what lets `zedis-gui` be compiled for `wasm32-unknown-unknown`
@@ -280,7 +280,7 @@ percent-encoding = "2.3.2"
 pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.9.1"
-rand = "0.10.2"
+rand = "0.10.3"
 redb = "4.3.0"
 # Both runtime adapters are on. redis picks per connection: it takes tokio
 # when `Handle::try_current()` finds an ambient runtime and smol otherwise
@@ -346,26 +346,26 @@ webpki-roots = "1.0.9"
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.5" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.5", features = [
+gpui = { package = "gpui-pre", version = "0.3.6" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.6", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.5" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.6" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.5" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.6" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
 # LanguageRegistry, pulling tree-sitter + tree-sitter-json only, not the
 # 30-parser `tree-sitter-languages` bundle; we register Lua ourselves.
-gpui-kit = { version = "0.6.4" }
+gpui-kit = { version = "0.6.6" }
 
 [build-dependencies]
 winres = "0.1.12"
