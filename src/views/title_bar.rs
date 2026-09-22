@@ -337,12 +337,17 @@ fn left_slot(cx: &mut App) -> Div {
     let label_color = cx.theme().foreground;
     let mark = logo(cx.theme().is_dark());
     let tooltip = i18n_sidebar(cx, "home");
-    h_flex().flex_1().items_center().pl_2().child(
+    // No left padding of its own: `TitleBar` already insets everything by
+    // `TITLE_BAR_LEFT_PADDING` (12px off macOS), and adding to it put the app
+    // mark 26px from the window edge — a gap wide enough to read as a missing
+    // element. The pill's own inset is halved for the same reason; between
+    // them the mark now starts at 14px, flush with the bar's own inset.
+    h_flex().flex_1().items_center().child(
         h_flex()
             .id("title-bar-home")
             .items_center()
             .gap_2()
-            .px_2()
+            .px_1()
             .py_0p5()
             .rounded_md()
             .cursor_pointer()
