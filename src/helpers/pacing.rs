@@ -122,6 +122,19 @@ pub fn set_unattended(unattended: bool) {
 #[cfg(not(target_family = "wasm"))]
 pub const WINDOW_IDLE_AFTER: Duration = Duration::from_secs(120);
 
+/// How often a browser page asks the bridge for the server list again.
+///
+/// The desktop owns its list and needs no such poll, so this is the browser's
+/// alone, the way [`WINDOW_IDLE_AFTER`] is the desktop's. The list is shared:
+/// an entry added by another account, another tab, a script against
+/// `/v1/servers`, or a `redis://` link opened elsewhere reaches this page only
+/// through this poll — until it existed, only a reload did. A minute, because
+/// the reply is the whole list with no secrets, one request a page, and a
+/// page nobody is looking at skips it (`unattended`) rather than polling a
+/// shared bridge on behalf of a hidden tab.
+#[cfg(target_family = "wasm")]
+pub const SERVER_LIST_REFRESH: Duration = Duration::from_secs(60);
+
 /// The longest a cluster's heartbeat is stretched to, however many masters.
 const HEARTBEAT_STRETCH_CAP: Duration = Duration::from_secs(30);
 

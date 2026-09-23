@@ -39,6 +39,8 @@ use std::borrow::Cow;
 #[cfg(target_family = "wasm")]
 use std::cell::RefCell;
 #[cfg(target_family = "wasm")]
+use std::collections::HashSet;
+#[cfg(target_family = "wasm")]
 use std::rc::Rc;
 #[cfg(target_family = "wasm")]
 use std::sync::Arc;
@@ -49,9 +51,9 @@ use tracing_subscriber::prelude::*;
 #[cfg(target_family = "wasm")]
 use transport::HttpBridgeTransport;
 #[cfg(target_family = "wasm")]
-use zedis_connection::{set_bridge_server_store, set_bridge_transport, set_servers_cache};
+use zedis_connection::{RedisServer, get_servers, set_bridge_server_store, set_bridge_transport, set_servers_cache};
 #[cfg(target_family = "wasm")]
-use zedis_gui::helpers::pacing::set_unattended;
+use zedis_gui::helpers::pacing::{SERVER_LIST_REFRESH, set_unattended, unattended};
 #[cfg(target_family = "wasm")]
 use zedis_gui::helpers::set_web_command_key;
 #[cfg(target_family = "wasm")]
@@ -182,24 +184,66 @@ pub fn run(origin: String, ui_font: Vec<u8>, apple_keyboard: bool) -> Result<(),
         // The server list follows, the way it does on the desktop: the window
         // is already up, and the sidebar refreshes when the list lands. No
         // credential — the login cookie rides along on a same-origin fetch.
+        //
+        // Then it keeps following. The list is shared with every other
+        // account, tab and script on this bridge, and this page has no other
+        // way to learn that one of them changed it — the desktop owns its
+        // file, the browser only borrows the bridge's. So the page asks again
+        // every `SERVER_LIST_REFRESH`, skipping the rounds nobody would see,
+        // and redraws only when the answer differs from what it holds. A
+        // round that lands between this page's own save and that save's
+        // re-list can carry a list a moment stale; the re-list corrects it
+        // on the same path, so the worst case is one redraw too many.
         cx.spawn(async move |cx| {
             let servers = transport.fetch_servers().await;
             let _ = cx.update(|cx| match servers {
                 Ok(list) => {
                     info!(count = list.len(), "server list from the bridge");
-                    set_servers_cache(list);
-                    // Tell the sidebar to re-read the (now filled) list.
-                    let store = cx.global::<ZedisGlobalStore>().clone();
-                    let state = store.state();
-                    state.update(cx, |_state, cx| cx.emit(GlobalEvent::ServerListUpdated));
+                    apply_server_list(list, cx);
                 }
                 Err(e) => error!(error = %e, "the server list could not be fetched"),
             });
+            loop {
+                cx.background_executor().timer(SERVER_LIST_REFRESH).await;
+                if unattended() {
+                    continue;
+                }
+                match transport.fetch_servers().await {
+                    Ok(list) => {
+                        let _ = cx.update(|cx| apply_server_list(list, cx));
+                    }
+                    // A missed round is a missed round; the next one is a
+                    // minute away and the page keeps the list it has.
+                    Err(e) => info!(error = %e, "server list refresh skipped"),
+                }
+            }
         })
         .detach();
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
     Ok(())
+}
+
+/// Take a server list from the bridge, and tell the views only if it differs
+/// from the one they are drawing.
+///
+/// Compared as sets: the bridge answers in its own order and the cache hands
+/// the list out sorted, so an order-sensitive comparison would call every
+/// round a change and rebuild the sidebar once a minute for nothing. Both
+/// sides came through the same transport, so secrets are the same
+/// placeholders on both and the read-only marking is the same too.
+#[cfg(target_family = "wasm")]
+fn apply_server_list(list: Vec<RedisServer>, cx: &mut gpui::App) {
+    let before: HashSet<RedisServer> = get_servers().unwrap_or_default().into_iter().collect();
+    let after: HashSet<RedisServer> = list.iter().cloned().collect();
+    if before == after {
+        return;
+    }
+    set_servers_cache(list);
+    // Tell the sidebar and the connection page to re-read the list.
+    let store = cx.global::<ZedisGlobalStore>().clone();
+    let state = store.state();
+    state.update(cx, |_state, cx| cx.emit(GlobalEvent::ServerListUpdated));
 }
 
 /// The page's `visibilitychange`, from `index.html`. A hidden page polls the

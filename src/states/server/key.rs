@@ -42,7 +42,7 @@ use crate::{
     error::Error,
     helpers::{parse_duration, unix_ts, unix_ts_millis},
 };
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
 use futures::future::join;
 use gpui::{SharedString, prelude::*};
@@ -287,16 +287,42 @@ impl ZedisServerState {
             cx,
         );
     }
+    /// What an auto-refresh round changes in the loaded key set.
+    ///
+    /// Additions are always safe: a key the server just listed exists.
+    /// Removals are only safe when `complete` — the round's cursors all came
+    /// back at 0, so the server has listed *everything* matching and a key
+    /// absent from the result really is gone. One `SCAN` round is a hint,
+    /// not an enumeration: `COUNT` is advisory and `MATCH` filters *after*
+    /// the round is drawn, so on any keyspace bigger than a round the result
+    /// is a sample. Diffing against a sample deleted live keys from the tree,
+    /// and it did so precisely on the large databases where auto-refresh is
+    /// most used.
+    fn plan_auto_refresh(
+        complete: bool,
+        scanned: Vec<(String, String, i64)>,
+        loaded: &AHashMap<SharedString, KeyType>,
+    ) -> (Vec<(SharedString, SharedString, i64)>, Vec<SharedString>) {
+        let seen: AHashSet<&str> = scanned.iter().map(|(k, _, _)| k.as_str()).collect();
+        let to_remove = if complete {
+            loaded.keys().filter(|k| !seen.contains(k.as_ref())).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let to_add = scanned
+            .into_iter()
+            .filter(|(k, _, _)| !loaded.contains_key(k.as_str()))
+            .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
+            .collect();
+        (to_add, to_remove)
+    }
+
     pub fn handle_auto_refresh(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         if self.query_mode == QueryMode::Exact {
             self.select_key(keyword, cx);
             return;
         }
         let pattern = match self.query_mode {
-            QueryMode::Exact => {
-                self.select_key(keyword, cx);
-                return;
-            }
             QueryMode::Prefix => format!("{keyword}*"),
             _ => format!("*{keyword}*"),
         };
@@ -335,22 +361,13 @@ impl ZedisServerState {
                 if this.keys_superseded_by_next_batch {
                     return;
                 }
-                if let Ok((_, keys)) = result {
-                    let new_keys_set: AHashSet<SharedString> =
-                        keys.iter().map(|(k, _, _)| SharedString::from(k.clone())).collect();
-
-                    let keys_to_remove: Vec<SharedString> = this
-                        .keys
-                        .keys()
-                        .filter(|k| !new_keys_set.contains(*k))
-                        .cloned()
-                        .collect();
-
-                    let keys_to_add: Vec<(SharedString, SharedString, i64)> = keys
-                        .into_iter()
-                        .filter(|(k, _, _)| !this.keys.contains_key(k.as_str()))
-                        .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
-                        .collect();
+                if let Ok((cursors, keys)) = result {
+                    // Whether this round walked the whole keyspace: every
+                    // master's cursor back at 0, the same test `scan_keys`
+                    // uses. Only then is "absent from the result" the same
+                    // thing as "gone from the server".
+                    let complete = cursors.iter().sum::<u64>() == 0;
+                    let (keys_to_add, keys_to_remove) = Self::plan_auto_refresh(complete, keys, &this.keys);
 
                     let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty();
                     debug!(
@@ -1556,4 +1573,48 @@ async fn load_module_value(
         ..Default::default()
     })));
     Ok(value)
+}
+
+#[cfg(test)]
+mod auto_refresh_tests {
+    use super::*;
+
+    fn loaded(keys: &[&str]) -> AHashMap<SharedString, KeyType> {
+        keys.iter()
+            .map(|k| (SharedString::from(k.to_string()), KeyType::String))
+            .collect()
+    }
+
+    fn scanned(keys: &[&str]) -> Vec<(String, String, i64)> {
+        keys.iter().map(|k| (k.to_string(), "string".to_string(), -1)).collect()
+    }
+
+    fn names(rows: &[(SharedString, SharedString, i64)]) -> Vec<&str> {
+        rows.iter().map(|(k, _, _)| k.as_ref()).collect()
+    }
+
+    /// The round finished (cursors at 0): a key the server no longer lists
+    /// is gone, and a new one arrives.
+    #[test]
+    fn a_complete_round_removes_what_the_server_no_longer_lists() {
+        let (add, remove) = ZedisServerState::plan_auto_refresh(true, scanned(&["a", "c"]), &loaded(&["a", "b"]));
+        assert_eq!(names(&add), ["c"]);
+        assert_eq!(remove, vec![SharedString::from("b")]);
+    }
+
+    /// The round did *not* finish: its result is a sample, and a key missing
+    /// from a sample has not been shown to be missing from the server. This
+    /// is the case that used to delete live keys from the tree.
+    #[test]
+    fn an_incomplete_round_adds_but_never_removes() {
+        let (add, remove) = ZedisServerState::plan_auto_refresh(false, scanned(&["a", "c"]), &loaded(&["a", "b"]));
+        assert_eq!(names(&add), ["c"], "what the round did see is still added");
+        assert!(remove.is_empty(), "b was simply not in this round's sample");
+    }
+
+    #[test]
+    fn a_key_in_both_is_neither_added_nor_removed() {
+        let (add, remove) = ZedisServerState::plan_auto_refresh(true, scanned(&["a"]), &loaded(&["a"]));
+        assert!(add.is_empty() && remove.is_empty());
+    }
 }
