@@ -492,7 +492,7 @@ async fn servers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult
 
 #[derive(Deserialize)]
 struct AddServerRequest {
-    /// A `redis://` or `rediss://` connection string, or any of the export
+    /// A `redis(s)://` or `valkey(s)://` connection string, or any of the export
     /// formats `RedisServer::from_import` understands.
     #[serde(default)]
     url: Option<String>,

@@ -45,7 +45,7 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct InstanceMessage {
-    /// `redis://` / `rediss://` links from the command line.
+    /// Connection links (`redis://`, `valkeys://`, …) from the command line.
     pub urls: Vec<String>,
 }
 

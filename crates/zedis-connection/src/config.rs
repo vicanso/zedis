@@ -104,6 +104,33 @@ fn env_label_for_key(key: &str) -> Option<&'static str> {
     (label != "None").then_some(label)
 }
 
+/// The connection-string schemes Zedis reads, and whether each means TLS.
+/// `valkey://` / `valkeys://` are Valkey's spelling of the same format — what
+/// `valkey-cli -u` takes and what Aiven's console hands out — so a pasted
+/// Valkey URI reads exactly like its `redis(s)://` twin. What Zedis *writes*
+/// (`get_connection_url`) stays `redis(s)://`: that string only goes to
+/// redis-rs, never to a person.
+const URI_SCHEMES: [(&str, bool); 4] = [("redis", false), ("rediss", true), ("valkey", false), ("valkeys", true)];
+
+/// `Some(tls)` for a connection-string scheme, `None` for any other.
+/// Case-insensitive, as URI schemes are.
+fn scheme_tls(scheme: &str) -> Option<bool> {
+    URI_SCHEMES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(scheme))
+        .map(|(_, tls)| *tls)
+}
+
+/// `true` when `input` is a connection string — `redis://`, `rediss://`,
+/// `valkey://` or `valkeys://` — which is how the import dialog and the
+/// command line tell a link from everything else they are handed.
+pub fn is_connection_uri(input: &str) -> bool {
+    input
+        .trim()
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme_tls(scheme).is_some())
+}
+
 #[derive(Debug, Clone, Default)]
 struct RedisUrl {
     host: String,
@@ -129,7 +156,7 @@ fn parse_url(host: String) -> RedisUrl {
             port,
             username: u.username().to_string(),
             password: u.password().map(|p| p.to_string()),
-            tls: u.scheme() == "rediss",
+            tls: scheme_tls(u.scheme()).unwrap_or(false),
         }
     } else {
         RedisUrl {
@@ -319,7 +346,8 @@ pub enum ImportError {
     InvalidJson(String),
     /// The Redis URI was malformed (detail = parser message).
     InvalidUri(String),
-    /// URI scheme other than `redis` / `rediss` (carries the offending scheme).
+    /// URI scheme other than `redis(s)` / `valkey(s)` (carries the offending
+    /// scheme).
     UnsupportedScheme(String),
     /// Required `name` field missing or empty.
     MissingName,
@@ -648,12 +676,12 @@ impl RedisServer {
 
     /// Smart import entry point used by the paste-to-import dialog.
     /// Accepts either a JSON config (as produced by
-    /// [`Self::to_export_json`]) or a bare Redis connection URI
-    /// (`redis://` / `rediss://`), dispatching on the leading token so
-    /// a pasted connection string "just works" alongside the JSON form.
+    /// [`Self::to_export_json`]) or a bare connection URI (see
+    /// [`is_connection_uri`]), dispatching on the leading token so a pasted
+    /// connection string "just works" alongside the JSON form.
     pub fn from_import(input: &str) -> Result<Self, ImportError> {
         let trimmed = input.trim();
-        if trimmed.starts_with("redis://") || trimmed.starts_with("rediss://") {
+        if is_connection_uri(trimmed) {
             Self::from_import_uri(trimmed)
         } else {
             Self::from_import_json(trimmed)
@@ -662,7 +690,8 @@ impl RedisServer {
 
     /// Parse a Redis connection URI into a `RedisServer`. Supports the
     /// standard form `scheme://[username[:password]@]host[:port][/db]`,
-    /// where the `rediss` scheme enables TLS. Username and password are
+    /// where the scheme is `redis` / `valkey`, or `rediss` / `valkeys` to
+    /// enable TLS. Username and password are
     /// percent-decoded (so e.g. `%40` round-trips to `@`). The friendly
     /// `name` defaults to the host since a bare URI carries no label,
     /// and the trailing `/db` segment becomes the entry's pinned
@@ -675,15 +704,14 @@ impl RedisServer {
     /// cluster topology at connect time. Query parameters (`?slow=…`) are
     /// likewise client options with no Zedis equivalent and are ignored.
     ///
-    /// Returns `Err` for a malformed URI, a non-`redis(s)` scheme, or a
-    /// missing host. The entry always gets a fresh `id` so importing
+    /// Returns `Err` for a malformed URI, a scheme other than those four, or
+    /// a missing host. The entry always gets a fresh `id` so importing
     /// the same URI twice yields two distinct entries.
     pub fn from_import_uri(uri: &str) -> Result<Self, ImportError> {
         let parsed = Url::parse(&keep_first_host(uri.trim())).map_err(|e| ImportError::InvalidUri(e.to_string()))?;
-        let scheme = parsed.scheme();
-        if scheme != "redis" && scheme != "rediss" {
-            return Err(ImportError::UnsupportedScheme(scheme.to_string()));
-        }
+        let Some(tls) = scheme_tls(parsed.scheme()) else {
+            return Err(ImportError::UnsupportedScheme(parsed.scheme().to_string()));
+        };
         let host = parsed
             .host_str()
             .map(|h| strip_ipv6_brackets(h).to_string())
@@ -711,14 +739,15 @@ impl RedisServer {
             username,
             password,
             default_db,
-            tls: (scheme == "rediss").then_some(true),
+            tls: tls.then_some(true),
             ..Default::default()
         })
     }
 
     /// Import **one or more** servers from pasted text — the entry point used
     /// by the paste-to-import dialog. Recognizes, in order:
-    /// 1. a Redis connection URI (`redis://` / `rediss://`) → one server,
+    /// 1. a connection URI (`redis://` / `rediss://` / `valkey://` /
+    ///    `valkeys://`) → one server,
     /// 2. a **Redis Insight** database export (a JSON array — or a single
     ///    object — carrying a `connectionType` field) → one server per entry,
     /// 3. an **ARDM** (`connections.ano`) or **Tiny RDM**
@@ -1630,6 +1659,47 @@ mod tests {
     fn import_uri_rejects_bad_scheme_and_missing_host() {
         assert!(RedisServer::from_import_uri("http://example.com:6379").is_err());
         assert!(RedisServer::from_import_uri("not a uri").is_err());
+    }
+
+    #[test]
+    fn import_uri_reads_valkey_schemes_like_their_redis_twins() {
+        // What Aiven's console hands out and `valkey-cli -u` takes.
+        let tls = RedisServer::from_import_uri("valkeys://default:s3cr3t@valkey-demo.aivencloud.com:12691/2")
+            .expect("valkeys uri");
+        assert_eq!(tls.host, "valkey-demo.aivencloud.com");
+        assert_eq!(tls.port, 12691);
+        assert_eq!(tls.username.as_deref(), Some("default"));
+        assert_eq!(tls.password.as_deref(), Some("s3cr3t"));
+        assert_eq!(tls.default_db, Some(2));
+        assert_eq!(tls.tls, Some(true));
+        // Dialed as the format redis-rs knows, whatever it was pasted as.
+        assert!(tls.get_connection_url().starts_with("rediss://"));
+
+        let plain = RedisServer::from_import_uri("valkey://h:6380").expect("valkey uri");
+        assert_eq!(plain.port, 6380);
+        assert!(plain.tls.is_none());
+
+        // Schemes are case-insensitive, and the dispatch agrees with the parser.
+        let shouted = RedisServer::from_import("  VALKEYS://h:6379  ").expect("uri branch");
+        assert_eq!(shouted.tls, Some(true));
+        // The server form's host field takes one too.
+        assert!(parse_url("valkeys://h:6379".to_string()).tls);
+    }
+
+    #[test]
+    fn only_the_four_schemes_count_as_connection_uris() {
+        for uri in ["redis://h", "rediss://h", "valkey://h", "valkeys://h", " Redis://h "] {
+            assert!(is_connection_uri(uri), "{uri}");
+        }
+        for other in [
+            "http://h",
+            "redis:h",
+            "h:6379",
+            r#"{"host":"redis://h"}"#,
+            "--port=6379",
+        ] {
+            assert!(!is_connection_uri(other), "{other}");
+        }
     }
 
     #[test]

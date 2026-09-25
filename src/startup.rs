@@ -15,7 +15,7 @@
 //! Pre-window startup pieces: version constants, the database recovery
 //! window, CLI argument parsing and the smoke-test gates.
 
-use crate::connection::{RedisServer, get_servers};
+use crate::connection::{RedisServer, get_servers, is_connection_uri};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{DbOpenFailure, init_database, quarantine_database};
 #[cfg(not(target_family = "wasm"))]
@@ -187,18 +187,13 @@ impl Render for DatabaseErrorView {
     }
 }
 
-/// `true` for a Redis connection link (`redis://` / `rediss://`).
-pub(crate) fn is_redis_url(arg: &str) -> bool {
-    let arg = arg.trim();
-    arg.starts_with("redis://") || arg.starts_with("rediss://")
-}
-
-/// The `redis://` / `rediss://` links among the arguments. The OS hands a
-/// clicked link to the binary this way (the `%u` of the desktop entry, the
-/// `"%1"` of the Windows registry command), and a terminal user can pass one
-/// directly; macOS delivers links through `on_open_urls` instead.
+/// The connection links among the arguments (`redis://` / `rediss://`, and
+/// Valkey's `valkey://` / `valkeys://` — see `is_connection_uri`). The OS
+/// hands a clicked link to the binary this way (the `%u` of the desktop
+/// entry, the `"%1"` of the Windows registry command), and a terminal user
+/// can pass one directly; macOS delivers links through `on_open_urls` instead.
 pub(crate) fn cli_redis_urls() -> Vec<String> {
-    std::env::args().skip(1).filter(|arg| is_redis_url(arg)).collect()
+    std::env::args().skip(1).filter(|arg| is_connection_uri(arg)).collect()
 }
 
 /// A link without its credentials, for the log.
@@ -216,7 +211,7 @@ fn redact_url(url: &str) -> String {
 /// one connection to land on). Handles links from the OS, a second launch
 /// and the command line alike; an unparsable one becomes a notice.
 pub(crate) fn open_redis_urls(urls: Vec<String>, cx: &mut App) {
-    let Some(url) = urls.into_iter().find(|url| is_redis_url(url)) else {
+    let Some(url) = urls.into_iter().find(|url| is_connection_uri(url)) else {
         return;
     };
     info!(url = %redact_url(&url), "opening redis link");
