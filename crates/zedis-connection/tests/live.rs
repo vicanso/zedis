@@ -41,26 +41,26 @@ use zedis_connection::{
     bitmap_info, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
     cluster_get_slot_migrations, cluster_migrate_slots, command_log_reset, command_logs, compare_prefix,
     config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite, config_set,
-    consumer_create, consumer_delete, create_key, csv_header, dbsize, delete_key, delete_keys, delete_keys_matching,
-    dump_key, dump_keys_chunk, entry_to_csv, entry_to_json, expire_key, expire_key_at, forget_client, ft_explain,
-    ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist, geo_sample, geo_search, get_connection_manager,
-    get_server, get_server_heat_probe, get_servers, group_create, group_destroy, group_set_id, hash_delete_fields,
-    hash_field_ttls, hash_len, hash_scan, heartbeat_probe, hll_info, info_everything, key_bytes, key_memory_usage,
-    key_object_meta, key_type_and_ttl, key_types, kill_filter_commands, kill_running, latency_history, latency_latest,
-    latency_monitor_threshold, latency_reset, list_len, list_push, list_range, list_set_if_unchanged, master_addrs,
-    master_infos, maxmemory_policy, node_add_slots, node_cancel_slot_migrations, node_failover, node_load,
-    node_replicate, node_slot_migrations, node_stabilize_slot, open_monitor_feeds, open_single_connection,
-    parse_readable_entries, pending_page, pf_add, pf_merge, plan_cluster_rebalance, preview_key_conflicts, prob_info,
-    prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes, rename_hash_field, rename_key,
-    restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, scan_page, script_exists, script_load,
-    script_sha1, sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names, sentinel_masters, sentinel_monitor,
-    sentinel_remove, sentinel_set, server_summary, server_supports, set_add, set_bit, set_card, set_keys_ttl,
-    set_remove, set_replace_member, set_scan, set_ttl_matching, slow_logs, snapshot_key, sniff_import_format,
-    split_acl_rules, stream_ack, stream_add, stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len,
-    stream_page, stream_set_id, stream_trim, string_get, string_set, test_connection, ts_add, ts_alter, ts_create_rule,
-    ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr,
-    vset_sim, write_hash_field, write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put,
-    zset_range, zset_range_by_score, zset_remove, zset_scan,
+    consumer_create, consumer_delete, count_keys_matching, create_key, csv_header, dbsize, delete_key, delete_keys,
+    delete_keys_matching, dump_key, dump_keys_chunk, entry_to_csv, entry_to_json, expire_key, expire_key_at,
+    forget_client, ft_explain, ft_info, ft_search, ft_spellcheck, ft_tagvals, geo_add, geo_dist, geo_sample,
+    geo_search, get_connection_manager, get_server, get_server_heat_probe, get_servers, group_create, group_destroy,
+    group_set_id, hash_delete_fields, hash_field_ttls, hash_len, hash_scan, heartbeat_probe, hll_info, info_everything,
+    key_bytes, key_memory_usage, key_object_meta, key_type_and_ttl, key_types, kill_filter_commands, kill_running,
+    latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_len, list_push, list_range,
+    list_set_if_unchanged, master_addrs, master_infos, maxmemory_policy, node_add_slots, node_cancel_slot_migrations,
+    node_failover, node_load, node_replicate, node_slot_migrations, node_stabilize_slot, open_monitor_feeds,
+    open_single_connection, parse_readable_entries, pending_page, pf_add, pf_merge, plan_cluster_rebalance,
+    preview_key_conflicts, prob_info, prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes,
+    rename_hash_field, rename_key, restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, scan_page,
+    script_exists, script_load, script_sha1, sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names,
+    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, server_summary, server_supports, set_add,
+    set_bit, set_card, set_keys_ttl, set_remove, set_replace_member, set_scan, set_ttl_matching, slow_logs,
+    snapshot_key, sniff_import_format, split_acl_rules, stream_ack, stream_add, stream_autoclaim, stream_claim,
+    stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim, string_get, string_set,
+    test_connection, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges,
+    value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_card,
+    zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -3244,6 +3244,16 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
         delete_keys(&at, vec![format!("{prefix}:b1"), format!("{prefix}:gone")])
             .await
             .expect("del keys");
+        // The count that precedes a folder delete: the same walk, and a
+        // sampled size wherever the server has MEMORY USAGE.
+        let impact = count_keys_matching(&at, &format!("{prefix}:*"))
+            .await
+            .expect("count prefix");
+        assert!(impact.complete, "a small prefix is walked in one pass: {impact:?}");
+        assert!(impact.keys >= 2, "s and b2 are still there: {impact:?}");
+        if supports(&id, floors::MEMORY_USAGE).await {
+            assert!(impact.estimated_bytes().is_some_and(|bytes| bytes > 0), "{impact:?}");
+        }
         delete_keys_matching(&at, &format!("{prefix}:*"))
             .await
             .expect("del prefix");
@@ -3255,6 +3265,10 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
                 .is_empty(),
             "the prefix is gone"
         );
+        let gone = count_keys_matching(&at, &format!("{prefix}:*"))
+            .await
+            .expect("count gone");
+        assert_eq!((gone.keys, gone.complete, gone.sampled), (0, true, None), "{gone:?}");
 
         // The recycle bin's snapshot, and what it refuses to keep.
         let bin = format!("{prefix}:bin");

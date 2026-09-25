@@ -40,7 +40,7 @@ use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar}
 use crate::{
     connection::{Capability, ServerDb},
     error::Error,
-    helpers::{parse_duration, unix_ts, unix_ts_millis},
+    helpers::{escape_glob, parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
@@ -568,7 +568,9 @@ impl ZedisServerState {
         if self.server_id != server_id {
             return;
         }
-        let pattern = format!("{}*", prefix);
+        // "Starts with this text": a `[` or `*` in a folder name, or typed
+        // into the prefix box, is a character of the key, not a wildcard.
+        let pattern = format!("{}*", escape_glob(&prefix));
         let key_scan_count = self.key_scan_count() as u64;
         let with_ttl = self.show_key_tree_ttl();
         // Stop this batch once accumulated matches reach ~80% of key_scan_count.
@@ -1105,11 +1107,25 @@ impl ZedisServerState {
         );
     }
 
+    /// Everything under `folder`, as a key prefix: the folder and the
+    /// configured separator.
+    pub fn folder_prefix(&self, folder: &str) -> String {
+        format!("{folder}{}", self.key_separator())
+    }
+
+    /// Everything under `folder`, as a `SCAN MATCH` pattern: the prefix with
+    /// its glob characters escaped, so a folder named `user[1]` means the
+    /// keys under `user[1]:` and not a character class. The delete, the
+    /// count that precedes it and the batch TTL all ask this one function,
+    /// so what the confirmation counted is what the click removes.
+    pub fn folder_pattern(&self, folder: &str) -> String {
+        format!("{}*", escape_glob(&self.folder_prefix(folder)))
+    }
+
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
         let at = self.at();
-        let separator = self.key_separator().to_string();
-        let prefix = format!("{folder}{separator}");
-        let pattern = format!("{prefix}*");
+        let prefix = self.folder_prefix(&folder);
+        let pattern = self.folder_pattern(&folder);
         self.spawn_with_arg(
             ServerTask::DeleteKeys,
             prefix.clone(),
@@ -1411,9 +1427,8 @@ impl ZedisServerState {
         cx: &mut Context<Self>,
     ) {
         let at = self.at();
-        let separator = self.key_separator().to_string();
-        let prefix = format!("{folder}{separator}");
-        let pattern = format!("{prefix}*");
+        let prefix = self.folder_prefix(&folder);
+        let pattern = self.folder_pattern(&folder);
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             prefix,

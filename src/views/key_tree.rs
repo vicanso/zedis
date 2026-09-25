@@ -71,6 +71,7 @@ use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions
 mod actions;
 mod build;
 mod delegate;
+mod folder_delete;
 mod render;
 
 use actions::KeyTreeAction;

@@ -93,5 +93,6 @@ pub use zedis_core::jsonpath::{
     JsonPathOutcome, is_json_container, jsonpath_completion_prefix, jsonpath_key_suggestions, run_jsonpath,
 };
 pub use zedis_core::key_segments::{folder_prefixes, single_child_expanded_set, split_key_segments};
+pub use zedis_core::string::escape_glob;
 pub use zedis_core::ttl::{TtlFilter, format_ttl_chip, ttl_chip_kind};
 pub use zedis_core::validate::*;

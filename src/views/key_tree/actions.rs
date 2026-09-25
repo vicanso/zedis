@@ -405,26 +405,12 @@ impl Render for ZedisKeyTree {
                 KeyTreeAction::RefreshFolder(id) => {
                     let id = id.clone();
                     this.server_state.update(cx, |state, cx| {
-                        state.refresh_prefix(format!("{}:", id.as_str()).into(), cx);
+                        let prefix = state.folder_prefix(&id);
+                        state.refresh_prefix(prefix.into(), cx);
                     });
                 }
                 KeyTreeAction::DeleteFolder(id) => {
-                    let id = id.clone();
-                    let server_state = this.server_state.clone();
-                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                    let text = t!("key_tree.delete_folder_prompt", folder = id.clone(), locale = locale).to_string();
-                    let server_id = this.server_state.read(cx).server_id().to_string();
-                    let text = escalate_dangerous_body(cx, &server_id, text);
-
-                    ZedisDialog::new_alert(i18n_key_tree(cx, "delete_folder_title"), text)
-                        .button_props(dialog_button_props(cx))
-                        .on_ok(move |_, _, cx| {
-                            server_state.update(cx, |state, cx| {
-                                state.delete_folder(id.clone(), cx);
-                            });
-                            true
-                        })
-                        .open(window, cx);
+                    folder_delete::open_folder_delete_dialog(this, id.clone(), window, cx);
                 }
                 KeyTreeAction::PersistMultipleKeys => {
                     let keys = this.key_tree_list_state.update(cx, |state, _cx| {

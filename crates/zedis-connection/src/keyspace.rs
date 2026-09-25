@@ -22,6 +22,7 @@
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::floors;
 use crate::manager::{ExpireCondition, HeatMetric, HeatProbe};
 use crate::server_db::ServerDb;
 use futures::stream::{self, StreamExt};
@@ -35,6 +36,16 @@ const PREFIX_SCAN_COUNT: u64 = 10_000;
 /// Rounds a prefix walk makes before it stops: it bounds one click, and what
 /// is left is reached by clicking again.
 const PREFIX_SCAN_ROUNDS: usize = 20;
+/// The same bound for a delete — and for the count that precedes it, which
+/// has to make the same walk or the confirmation would show one number and
+/// the click remove another. Wider than the TTL walk's: a delete is the
+/// operation people run on a whole prefix, and a click that leaves most of
+/// it standing is the surprise the confirmation exists to prevent.
+const DELETE_SCAN_ROUNDS: usize = 50;
+/// Keys `MEMORY USAGE` is asked about when a prefix is sized before it is
+/// deleted: enough for an average, few enough that the question costs
+/// nothing next to the walk.
+const MEMORY_SAMPLE: usize = 32;
 /// `TYPE` commands per pipeline when typing a page of keys.
 const TYPE_PIPELINE_CHUNK: usize = 500;
 /// `TYPE` commands in flight on a cluster, where keys cannot be pipelined
@@ -202,10 +213,98 @@ pub async fn delete_keys(at: &ServerDb, keys: Vec<String>) -> Result<()> {
 
 /// Delete every key matching `pattern`: scan a round, delete what it found,
 /// again — bounded, so one click cannot run for ever on a huge prefix.
+/// What one pass over a prefix reaches — the answer to "delete this
+/// folder?" before it is asked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrefixImpact {
+    /// Keys the pass matched.
+    pub keys: u64,
+    /// Whether the cursors came back to zero. `false` means the pass stopped
+    /// at its round limit and the prefix holds more than `keys`.
+    pub complete: bool,
+    /// `MEMORY USAGE` over up to [`MEMORY_SAMPLE`] of the matched keys —
+    /// (keys asked, bytes) — or `None` where the server would not say.
+    pub sampled: Option<(u64, u64)>,
+}
+
+impl PrefixImpact {
+    /// The prefix's size, scaled up from the sample; `None` without one.
+    pub fn estimated_bytes(&self) -> Option<u64> {
+        let (asked, bytes) = self.sampled.filter(|(asked, _)| *asked > 0)?;
+        Some((bytes as f64 / asked as f64 * self.keys as f64) as u64)
+    }
+}
+
+/// What [`delete_keys_matching`] would reach: the same walk, counting
+/// instead of deleting. The number is the pass's, not the prefix's — a
+/// walk that stops at its round limit says so in `complete` — so what the
+/// confirmation shows is what the click does.
+pub async fn count_keys_matching(at: &ServerDb, pattern: &str) -> Result<PrefixImpact> {
+    let client = at.client().await?;
+    let mut cursors: Option<Vec<u64>> = None;
+    let mut keys = 0u64;
+    let mut complete = false;
+    let mut sample: Vec<String> = Vec::new();
+    for _ in 0..DELETE_SCAN_ROUNDS {
+        let (next, keys_per_node) = client.scan_nodes(cursors, pattern, PREFIX_SCAN_COUNT, None).await?;
+        for node_keys in keys_per_node {
+            keys += node_keys.len() as u64;
+            let room = MEMORY_SAMPLE.saturating_sub(sample.len());
+            sample.extend(node_keys.into_iter().take(room));
+        }
+        if next.iter().sum::<u64>() == 0 {
+            complete = true;
+            break;
+        }
+        cursors = Some(next);
+    }
+    let sampled = if client.supports(floors::MEMORY_USAGE) {
+        sample_memory(at, &sample).await
+    } else {
+        None
+    };
+    Ok(PrefixImpact {
+        keys,
+        complete,
+        sampled,
+    })
+}
+
+/// `MEMORY USAGE` over `keys`: (keys asked, bytes), or `None` when the
+/// server refuses — a proxy without the command, an ACL without `@memory`.
+/// Never an error: a count without a size is still a count.
+async fn sample_memory(at: &ServerDb, keys: &[String]) -> Option<(u64, u64)> {
+    if keys.is_empty() {
+        return None;
+    }
+    let conn = &mut at.connection().await.ok()?;
+    let (mut asked, mut bytes) = (0u64, 0u64);
+    for key in keys {
+        match cmd("MEMORY")
+            .arg("USAGE")
+            .arg(key)
+            .query_async::<Option<u64>>(conn)
+            .await
+        {
+            Ok(Some(size)) => {
+                asked += 1;
+                bytes += size;
+            }
+            // Gone since the scan listed it.
+            Ok(None) => {}
+            Err(e) => {
+                debug!(key, error = %e, "MEMORY USAGE unavailable, the prefix goes unsized");
+                return None;
+            }
+        }
+    }
+    (asked > 0).then_some((asked, bytes))
+}
+
 pub async fn delete_keys_matching(at: &ServerDb, pattern: &str) -> Result<()> {
     let client = at.client().await?;
     let mut cursors: Option<Vec<u64>> = None;
-    for _ in 0..PREFIX_SCAN_ROUNDS {
+    for _ in 0..DELETE_SCAN_ROUNDS {
         let (next, keys_per_node) = client.scan_nodes(cursors, pattern, PREFIX_SCAN_COUNT, None).await?;
         client.unlike_keys(keys_per_node).await?;
         if next.iter().sum::<u64>() == 0 {
@@ -322,4 +421,31 @@ pub async fn publish(at: &ServerDb, channel: &str, message: &str, sharded: bool)
         .arg(message)
         .query_async(&mut at.connection().await?)
         .await?)
+}
+
+#[cfg(test)]
+mod prefix_impact_tests {
+    use super::PrefixImpact;
+
+    #[test]
+    fn the_estimate_scales_the_sample_and_is_absent_without_one() {
+        let sized = PrefixImpact {
+            keys: 1_000,
+            complete: true,
+            sampled: Some((10, 2_500)),
+        };
+        assert_eq!(sized.estimated_bytes(), Some(250_000));
+        let without_sample = PrefixImpact {
+            keys: 1_000,
+            complete: false,
+            sampled: None,
+        };
+        assert_eq!(without_sample.estimated_bytes(), None);
+        // A sample that asked nothing (every key gone by the time it ran).
+        let empty = PrefixImpact {
+            sampled: Some((0, 0)),
+            ..sized
+        };
+        assert_eq!(empty.estimated_bytes(), None);
+    }
 }

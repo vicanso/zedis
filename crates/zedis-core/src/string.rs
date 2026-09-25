@@ -122,6 +122,26 @@ pub fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 /// Groups a count into thousands (`500000` → `"500,000"`) — six-digit key /
 /// client / slowlog counts are unreadable without it. Hand-rolled to keep the
 /// dependency surface lean (no `num-format` for a formatting one-liner).
+/// `s` with every glob metacharacter escaped, so a `SCAN MATCH` built
+/// from it matches the text itself: the keys under a folder named
+/// `user[1]` are those starting with `user[1]:`, not with `user1:`, and a
+/// name with `*` in it is not a wildcard. Borrowed when there is nothing
+/// to escape, which is nearly always.
+pub fn escape_glob(s: &str) -> Cow<'_, str> {
+    const SPECIAL: [char; 5] = ['*', '?', '[', ']', '\\'];
+    if !s.contains(SPECIAL) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        if SPECIAL.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    Cow::Owned(out)
+}
+
 pub fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -173,6 +193,15 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(60)), "1.0m");
         assert_eq!(format_duration(Duration::from_secs(59)), "59s");
         assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+    }
+    #[test]
+    fn escape_glob_makes_a_name_mean_itself() {
+        // Nothing to escape: borrowed, unchanged.
+        assert!(matches!(escape_glob("user:1:"), Cow::Borrowed("user:1:")));
+        assert_eq!(escape_glob("user[1]:"), "user\\[1\\]:");
+        assert_eq!(escape_glob("a*b?c\\d"), "a\\*b\\?c\\\\d");
+        // Escaped, then a wildcard appended, is the prefix and only the prefix.
+        assert_eq!(format!("{}*", escape_glob("h[o]t:")), "h\\[o\\]t:*");
     }
 }
 

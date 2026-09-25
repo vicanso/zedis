@@ -175,9 +175,9 @@ pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};
 pub use key_ops::{FromEnd, KeyOp, KeyOpOutcome, run_key_op};
 pub use keyspace::{
-    KeySnapshot, ScanPage, create_key, delete_key, delete_keys, delete_keys_matching, dump_key, expire_key,
-    expire_key_at, key_memory_usage, key_object_meta, key_type_and_ttl, key_types, publish, rename_key, scan_page,
-    set_keys_ttl, set_ttl_matching, snapshot_key,
+    KeySnapshot, PrefixImpact, ScanPage, count_keys_matching, create_key, delete_key, delete_keys,
+    delete_keys_matching, dump_key, expire_key, expire_key_at, key_memory_usage, key_object_meta, key_type_and_ttl,
+    key_types, publish, rename_key, scan_page, set_keys_ttl, set_ttl_matching, snapshot_key,
 };
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
