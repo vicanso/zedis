@@ -101,3 +101,8 @@ ratchet: a failure means the new code belongs in `zedis-connection`.
   little of this for destructive commands); a second front end needs an API
   (mobile, a CLI, an integration), for which RESP is not one; or RESP2 / RESP3
   differences start to be debugged on both sides of the bridge.
+  *2026-09-25:* the first of these arrived and did not need the revisit. The
+  read-only role had already made `policy.rs` read every command in every
+  batch, so the audit log (ADR 11) is a line written at that same place.
+  What would still be the signal is audit *by feature* rather than by
+  command, or a second role beyond read-only.

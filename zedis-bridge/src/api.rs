@@ -18,12 +18,13 @@
 //! The bridge holds the credentials. A caller names a server by its id and
 //! never sees a host, a password or a key (ADR 9).
 
+use crate::audit::{self, Audit, Event, Origin, ServerRef};
 use crate::static_files::{Representation, WebBuild};
 use crate::{auth, policy, resp, session::Sessions, static_files};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
@@ -32,6 +33,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use redis::aio::ConnectionLike;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::net::SocketAddr;
 use std::path::Path as FsPath;
 use uuid::Uuid;
 use zedis_connection::{RedisServer, get_connection_manager, get_server, get_servers, save_servers};
@@ -41,6 +43,8 @@ pub struct AppState {
     pub accounts: auth::Accounts,
     pub sessions: Sessions,
     pub logins: auth::Logins,
+    /// `--audit-log`: the record of what went through, or nothing.
+    pub audit: Audit,
     /// The login cookie's `Secure` and `Path`, fixed at startup.
     pub cookie: auth::CookiePolicy,
     /// `--base-path`: where the bridge is mounted, as [`normalize_base_path`]
@@ -155,15 +159,12 @@ struct ErrorBody {
     strictness: Option<&'static str>,
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        // Every refusal is logged here, once, whichever handler produced it:
-        // a browser that is told "401" or "400" leaves no other trace on this
-        // side, and the first hours of the web build were spent inferring a
-        // refusal from the absence of the log line that a success would have
-        // written. `warn`, because a refused request is worth a look and a
-        // wrong password on a busy deployment is not an error of this process.
-        let (status, error, message, kind, strictness) = match &self {
+impl ApiError {
+    /// The status, the machine-readable `error` and the message the caller
+    /// is sent — and the confirmation details, for the one error that has
+    /// them.
+    fn parts(&self) -> (StatusCode, &'static str, String, Option<String>, Option<&'static str>) {
+        match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", String::new(), None, None),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone(), None, None),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone(), None, None),
@@ -177,7 +178,30 @@ impl IntoResponse for ApiError {
                 Some(*strictness),
             ),
             ApiError::Upstream(m) => (StatusCode::BAD_GATEWAY, "upstream", m.clone(), None, None),
-        };
+        }
+    }
+
+    /// What the audit log writes in `error`: the `error` word, and the
+    /// message when there is one.
+    fn describe(&self) -> String {
+        let (_, error, message, _, _) = self.parts();
+        if message.is_empty() {
+            error.to_string()
+        } else {
+            format!("{error}: {message}")
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        // Every refusal is logged here, once, whichever handler produced it:
+        // a browser that is told "401" or "400" leaves no other trace on this
+        // side, and the first hours of the web build were spent inferring a
+        // refusal from the absence of the log line that a success would have
+        // written. `warn`, because a refused request is worth a look and a
+        // wrong password on a busy deployment is not an error of this process.
+        let (status, error, message, kind, strictness) = self.parts();
         tracing::warn!(status = status.as_u16(), error, message = %message, "request refused");
         (
             status,
@@ -218,14 +242,20 @@ const READ_ONLY_REFUSAL: &str = "this account is read-only";
 /// Every mutating route goes through this one rather than through
 /// [`authorize`] with a flag test bolted on, so adding a route and
 /// forgetting the test is a compile error's worth of obvious: the route
-/// either asks this function or it does not change anything.
-fn authorize_write(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
+/// either asks this function or it does not change anything. `action` is
+/// what the audit log says was refused.
+fn authorize_write(state: &AppState, headers: &HeaderMap, origin: &Origin, action: &'static str) -> ApiResult<String> {
     let account = authorize(state, headers)?;
     if state.accounts.is_read_only(&account) {
+        state.audit.record(&account, origin, Event::Refused { action });
         return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()));
     }
     Ok(account)
 }
+
+/// The longest name a failed login is recorded under: it is whatever was
+/// typed into the box, and the log is not the place for a pasted essay.
+const MAX_TRIED_NAME: usize = 64;
 
 /// Whether `account` may see `server` — and so use, edit and delete it: its
 /// own entries, and the shared ones, which are those with no owner. Entries
@@ -279,8 +309,16 @@ struct LoginRequest {
 ///
 /// This is the only place a password is accepted in a body, and the only way
 /// a browser gets in: afterwards the page holds nothing a script can read.
-async fn login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> ApiResult<Response> {
+async fn login(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<LoginRequest>,
+) -> ApiResult<Response> {
+    let origin = Origin::new(peer, &headers);
     if !state.accounts.accepts_password(&req.username, &req.password) {
+        let tried: String = req.username.trim().chars().take(MAX_TRIED_NAME).collect();
+        state.audit.record(&tried, &origin, Event::LoginFailed);
         return Err(ApiError::Unauthorized);
     }
     let account = req.username;
@@ -289,6 +327,9 @@ async fn login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> 
         .open(&account, &state.accounts, req.remember)
         .ok_or(ApiError::Unauthorized)?;
     tracing::info!(account, remember = req.remember, "login");
+    state
+        .audit
+        .record(&account, &origin, Event::Login { remember: req.remember });
     Ok((
         [("set-cookie", state.cookie.set(&id, auth::idle_timeout(req.remember)))],
         Json(serde_json::json!({ "status": "ok" })),
@@ -298,10 +339,17 @@ async fn login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> 
 
 /// Drop this browser's login. Idempotent, and it always clears the cookie so a
 /// stale one cannot linger after the server forgot it.
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
     if let Some(account) = auth::cookie_value(cookie).and_then(|id| state.logins.close(id)) {
         tracing::info!(account, "logout");
+        state
+            .audit
+            .record(&account, &Origin::new(peer, &headers), Event::Logout);
     }
     ([("set-cookie", state.cookie.clear())], StatusCode::NO_CONTENT).into_response()
 }
@@ -529,10 +577,12 @@ struct AddServerResponse {
 /// reached is not added.
 async fn add_server(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<AddServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let account = authorize_write(&state, &headers)?;
+    let origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &origin, "server_add")?;
     let (mut server, shared) = match (req.url, req.server) {
         (Some(url), None) => {
             let server = RedisServer::from_import(&url)
@@ -558,7 +608,25 @@ async fn add_server(
     if server.name.trim().is_empty() {
         server.name = format!("{}:{}", server.host, server.port);
     }
-    save_and_dial(server, None).await.map(Json)
+    // The facts before the entry is moved; the line after the outcome is
+    // known, since an entry that could not be dialled is not added.
+    let (reference, shared, settings) = (
+        ServerRef::from(&server),
+        audit::is_shared(&server),
+        audit::settings(&server),
+    );
+    let result = save_and_dial(server, None).await;
+    state.audit.record(
+        &account,
+        &origin,
+        Event::ServerAdded {
+            server: reference,
+            shared,
+            settings,
+            error: result.as_ref().err().map(ApiError::describe),
+        },
+    );
+    result.map(Json)
 }
 
 /// Put `server` into the shared list and prove it reachable, or put the list
@@ -657,27 +725,54 @@ fn merge_update(stored: &RedisServer, mut incoming: RedisServer, keep: &[String]
 /// Edit an entry, and prove the edit reachable before it is kept.
 async fn update_server(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<UpdateServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let account = authorize_write(&state, &headers)?;
+    let origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &origin, "server_update")?;
     let stored = visible_server(&id, &account)?;
     let mut server = merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?;
     assign_owner(&mut server, &account, req.shared, Some(&stored));
-    save_and_dial(server, Some(stored)).await.map(Json)
+    let reference = ServerRef::from(&server);
+    let changed = audit::changed(&stored, &server);
+    let secrets_changed = audit::secrets_changed(&stored, &server);
+    let (was_shared, is_shared) = (audit::is_shared(&stored), audit::is_shared(&server));
+    let result = save_and_dial(server, Some(stored)).await;
+    state.audit.record(
+        &account,
+        &origin,
+        Event::ServerUpdated {
+            server: reference,
+            changed,
+            secrets_changed,
+            shared: (was_shared != is_shared).then(|| audit::Change {
+                from: was_shared.into(),
+                to: is_shared.into(),
+            }),
+            error: result.as_ref().err().map(ApiError::describe),
+        },
+    );
+    result.map(Json)
 }
 
 /// Drop an entry. Idempotent: an id that is already gone is not an error,
 /// because the browser reconciles by diffing and may ask twice.
 async fn delete_server(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let account = authorize_write(&state, &headers)?;
+    let origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &origin, "server_delete")?;
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
     // Someone else's entry is left alone and answered like one already gone.
+    let removed = list
+        .iter()
+        .find(|s| s.id == id && visible_to(s, &account))
+        .map(ServerRef::from);
     let kept: Vec<_> = list
         .into_iter()
         .filter(|s| s.id != id || !visible_to(s, &account))
@@ -685,6 +780,11 @@ async fn delete_server(
     save_servers(kept)
         .await
         .map_err(|e| ApiError::Upstream(e.to_string()))?;
+    // Only a deletion that deleted something: the second of two asks for
+    // the same id changed nothing.
+    if let Some(server) = removed {
+        state.audit.record(&account, &origin, Event::ServerDeleted { server });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -802,10 +902,12 @@ fn aim_at_nodes(master_labels: &[String], wanted: &[String]) -> Vec<Vec<usize>> 
 
 async fn exec(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<ExecRequest>,
 ) -> ApiResult<Json<ExecResponse>> {
     let account = authorize(&state, &headers)?;
+    let origin = Origin::new(peer, &headers);
     // Not `authorize_write`: most of what reaches this route *is* a read, and
     // a read-only account has to keep running those. The role is carried down
     // to `policy::check`, which judges each command.
@@ -825,22 +927,48 @@ async fn exec(
     let server = visible_server(&req.server, &account)?;
     // Every command in a batch is judged. Gating only the first would let a
     // pipeline smuggle a FLUSHALL in behind a GET.
-    for args in &decoded {
-        match policy::check(&server, args, req.confirm.as_deref(), read_only) {
-            policy::Verdict::Allow => {}
-            policy::Verdict::Deny => return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string())),
-            policy::Verdict::Confirm { kind, strictness } => {
-                return Err(ApiError::ConfirmationRequired {
-                    kind: kind.i18n_key().to_string(),
-                    strictness: match strictness {
-                        zedis_connection::ConfirmStrictness::Click => "click",
-                        zedis_connection::ConfirmStrictness::TypeName => "type_name",
-                    },
-                });
-            }
+    let verdicts: Vec<policy::Verdict> = decoded
+        .iter()
+        .map(|args| policy::check(&server, args, req.confirm.as_deref(), read_only))
+        .collect();
+    for (args, verdict) in decoded.iter().zip(&verdicts) {
+        let refusal = match verdict {
+            policy::Verdict::Allow | policy::Verdict::Confirmed { .. } => continue,
+            policy::Verdict::Deny => ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()),
+            policy::Verdict::Confirm { kind, strictness } => ApiError::ConfirmationRequired {
+                kind: kind.i18n_key().to_string(),
+                strictness: match strictness {
+                    zedis_connection::ConfirmStrictness::Click => "click",
+                    zedis_connection::ConfirmStrictness::TypeName => "type_name",
+                },
+            },
+        };
+        // The refused command alone: the batch went nowhere.
+        for line in audit::command_lines(&server, req.db, [(args, verdict)], false) {
+            state.audit.record(&account, &origin, Event::Command(line));
         }
+        return Err(refusal);
     }
 
+    // What the log keeps of this batch, decided before it goes out and
+    // written after, with the outcome.
+    let lines = audit::command_lines(
+        &server,
+        req.db,
+        decoded.iter().zip(&verdicts),
+        state.audit.logs_writes(),
+    );
+    let result = forward(&state, &req, &decoded).await;
+    let error = result.as_ref().err().map(ApiError::describe);
+    for mut line in lines {
+        line.error.clone_from(&error);
+        state.audit.record(&account, &origin, Event::Command(line));
+    }
+    result.map(Json)
+}
+
+/// Send the judged commands of `req` and collect the replies.
+async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) -> ApiResult<ExecResponse> {
     // Fan-out is its own path: it needs the client, not a connection, because
     // reaching every master is topology knowledge this process owns.
     if let Some(mode) = &req.fanout {
@@ -918,7 +1046,7 @@ async fn exec(
             })
             .collect::<ApiResult<Vec<String>>>()?;
         let nodes = servers.iter().map(|s| format!("{}:{}", s.host, s.port)).collect();
-        return Ok(Json(ExecResponse { replies, nodes }));
+        return Ok(ExecResponse { replies, nodes });
     }
 
     let mut conn = match &req.session {
@@ -947,7 +1075,7 @@ async fn exec(
             if spec.atomic {
                 pipe.atomic();
             }
-            for args in &decoded {
+            for args in decoded {
                 pipe.add_command(resp::command_from_args(args));
             }
             conn.req_packed_commands(&pipe, spec.offset, spec.count)
@@ -964,10 +1092,10 @@ async fn exec(
                 .map_err(|e| ApiError::Upstream(e.to_string()))
         })
         .collect::<ApiResult<Vec<String>>>()?;
-    Ok(Json(ExecResponse {
+    Ok(ExecResponse {
         replies,
         nodes: Vec::new(),
-    }))
+    })
 }
 
 #[cfg(test)]

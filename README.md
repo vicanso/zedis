@@ -241,6 +241,16 @@ Changing an account's password **or its role** ends the logins it already has, s
 
 This is defence in depth and not a substitute for Redis's own: a Redis ACL user with `-@write` is enforced by the server on every connection, whatever talks to it, while this is enforced by the bridge, which is the only thing the browser can reach. Use both — the ACL is the guarantee, the account is what greys the buttons out before the round trip.
 
+### Audit log
+
+`--audit-log /data/audit.log` (`ZEDIS_BRIDGE_AUDIT_LOG`) appends one JSON line per event: every login and failed login, every refusal of a read-only account, every server entry added, edited (which settings changed and from what; which secrets changed, never to what; a private entry made shared) or deleted, every command that administers the server — `CONFIG SET`, `ACL SETUSER`, `REPLICAOF`, `MODULE LOAD`, `CLIENT KILL`, `FLUSHDB` and the like — and every command someone had to confirm, so an entry with *confirm every write* switched on logs each of its writes. `--audit-writes` (`ZEDIS_BRIDGE_AUDIT_WRITES=1`) adds plain data writes; reads are never logged. Passwords in arguments are blanked, long values cut, a batch of one command is one line with a count, and the file is created owner-only.
+
+```json
+{"ts":"2026-09-25T08:12:03.417Z","account":"alice","peer":"10.0.0.7:51234","event":"command","server":{"id":"0199…","name":"prod"},"db":0,"command":"CONFIG","args":["SET","maxmemory","2gb"],"outcome":"confirmed","kind":"config_set","confirm":"type_name"}
+```
+
+It is the log of this door only: what reaches Redis from `redis-cli` or an application is not in it, and it cannot tell you who changed a key — it can tell you whether anyone did so by hand. The bridge appends and never reopens the file, so rotate it with `copytruncate`.
+
 ### What the web version leaves out
 
 Everything that is a request and a reply works: the key tree, every value editor, the terminal, metrics, slow log, config, clients, memory analysis, value search. Not available in the browser: the streaming panels (`MONITOR`, Pub/Sub, keyspace events), Topology and Sentinel administration, the Lua script library and the Protobuf schema editor, multi-database key search, migration (file import / export) and cross-server compare, connection diagnostics, the recycle bin and the 1h / 24h / 7d Metrics history (both need storage that survives a reload), and the shortcuts a browser keeps for itself (⌘N / ⌘T / ⌘W). The value editors show code as plain text there: `gpui-component` puts syntax highlighting behind a `tree-sitter` feature that no wasm build can enable, so JSON and the rest are uncoloured and nothing folds — formatting, JSONPath and editing are unaffected. Tags, notes, favorites and saved scripts work but live in the page only — a reload clears them. A page left in a background browser tab slows its polling down by itself. A panel that is left out says so instead of failing. The desktop app remains the complete client.

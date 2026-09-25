@@ -30,6 +30,7 @@
 //! answer a keychain prompt in.
 
 mod api;
+mod audit;
 mod auth;
 mod policy;
 mod resp;
@@ -38,6 +39,7 @@ mod static_files;
 
 use auth::{Accounts, USERS_ENV, USERS_FILE_ENV};
 use session::Sessions;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 use zedis_connection::{disable_keychain, install_crypto_provider};
@@ -72,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         println!(
             "zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] \
-             [--users-file <file>] [--insecure-cookie]"
+             [--users-file <file>] [--insecure-cookie] [--audit-log <file>] [--audit-writes]"
         );
         println!();
         println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
@@ -89,6 +91,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("The page asks for the username and password, scripts send HTTP Basic. A server");
         println!("entry is private to the account that added it unless it is marked shared.");
         println!("Secrets are encrypted with the master.key file there, never the OS keychain.");
+        println!(
+            "--audit-log <file> ({}) appends one JSON line per login and failed",
+            audit::LOG_ENV
+        );
+        println!("login, refusal, server entry added / edited / deleted, command that administers");
+        println!("the server (CONFIG SET, ACL SETUSER, REPLICAOF, FLUSHDB, …) and command someone");
+        println!(
+            "had to confirm. --audit-writes ({}) adds plain data writes; reads",
+            audit::WRITES_ENV
+        );
+        println!("are never logged. Passwords in arguments are blanked.");
         return Ok(());
     }
 
@@ -128,6 +141,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|raw| api::normalize_base_path(&raw))
         .transpose()?
         .unwrap_or_default();
+    // The audit log, when asked for: opened before anything can happen, and
+    // a path that cannot be opened stops the bridge — an audit that was
+    // configured and is silently absent is worse than none (ADR 11).
+    let audit_writes = std::env::args().any(|a| a == "--audit-writes")
+        || std::env::var(audit::WRITES_ENV).is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+    let audit_path = flag("--audit-log")
+        .or_else(|| std::env::var(audit::LOG_ENV).ok())
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let audit = match audit_path {
+        Some(path) => {
+            let audit =
+                audit::Audit::open(&path, audit_writes).map_err(|e| format!("--audit-log {}: {e}", path.display()))?;
+            tracing::info!(path = %path.display(), writes = audit_writes, "audit log open");
+            audit
+        }
+        None if audit_writes => return Err("--audit-writes needs --audit-log".into()),
+        None => audit::Audit::off(),
+    };
+
     // Saved, so that restarting the bridge does not sign everybody out —
     // which, while they lived in memory, it did, every time.
     let logins_path = get_or_create_config_dir()?.join("bridge-logins.json");
@@ -182,11 +215,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         accounts,
         sessions,
         logins,
+        audit,
         cookie: auth::CookiePolicy::new(secure_cookie, &base_path),
         base_path,
         web_root,
     });
-    axum::serve(listener, app).await?;
+    // With the peer's address, which the audit log records beside whatever
+    // a proxy wrote in `X-Forwarded-For`.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
 

@@ -238,6 +238,16 @@ read_only = true
 
 这是纵深防御，不能替代 Redis 自己的 ACL：带 `-@write` 的 Redis ACL 用户由服务端在每条连接上强制执行，无论谁来连；而这里的限制由 bridge 强制执行，它是浏览器唯一能碰到的东西。两者一起用 —— ACL 是保证，账号角色是让按钮在请求发出之前就变灰的那一层。
 
+### 审计日志
+
+`--audit-log /data/audit.log`（`ZEDIS_BRIDGE_AUDIT_LOG`）会为每个事件追加一行 JSON：每次登录与登录失败、只读账号被拒绝的每次请求、服务器条目的新增、编辑（改了哪些设置、改前改后的值；改了哪些密钥，只记名字不记值；私有条目被改为共享）和删除、每条管理服务器的命令 —— `CONFIG SET`、`ACL SETUSER`、`REPLICAOF`、`MODULE LOAD`、`CLIENT KILL`、`FLUSHDB` 之类 —— 以及每条需要人确认才放行的命令，所以开了"每次写都要确认"的条目，它的每一次写都会留痕。`--audit-writes`（`ZEDIS_BRIDGE_AUDIT_WRITES=1`）再加上普通的数据写命令；读命令永远不记。参数里的密码会被抹掉，过长的值会截断，同一批里的同名命令合并成一行并记数量，文件以仅属主可读的权限创建。
+
+```json
+{"ts":"2026-09-25T08:12:03.417Z","account":"alice","peer":"10.0.0.7:51234","event":"command","server":{"id":"0199…","name":"prod"},"db":0,"command":"CONFIG","args":["SET","maxmemory","2gb"],"outcome":"confirmed","kind":"config_set","confirm":"type_name"}
+```
+
+这只是 bridge 这一扇门的日志：`redis-cli` 和应用程序直连 Redis 的操作不在里面；它回答不了"谁改了这个 key"，能回答的是"有没有人手动改过"。bridge 只追加、从不重新打开文件，轮转请用 `copytruncate`。
+
 ### Web 版不包含的功能
 
 所有"一问一答"式的功能都可用：key 树、各类型的值编辑器、终端、指标、慢日志、配置、客户端、内存分析、按值搜索。浏览器中不可用的有：流式面板（`MONITOR`、Pub/Sub、键空间事件）、拓扑与 Sentinel 管理、Lua 脚本库与 Protobuf 描述编辑器、多数据库键搜索、迁移（文件导入 / 导出）与跨服务器对比、连接诊断、回收站与指标的 1h / 24h / 7d 历史（两者都需要刷新后仍在的存储），以及被浏览器自己占用的快捷键（⌘N / ⌘T / ⌘W）。值编辑器里的代码在浏览器中是纯文本：语法高亮被 `gpui-component` 放在一个 wasm 构建无法开启的 `tree-sitter` feature 后面，因此 JSON 之类不着色、也无法折叠——格式化、JSONPath 与编辑不受影响。标签、备注、收藏和保存的脚本可以使用，但只保存在当前页面，刷新后会清空。页面处于后台标签页时会自动降低轮询频率。被摘掉的面板会明确提示不可用，而不是报错。桌面版仍是功能完整的客户端。

@@ -35,6 +35,14 @@ use zedis_connection::{
 pub enum Verdict {
     /// Forward it.
     Allow,
+    /// Forward it: it needed a confirmation and the caller gave one. Kept
+    /// apart from [`Verdict::Allow`] for the audit log alone — a command a
+    /// person had to confirm is a command the log keeps (ADR 11), and the
+    /// forwarding treats the two the same.
+    Confirmed {
+        kind: DangerKind,
+        strictness: ConfirmStrictness,
+    },
     /// Refuse until the caller repeats the request with a confirmation that
     /// satisfies `strictness`.
     Confirm {
@@ -80,7 +88,7 @@ pub fn check(server: &RedisServer, args: &[Vec<u8>], confirm: Option<&str>, read
         (ConfirmStrictness::TypeName, Some(token)) => token.trim() == server.name.trim(),
     };
     if satisfied {
-        Verdict::Allow
+        Verdict::Confirmed { kind, strictness }
     } else {
         Verdict::Confirm { kind, strictness }
     }
@@ -110,13 +118,14 @@ fn classify(server: &RedisServer, args: &[Vec<u8>]) -> Option<DangerKind> {
     None
 }
 
-/// The command name and its arguments as text, for the classifier only.
+/// The command name and its arguments as text, for the classifier and the
+/// audit log only.
 ///
 /// Lossy on purpose: a key can be arbitrary bytes, and the classifier reads
 /// argument text (`DEBUG SLEEP`, `KEYS <pattern>`). The bytes that reach
 /// Redis are never these — the forwarded command is rebuilt from the raw
 /// arguments.
-fn words(args: &[Vec<u8>]) -> Option<(String, Vec<String>)> {
+pub(crate) fn words(args: &[Vec<u8>]) -> Option<(String, Vec<String>)> {
     let (name, rest) = args.split_first()?;
     Some((
         String::from_utf8_lossy(name).into_owned(),
@@ -243,8 +252,22 @@ mod tests {
             panic!("FLUSHALL must be gated, got {refused:?}");
         };
         assert_eq!(kind, DangerKind::FlushAll);
-        // The same command with a confirmation goes through.
-        assert_eq!(check(&server, &args(&["FLUSHALL"]), Some("yes"), false), Verdict::Allow);
+        // The same command with a confirmation goes through — as *confirmed*,
+        // which is how the audit log tells it from a plain read.
+        assert_eq!(
+            check(&server, &args(&["FLUSHALL"]), Some("yes"), false),
+            Verdict::Confirmed {
+                kind: DangerKind::FlushAll,
+                strictness: ConfirmStrictness::Click
+            }
+        );
+        assert_eq!(
+            check(&prod(), &args(&["FLUSHALL"]), Some("production"), false),
+            Verdict::Confirmed {
+                kind: DangerKind::FlushAll,
+                strictness: ConfirmStrictness::TypeName
+            }
+        );
     }
 
     #[test]
