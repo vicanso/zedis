@@ -41,9 +41,9 @@ use crate::startup::{GIT_SHA, VERSION};
 #[cfg(not(target_family = "wasm"))]
 use crate::states::i18n_update;
 use crate::states::{
-    GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerToolsAction, ServerView,
-    SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar, save_ui_locale,
-    update_app_state_and_save, update_app_state_and_save_quiet,
+    ConnectionHealth, GlobalEvent, LocaleAction, NotificationCategory, Route, SelectThemeAction, ServerEvent,
+    ServerToolsAction, ServerView, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_common, i18n_sidebar,
+    save_ui_locale, update_app_state_and_save, update_app_state_and_save_quiet,
 };
 // The window placement is written to `zedis.toml`; a tab has no file (ADR 9).
 #[cfg(not(target_family = "wasm"))]
@@ -57,7 +57,10 @@ use crate::views::{
     confirm_dangerous_command, open_features_dialog, open_settings_window, open_trash_dialog,
 };
 use crate::window_setup::*;
-use gpui::{Action, Bounds, Entity, MouseButton, Pixels, Point, SharedString, Task, Window, div, prelude::*};
+use gpui::{
+    Action, Bounds, Entity, MouseButton, Pixels, Point, SharedString, Subscription, Task, Window, div, prelude::*,
+};
+use std::collections::HashMap;
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 use gpui_kit::component::{
@@ -90,6 +93,26 @@ pub(crate) struct ContentTab {
     server_id: String,
     db: usize,
     content: Entity<ZedisContent>,
+    /// The tab's server state, watched for its link health: the sidebar's
+    /// dots follow every tab's heartbeat, not only the active one's.
+    _health: Subscription,
+}
+
+impl ContentTab {
+    fn new(server_id: String, db: usize, content: Entity<ZedisContent>, cx: &mut Context<Zedis>) -> Self {
+        let server_state = content.read(cx).server_state();
+        let _health = cx.subscribe(&server_state, |this, _server_state, event, cx| {
+            if matches!(event, ServerEvent::ConnectionHealthChanged) {
+                this.sync_sidebar_health(cx);
+            }
+        });
+        Self {
+            server_id,
+            db,
+            content,
+            _health,
+        }
+    }
 }
 
 /// Context-menu actions on a workspace tab (dispatched by the tab strip's
@@ -167,11 +190,7 @@ impl Zedis {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(window, cx));
         let content = cx.new(|cx| ZedisContent::new(window, cx));
-        let mut tabs = vec![ContentTab {
-            server_id: String::new(),
-            db: 0,
-            content,
-        }];
+        let mut tabs = vec![ContentTab::new(String::new(), 0, content, cx)];
         let mut active_tab = 0;
         // Restore the last session's workspace tabs. Only the strip layout is
         // rebuilt here — a restored tab's connection loads lazily on first
@@ -208,11 +227,7 @@ impl Zedis {
         for (id, db) in saved_tabs.iter().skip(1) {
             let content = cx.new(|cx| ZedisContent::new(window, cx));
             content.update(cx, |content, cx| content.set_active(false, cx));
-            tabs.push(ContentTab {
-                server_id: id.clone(),
-                db: *db,
-                content,
-            });
+            tabs.push(ContentTab::new(id.clone(), *db, content, cx));
         }
         // Reactivate the tab the user left off on: the remembered selection's
         // tab, or — when the session ended on Home (no selection) — the first
@@ -620,6 +635,36 @@ impl Zedis {
     fn persist_tabs(&self, cx: &mut Context<Self>) {
         let tabs: Vec<(String, usize)> = self.tabs.iter().map(|tab| (tab.server_id.clone(), tab.db)).collect();
         update_app_state_and_save_quiet(cx, "save_open_tabs", move |state, _| state.set_open_tabs(tabs.clone()));
+        // Every change to the set of tabs comes through here, and the
+        // sidebar's dots are a view of that same set.
+        self.sync_sidebar_health(cx);
+    }
+
+    /// Hand the sidebar the link health of every open tab's server, so its
+    /// dots say what the status bar says — for every tab, not only the
+    /// active one. Two tabs on one server share a pool, so the better
+    /// reading wins: a connected tab means the server answers.
+    fn sync_sidebar_health(&self, cx: &mut Context<Self>) {
+        fn rank(health: ConnectionHealth) -> u8 {
+            match health {
+                ConnectionHealth::Unknown => 0,
+                ConnectionHealth::Offline => 1,
+                ConnectionHealth::Reconnecting => 2,
+                ConnectionHealth::Connected => 3,
+            }
+        }
+        let mut health: HashMap<String, ConnectionHealth> = HashMap::new();
+        for tab in &self.tabs {
+            if tab.server_id.is_empty() {
+                continue;
+            }
+            let reading = tab.content.read(cx).server_state().read(cx).connection_health();
+            let slot = health.entry(tab.server_id.clone()).or_default();
+            if rank(reading) > rank(*slot) {
+                *slot = reading;
+            }
+        }
+        self.sidebar.update(cx, |sidebar, cx| sidebar.set_health(health, cx));
     }
 
     fn persist_window_state(
@@ -835,11 +880,7 @@ impl Render for Zedis {
             self.tabs[self.active_tab]
                 .content
                 .update(cx, |content, cx| content.set_active(false, cx));
-            self.tabs.push(ContentTab {
-                server_id: id.clone(),
-                db,
-                content,
-            });
+            self.tabs.push(ContentTab::new(id.clone(), db, content, cx));
             self.active_tab = self.tabs.len() - 1;
             self.rebind_palettes(cx);
             cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {

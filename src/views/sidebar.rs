@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use crate::{
-    assets::{Assets, CustomIconName},
+    assets::Assets,
     connection::get_servers,
     constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
-    helpers::{humanize_keystroke, resolve_tag_color},
-    states::{GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save},
+    helpers::{humanize_keystroke, is_quiet_tag, resolve_tag_chip, resolve_tag_color},
+    states::{
+        ConnectionHealth, GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save,
+    },
 };
 use gpui::{Context, Hsla, Image, ImageFormat, SharedString, Subscription, Window, div, img, prelude::*, px, rgb};
 use gpui_kit::component::scroll::ScrollableElement;
@@ -31,6 +33,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
@@ -49,6 +52,12 @@ struct SidebarState {
 
     /// Currently selected server ID (empty string means home page)
     server_id: SharedString,
+
+    /// The link health of every server that has a workspace tab, by id —
+    /// what the row's dot shows. Pushed by the root, which owns the tabs
+    /// (`Zedis::sync_sidebar_health`); a server without a tab is absent
+    /// and gets no dot.
+    health: HashMap<String, ConnectionHealth>,
 }
 
 #[derive(Clone, Default)]
@@ -70,8 +79,10 @@ struct SidebarSection {
 struct SidebarServerEntry {
     id: SharedString,
     name: SharedString,
+    /// The environment label (`Prod`, `UAT`, …), empty when untagged.
     tag: SharedString,
-    color: Option<Hsla>,
+    /// The stored colour key the label maps to; `None` when untagged.
+    tag_color_key: Option<String>,
 }
 
 /// Sidebar navigation component
@@ -162,6 +173,15 @@ impl ZedisSidebar {
         this
     }
 
+    /// The root's view of every open tab's link health, keyed by server id.
+    /// Replaces the previous map whole: a server whose tab closed drops out.
+    pub fn set_health(&mut self, health: HashMap<String, ConnectionHealth>, cx: &mut Context<Self>) {
+        if self.state.health != health {
+            self.state.health = health;
+            cx.notify();
+        }
+    }
+
     /// Rebuild the cached `sections` from the current server config.
     ///
     /// Mirrors the bucketing in `views::servers::render_server_grid`:
@@ -186,7 +206,7 @@ impl ZedisSidebar {
                 id: server.id.clone().into(),
                 name: server.name.clone().into(),
                 tag: server.tag_label().unwrap_or_default().to_string().into(),
-                color: resolve_tag_color(server.tag_color.as_deref()),
+                tag_color_key: server.tag_color.clone(),
             };
 
             match sections.last_mut() {
@@ -293,6 +313,10 @@ impl ZedisSidebar {
         // Green status dot on the selected server's row (#69b083 — same green as
         // the status-bar "Connected" indicator).
         let connected_color: Hsla = rgb(0x69b083).into();
+        // The other two link states, in the theme's own words.
+        let reconnecting_color = cx.theme().warning;
+        let offline_color = cx.theme().danger;
+        let dark = cx.theme().is_dark();
         // Ring colour around the tag dot so it reads as a crisp badge over the
         // icon instead of bleeding into the glyph — matches the sidebar panel
         // background (see main.rs).
@@ -455,6 +479,9 @@ impl ZedisSidebar {
                     h_flex()
                         .id(header_id)
                         .mx_2()
+                        // Ends where the rows' content ends (`pr_2` on the
+                        // item), so the count and a row's dot share a spine.
+                        .pr_2()
                         .h_6()
                         .gap_1()
                         .items_center()
@@ -469,7 +496,11 @@ impl ZedisSidebar {
                                 .flex_1()
                                 .min_w_0(),
                         )
-                        .child(Label::new(count_label).text_xs().text_color(muted_icon_color))
+                        // The count only when the rows are hidden: open, they
+                        // can be counted; closed, it says what the header holds.
+                        .when(is_collapsed, |this| {
+                            this.child(Label::new(count_label).text_xs().text_color(muted_icon_color))
+                        })
                         .on_click(move |_, _window, cx| {
                             let key = toggle_key.clone();
                             update_app_state_and_save(cx, "toggle_server_group_collapsed", move |state, _| {
@@ -508,8 +539,30 @@ impl ZedisSidebar {
                 };
 
                 let server_id = entry.id.clone();
-                let tag_color = entry.color;
                 let icon_color = if is_current { accent_color } else { muted_icon_color };
+                // The environment, where it matters: UAT and Prod get a chip
+                // in the list and a corner dot in the rail; Dev and Local get
+                // nothing. A mark on every row says nothing, and the badge is
+                // spent where knowing which server this is changes what
+                // someone does next.
+                let quiet = is_quiet_tag(entry.tag_color_key.as_deref());
+                let tag_label = entry.tag.clone();
+                let tag_chip = (!quiet && !tag_label.is_empty())
+                    .then(|| resolve_tag_chip(entry.tag_color_key.as_deref(), dark))
+                    .flatten();
+                let tag_dot = (!quiet)
+                    .then(|| resolve_tag_color(entry.tag_color_key.as_deref()))
+                    .flatten();
+                // The dot is the link, not the selection: for every server with
+                // a workspace tab, and nothing for one without (or one whose
+                // first heartbeat is still out).
+                let health = self.state.health.get(entry.id.as_ref()).copied().unwrap_or_default();
+                let health_color = match health {
+                    ConnectionHealth::Connected => Some(connected_color),
+                    ConnectionHealth::Reconnecting => Some(reconnecting_color),
+                    ConnectionHealth::Offline => Some(offline_color),
+                    ConnectionHealth::Unknown => None,
+                };
                 // Initials for the collapsed rail so servers stay tellable apart
                 // at a glance: two letters for Latin names ("upstash" → "UP"), but
                 // a single glyph for CJK so a wide character (缓 / 中) isn't cramped.
@@ -533,8 +586,9 @@ impl ZedisSidebar {
                 let item = ListItem::new(item_id)
                     .w_full()
                     .h_8()
-                    // Collapsed rail centers the icon; expanded indents the row.
-                    .when(!sidebar_collapsed, |this| this.pl_4().pr_2())
+                    // Collapsed rail centers the monogram; expanded indents the
+                    // name under the group label (its chevron and gap: `pl_5`).
+                    .when(!sidebar_collapsed, |this| this.pl_5().pr_2())
                     .when(sidebar_collapsed, |this| this.px_1())
                     .rounded_md()
                     // Expanded: the full-row pill marks selection. Collapsed: the
@@ -548,31 +602,10 @@ impl ZedisSidebar {
                             .w_full()
                             .overflow_hidden()
                             .when(sidebar_collapsed, |this| this.justify_center())
-                            // Expanded: database-cylinder icon with the tag colour
-                            // as a corner dot badge (ringed so it doesn't merge in).
-                            .when(!sidebar_collapsed, |this| {
-                                this.child(
-                                    div()
-                                        .relative()
-                                        .flex_none()
-                                        .child(Icon::new(CustomIconName::Database).text_color(icon_color))
-                                        .when_some(tag_color, |this, color| {
-                                            this.child(
-                                                div()
-                                                    .absolute()
-                                                    .bottom_0()
-                                                    .right_0()
-                                                    .size(px(8.))
-                                                    .rounded_full()
-                                                    .bg(color)
-                                                    .border_2()
-                                                    .border_color(dot_ring_color),
-                                            )
-                                        }),
-                                )
-                            })
-                            // Collapsed rail: an initials monogram (tag dot kept) so
-                            // each server is distinguishable without expanding.
+                            // Collapsed rail: an initials monogram so each server is
+                            // distinguishable without expanding. The corner dot is
+                            // the link health where there is a tab, else the
+                            // environment for UAT / Prod.
                             .when(sidebar_collapsed, |this| {
                                 this.child(
                                     div()
@@ -587,9 +620,7 @@ impl ZedisSidebar {
                                         // (design); the rest are plain letters.
                                         .when(is_current, |this| this.bg(list_active_color))
                                         .child(Label::new(monogram).text_xs().font_bold().text_color(icon_color))
-                                        // Corner dot: green for the selected server,
-                                        // else the tag colour for tagged servers.
-                                        .when(is_current, |this| {
+                                        .when_some(health_color.or(tag_dot), |this, color| {
                                             this.child(
                                                 div()
                                                     .absolute()
@@ -597,44 +628,45 @@ impl ZedisSidebar {
                                                     .right_0()
                                                     .size(px(9.))
                                                     .rounded_full()
-                                                    .bg(connected_color)
+                                                    .bg(color)
                                                     .border_2()
                                                     .border_color(dot_ring_color),
                                             )
-                                        })
-                                        .when(!is_current, |this| {
-                                            this.when_some(tag_color, |this, color| {
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .bottom_0()
-                                                        .right_0()
-                                                        .size(px(9.))
-                                                        .rounded_full()
-                                                        .bg(color)
-                                                        .border_2()
-                                                        .border_color(dot_ring_color),
-                                                )
-                                            })
                                         }),
                                 )
                             })
-                            // Name + selected green dot — hidden in the icon rail
-                            // (the wrapper tooltip surfaces the name on hover).
+                            // Expanded: the name, the environment chip where there is
+                            // one, and the link dot. No icon: a column of identical
+                            // cylinders told nobody anything, and the selection is
+                            // the bar and the fill — the name is not restyled.
                             .when(!sidebar_collapsed, |this| {
                                 this.child(
                                     Label::new(name)
                                         .text_xs()
-                                        // Not restyled on selection: the left bar (and
-                                        // the icon) carry the accent, the name stays in
-                                        // the default foreground.
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .flex_1()
                                         .min_w_0(),
                                 )
-                                .when(is_current, |this| {
-                                    this.child(div().flex_none().size(px(7.)).rounded_full().bg(connected_color))
+                                // Smaller than the status bar's chip: this row is a
+                                // list entry, and the label is a mark on it, not a
+                                // heading — 10px type on a 15px pill.
+                                .when_some(tag_chip, |this, (bg, fg)| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .h(px(15.))
+                                            .px(px(4.))
+                                            .rounded_sm()
+                                            .bg(bg)
+                                            .text_size(px(10.))
+                                            .line_height(px(15.))
+                                            .text_color(fg)
+                                            .child(tag_label.clone()),
+                                    )
+                                })
+                                .when_some(health_color, |this, color| {
+                                    this.child(div().flex_none().size(px(7.)).rounded_full().bg(color))
                                 })
                             }),
                     )

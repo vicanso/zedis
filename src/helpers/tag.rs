@@ -35,6 +35,14 @@ fn canonical_tag_key(key: Option<&str>) -> Option<&'static str> {
     })
 }
 
+/// Whether a tag is one of the quiet tiers — Dev (`teal`) and Local
+/// (`sky`) — that the sidebar leaves unmarked. A mark on every row says
+/// nothing; the sidebar spends its badge on UAT and Prod, the tiers where
+/// knowing which server this is changes what someone does next.
+pub fn is_quiet_tag(key: Option<&str>) -> bool {
+    matches!(canonical_tag_key(key), Some("teal" | "sky"))
+}
+
 /// Resolve a preset tag color key to a single vivid HSLA — used for the
 /// small sidebar dot, where one color reads fine on both light and dark
 /// backgrounds. Chips that need contrast (cards) use [`resolve_tag_chip`].
