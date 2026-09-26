@@ -32,6 +32,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 📊 **Real-time observability** — live metrics, a memory analyzer (offline + AI recommendations, server-side key-size histogram), hot-key tracking (`HOTKEYS`), per-slot cluster stats, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
+- 🔀 **Redis and Valkey, both first-class** — every version gate carries a Valkey floor of its own, Valkey-only features get panels (`COMMANDLOG`, atomic slot migration, `CLUSTER SLOT-STATS`, multi-database clusters), valkey-json / valkey-search / valkey-bloom are recognised, and CI runs Valkey 8, 9 and the bundle beside Redis 6.2–8 ([the matrix](#-redis-and-valkey)).
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, table/JSON replies + AI command assistant, batch mode, and cross-server copy/diff.
 - 🕸️ **In the browser too** — the same app compiled to WebAssembly, self-hosted from one ~26 MB Docker image ([Web version](#-web-version-self-hosted)).
 
@@ -96,6 +97,34 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 📖 **[See the full feature tour →](./docs/FEATURES.md)**
 
 ---
+
+## 🔀 Redis and Valkey
+
+Zedis treats the two as what they are: one wire protocol, two release lines that diverged at 7.2.4 and have shipped different things since. Every feature that depends on a server version is gated by a floor per flavor (`crates/zedis-connection/src/floors.rs`), so a Valkey that never shipped a command is never sent it, and a Valkey that shipped it earlier gets it earlier. The live integration suite runs on Redis 6.2 / 7.2 / 8.0, Valkey 8 / 9, `redis-stack` and `valkey-bundle` on every change.
+
+| Feature | Redis | Valkey |
+|---|---|---|
+| `COMMANDLOG` — slow, large-request and large-reply logs | — | 8.1 |
+| Atomic slot migration (`CLUSTER MIGRATESLOTS`) | — | 9.0 |
+| `CLUSTER SLOT-STATS` (per-slot keys, CPU, network) | 8.2 | 8.0 |
+| Multiple databases in cluster mode | — | 9.0 |
+| Hash field TTL (`HEXPIRE`, `HSETEX`, `HTTL`…) | 7.4 | 9.0 |
+| `SET … IFEQ` | 8.4 | 8.1 |
+| `CLIENT KILL … MAXAGE` | 7.4 | 8.0 |
+| `SCRIPT SHOW` — the source behind an `EVALSHA` in the slow log | — | 8.0 |
+| Availability zone per node (`availability-zone`, on the topology page) | — | 8.1 |
+| `INFO keysizes` histograms (memory analyzer) | 8.0 | — |
+| `HOTKEYS` tracking | 8.6 | — |
+| Stream `XACKDEL` / `XDELEX` and reference policies | 8.2 | — |
+| `XNACK` | 8.8 | — |
+| Vector sets | 8.0 | — |
+| `allkeys-lrm` / `volatile-lrm` eviction | 8.6 | — |
+| JSON | RedisJSON | valkey-json |
+| Search | RediSearch | valkey-search — `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`; no `TAGVALS`, `SPELLCHECK`, `EXPLAIN`, `PROFILE` or `DROPINDEX DD`, which the panel reports as unavailable |
+| Probabilistic | RedisBloom — BF, CF, CMS, TOPK, TDIGEST | valkey-bloom — BF |
+| Time series | RedisTimeSeries | — |
+
+A command a server does not have is never a crash: the panel that needs it says so, and everything else keeps working. A command that *would* crash the server is not sent either: Redis 8.0–8.2.6 and Valkey 8.0 die in `lookupKey()` when a `CLIENT NO-TOUCH` client unblocks another client, so Zedis withholds that flag there and the memory analyzer's heat column is a little less exact instead.
 
 ## 📦 Installation
 

@@ -36,7 +36,14 @@ impl ZedisSlowlogEditor {
         });
         self.last_time_stamp = SharedString::default();
         let editor_weak = cx.entity().downgrade();
-        self.table_state = cx.new(|cx| TableState::new(build_table(editor_weak, kind, window, cx), window, cx));
+        let script_show_supported = self.script_show_supported.clone();
+        self.table_state = cx.new(|cx| {
+            TableState::new(
+                build_table(editor_weak, kind, script_show_supported, window, cx),
+                window,
+                cx,
+            )
+        });
         self.commandlog_entries.clear();
         self._commandlog_task = None;
         self._commandlog_poll_task = None;

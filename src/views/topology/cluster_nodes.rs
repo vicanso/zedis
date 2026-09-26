@@ -177,6 +177,15 @@ impl ZedisTopology {
             .redis_info()
             .map(|info| info.replicas.clone())
             .unwrap_or_default();
+        // Which zone each master answers from (Valkey 8.1+, when the
+        // operator set `availability-zone`); nothing to show otherwise.
+        let node_zones: Vec<(String, String)> = self
+            .server_state
+            .read(cx)
+            .redis_info()
+            .map(|info| info.node_zones.clone())
+            .unwrap_or_default();
+        let zone_tooltip = i18n_topology(cx, "availability_zone");
         let warning = cx.theme().warning;
         let summary: SharedString = rust_i18n::t!(
             "topology.nodes_summary",
@@ -252,6 +261,25 @@ impl ZedisTopology {
                 .when(!m_annot.is_empty(), |row| {
                     row.child(Label::new(m_annot).text_xs().text_color(muted))
                 })
+                .when_some(
+                    node_zones
+                        .iter()
+                        .find(|(addr, _)| addr == &m_addr)
+                        .map(|(_, zone)| zone.clone()),
+                    |row, zone| {
+                        let tooltip = zone_tooltip.clone();
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("topo-zone-{m_addr}")))
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(muted)
+                                .child(Label::new(SharedString::from(zone)).text_xs().text_color(muted))
+                                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+                        )
+                    },
+                )
                 .when(slot_count > 0, |row| {
                     row.child(
                         Label::new(SharedString::from(

@@ -203,7 +203,7 @@ fn is_container_read(name: &str, sub: &str) -> bool {
             // REMOVE and RESET are not, and are absent.
             | ("SENTINEL", "MASTERS" | "MASTER" | "SENTINELS" | "REPLICAS" | "SLAVES" | "CKQUORUM")
             | ("SENTINEL", "GET-MASTER-ADDR-BY-NAME" | "IS-MASTER-DOWN-BY-ADDR" | "INFO-CACHE" | "HELP")
-            | ("SCRIPT", "EXISTS" | "HELP")
+            | ("SCRIPT", "EXISTS" | "SHOW" | "HELP")
             | ("PUBSUB", "CHANNELS" | "NUMSUB" | "NUMPAT" | "SHARDCHANNELS" | "SHARDNUMSUB")
             | ("OBJECT", "HELP")
             | ("XGROUP", "HELP")

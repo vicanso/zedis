@@ -202,6 +202,40 @@ fn unique(prefix: &str) -> String {
 
 /// Version gate for a test: the same [`Floor`] the app uses, so a test
 /// never carries its own (flavor-blind) version string.
+/// Whether the server knows `name` — `COMMAND INFO` answers a nil entry for
+/// a command it does not have. The module tests ask this per family, because
+/// the stack image and valkey-bundle ship different sets: valkey-bloom is
+/// `BF.*` alone, valkey-search has no `TAGVALS`, and neither has TimeSeries.
+async fn has_command(c: &mut RedisAsyncConn, name: &str) -> bool {
+    let reply: redis::RedisResult<Vec<redis::Value>> = cmd("COMMAND").arg("INFO").arg(name).query_async(c).await;
+    reply.is_ok_and(|entries| entries.iter().any(|entry| !matches!(entry, redis::Value::Nil)))
+}
+
+/// Drop `index` and the documents under `prefix`. `FT.DROPINDEX … DD` would
+/// do both on RediSearch; valkey-search has no `DD`, so the documents go by
+/// hand — a test's keyspace is small enough for `KEYS`.
+async fn drop_index_and_docs(c: &mut RedisAsyncConn, index: &str, prefix: &str) {
+    cmd("FT.DROPINDEX")
+        .arg(index)
+        .exec_async(c)
+        .await
+        .expect("ft.dropindex");
+    let keys: Vec<String> = cmd("KEYS")
+        .arg(format!("{prefix}:*"))
+        .query_async(c)
+        .await
+        .expect("keys");
+    if !keys.is_empty() {
+        cmd("DEL").arg(keys).exec_async(c).await.expect("del docs");
+    }
+}
+
+/// Whether the lane is Valkey (`ZEDIS_IT_FLAVOR=valkey`), where the module
+/// behind a familiar name is a different program with its own rules.
+fn valkey_lane() -> bool {
+    env::var("ZEDIS_IT_FLAVOR").is_ok_and(|flavor| flavor == "valkey")
+}
+
 async fn supports(id: &str, floor: Floor) -> bool {
     get_connection_manager()
         .get_client(id, 0)
@@ -1403,7 +1437,7 @@ fn stack_probabilistic_structures_probe_and_describe_themselves() {
         };
 
         // Bloom: a negative is definitive, a positive is a maybe, and a second
-        // add of the same item says "already".
+        // add of the same item says "already". (Every bloom module has it.)
         let bf = unique("prob-bf");
         assert_eq!(probe(&bf, ProbKind::Bloom, "a", true).await, ProbeOutcome::Added);
         assert_eq!(probe(&bf, ProbKind::Bloom, "a", true).await, ProbeOutcome::AlreadyMaybe);
@@ -1424,6 +1458,12 @@ fn stack_probabilistic_structures_probe_and_describe_themselves() {
         );
 
         // Cuckoo shares the EXISTS path by prefix.
+        // valkey-bloom stops at Bloom filters; the rest are RedisBloom's.
+        if !has_command(&mut c, "CF.ADD").await {
+            eprintln!("skipped: no CF / CMS / TOPK / TDIGEST on this server");
+            cmd("DEL").arg(&bf).exec_async(&mut c).await.expect("cleanup");
+            return;
+        }
         let cf = unique("prob-cf");
         assert_eq!(probe(&cf, ProbKind::Cuckoo, "a", true).await, ProbeOutcome::Added);
         assert_eq!(
@@ -1511,6 +1551,10 @@ fn stack_timeseries_write_operations() {
         }
         let id = register(server("it-stack", standalone())).await;
         let mut c = conn(&id, 0).await;
+        if !has_command(&mut c, "TS.CREATE").await {
+            eprintln!("skipped: no TimeSeries module on this server");
+            return;
+        }
         let at = ServerDb::new(&id, 0);
         let key = unique("ts-write");
         let compacted = unique("ts-write-1m");
@@ -1647,6 +1691,10 @@ fn stack_timeseries_mrange_selects_by_label_and_aligns_buckets() {
         }
         let id = register(server("it-stack", standalone())).await;
         let mut c = conn(&id, 0).await;
+        if !has_command(&mut c, "TS.CREATE").await {
+            eprintln!("skipped: no TimeSeries module on this server");
+            return;
+        }
         let at = ServerDb::new(&id, 0);
         let tag = unique("mrange");
         let a = format!("{tag}:a");
@@ -5377,6 +5425,84 @@ fn standalone_batch_ttl_conditions_report_skipped_keys() {
     });
 }
 
+/// The database count a cluster client reports is the one `SELECT`
+/// accepts: `cluster-databases` where the server has it (Valkey 9, default
+/// 1), else `databases`, which Redis and Valkey 8 force to 1 in cluster
+/// mode. Found on a default Valkey 9.0 cluster: it keeps `databases` at 16
+/// and answers `SELECT 1` with "DB index is out of range", and the switcher
+/// listed fifteen databases that did not exist. With more than one
+/// database (`--cluster-databases 16`), a key written to the last one is
+/// found by a scan of that database — the per-master fan-out selects it —
+/// and not by a scan of db 0.
+#[test]
+#[ignore]
+fn cluster_database_count_is_the_one_select_accepts() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-databases", addr)).await;
+        let client = get_connection_manager()
+            .get_client(&id, 0)
+            .await
+            .expect("cluster client");
+        let at = ServerDb::new(&id, 0);
+        let expected = match config_get_one(&at, "cluster-databases")
+            .await
+            .expect("CONFIG GET cluster-databases")
+        {
+            Some(count) => count.parse::<usize>().expect("cluster-databases is a count"),
+            None => 1,
+        };
+        assert_eq!(client.databases(), expected, "the switcher offers what SELECT accepts");
+
+        // One past the end is refused, at the handshake or on first use.
+        let beyond = get_connection_manager().get_client(&id, expected).await;
+        let refused = match beyond {
+            Err(_) => true,
+            Ok(client) => client.dbsize().await.is_err(),
+        };
+        assert!(refused, "db {expected} does not exist on this cluster");
+        get_connection_manager().remove_client(&id, expected);
+
+        if expected == 1 {
+            eprintln!("skipped the multi-database half: this cluster has db 0 alone");
+            return;
+        }
+        let last = expected - 1;
+        let key = unique("cluster-db");
+        let mut c = conn(&id, last).await;
+        cmd("SET")
+            .arg(&key)
+            .arg("x")
+            .exec_async(&mut c)
+            .await
+            .expect("set on the last db");
+        let found_on = |db: usize| {
+            let id = id.clone();
+            let pattern = format!("{key}*");
+            async move {
+                let client = get_connection_manager().get_client(&id, db).await.expect("client");
+                let mut found = false;
+                let mut cursors = None;
+                loop {
+                    let (next, page) = client.scan(cursors, &pattern, 10, false, None).await.expect("scan");
+                    found |= !page.is_empty();
+                    if next.iter().sum::<u64>() == 0 {
+                        break;
+                    }
+                    cursors = Some(next);
+                }
+                found
+            }
+        };
+        assert!(
+            found_on(last).await,
+            "the scan of db {last} fans out with that db selected"
+        );
+        assert!(!found_on(0).await, "db 0 does not see a key written to db {last}");
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
+
 /// Same contract on a cluster, where the two keys land in different slots
 /// and the helper fans out per key: the flags must still come back in the
 /// caller's order (the folder batch aligns its TTL cache on that).
@@ -6325,46 +6451,51 @@ fn stack_search_index_size_tag_values_and_spelling() {
 
         let info = ft_info(&at, &index).await.expect("ft.info");
         assert_eq!(info.num_docs, 2);
-        assert!(
-            info.index_bytes().is_some_and(|bytes| bytes > 0),
-            "FT.INFO reports the index's size: {info:?}"
-        );
-        assert!(
-            info.inverted_index_bytes.is_some(),
-            "the inverted index is one of the parts"
-        );
+        // The size fields are RediSearch's (`inverted_sz_mb` and friends);
+        // valkey-search's FT.INFO carries none of them.
+        if !valkey_lane() {
+            assert!(
+                info.index_bytes().is_some_and(|bytes| bytes > 0),
+                "FT.INFO reports the index's size: {info:?}"
+            );
+            assert!(
+                info.inverted_index_bytes.is_some(),
+                "the inverted index is one of the parts"
+            );
+        }
 
-        let mut values = ft_tagvals(&at, &index, "tags").await.expect("ft.tagvals");
-        values.sort();
-        assert_eq!(
-            values,
-            vec!["blue", "green", "red"],
-            "TAG values, lowercased by the index"
-        );
+        // TAGVALS and SPELLCHECK are RediSearch's; valkey-search has neither,
+        // and the panel learns that at run time like any missing command.
+        if has_command(&mut c, "FT.TAGVALS").await {
+            let mut values = ft_tagvals(&at, &index, "tags").await.expect("ft.tagvals");
+            values.sort();
+            assert_eq!(
+                values,
+                vec!["blue", "green", "red"],
+                "TAG values, lowercased by the index"
+            );
 
-        let suggestions = ft_spellcheck(&at, &index, "helo", None).await.expect("ft.spellcheck");
-        let for_term = suggestions
-            .iter()
-            .find(|entry| entry.term == "helo")
-            .expect("a suggestion for helo");
-        assert!(
-            for_term.suggestions.iter().any(|(word, _)| word == "hello"),
-            "the indexed term is proposed: {suggestions:?}"
-        );
-        assert!(
-            ft_spellcheck(&at, &index, "hello", None)
-                .await
-                .expect("ft.spellcheck")
-                .is_empty(),
-            "a known term gets no suggestion"
-        );
+            let suggestions = ft_spellcheck(&at, &index, "helo", None).await.expect("ft.spellcheck");
+            let for_term = suggestions
+                .iter()
+                .find(|entry| entry.term == "helo")
+                .expect("a suggestion for helo");
+            assert!(
+                for_term.suggestions.iter().any(|(word, _)| word == "hello"),
+                "the indexed term is proposed: {suggestions:?}"
+            );
+            assert!(
+                ft_spellcheck(&at, &index, "hello", None)
+                    .await
+                    .expect("ft.spellcheck")
+                    .is_empty(),
+                "a known term gets no suggestion"
+            );
+        } else {
+            eprintln!("skipped: no FT.TAGVALS / FT.SPELLCHECK on this server");
+        }
 
-        cmd("FT.DROPINDEX")
-            .arg(&index)
-            .arg("DD")
-            .exec_async(&mut c)
-            .await
-            .expect("ft.dropindex");
+        drop_index_and_docs(&mut c, &index, &prefix).await;
     });
 }
 
@@ -6435,7 +6566,9 @@ fn stack_search_params_bind_a_knn_vector() {
             limit: (0, 10),
             dialect: Some(2),
             params: params.clone(),
-            sort_by: Some("dist".to_string()),
+            // valkey-search answers a KNN query nearest-first by itself and
+            // refuses SORTBY on the alias; RediSearch needs to be asked.
+            sort_by: (!valkey_lane()).then(|| "dist".to_string()),
             ..Default::default()
         };
         let result = ft_search(&at, &index, query, &opts).await.expect("ft.search");
@@ -6466,20 +6599,50 @@ fn stack_search_params_bind_a_knn_vector() {
         };
         let (near, far) = (distance("a"), distance("b"));
         assert!(near < far, "(1, 0) is nearer than (0, 1): {near} vs {far}");
-        let plan = ft_explain(&at, &index, query, &params, Some(2))
-            .await
-            .expect("ft.explain");
-        assert!(plan.contains("VECTOR"), "plan names the vector iterator: {plan}");
-        assert!(
-            ft_explain(&at, &index, query, &[], Some(2)).await.is_err(),
-            "without the binding the server refuses to plan"
-        );
+        // EXPLAIN is RediSearch's; valkey-search has no plan to show.
+        if has_command(&mut c, "FT.EXPLAIN").await {
+            let plan = ft_explain(&at, &index, query, &params, Some(2))
+                .await
+                .expect("ft.explain");
+            assert!(plan.contains("VECTOR"), "plan names the vector iterator: {plan}");
+            assert!(
+                ft_explain(&at, &index, query, &[], Some(2)).await.is_err(),
+                "without the binding the server refuses to plan"
+            );
+        } else {
+            eprintln!("skipped: no FT.EXPLAIN on this server");
+        }
 
-        cmd("FT.DROPINDEX")
-            .arg(&index)
-            .arg("DD")
-            .exec_async(&mut c)
-            .await
-            .expect("ft.dropindex");
+        drop_index_and_docs(&mut c, &index, &prefix).await;
+    });
+}
+
+/// `SCRIPT SHOW` reads a cached script back — Valkey 8.0 and later; Redis's
+/// cache is write-only and the floor keeps the command off it.
+#[test]
+#[ignore]
+fn standalone_script_show_reads_the_cache_back_on_valkey() {
+    smol::block_on(async {
+        let id = register(server("it-script-show", standalone())).await;
+        if !supports(&id, floors::SCRIPT_SHOW).await {
+            eprintln!("skipped: no SCRIPT SHOW on this server");
+            return;
+        }
+        let at = ServerDb::new(&id, 0);
+        let source = format!("return {}", unique("script-show").len());
+        let sha = script_load(&at, &source).await.expect("script load");
+        assert_eq!(
+            zedis_connection::script_show(&at, &sha)
+                .await
+                .expect("script show")
+                .as_deref(),
+            Some(source.as_str())
+        );
+        assert_eq!(
+            zedis_connection::script_show(&at, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+                .await
+                .expect("an unknown digest is not an error"),
+            None
+        );
     });
 }

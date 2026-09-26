@@ -170,6 +170,9 @@ pub const MAXMEMORY_LRM: Floor = Floor::redis_only("8.6.0");
 /// `VSIM … WITHATTRIBS` — neighbour attributes inline (Redis 8.2; vector
 /// sets exist only in Redis).
 pub const VSIM_WITHATTRIBS: Floor = Floor::redis_only("8.2.0");
+/// `SCRIPT SHOW sha` — the source of a cached script (Valkey 8.0; Redis has
+/// no such command, its cache is write-only).
+pub const SCRIPT_SHOW: Floor = Floor::valkey_only("8.0.0");
 
 /// Whether `CLIENT NO-TOUCH ON` is safe to send to this server.
 ///
@@ -189,13 +192,25 @@ pub const VSIM_WITHATTRIBS: Floor = Floor::redis_only("8.2.0");
 /// against a locally built 8.0.0 — with the flag the server dies in
 /// `lookupKey`, without it the same sequence is clean.
 ///
-/// Valkey forked before the refactor and is unaffected at every release.
+/// Valkey has the same fault in its **8.0** line, and it was found the same
+/// way the Redis one was: the stream-tail live test crashed
+/// `valkey/valkey:8.0` (8.0.11, signal 11 in `lookupKey+0xb8` under
+/// `handleClientsBlockedOnKey` — the stack valkey-io/valkey#2110 reports,
+/// closed there as a duplicate with no fix named), and by hand
+/// `CLIENT NO-TOUCH ON` + `XADD` against a blocked `XREAD` kills 8.0.11
+/// while 8.1.10, 9.0.6 and 9.1.2 answer PONG. 8.1.10 is the earliest 8.1
+/// verified here, so the window closes at 8.1.0 on the strength of that.
+/// "Forked before the refactor" was this function's earlier belief and it
+/// was wrong twice over: the belief itself, and the fact that the version
+/// it was handed was Valkey's `redis_version:7.2.4` compatibility line
+/// (`no_touch_is_safe_per`), so the window could never have been reached.
+/// The lane pinned to `valkey/valkey:8.0` is what keeps it honest now.
 pub fn no_touch_is_safe(is_valkey: bool, version: &Version) -> bool {
-    if is_valkey {
-        return true;
-    }
-    let affected_from = Version::new(8, 0, 0);
-    let fixed_in = Version::new(8, 2, 7);
+    let (affected_from, fixed_in) = if is_valkey {
+        (Version::new(8, 0, 0), Version::new(8, 1, 0))
+    } else {
+        (Version::new(8, 0, 0), Version::new(8, 2, 7))
+    };
     *version < affected_from || *version >= fixed_in
 }
 
@@ -292,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn no_touch_is_refused_only_inside_the_redis_regression_window() {
+    fn no_touch_is_refused_only_inside_the_regression_windows() {
         // 7.x has the flag and none of the bug.
         assert!(no_touch_is_safe(false, &v("7.2.0")));
         assert!(no_touch_is_safe(false, &v("7.4.5")));
@@ -306,9 +321,13 @@ mod tests {
         // Fixed in 8.2.7.
         assert!(no_touch_is_safe(false, &v("8.2.7")));
         assert!(no_touch_is_safe(false, &v("8.6.1")));
-        // Valkey forked before the refactor: safe at every release.
-        for valkey in ["7.2.4", "8.0.0", "8.1.0", "9.0.0"] {
+        // Valkey's 8.0 line has the same fault (valkey-io/valkey#2110): 8.0.11,
+        // its newest release, still crashes; 8.1.0 and later do not.
+        for valkey in ["7.2.4", "7.2.10", "8.1.0", "8.1.10", "9.0.0", "9.0.6", "9.1.2"] {
             assert!(no_touch_is_safe(true, &v(valkey)), "valkey {valkey}");
+        }
+        for valkey in ["8.0.0", "8.0.6", "8.0.11"] {
+            assert!(!no_touch_is_safe(true, &v(valkey)), "valkey {valkey}");
         }
     }
 }

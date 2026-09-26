@@ -26,6 +26,7 @@ use crate::connection::ServerCommand;
 use crate::connection::{
     CommandLogKind, LatencyEvent, LatencySample, ServerDb, SlowLogEntry, command_log_reset, command_logs, config_set,
     floors, get_server, latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_commands,
+    script_show,
 };
 use crate::error::Error;
 use crate::helpers::{SlowlogAction, build_csv, djb2_hash, format_unix_secs, get_mono_font_family, pacing};
@@ -41,6 +42,7 @@ use gpui::{
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::Button,
@@ -50,11 +52,12 @@ use gpui_kit::component::{
     table::{DataTable, TableState},
     v_flex,
 };
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use zedis_ui::{CellRenderer, TextColumn, ZedisDialog, ZedisDivider, ZedisTextTable};
+use zedis_ui::{CellAction, CellActionProvider, CellRenderer, TextColumn, ZedisDialog, ZedisDivider, ZedisTextTable};
 
 // One file per tab that has a life of its own.
 mod commandlog;
@@ -354,6 +357,8 @@ const SLOWLOG_COLUMNS: [&str; 6] = [
     COLUMN_CORRELATED,
 ];
 /// Index of the correlation column, drawn as a chip rather than text.
+const COMMAND_COLUMN: usize = 2;
+const ARGS_COLUMN: usize = 3;
 const CORRELATED_COLUMN: usize = 5;
 /// Payload cells after the six columns: the raw duration the duration
 /// column sorts by, and the correlated latency event's name and delta.
@@ -386,6 +391,7 @@ impl SlowLogRow {
 fn build_table(
     editor: WeakEntity<ZedisSlowlogEditor>,
     kind: CommandLogKind,
+    script_show_supported: Rc<Cell<bool>>,
     window: &mut Window,
     cx: &mut gpui::App,
 ) -> ZedisTextTable {
@@ -446,12 +452,116 @@ fn build_table(
             }
         })
         .collect();
+    let chip_editor = editor.clone();
     let chip: CellRenderer = Rc::new(move |row_ix, col_ix, cells, _window, cx| {
-        (col_ix == CORRELATED_COLUMN).then(|| render_correlation_chip(row_ix, cells, editor.clone(), cx))
+        (col_ix == CORRELATED_COLUMN).then(|| render_correlation_chip(row_ix, cells, chip_editor.clone(), cx))
+    });
+    // An `EVALSHA` names a script by its digest and nothing else; where the
+    // server can show the source (Valkey's `SCRIPT SHOW`), the arguments
+    // cell grows a button that does.
+    let show_script_tooltip = i18n_slowlog_editor(cx, "show_script_tooltip");
+    let show_script: CellActionProvider = Rc::new(move |col_ix, cells| {
+        if col_ix != ARGS_COLUMN || !script_show_supported.get() {
+            return Vec::new();
+        }
+        let Some(sha) = evalsha_digest(cells) else {
+            return Vec::new();
+        };
+        let editor = editor.clone();
+        vec![CellAction {
+            icon: IconName::Search,
+            tooltip: show_script_tooltip.clone(),
+            on_click: Rc::new(move |window, cx| open_script_source(editor.clone(), sha.clone(), window, cx)),
+        }]
     });
     ZedisTextTable::new(columns, i18n_common(cx, "copied_to_clipboard"))
         .copy_tooltip(i18n_common(cx, "copy_cell_tooltip"))
         .cell_render(chip)
+        .cell_action(show_script)
+}
+
+/// The digest an `EVALSHA` / `EVALSHA_RO` row names — its first argument,
+/// forty hex characters — or `None` for any other row.
+fn evalsha_digest(cells: &[SharedString]) -> Option<String> {
+    let command = cells.get(COMMAND_COLUMN)?;
+    if !command.eq_ignore_ascii_case("EVALSHA") && !command.eq_ignore_ascii_case("EVALSHA_RO") {
+        return None;
+    }
+    let sha = cells.get(ARGS_COLUMN)?.split_whitespace().next()?;
+    (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| sha.to_ascii_lowercase())
+}
+
+/// What the script dialog knows: the digest, and the source once fetched.
+struct ScriptSourceView {
+    sha: String,
+    /// `None` while fetching; then the source, `Ok(None)` for a digest the
+    /// cache no longer holds, or why the fetch failed.
+    source: Option<Result<Option<String>, String>>,
+}
+
+impl Render for ScriptSourceView {
+    fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let body: AnyElement = match &self.source {
+            None => h_flex()
+                .gap_2()
+                .items_center()
+                .child(Spinner::new().small())
+                .child(Label::new(i18n_slowlog_editor(cx, "script_loading")).text_color(muted))
+                .into_any_element(),
+            Some(Ok(Some(source))) => div()
+                .font_family(get_mono_font_family())
+                .text_sm()
+                .child(SharedString::from(source.clone()))
+                .into_any_element(),
+            Some(Ok(None)) => Label::new(i18n_slowlog_editor(cx, "script_missing"))
+                .text_color(muted)
+                .into_any_element(),
+            Some(Err(error)) => Label::new(i18n_slowlog_editor(cx, "script_failed").replace("%{error}", error))
+                .text_color(cx.theme().danger)
+                .into_any_element(),
+        };
+        v_flex()
+            .gap_2()
+            .child(
+                Label::new(SharedString::from(self.sha.clone()))
+                    .text_xs()
+                    .text_color(muted)
+                    .font_family(get_mono_font_family()),
+            )
+            .child(body)
+    }
+}
+
+/// Open the dialog for `sha` and fetch its source into it. The body is a
+/// view so the fetch can land in it after the dialog is up.
+fn open_script_source(editor: WeakEntity<ZedisSlowlogEditor>, sha: String, window: &mut Window, cx: &mut gpui::App) {
+    let Some(editor) = editor.upgrade() else {
+        return;
+    };
+    let at = editor.read(cx).server_state.read(cx).at();
+    let view = cx.new(|_| ScriptSourceView {
+        sha: sha.clone(),
+        source: None,
+    });
+    let body = view.clone();
+    ZedisDialog::new(i18n_slowlog_editor(cx, "script_source_title").replace("%{sha}", &sha[..8]))
+        .child(move || body.clone())
+        .ok_text(i18n_common(cx, "close"))
+        .on_ok(|_, _, _| true)
+        .w(px(640.))
+        .open(window, cx);
+    cx.spawn(async move |cx| {
+        let fetched = cx
+            .background_spawn(async move { script_show(&at, &sha).await })
+            .await
+            .map_err(|e| e.to_string());
+        view.update(cx, |view, cx| {
+            view.source = Some(fetched);
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 /// The chip-style cell for the "correlated event" column. Empty text when
@@ -534,6 +644,11 @@ fn render_correlation_chip(
 ///   2. Table    – slowlog rows (hidden when empty, replaced by a placeholder)
 pub struct ZedisSlowlogEditor {
     server_state: Entity<ZedisServerState>,
+    /// Whether the server can show a cached script's source (Valkey's
+    /// `SCRIPT SHOW`, `floors::SCRIPT_SHOW`) — read by the table's cell
+    /// actions, which have no context of their own, so it is a cell shared
+    /// with them and refreshed as the server reports itself.
+    script_show_supported: Rc<Cell<bool>>,
     /// Shared table state that owns the [`SlowlogTableDelegate`] and drives rendering.
     table_state: Entity<TableState<ZedisTextTable>>,
     /// Timestamp of the most recently seen slow-log entry, used to skip redundant refreshes.
@@ -626,8 +741,22 @@ impl ZedisSlowlogEditor {
         let filtered = all_rows.clone();
         let row_count = filtered.len();
         let editor_weak = cx.entity().downgrade();
-        let table_state =
-            cx.new(|cx| TableState::new(build_table(editor_weak, CommandLogKind::Slow, window, cx), window, cx));
+        // Read by the table's cell actions, which have no context of their
+        // own; set as the server reports itself (the subscription below).
+        let script_show_supported = Rc::new(Cell::new(false));
+        let table_state = cx.new(|cx| {
+            TableState::new(
+                build_table(
+                    editor_weak,
+                    CommandLogKind::Slow,
+                    script_show_supported.clone(),
+                    window,
+                    cx,
+                ),
+                window,
+                cx,
+            )
+        });
         table_state.update(cx, |state, _| {
             state
                 .delegate_mut()
@@ -669,6 +798,9 @@ impl ZedisSlowlogEditor {
         // prevents redundant re-renders when the data hasn't actually changed.
         subscriptions.push(
             cx.subscribe_in(&server_state, window, |this, _state, event, window, cx| {
+                // The server's word on `SCRIPT SHOW` arrives with its version.
+                this.script_show_supported
+                    .set(this.server_state.read(cx).supports(floors::SCRIPT_SHOW));
                 // A new server starts on its slow log — the size log shown was
                 // the previous server's.
                 if matches!(event, ServerEvent::ServerSelected(_)) {
@@ -699,6 +831,7 @@ impl ZedisSlowlogEditor {
 
         Self {
             server_state,
+            script_show_supported,
             table_state,
             last_time_stamp: SharedString::default(),
             row_count,

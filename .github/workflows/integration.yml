@@ -49,22 +49,36 @@ jobs:
             image: redis:7.2
           - name: redis-8.0
             image: redis:8.0
-          - name: valkey-8
-            image: valkey/valkey:8
+          # The oldest Valkey: the edge every Valkey floor is measured from
+          # (COMMANDLOG and SET IFEQ arrive in 8.1, SCRIPT SHOW and
+          # CLUSTER SLOT-STATS are already here). `valkey:8` would resolve to
+          # 8.1 and test nothing the 9.x lanes do not.
+          - name: valkey-8.0
+            image: valkey/valkey:8.0
             server_bin: valkey-server
             cli_bin: valkey-cli
             flavor: valkey
-          # Valkey 9 is where the Valkey-only paths live: COMMANDLOG's size
-          # logs (8.1) and atomic slot migration (9.0).
-          - name: valkey-9
-            image: valkey/valkey:9
+          # Valkey 9.0 is where the newer Valkey-only paths live: atomic slot
+          # migration, hash field TTL, multi-database clusters. Pinned to the
+          # floor version; valkey-bundle below is the newest 9.x.
+          - name: valkey-9.0
+            image: valkey/valkey:9.0
             server_bin: valkey-server
             cli_bin: valkey-cli
             flavor: valkey
-          # Modules (ReJSON / RediSearch) — the stack image's own entrypoint,
-          # standalone only.
+          # Modules (ReJSON / RediSearch / RedisBloom / TimeSeries) — the
+          # stack image's own entrypoint, standalone only.
           - name: redis-stack
             image: redis/redis-stack-server:latest
+            stack: "1"
+          # Valkey's modules (valkey-json / valkey-search / valkey-bloom):
+          # the same names as the stack's, a different program behind each,
+          # and no TimeSeries — the module tests skip what is not there.
+          - name: valkey-bundle
+            image: valkey/valkey-bundle:latest
+            server_bin: valkey-server
+            cli_bin: valkey-cli
+            flavor: valkey
             stack: "1"
     steps:
       - uses: actions/checkout@v7

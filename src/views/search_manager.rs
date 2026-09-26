@@ -1112,8 +1112,16 @@ impl ZedisSearchManager {
     /// one thing a vector search is for. Filling the box rather than sorting
     /// quietly underneath: the query says `AS vector_distance`, the box says
     /// `vector_distance`, and both are there to be edited or cleared.
+    ///
+    /// Not on Valkey: valkey-search returns a KNN query nearest-first by
+    /// itself and refuses `SORTBY` on the distance alias ("field `dist` does
+    /// not exist"), so there the box stays empty and the order is right
+    /// anyway.
     fn aim_sort_at_the_distance(&mut self, query: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
         if !query.contains(KNN_DISTANCE_ALIAS) || !self.sort_by_input.read(cx).value().trim().is_empty() {
+            return;
+        }
+        if self.server_state.read(cx).nodes_description().is_valkey {
             return;
         }
         self.sort_by_input.update(cx, |state, cx| {

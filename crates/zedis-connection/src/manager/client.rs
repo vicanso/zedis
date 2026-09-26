@@ -395,14 +395,20 @@ impl RedisClient {
     pub fn supports_info_keysizes(&self) -> bool {
         self.supports(floors::INFO_KEYSIZES)
     }
+    /// Whether a JSON module is loaded: RedisJSON lists itself as `ReJSON`,
+    /// valkey-json as `json`. Both answer the same `JSON.*` commands and
+    /// type their keys `ReJSON-RL`, so everything past this test is shared.
     pub fn supports_rejson(&self) -> bool {
-        self.modules.iter().any(|(name, _)| name == "ReJSON")
+        self.modules.iter().any(|(name, _)| name == "ReJSON" || name == "json")
     }
 
-    /// Whether the RediSearch module is loaded on this server. The
-    /// module name reported by `MODULE LIST` is the lowercase string
-    /// `"search"` (true across all RediSearch versions 1.x → 2.x).
-    /// Drives the visibility of the Search entry in the Tools menu.
+    /// Whether a search module is loaded. RediSearch (every 1.x → 2.x) and
+    /// valkey-search both list themselves as `search`; what differs is the
+    /// `FT.*` surface behind the name — valkey-search has `FT.CREATE` /
+    /// `FT.SEARCH` / `FT.AGGREGATE` / `FT.INFO` / `FT._LIST` / `FT.DROPINDEX`
+    /// and none of `TAGVALS`, `SPELLCHECK`, `ALTER`, `EXPLAIN`, `PROFILE`,
+    /// which the panel learns at run time the way it learns any missing
+    /// command. Drives the visibility of the Search entry in the Tools menu.
     pub fn supports_search(&self) -> bool {
         self.modules.iter().any(|(name, _)| name == "search")
     }

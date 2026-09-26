@@ -232,16 +232,32 @@ async fn no_touch_is_safe_here(conn: &mut impl ConnectionLike) -> bool {
     let Ok(info) = cmd("INFO").arg("server").query_async::<String>(conn).await else {
         return false;
     };
+    no_touch_is_safe_per(&info)
+}
+
+/// The verdict for an `INFO server` reply. Valkey prints `redis_version`
+/// (its compatibility line, `7.2.4` on every release) *before*
+/// `valkey_version`, so the two are asked for in that order of preference,
+/// not the reply's: taking the first version line that matched handed the
+/// predicate `7.2.4` for every Valkey and made the 8.0 window unreachable —
+/// which is how the stream-tail live test came to crash `valkey/valkey:8.0`
+/// with the flag this function exists to withhold.
+fn no_touch_is_safe_per(info: &str) -> bool {
     let fields = || info.lines().filter_map(|line| line.split_once(':'));
     let is_valkey = ServerFlavor::from_info(fields()) == ServerFlavor::Valkey;
-    let version = fields()
-        .find(|(key, _)| {
-            let key = key.trim();
-            key == "valkey_version" || key == "redis_version"
-        })
-        .and_then(|(_, value)| Version::parse(value.trim()).ok());
+    let version_line = |name: &str| {
+        fields()
+            .find(|(key, _)| key.trim() == name)
+            .and_then(|(_, value)| Version::parse(value.trim()).ok())
+    };
+    let version = if is_valkey {
+        version_line("valkey_version").or_else(|| version_line("redis_version"))
+    } else {
+        version_line("redis_version")
+    };
     version.is_some_and(|version| floors::no_touch_is_safe(is_valkey, &version))
 }
+
 
 /// Opens a single Redis connection with connection pooling support.
 ///
@@ -573,4 +589,26 @@ async fn open_node_connection_inner(
     config.host = host.to_string();
     config.port = port;
     open_multiplexed_connection(&config, 0, use_cache).await
+}
+
+#[cfg(test)]
+mod no_touch_tests {
+    use super::no_touch_is_safe_per;
+
+    #[test]
+    fn valkeys_own_version_line_decides_not_its_compatibility_one() {
+        // As Valkey prints it: the compatibility line first.
+        let valkey_8_0 = "# Server\r\nredis_version:7.2.4\r\nserver_name:valkey\r\nvalkey_version:8.0.11\r\n";
+        assert!(!no_touch_is_safe_per(valkey_8_0), "8.0.11 is inside the window");
+        let valkey_8_1 = "# Server\r\nredis_version:7.2.4\r\nserver_name:valkey\r\nvalkey_version:8.1.10\r\n";
+        assert!(no_touch_is_safe_per(valkey_8_1));
+        let valkey_9 = "redis_version:7.2.4\r\nserver_name:valkey\r\nvalkey_version:9.0.6\r\n";
+        assert!(no_touch_is_safe_per(valkey_9));
+        // Redis, either side of its own window.
+        assert!(no_touch_is_safe_per("redis_version:7.4.5\r\n"));
+        assert!(!no_touch_is_safe_per("redis_version:8.0.6\r\n"));
+        assert!(no_touch_is_safe_per("redis_version:8.2.7\r\n"));
+        // A server that will not say is treated as unsafe.
+        assert!(!no_touch_is_safe_per("# Server\r\nuptime_in_seconds:5\r\n"));
+    }
 }

@@ -58,6 +58,7 @@ use crate::states::{
 };
 use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog, unavailable_chip};
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},

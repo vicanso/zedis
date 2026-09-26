@@ -49,6 +49,9 @@ pub struct RedisServerMeta {
     pub os: String,
     pub role: String,
     pub maxmemory: u64,
+    /// `availability_zone` (Valkey 8.1's `availability-zone` config, in
+    /// `INFO server`); empty where unset or on Redis.
+    pub availability_zone: String,
 }
 
 // Serialized as JSON into the `metrics_history` redb table; `serde(default)`
@@ -257,6 +260,10 @@ pub struct RedisInfo {
     /// Per-master persistence rows. Empty on standalone (the top-level
     /// cards already cover the single node).
     pub persistence_nodes: Vec<PersistenceNodeSnapshot>,
+    /// Each master's availability zone, `host:port` → zone, for the nodes
+    /// that report one (Valkey 8.1+ with `availability-zone` set). The
+    /// topology page labels its master rows with it.
+    pub node_zones: Vec<(String, String)>,
     /// The whole `INFO replication` section of the polled node — both
     /// sides of a primary / replica link, for the Topology page's
     /// standalone view. On a cluster / Sentinel entry the aggregate keeps
@@ -287,10 +294,25 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
         total.replicas.extend(info.replicas.iter().cloned());
     }
 
-    // Temporary map to calculate weighted average for avg_ttl: DbName -> (TotalTTLProduct, TotalExpires)
+    // Weighted average of avg_ttl per db: DbName -> (Σ avg_ttl·expires,
+    // Σ expires), read from every node — the first included, whose keyspace
+    // the loop below leaves in `total` as it is.
     let mut ttl_accumulator: HashMap<String, (u64, u64)> = HashMap::new();
-
     for info in &infos {
+        for (db, stats) in &info.keyspace {
+            if stats.expires > 0 {
+                let acc = ttl_accumulator.entry(db.clone()).or_insert((0, 0));
+                acc.0 += stats.avg_ttl * stats.expires;
+                acc.1 += stats.expires;
+            }
+        }
+    }
+
+    // `total` *is* the first node, so the sums, maxes and flags fold the
+    // other nodes onto it. Walking every node here counted the first master
+    // twice: 7 keys in the database switcher for a db holding 6, and the
+    // same again for clients, memory and every throughput counter.
+    for info in infos.iter().skip(1) {
         // --- Clients (Sum) ---
         total.metrics.connected_clients += info.metrics.connected_clients;
         total.metrics.blocked_clients += info.metrics.blocked_clients;
@@ -338,7 +360,7 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
         total.metrics.loading |= info.metrics.loading;
 
         // Success flags: AND — surface a failure banner if ANY node had
-        // its last save fail. Idempotent under repeated infos[0].
+        // its last save fail.
         total.metrics.rdb_last_bgsave_success &= info.metrics.rdb_last_bgsave_success;
         total.metrics.aof_last_write_success &= info.metrics.aof_last_write_success;
         total.metrics.aof_last_bgrewrite_success &= info.metrics.aof_last_bgrewrite_success;
@@ -363,20 +385,11 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
             total.metrics.aof_last_rewrite_time_sec = info.metrics.aof_last_rewrite_time_sec;
         }
 
-        // --- Keyspace (Sum & Weighted Avg) ---
+        // --- Keyspace (Sum) ---
         for (db, stats) in &info.keyspace {
             let entry = total.keyspace.entry(db.clone()).or_default();
-
-            // Sum keys and expires
             entry.keys += stats.keys;
             entry.expires += stats.expires;
-
-            // Prepare data for weighted average calculation of avg_ttl
-            if stats.expires > 0 {
-                let acc = ttl_accumulator.entry(db.clone()).or_insert((0, 0));
-                acc.0 += stats.avg_ttl * stats.expires; // Weighted product
-                acc.1 += stats.expires; // Total weight
-            }
         }
     }
 
@@ -430,6 +443,7 @@ impl RedisInfo {
 
                 match key {
                     "redis_version" => info.meta.redis_version = value.to_string(),
+                    "availability_zone" => info.meta.availability_zone = value.to_string(),
                     "os" => info.meta.os = value.to_string(),
                     "role" => info.meta.role = value.to_string(),
 
@@ -797,8 +811,20 @@ impl ZedisServerState {
                 } else {
                     Vec::new()
                 };
+                let node_zones: Vec<(String, String)> = servers
+                    .iter()
+                    .zip(infos.iter())
+                    .filter(|(_, node)| !node.meta.availability_zone.is_empty())
+                    .map(|(srv, node)| {
+                        (
+                            format!("{}:{}", srv.host, srv.port),
+                            node.meta.availability_zone.clone(),
+                        )
+                    })
+                    .collect();
                 let mut info = aggregate_redis_info(infos);
                 info.persistence_nodes = persistence_nodes;
+                info.node_zones = node_zones;
                 info.metrics.timestamp_ms = unix_ts_millis();
                 info.metrics.latency_ms = latency.as_millis() as u64;
                 Ok((info, slow_logs, dbsize))
@@ -872,6 +898,32 @@ impl ZedisServerState {
 mod tests {
     use super::*;
     use crate::connection::ReplicationRole;
+
+    /// The aggregate starts from the first master's INFO, so the fold has
+    /// to add the *other* masters to it: a loop over every node counted the
+    /// first one twice (7 keys in the switcher for a db holding 6). The
+    /// weighted avg_ttl still reads every node, the first included.
+    #[test]
+    fn a_cluster_aggregate_counts_the_first_master_once() {
+        let node = |keys: u64, clients: u64, expires: u64, avg_ttl: u64| {
+            let mut info = RedisInfo::default();
+            info.metrics.connected_clients = clients;
+            info.metrics.used_memory = keys * 100;
+            info.keyspace
+                .insert("db0".to_string(), RedisKeySpaceStats { keys, expires, avg_ttl });
+            info
+        };
+        let total = aggregate_redis_info(vec![node(1, 1, 1, 1000), node(2, 2, 1, 3000), node(3, 3, 0, 0)]);
+        let db0 = total.keyspace.get("db0").expect("db0 present");
+        assert_eq!(db0.keys, 6);
+        assert_eq!(db0.expires, 2);
+        assert_eq!(db0.avg_ttl, 2000, "weighted over both nodes with volatile keys");
+        assert_eq!(total.metrics.connected_clients, 6);
+        assert_eq!(total.metrics.used_memory, 600);
+
+        let single = aggregate_redis_info(vec![node(4, 1, 0, 0)]);
+        assert_eq!(single.keyspace.get("db0").expect("db0").keys, 4);
+    }
 
     #[test]
     fn parses_replicas_and_computes_lag_bytes() {

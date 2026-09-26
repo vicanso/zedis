@@ -184,7 +184,7 @@ pub use latency::{
 };
 pub use list_ops::{list_len, list_push, list_range, list_set_if_unchanged, remove_list_indexes};
 pub use lua_script::{
-    ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1,
+    ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1, script_show,
 };
 /// Only the browser has an account in front of the Redis user — see
 /// `manager::pool::set_account_read_only_on`.

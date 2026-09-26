@@ -112,6 +112,18 @@ pub async fn script_load(at: &ServerDb, code: &str) -> Result<String> {
     Ok(sha)
 }
 
+/// `SCRIPT SHOW sha` — the source of a cached script, or `None` when the
+/// cache holds no such digest (`NOSCRIPT`). Valkey 8.0 and later only
+/// (`floors::SCRIPT_SHOW`); Redis's cache cannot be read back.
+pub async fn script_show(at: &ServerDb, sha: &str) -> Result<Option<String>> {
+    let conn = &mut at.connection().await?;
+    match cmd("SCRIPT").arg("SHOW").arg(sha).query_async::<String>(conn).await {
+        Ok(source) => Ok(Some(source)),
+        Err(e) if e.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::NoScript) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// `SCRIPT EXISTS sha [sha …]` — one bool per digest, same order.
 pub async fn script_exists(at: &ServerDb, shas: &[String]) -> Result<Vec<bool>> {
     let conn = &mut at.connection().await?;

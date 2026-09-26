@@ -285,6 +285,10 @@ pub struct CreateFieldSpec {
 /// `DD` suffix — `true` removes the indexed documents from Redis along
 /// with the index definition, `false` (the safer default) only removes
 /// the index leaving raw key data intact.
+///
+/// valkey-search has no `DD`: it answers "wrong number of arguments" and
+/// drops nothing, which is said in those words rather than the server's,
+/// so the person can untick the option and drop the index alone.
 pub async fn ft_dropindex(at: &ServerDb, index: &str, delete_documents: bool) -> Result<()> {
     let conn = &mut at.connection().await?;
     let mut c = cmd("FT.DROPINDEX");
@@ -292,8 +296,16 @@ pub async fn ft_dropindex(at: &ServerDb, index: &str, delete_documents: bool) ->
     if delete_documents {
         c.arg("DD");
     }
-    let _: () = c.query_async(conn).await?;
-    Ok(())
+    match c.query_async::<()>(conn).await {
+        Ok(()) => Ok(()),
+        Err(e) if delete_documents && e.to_string().contains("wrong number of arguments") => Err(Error::Invalid {
+            message:
+                "this server's FT.DROPINDEX cannot delete the documents with the index (valkey-search has no DD); \
+                      nothing was dropped — drop the index without its documents"
+                    .to_string(),
+        }),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Add a new attribute to an existing index via `FT.ALTER`. RediSearch

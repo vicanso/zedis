@@ -33,7 +33,8 @@
 #             e.g. Homebrew Redis on a dev machine.
 #   docker  — `REDIS_IMAGE=redis:7.2 scripts/it/up.sh`: every process is a container on the
 #             host network (Linux / GitHub runners). Valkey images need SERVER_BIN=valkey-server
-#             CLI_BIN=valkey-cli; `IT_STACK=1` runs redis-stack-server's own entrypoint instead
+#             CLI_BIN=valkey-cli; `IT_STACK=1` runs the image's own entrypoint instead
+#             (redis-stack-server, or valkey-bundle with its modules)
 #             (modules need it) and limits the topology to `standalone`.
 #
 # `IT_SCENARIOS="standalone tls"` narrows what is started. The resulting ZEDIS_IT_* variables
@@ -195,8 +196,12 @@ if has standalone; then
   echo "standalone :$PORT_STANDALONE"
   wait_port_free "$PORT_STANDALONE" standalone
   if [ "$STACK" = "1" ]; then
+    # The image's own entrypoint, which is what loads its modules. Flags
+    # travel as the variable each image reads — REDIS_ARGS for
+    # redis-stack-server, VALKEY_EXTRA_FLAGS for valkey-bundle.
     docker run -d --rm --network host --name zedis-it-standalone \
-      -e REDIS_ARGS="--port $PORT_STANDALONE --save '' --appendonly no" "$IMAGE" >/dev/null
+      -e REDIS_ARGS="--port $PORT_STANDALONE --save '' --appendonly no" \
+      -e VALKEY_EXTRA_FLAGS="--port $PORT_STANDALONE --save '' --appendonly no" "$IMAGE" >/dev/null
     echo zedis-it-standalone >> "$IT_DIR/containers"
   else
     start standalone --port "$PORT_STANDALONE" --save "" --appendonly no --dir "$FS"

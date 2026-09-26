@@ -288,16 +288,41 @@ async fn get_modules(mut conn: RedisAsyncConn) -> Result<Vec<(String, Version)>>
     }
     Ok(modules)
 }
+/// The count in a `CONFIG GET <name>` reply (`[name, value]`), when it is one.
+fn configured_count(reply: &[String]) -> Option<usize> {
+    reply.get(1).and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
+}
+
 async fn get_databases(mut conn: RedisAsyncConn, is_cluster: bool) -> Result<usize> {
+    // Step 0 — a cluster is asked `cluster-databases` first. Valkey 9 lets a
+    // cluster hold more than one database, sized by that setting (default
+    // 1, immutable at run time), and leaves `databases` at its standalone
+    // value: a default 9.0 cluster node answers `databases` with 16 and
+    // `SELECT 1` with "DB index is out of range", so the standalone count
+    // would put fifteen databases the server refuses into the switcher.
+    // Redis and Valkey 8 know no such parameter and answer an empty list,
+    // which falls through to `databases` — and both force that to 1 in
+    // cluster mode ("Changing databases number from 16 to 1 since we are in
+    // cluster mode"), so a stock cluster of either flavor offers db 0 alone.
+    if is_cluster {
+        let reply: redis::RedisResult<Vec<String>> = cmd("CONFIG")
+            .arg("GET")
+            .arg("cluster-databases")
+            .query_async(&mut conn)
+            .await;
+        if let Ok(reply) = reply
+            && let Some(count) = configured_count(&reply)
+        {
+            return Ok(count);
+        }
+    }
+
     // Step 1 — CONFIG GET databases: the exact count on self-hosted /
-    // unrestricted servers. Correct in cluster mode too: stock Redis
-    // forces `databases` to 1 at startup when cluster is enabled
-    // ("Changing databases number from 16 to 1 since we are in cluster
-    // mode"), while Valkey 9+ cluster reports its real multi-db count.
+    // unrestricted servers, and on every cluster step 0 did not answer.
     let config_reply: redis::RedisResult<Vec<String>> =
         cmd("CONFIG").arg("GET").arg("databases").query_async(&mut conn).await;
     if let Ok(reply) = config_reply
-        && let Some(count) = reply.get(1).and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
+        && let Some(count) = configured_count(&reply)
     {
         return Ok(count);
     }
@@ -805,11 +830,23 @@ impl ConnectionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{WriteVerdict, classify_denial, cluster_enabled, probe_key};
+    use super::{WriteVerdict, classify_denial, cluster_enabled, configured_count, probe_key};
     use redis::Value;
 
     fn text(info: &str) -> Value {
         Value::BulkString(info.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn a_config_count_is_read_from_the_value_and_an_unknown_name_is_none() {
+        let reply = |v: &str| vec!["cluster-databases".to_string(), v.to_string()];
+        assert_eq!(configured_count(&reply("16")), Some(16));
+        assert_eq!(configured_count(&reply("1")), Some(1));
+        // Zero is no count, and the empty list Redis answers for a name it
+        // does not know is what sends a cluster on to `databases`.
+        assert_eq!(configured_count(&reply("0")), None);
+        assert_eq!(configured_count(&reply("many")), None);
+        assert_eq!(configured_count(&[]), None);
     }
 
     #[test]

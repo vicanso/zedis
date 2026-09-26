@@ -32,6 +32,7 @@
 - 📊 **实时可观测** —— 实时指标、内存分析器（离线 + AI 建议、服务端 key 大小直方图）、热点 Key 跟踪（`HOTKEYS`）、集群每 slot 统计、慢日志 ↔ Latency、`MONITOR`、按值搜索。
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥用每机唯一密钥加密存储、破坏性操作对生产环境升级确认措辞。
 - 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、从 Redis Insight / ARDM / Tiny RDM 导入，以及 8 种界面语言。
+- 🔀 **Redis 和 Valkey 同为一等公民** —— 每个版本门槛都单独写明 Valkey 一侧，Valkey 独有的功能有自己的面板（`COMMANDLOG`、原子槽迁移、`CLUSTER SLOT-STATS`、集群多库），识别 valkey-json / valkey-search / valkey-bloom，CI 在 Redis 6.2–8 之外还跑 Valkey 8、9 和 bundle（[支持矩阵](#-redis-与-valkey)）。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、表格 / JSON 回复视图 + AI 命令助手、Batch 模式、跨服务器复制/对比。
 - 🕸️ **浏览器里也能用** —— 同一套代码编译成 WebAssembly，一个约 26 MB 的 Docker 镜像即可自托管（见 [Web 版](#-web-版自托管)）。
 
@@ -94,6 +95,34 @@
 📖 **[查看完整功能巡览 →](./docs/FEATURES_zh.md)**
 
 ---
+
+## 🔀 Redis 与 Valkey
+
+Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 分叉、此后各自发布的版本线。每一个依赖服务器版本的功能都按 flavor 分别设门槛（`crates/zedis-connection/src/floors.rs`），Valkey 从未发布的命令不会发给它，Valkey 先发布的功能也会更早启用。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8 / 9、`redis-stack` 和 `valkey-bundle`。
+
+| 功能 | Redis | Valkey |
+|---|---|---|
+| `COMMANDLOG` —— 慢命令、大请求、大回复三种日志 | — | 8.1 |
+| 原子槽迁移（`CLUSTER MIGRATESLOTS`） | — | 9.0 |
+| `CLUSTER SLOT-STATS`（每 slot 的键数、CPU、网络） | 8.2 | 8.0 |
+| 集群模式下的多数据库 | — | 9.0 |
+| Hash 字段 TTL（`HEXPIRE`、`HSETEX`、`HTTL`…） | 7.4 | 9.0 |
+| `SET … IFEQ` | 8.4 | 8.1 |
+| `CLIENT KILL … MAXAGE` | 7.4 | 8.0 |
+| `SCRIPT SHOW` —— 慢日志里 `EVALSHA` 背后的脚本源码 | — | 8.0 |
+| 每个节点的可用区（`availability-zone`，拓扑页显示） | — | 8.1 |
+| `INFO keysizes` 直方图（内存分析） | 8.0 | — |
+| `HOTKEYS` 热点跟踪 | 8.6 | — |
+| Stream `XACKDEL` / `XDELEX` 及引用策略 | 8.2 | — |
+| `XNACK` | 8.8 | — |
+| Vector set | 8.0 | — |
+| `allkeys-lrm` / `volatile-lrm` 淘汰策略 | 8.6 | — |
+| JSON | RedisJSON | valkey-json |
+| 搜索 | RediSearch | valkey-search —— 有 `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`；没有 `TAGVALS`、`SPELLCHECK`、`EXPLAIN`、`PROFILE` 和 `DROPINDEX DD`，面板会提示不可用 |
+| 概率结构 | RedisBloom —— BF、CF、CMS、TOPK、TDIGEST | valkey-bloom —— BF |
+| 时间序列 | RedisTimeSeries | — |
+
+服务器没有的命令不会导致崩溃：需要它的面板会说明，其它一切照常。会让服务器崩溃的命令也不会发出：Redis 8.0–8.2.6 和 Valkey 8.0 在带 `CLIENT NO-TOUCH` 的客户端唤醒另一个阻塞客户端时会在 `lookupKey()` 里段错误，所以 Zedis 在这些版本上不设置该标志，代价只是内存分析里热度一列略欠精确。
 
 ## 📦 安装
 

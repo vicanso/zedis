@@ -799,6 +799,11 @@ field_errors_title = "Ошибка сохранения Proto"
 field_errors_message = "Проверьте следующие поля и повторите попытку:\n\n%{errors}"
 
 [slowlog_editor]
+show_script_tooltip = "Показать скрипт по этому дайджесту (SCRIPT SHOW)"
+script_source_title = "Скрипт %{sha}…"
+script_loading = "Получение скрипта…"
+script_missing = "На сервере больше нет скрипта с этим дайджестом."
+script_failed = "Не удалось получить скрипт: %{error}"
 title = "Производительность (Slow Log + задержка)"
 tab_top_commands = "Топ команд"
 agg_command = "Команда"
@@ -1841,6 +1846,7 @@ empty_waiting = "Подписка активна — ожидание событ
 empty_filtered = "Ни одна строка не соответствует текущим фильтрам."
 empty_paused = "Пауза — новые события отбрасываются до возобновления."
 [topology]
+availability_zone = "Зона доступности"
 title = "Топология"
 cluster_placeholder = "Обнаружен режим Cluster. Операции (FAILOVER, RESHARD, MEET, FORGET, REPLICATE) будут добавлены в следующих версиях."
 sentinel_placeholder = "Обнаружен режим Sentinel. Подключитесь к доступному sentinel, чтобы увидеть мастера, которые он отслеживает."

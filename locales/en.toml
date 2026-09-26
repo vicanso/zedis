@@ -799,6 +799,11 @@ field_errors_title = "Save Proto Failed"
 field_errors_message = "Please verify the following fields and try again:\n\n%{errors}"
 
 [slowlog_editor]
+show_script_tooltip = "Show the script behind this digest (SCRIPT SHOW)"
+script_source_title = "Script %{sha}…"
+script_loading = "Fetching the script…"
+script_missing = "The server no longer has a script with this digest."
+script_failed = "Could not fetch the script: %{error}"
 title = "Performance (Slow Log + Latency)"
 tab_top_commands = "Top Commands"
 agg_command = "Command"
@@ -1845,6 +1850,7 @@ empty_filtered = "No rows match the current filters."
 empty_paused = "Paused — new events are dropped until you resume."
 
 [topology]
+availability_zone = "Availability zone"
 title = "Topology"
 cluster_placeholder = "Cluster mode detected. Connect to a healthy cluster to manage nodes, slots, and load."
 sentinel_placeholder = "Sentinel mode detected. Connect to a reachable sentinel to see the masters it monitors."
