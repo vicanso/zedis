@@ -463,6 +463,7 @@ impl ConnectionManager {
                             role: item.role.clone(),
                             cluster_id: Some(item.id.clone()),
                             master_cluster_id: item.master_id.clone(),
+                            health: item.health,
                             slots: item.slots.clone(),
                             migrations: item.migrations.clone(),
                             ..Default::default()

@@ -1100,6 +1100,40 @@ impl ZedisStatusBar {
                                 ),
                         )
                     })
+                    // Clients paused — by this app (remembered), or by anyone
+                    // where the server says so (Valkey 8.1+): the state in
+                    // which every write hangs and nothing else on screen
+                    // explains why. The click lifts it.
+                    .when_some(self.server_state.read(cx).client_pause(), |this, pause| {
+                        let seconds = pause.remaining.as_secs().to_string();
+                        let label = i18n_status_bar(cx, "paused_chip")
+                            .replace("%{actions}", &pause.actions)
+                            .replace("%{seconds}", &seconds);
+                        let tooltip: SharedString = if pause.from_server {
+                            i18n_status_bar(cx, "paused_tooltip_server")
+                                .replace("%{actions}", &pause.actions)
+                                .replace("%{reason}", pause.reason.as_deref().unwrap_or("-"))
+                                .replace("%{seconds}", &seconds)
+                                .into()
+                        } else {
+                            i18n_status_bar(cx, "paused_tooltip_local")
+                                .replace("%{actions}", &pause.actions)
+                                .replace("%{seconds}", &seconds)
+                                .into()
+                        };
+                        this.child(
+                            Button::new("zedis-status-bar-client-pause")
+                                .warning()
+                                .small()
+                                .compact()
+                                .icon(Icon::new(CustomIconName::Clock3))
+                                .label(label)
+                                .tooltip(tooltip)
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.server_state.update(cx, |state, cx| state.unpause_clients(cx));
+                                })),
+                        )
+                    })
                     .child({
                         // A locked entry's lock is a window, not a switch (ADR
                         // 14): closed, the button asks the lock's question and

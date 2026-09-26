@@ -21,7 +21,7 @@
 //! command to all masters and kicks an immediate `INFO` refresh so the
 //! in-progress flag flips into the UI without waiting for the heartbeat.
 
-use crate::connection::{Capability, bgrewriteaof, bgsave};
+use crate::connection::{Capability, bgrewriteaof, bgsave, bgsave_cancel};
 use crate::states::{ServerTask, ZedisServerState, i18n_persistence};
 use gpui::prelude::*;
 
@@ -61,6 +61,32 @@ impl ZedisServerState {
                     this.refresh_redis_info(cx);
                 }
                 // Error path: `spawn` already records via add_error_message.
+            },
+            cx,
+        );
+    }
+
+    /// `BGSAVE CANCEL` on every master (Valkey 8.1+): the snapshot in
+    /// progress is stopped and the previous RDB file stays. The panel
+    /// offers it only where `floors::BGSAVE_CANCEL` holds.
+    pub fn bgsave_cancel(&mut self, cx: &mut Context<Self>) {
+        if !self.can(Capability::PersistenceWrite) {
+            self.emit_warning_notification(i18n_persistence(cx, "readonly_blocked"), cx);
+            return;
+        }
+        let at = self.at();
+        self.spawn(
+            ServerTask::BgsaveCancel,
+            move || async move { Ok(bgsave_cancel(&at).await?) },
+            |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        i18n_persistence(cx, "bgsave_cancelled_message"),
+                        i18n_persistence(cx, "bgsave_cancelled_title"),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
             },
             cx,
         );

@@ -108,6 +108,14 @@ pub(super) fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>
         } else {
             NodeRole::Unknown
         };
+        // The role flag stays on a failed node, so its health is read apart.
+        let health = if flags.contains("fail") {
+            NodeHealth::Failing
+        } else if flags.contains("fail?") {
+            NodeHealth::PossiblyFailing
+        } else {
+            NodeHealth::Ok
+        };
 
         let master_id = if parts[3] != "-" {
             Some(parts[3].to_string())
@@ -138,6 +146,7 @@ pub(super) fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>
         nodes.push(ClusterNodeInfo {
             id,
             ip,
+            health,
             port,
             role,
             master_id,
@@ -516,6 +525,23 @@ mod tests {
         assert_eq!(m2.migrations[0].slot, 12345);
         assert_eq!(m2.migrations[0].kind, SlotMigrationKind::Migrating);
         assert_eq!(m2.migrations[0].peer_id, "67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1");
+    }
+
+    /// `fail?` is one node's suspicion, `fail` the cluster's verdict, and
+    /// either leaves the role flag in place — a failed master is still a
+    /// master until a replica takes over.
+    #[test]
+    fn parse_cluster_nodes_reads_pfail_and_fail_beside_the_role() {
+        let raw = "\
+a1 10.0.0.1:7000@17000 master,fail? - 0 0 1 connected 0-5460
+b2 10.0.0.2:7000@17000 slave,fail a1 0 0 1 connected
+c3 10.0.0.3:7000@17000 myself,master - 0 0 2 connected 5461-16383";
+        let nodes = parse_cluster_nodes(raw).expect("parse");
+        assert_eq!(nodes[0].role, NodeRole::Master);
+        assert_eq!(nodes[0].health, NodeHealth::PossiblyFailing);
+        assert_eq!(nodes[1].role, NodeRole::Slave);
+        assert_eq!(nodes[1].health, NodeHealth::Failing);
+        assert_eq!(nodes[2].health, NodeHealth::Ok);
     }
 
     #[test]

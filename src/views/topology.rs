@@ -44,9 +44,9 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{
-    AtomicSlotMigration, CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, RebalanceMove,
-    ReplicationRole, SentinelMaster, ServerCommand, ServerDb, SlotStatMetric, SlotStatRow, cluster_slot_stats, floors,
-    get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
+    AtomicSlotMigration, CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, NodeHealth,
+    RebalanceMove, ReplicationRole, SentinelMaster, ServerCommand, ServerDb, SlotStatMetric, SlotStatRow,
+    cluster_slot_stats, floors, get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
 use crate::helpers::{format_lag_bytes, get_mono_font_family};

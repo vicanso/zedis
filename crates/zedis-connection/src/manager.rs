@@ -307,6 +307,19 @@ pub enum NodeRole {
     Unknown, // e.g. "handshake", "noaddr"
 }
 
+/// What `CLUSTER NODES` says about a node's reachability, beside its role:
+/// `fail?` is one node's suspicion (PFAIL), `fail` the cluster's agreement
+/// (FAIL). A failed node keeps its `master` / `slave` flag, so this is not
+/// folded into [`NodeRole`] — a failed master is still the master of its
+/// slots until a replica wins the election.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeHealth {
+    #[default]
+    Ok,
+    PossiblyFailing,
+    Failing,
+}
+
 // Represents a single Redis node
 #[derive(Debug, Clone, Default)]
 struct RedisNode {
@@ -322,6 +335,8 @@ struct RedisNode {
     slots: Vec<(u16, u16)>,
     /// In-flight slot migrations reported on this node (`CLUSTER NODES`).
     migrations: Vec<SlotMigration>,
+    /// `fail?` / `fail` from `CLUSTER NODES`; `Ok` outside cluster mode.
+    health: NodeHealth,
 }
 
 impl RedisNode {
@@ -362,6 +377,8 @@ pub struct ClusterNodeInfo {
     pub slots: Vec<(u16, u16)>,
     /// In-flight migration markers on this node.
     pub migrations: Vec<SlotMigration>,
+    /// `fail?` (possibly failing) or `fail` (failed) among the flags.
+    pub health: NodeHealth,
 }
 
 /// One contiguous owned slot range with its master, used by the Topology
@@ -614,6 +631,8 @@ pub struct TopologyEntry {
     /// `SENTINEL RESET pattern`, `SENTINEL REMOVE name` — Sentinel
     /// ops target by master name, not by addr or node_id.
     pub master_name: String,
+    /// Reachability as the cluster sees it; `Ok` outside cluster mode.
+    pub health: NodeHealth,
 }
 
 /// One master plus the replicas it owns. Replicas already filtered to those

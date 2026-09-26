@@ -251,6 +251,16 @@ impl RedisClient {
             }
             .into()
         };
+        // A failed node keeps its role flag, so the cross comes from its
+        // health; a merely suspected one keeps its role glyph and is
+        // counted apart by the page.
+        let marker = |role: &NodeRole, health: NodeHealth| -> String {
+            if health == NodeHealth::Failing {
+                "✗".into()
+            } else {
+                role_marker(role)
+            }
+        };
         let format_slots = |slots: &[(u16, u16)]| -> String {
             if slots.is_empty() {
                 return String::new();
@@ -269,7 +279,8 @@ impl RedisClient {
                 for master in self.master_nodes.iter() {
                     let entry = TopologyEntry {
                         addr: master.host_port(),
-                        role_marker: role_marker(&master.role),
+                        role_marker: marker(&master.role, master.health),
+                        health: master.health,
                         annotation: format_slots(&master.slots),
                         node_id: master.cluster_id.clone().unwrap_or_default(),
                         master_name: String::new(),
@@ -283,7 +294,8 @@ impl RedisClient {
                             })
                             .map(|replica| TopologyEntry {
                                 addr: replica.host_port(),
-                                role_marker: role_marker(&replica.role),
+                                role_marker: marker(&replica.role, replica.health),
+                                health: replica.health,
                                 annotation: String::new(),
                                 node_id: replica.cluster_id.clone().unwrap_or_default(),
                                 master_name: String::new(),
@@ -307,7 +319,8 @@ impl RedisClient {
                     // SENTINEL ops, which all target by master name).
                     let entry = TopologyEntry {
                         addr: master.host_port(),
-                        role_marker: role_marker(&master.role),
+                        role_marker: marker(&master.role, master.health),
+                        health: master.health,
                         annotation: if label.is_empty() {
                             String::new()
                         } else {
@@ -322,7 +335,8 @@ impl RedisClient {
                         .filter(|n| n.role == NodeRole::Slave && n.master_name.as_deref() == Some(label))
                         .map(|replica| TopologyEntry {
                             addr: replica.host_port(),
-                            role_marker: role_marker(&replica.role),
+                            role_marker: marker(&replica.role, replica.health),
+                            health: replica.health,
                             annotation: String::new(),
                             node_id: String::new(),
                             master_name: String::new(),

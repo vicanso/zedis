@@ -63,7 +63,7 @@ use zedis_connection::{
     zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_connection::{
-    SlotMigrationDialect, copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk,
+    SlotMigrationDialect, bgsave_cancel, copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -1321,6 +1321,42 @@ fn standalone_admin_panels_read_and_reset_through_their_operations() {
             "reset left events behind"
         );
         assert!(latency_history(&at, "command").await.expect("history").is_empty());
+
+        // The mean beside latest and max: Valkey 8.1+ keeps a sum and a
+        // count in LATENCY LATEST, Redis does not and the mean of HISTORY
+        // stands in. A Lua loop of a few milliseconds makes the event —
+        // counted, not clocked: TIME inside a script reads the event loop's
+        // cached clock, which stands still until the busy threshold. Short,
+        // because the other tests share this server and a command that
+        // lands mid-script waits on it.
+        let threshold_before = threshold.to_string();
+        config_set(&at, "latency-monitor-threshold", "1")
+            .await
+            .expect("threshold on");
+        let mut slow = conn(&id, 0).await;
+        let _: i64 = cmd("EVAL")
+            .arg("local x = 0; for i = 1, 3000000 do x = x + i end; return 1")
+            .arg(0)
+            .query_async(&mut slow)
+            .await
+            .expect("a slow script");
+        let listing = latency_latest(&at).await.expect("latency latest");
+        let command = listing
+            .events
+            .iter()
+            .find(|event| event.event == "command")
+            .expect("the slow script made a command event");
+        let mean = command.avg_ms.expect("a mean either way");
+        assert!(mean >= 1.0 && command.avg_samples >= 1, "{command:?}");
+        assert_eq!(
+            command.avg_exact,
+            supports(&id, floors::LATENCY_STATS).await,
+            "the server's own sum on Valkey 8.1+, HISTORY's mean elsewhere: {command:?}"
+        );
+        config_set(&at, "latency-monitor-threshold", &threshold_before)
+            .await
+            .expect("threshold back");
+        latency_reset(&at, &[]).await.expect("latency reset");
 
         // The slow log through the panel's operation, and its reset.
         command_log_reset(&at, CommandLogKind::Slow)
@@ -6472,8 +6508,23 @@ fn stack_search_index_size_tag_values_and_spelling() {
                 .expect("hset");
         }
 
-        let info = ft_info(&at, &index).await.expect("ft.info");
+        // Both modules say when the backfill is over — RediSearch as
+        // `indexing` / `percent_indexed`, valkey-search as
+        // `backfill_in_progress` / `backfill_complete_percent`. Valkey's
+        // runs for a moment even with nothing to backfill, so the state is
+        // waited for rather than read once: that moment is what the panel
+        // now shows instead of a ready index answering from half its keys.
+        let mut info = ft_info(&at, &index).await.expect("ft.info");
+        for _ in 0..50 {
+            if !info.indexing {
+                break;
+            }
+            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+            info = ft_info(&at, &index).await.expect("ft.info");
+        }
         assert_eq!(info.num_docs, 2);
+        assert!(!info.indexing, "the backfill is over: {info:?}");
+        assert_eq!(info.percent_indexed, Some(1.0), "{info:?}");
         // The size fields are RediSearch's (`inverted_sz_mb` and friends);
         // valkey-search's FT.INFO carries none of them.
         if !valkey_lane() {
@@ -6904,5 +6955,37 @@ fn standalone_copy_lands_on_a_server_of_the_other_flavor() {
         eprintln!("{key} landed on the other flavor as {status:?}");
         cmd("DEL").arg(&key).exec_async(&mut near).await.expect("del");
         cmd("DEL").arg(&key).exec_async(&mut there).await.expect("del");
+    });
+}
+
+/// `BGSAVE CANCEL` (Valkey 8.1+): a snapshot just started is stopped — or
+/// has already landed, a tiny dataset forking and finishing inside the
+/// round trip, in which case the server says so and nothing is stopped.
+/// With nothing running the refusal is the documented one.
+#[test]
+#[ignore]
+fn standalone_bgsave_cancel_stops_a_snapshot_on_valkey_8_1() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        if !supports(&id, floors::BGSAVE_CANCEL).await {
+            eprintln!("skipped: BGSAVE CANCEL is Valkey 8.1+");
+            return;
+        }
+        // The other tests share this server and may leave a save running
+        // or scheduled, so what a cancel finds is not this test's to say;
+        // what it proves is that the command is one the server takes —
+        // "cancelled", or the documented refusal — never a syntax error.
+        let taken = |result: Result<(), zedis_connection::error::Error>| match result {
+            Ok(()) => true,
+            Err(e) => {
+                assert!(e.to_string().contains("not in progress"), "{e}");
+                false
+            }
+        };
+        let _started = bgsave(&at).await;
+        taken(bgsave_cancel(&at).await);
+        smol::Timer::after(std::time::Duration::from_millis(500)).await;
+        taken(bgsave_cancel(&at).await);
     });
 }

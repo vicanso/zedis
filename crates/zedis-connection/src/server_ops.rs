@@ -103,6 +103,16 @@ pub async fn bgsave(at: &ServerDb) -> Result<()> {
     Ok(())
 }
 
+/// `BGSAVE CANCEL` on every master (Valkey 8.1+, `floors::BGSAVE_CANCEL`):
+/// the snapshot in progress is stopped, a scheduled one dropped. A master
+/// with nothing to cancel answers an error, which the caller shows.
+pub async fn bgsave_cancel(at: &ServerDb) -> Result<()> {
+    let mut cancel = cmd("BGSAVE");
+    cancel.arg("CANCEL");
+    let (_, _replies): (_, Vec<String>) = at.client().await?.query_async_masters(vec![cancel]).await?;
+    Ok(())
+}
+
 /// `BGREWRITEAOF` on every master.
 pub async fn bgrewriteaof(at: &ServerDb) -> Result<()> {
     let (_, _replies): (_, Vec<String>) = at

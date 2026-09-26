@@ -801,6 +801,7 @@ impl ZedisClientsManager {
                     Ok(()) => {
                         let msg = t!("clients_manager.unpause_success", locale = locale);
                         server_state.update(cx, |state, cx| {
+                            state.note_client_unpause(cx);
                             state.emit_success_notification(msg.to_string().into(), "CLIENT UNPAUSE".into(), cx);
                         });
                     }
@@ -962,6 +963,7 @@ impl ZedisClientsManager {
                             locale = locale
                         );
                         server_state.update(cx, |state, cx| {
+                            state.note_client_pause(mode, timeout_ms, cx);
                             state.emit_success_notification(msg.to_string().into(), "CLIENT PAUSE".into(), cx);
                         });
                     }

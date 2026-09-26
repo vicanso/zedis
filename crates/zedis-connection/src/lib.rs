@@ -233,9 +233,9 @@ pub use server_config::{
 };
 pub use server_db::ServerDb;
 pub use server_ops::{
-    ServerSummary, bgrewriteaof, bgsave, dbsize, failover, failover_abort, flush_all, flush_db, forget_client,
-    heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one, server_summary, server_supports,
-    slow_logs, unlock_writes,
+    ServerSummary, bgrewriteaof, bgsave, bgsave_cancel, dbsize, failover, failover_abort, flush_all, flush_db,
+    forget_client, heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one, server_summary,
+    server_supports, slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use set_ops::{set_add, set_card, set_remove, set_replace_member, set_scan};
@@ -301,7 +301,7 @@ pub use manager::{
 /// (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 pub use manager::{
-    AtomicSlotMigration, ShardedPubSub, SlotMigrationDialect, cluster_cancel_slot_migrations,
+    AtomicSlotMigration, NodeHealth, ShardedPubSub, SlotMigrationDialect, cluster_cancel_slot_migrations,
     cluster_get_slot_migrations, cluster_migrate_slots,
 };
 pub use search::{

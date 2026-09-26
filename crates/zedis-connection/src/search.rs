@@ -88,10 +88,11 @@ pub struct IndexInfo {
     pub max_doc_id: u64,
     pub num_terms: u64,
     pub num_records: u64,
-    /// `true` while RediSearch is still backfilling the index from
-    /// pre-existing keys (immediately after `FT.CREATE`). Surfaced
-    /// in the schema header so users don't mistake "still indexing"
-    /// for "0 documents found".
+    /// `true` while the module is still backfilling the index from
+    /// pre-existing keys (immediately after `FT.CREATE`): RediSearch's
+    /// `indexing`, valkey-search's `backfill_in_progress`. Surfaced in
+    /// the schema header so users don't mistake "still indexing" for
+    /// "0 documents found".
     pub indexing: bool,
     /// Number of keys that matched the index's prefix but failed to be
     /// indexed — typically because they were stored as `HASH` while the
@@ -113,7 +114,9 @@ pub struct IndexInfo {
     pub sortable_values_bytes: Option<u64>,
     pub key_table_bytes: Option<u64>,
     pub offset_vectors_bytes: Option<u64>,
-    /// Share of the matching keys indexed so far, `0.0..=1.0`.
+    /// Share of the matching keys indexed so far, `0.0..=1.0` —
+    /// RediSearch's `percent_indexed`, valkey-search's
+    /// `backfill_complete_percent` (a fraction too, despite the name).
     pub percent_indexed: Option<f64>,
     pub bytes_per_record_avg: Option<f64>,
 }
@@ -863,7 +866,11 @@ fn parse_info(value: &Value) -> Option<IndexInfo> {
             "max_doc_id" => info.max_doc_id = reply::int(&val).unwrap_or_default().max(0) as u64,
             "num_terms" => info.num_terms = reply::int(&val).unwrap_or_default().max(0) as u64,
             "num_records" => info.num_records = reply::int(&val).unwrap_or_default().max(0) as u64,
-            "indexing" => info.indexing = matches!(reply::int(&val), Some(n) if n != 0),
+            // valkey-search indexes asynchronously too and spells the same
+            // two facts `backfill_in_progress` / `backfill_complete_percent`;
+            // without them a freshly created index there looks ready while
+            // a search still answers from the part that is done.
+            "indexing" | "backfill_in_progress" => info.indexing = matches!(reply::int(&val), Some(n) if n != 0),
             // Both legacy (RediSearch 1.x: `hash_indexing_failures`) and
             // modern (2.x: `indexing_failures` inside `gc_stats`/top-level)
             // spellings exist; accept either.
@@ -876,7 +883,7 @@ fn parse_info(value: &Value) -> Option<IndexInfo> {
             "sortable_values_size_mb" => info.sortable_values_bytes = mib_to_bytes(&val),
             "key_table_size_mb" => info.key_table_bytes = mib_to_bytes(&val),
             "offset_vectors_sz_mb" => info.offset_vectors_bytes = mib_to_bytes(&val),
-            "percent_indexed" => info.percent_indexed = reply::float(&val),
+            "percent_indexed" | "backfill_complete_percent" => info.percent_indexed = reply::float(&val),
             "bytes_per_record_avg" => info.bytes_per_record_avg = reply::float(&val),
             "attributes" | "fields" => {
                 if let Value::Array(items) = &val {
@@ -1186,6 +1193,38 @@ mod tests {
             assert_eq!(a[p + 3], [1, 2, 3, 4]);
             assert_eq!(a[position(&a, "DIALECT") + 1], b"2");
         }
+    }
+
+    /// What valkey-search's `FT.INFO` says mid-backfill, in its own words,
+    /// read into the same two fields RediSearch's `indexing` /
+    /// `percent_indexed` fill.
+    #[test]
+    fn valkey_search_backfill_is_read_as_indexing_progress() {
+        let raw = Value::Array(vec![
+            bs("num_docs"),
+            Value::Int(21),
+            bs("backfill_in_progress"),
+            Value::Int(1),
+            bs("backfill_complete_percent"),
+            bs("0.420000"),
+            bs("mutation_queue_size"),
+            Value::Int(0),
+            bs("state"),
+            bs("backfill_in_progress"),
+        ]);
+        let info = parse_info(&raw).expect("parse failed");
+        assert!(info.indexing, "a backfill in progress is indexing");
+        assert_eq!(info.percent_indexed, Some(0.42));
+
+        let done = Value::Array(vec![
+            bs("backfill_in_progress"),
+            Value::Int(0),
+            bs("backfill_complete_percent"),
+            bs("1.000000"),
+        ]);
+        let info = parse_info(&done).expect("parse failed");
+        assert!(!info.indexing);
+        assert_eq!(info.percent_indexed, Some(1.0));
     }
 
     #[test]

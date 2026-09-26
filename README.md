@@ -114,6 +114,9 @@ Zedis treats the two as what they are: one wire protocol, two release lines that
 | `CLIENT KILL … MAXAGE` | 7.4 | 8.0 |
 | `SCRIPT SHOW` — the source behind an `EVALSHA` in the slow log | — | 8.0 |
 | Availability zone per node (`availability-zone`, on the topology page) | — | 8.1 |
+| `BGSAVE CANCEL` — a Cancel button beside the running snapshot | — | 8.1 |
+| Clients paused, shown in the status bar (`paused_actions` in `INFO clients`) | from Zedis's own `CLIENT PAUSE` only | 8.1 — whoever paused them |
+| Average latency per event (`LATENCY LATEST` sum / count) | mean of `LATENCY HISTORY` (last 160) | 8.1 — exact since the last reset |
 | `INFO keysizes` histograms (memory analyzer) | 8.0 | — |
 | `HOTKEYS` tracking | 8.6 | — |
 | Stream `XACKDEL` / `XDELEX` and reference policies | 8.2 | — |

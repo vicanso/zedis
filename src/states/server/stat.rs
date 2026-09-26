@@ -65,6 +65,10 @@ pub struct RedisMetrics {
     pub connected_clients: u64,
     pub rejected_connections: u64,
     pub blocked_clients: u64,
+    // --- Client pause: Valkey 8.1+ says so in `INFO clients`, Redis says nothing ---
+    pub paused_actions: PausedActions,
+    pub paused_timeout_ms: u64,
+    pub paused_reason: PauseReason,
 
     // --- Memory ---
     pub used_memory: u64,
@@ -317,6 +321,13 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
         total.metrics.connected_clients += info.metrics.connected_clients;
         total.metrics.blocked_clients += info.metrics.blocked_clients;
 
+        // --- Client pause (strongest wins: a cluster is paused where any master is) ---
+        if info.metrics.paused_actions.rank() > total.metrics.paused_actions.rank() {
+            total.metrics.paused_actions = info.metrics.paused_actions;
+            total.metrics.paused_reason = info.metrics.paused_reason;
+        }
+        total.metrics.paused_timeout_ms = total.metrics.paused_timeout_ms.max(info.metrics.paused_timeout_ms);
+
         // --- Memory (Sum) ---
         total.metrics.used_memory += info.metrics.used_memory;
         total.metrics.used_memory_rss += info.metrics.used_memory_rss;
@@ -408,6 +419,123 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
 
     total
 }
+/// `paused_actions` from `INFO clients` (Valkey 8.1+). `Unreported` is the
+/// field's absence — a Redis — and is what tells the status bar to show
+/// this app's own record instead. `Copy`, like the rest of the metrics,
+/// which the history keeps by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PausedActions {
+    #[default]
+    Unreported,
+    None,
+    Write,
+    All,
+}
+
+impl PausedActions {
+    fn parse(value: &str) -> Self {
+        match value {
+            "none" => Self::None,
+            "write" => Self::Write,
+            "all" => Self::All,
+            _ => Self::Unreported,
+        }
+    }
+
+    /// `none` < `write` < `all`.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Unreported | Self::None => 0,
+            Self::Write => 1,
+            Self::All => 2,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreported => "",
+            Self::None => "none",
+            Self::Write => "write",
+            Self::All => "all",
+        }
+    }
+}
+
+/// `paused_reason` from `INFO clients`: who asked for the pause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PauseReason {
+    #[default]
+    None,
+    ClientPause,
+    Failover,
+    Shutdown,
+    Other,
+}
+
+impl PauseReason {
+    fn parse(value: &str) -> Self {
+        match value {
+            "none" | "" => Self::None,
+            "client_pause" => Self::ClientPause,
+            "failover" => Self::Failover,
+            "shutdown" => Self::Shutdown,
+            _ => Self::Other,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ClientPause => "client_pause",
+            Self::Failover => "failover",
+            Self::Shutdown => "shutdown",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Clients paused on the server, as the status bar shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientPause {
+    /// `write` or `all`.
+    pub actions: String,
+    pub remaining: Duration,
+    /// The server's reason (`client_pause`, `failover`, …) where it gave one.
+    pub reason: Option<String>,
+    /// Read from `INFO clients` (Valkey 8.1+) rather than remembered from a
+    /// pause this app sent.
+    pub from_server: bool,
+}
+
+/// What is paused now: the server's word where it has one — Valkey 8.1+
+/// reports `paused_actions`, `none` included, so an absent field is the
+/// tell — else the pause this app sent (`local`: actions, until) that has
+/// not run out. A server that reports pauses is believed over the local
+/// record even when they disagree: it is the one holding the clients.
+pub fn client_pause_now(
+    metrics: Option<&RedisMetrics>,
+    local: Option<(&str, Instant)>,
+    now: Instant,
+) -> Option<ClientPause> {
+    if let Some(metrics) = metrics
+        && metrics.paused_actions != PausedActions::Unreported
+    {
+        return (metrics.paused_actions.rank() > 0).then(|| ClientPause {
+            actions: metrics.paused_actions.as_str().to_string(),
+            remaining: Duration::from_millis(metrics.paused_timeout_ms),
+            reason: Some(metrics.paused_reason.as_str().to_string()),
+            from_server: true,
+        });
+    }
+    let (actions, until) = local?;
+    (until > now).then(|| ClientPause {
+        actions: actions.to_string(),
+        remaining: until - now,
+        reason: None,
+        from_server: false,
+    })
+}
+
 impl RedisInfo {
     pub fn parse(info_str: &str) -> Self {
         let mut info = RedisInfo {
@@ -450,6 +578,9 @@ impl RedisInfo {
                     "connected_clients" => info.metrics.connected_clients = parse_u64(value),
                     "rejected_connections" => info.metrics.rejected_connections = parse_u64(value),
                     "blocked_clients" => info.metrics.blocked_clients = parse_u64(value),
+                    "paused_actions" => info.metrics.paused_actions = PausedActions::parse(value),
+                    "paused_timeout_milliseconds" => info.metrics.paused_timeout_ms = parse_u64(value),
+                    "paused_reason" => info.metrics.paused_reason = PauseReason::parse(value),
 
                     "used_memory" => info.metrics.used_memory = parse_u64(value),
                     "used_memory_rss" => info.metrics.used_memory_rss = parse_u64(value),
@@ -903,6 +1034,53 @@ mod tests {
     /// to add the *other* masters to it: a loop over every node counted the
     /// first one twice (7 keys in the switcher for a db holding 6). The
     /// weighted avg_ttl still reads every node, the first included.
+    /// Valkey 8.1+ writes the pause into `INFO clients`; a cluster is
+    /// paused where any master is, the stronger action winning; Redis
+    /// writes nothing, and then the pause this app sent is what shows.
+    #[test]
+    fn a_client_pause_is_the_server_s_word_where_it_has_one_else_this_app_s() {
+        let info = RedisInfo::parse(
+            "# Clients\r\nconnected_clients:3\r\npaused_reason:client_pause\r\npaused_actions:write\r\npaused_timeout_milliseconds:2991\r\n",
+        );
+        assert_eq!(info.metrics.paused_actions, PausedActions::Write);
+        assert_eq!(info.metrics.paused_timeout_ms, 2991);
+        assert_eq!(info.metrics.paused_reason, PauseReason::ClientPause);
+
+        let now = Instant::now();
+        let later = now + Duration::from_secs(5);
+        let server = client_pause_now(Some(&info.metrics), Some(("all", later)), now).expect("paused");
+        assert_eq!(server.actions, "write", "the server's word over the local record");
+        assert!(server.from_server);
+        assert_eq!(server.remaining, Duration::from_millis(2991));
+
+        let none = RedisInfo::parse("# Clients\r\npaused_actions:none\r\npaused_timeout_milliseconds:0\r\n");
+        assert_eq!(
+            client_pause_now(Some(&none.metrics), Some(("write", later)), now),
+            None,
+            "a server that reports no pause is believed over a stale local record"
+        );
+
+        let redis = RedisInfo::parse("# Clients\r\nconnected_clients:3\r\n");
+        let local = client_pause_now(Some(&redis.metrics), Some(("write", later)), now).expect("local pause");
+        assert!(!local.from_server);
+        assert_eq!(local.remaining, Duration::from_secs(5));
+        assert_eq!(
+            client_pause_now(Some(&redis.metrics), Some(("write", now)), now),
+            None,
+            "run out"
+        );
+        assert_eq!(client_pause_now(None, None, now), None);
+
+        let mut a = RedisInfo::default();
+        a.metrics.paused_actions = PausedActions::None;
+        let mut b = RedisInfo::default();
+        b.metrics.paused_actions = PausedActions::All;
+        b.metrics.paused_timeout_ms = 900;
+        let total = aggregate_redis_info(vec![a, b]);
+        assert_eq!(total.metrics.paused_actions, PausedActions::All);
+        assert_eq!(total.metrics.paused_timeout_ms, 900);
+    }
+
     #[test]
     fn a_cluster_aggregate_counts_the_first_master_once() {
         let node = |keys: u64, clients: u64, expires: u64, avg_ttl: u64| {

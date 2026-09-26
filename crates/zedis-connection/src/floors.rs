@@ -175,6 +175,15 @@ pub const VSIM_WITHATTRIBS: Floor = Floor::redis_only("8.2.0");
 /// `SCRIPT SHOW sha` — the source of a cached script (Valkey 8.0; Redis has
 /// no such command, its cache is write-only).
 pub const SCRIPT_SHOW: Floor = Floor::valkey_only("8.0.0");
+/// `BGSAVE CANCEL` — stop the snapshot in progress, or drop the one
+/// scheduled behind an AOF rewrite (Valkey 8.1; Redis has no way to cancel
+/// a `BGSAVE` once it has forked).
+pub const BGSAVE_CANCEL: Floor = Floor::valkey_only("8.1.0");
+/// `LATENCY LATEST` carrying a running sum and count behind each event
+/// (Valkey 8.1; Redis answers four fields). Nothing is gated on it — the
+/// parser goes by the field count and falls back to `LATENCY HISTORY` —
+/// it names the divergence for the tests and the matrix.
+pub const LATENCY_STATS: Floor = Floor::valkey_only("8.1.0");
 
 /// Whether `CLIENT NO-TOUCH ON` is safe to send to this server.
 ///
@@ -287,6 +296,11 @@ mod tests {
         assert!(SCRIPT_SHOW.met_by(true, &v("8.0.0")));
         assert!(!SCRIPT_SHOW.met_by(true, &v("7.2.9")));
         assert!(!SCRIPT_SHOW.met_by(false, &v("99.0.0")));
+        assert!(BGSAVE_CANCEL.met_by(true, &v("8.1.0")));
+        assert!(!BGSAVE_CANCEL.met_by(true, &v("8.0.11")));
+        assert!(!BGSAVE_CANCEL.met_by(false, &v("99.0.0")));
+        assert!(LATENCY_STATS.met_by(true, &v("8.1.0")));
+        assert!(!LATENCY_STATS.met_by(false, &v("99.0.0")));
         assert!(COMMANDLOG.met_by(true, &v("8.1.0")));
         assert!(!COMMANDLOG.met_by(true, &v("8.0.4")));
         assert!(!COMMANDLOG.met_by(false, &v("99.0.0")));

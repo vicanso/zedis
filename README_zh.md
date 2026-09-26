@@ -112,6 +112,9 @@ Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 �
 | `CLIENT KILL … MAXAGE` | 7.4 | 8.0 |
 | `SCRIPT SHOW` —— 慢日志里 `EVALSHA` 背后的脚本源码 | — | 8.0 |
 | 每个节点的可用区（`availability-zone`，拓扑页显示） | — | 8.1 |
+| `BGSAVE CANCEL` —— 快照进行中时旁边的取消按钮 | — | 8.1 |
+| 状态栏显示客户端暂停状态（`INFO clients` 的 `paused_actions`） | 只显示 Zedis 自己发起的 `CLIENT PAUSE` | 8.1 —— 无论谁暂停的都能看到 |
+| 每类事件的平均延迟（`LATENCY LATEST` 的 sum / count） | 用 `LATENCY HISTORY` 最近 160 个样本取均值 | 8.1 —— 自上次重置起精确值 |
 | `INFO keysizes` 直方图（内存分析） | 8.0 | — |
 | `HOTKEYS` 热点跟踪 | 8.6 | — |
 | Stream `XACKDEL` / `XDELEX` 及引用策略 | 8.2 | — |

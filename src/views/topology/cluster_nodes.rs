@@ -166,6 +166,21 @@ impl ZedisTopology {
                 n
             })
             .sum();
+        // `fail?`: nodes this one has stopped hearing from, before the
+        // cluster agrees they are gone — the same count on Redis and
+        // Valkey, read from the flags rather than from Valkey 9's
+        // `cluster_nodes_pfail`.
+        let pfail_count: usize = desc
+            .topology
+            .iter()
+            .map(|m| {
+                usize::from(m.master.health == NodeHealth::PossiblyFailing)
+                    + m.replicas
+                        .iter()
+                        .filter(|r| r.health == NodeHealth::PossiblyFailing)
+                        .count()
+            })
+            .sum();
         let assigned = desc.slot_map.assigned_slots;
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         // Live lag from INFO replication (heartbeat) — matched onto topology
@@ -207,6 +222,13 @@ impl ZedisTopology {
         } else {
             None
         };
+        let pfail_badge = (pfail_count > 0).then(|| {
+            Label::new(SharedString::from(
+                rust_i18n::t!("topology.nodes_pfail", count = pfail_count, locale = locale).to_string(),
+            ))
+            .text_xs()
+            .text_color(warning)
+        });
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         for master in desc.topology.iter() {
@@ -435,7 +457,8 @@ impl ZedisTopology {
                     .gap_2()
                     .items_center()
                     .child(Label::new(summary).text_xs().text_color(muted))
-                    .when_some(fail_badge, |this, badge| this.child(badge)),
+                    .when_some(fail_badge, |this, badge| this.child(badge))
+                    .when_some(pfail_badge, |this, badge| this.child(badge)),
             )
             .child(Label::new(fill_hint).text_xs().text_color(muted))
             .child(meet_form)

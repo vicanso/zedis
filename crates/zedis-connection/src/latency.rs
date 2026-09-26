@@ -30,8 +30,9 @@ use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// One row from `LATENCY LATEST`. Redis returns four positional fields
-/// per event — we map them to named fields here.
+/// One row from `LATENCY LATEST`. Redis answers four positional fields per
+/// event, Valkey 8.1+ six (a running sum and count behind them) — mapped to
+/// named fields here.
 #[derive(Debug, Clone, Default)]
 pub struct LatencyEvent {
     pub event: String,
@@ -41,6 +42,14 @@ pub struct LatencyEvent {
     pub latest_ms: i64,
     /// Worst latency (ms) seen in the recorded window.
     pub max_ms: i64,
+    /// Mean latency (ms) over `avg_samples` occurrences: the server's own
+    /// sum and count where `LATENCY LATEST` carries them
+    /// (`floors::LATENCY_STATS`, Valkey 8.1+), else the mean of what
+    /// `LATENCY HISTORY` still holds — `avg_exact` says which. `None` with
+    /// nothing to average.
+    pub avg_ms: Option<f64>,
+    pub avg_samples: u64,
+    pub avg_exact: bool,
 }
 
 /// One sample from `LATENCY HISTORY <event>`: `(timestamp, latency_ms)`.
@@ -65,10 +74,24 @@ pub async fn latency_latest(at: &ServerDb) -> Result<LatencyListing> {
         .query_async(&mut at.connection().await?)
         .await;
     match res {
-        Ok(v) => Ok(LatencyListing {
-            events: parse_latest(&v).unwrap_or_default(),
-            unsupported: false,
-        }),
+        Ok(v) => {
+            let mut events = parse_latest(&v).unwrap_or_default();
+            // A server that keeps no running sum (Redis) is asked for the
+            // samples it still holds — up to 160 per event — and the mean of
+            // those stands in. One `HISTORY` per event, and only there.
+            for event in events.iter_mut().filter(|event| event.avg_ms.is_none()) {
+                let samples = latency_history(at, &event.event).await.unwrap_or_default();
+                if let Some(mean) = history_mean(&samples) {
+                    event.avg_ms = Some(mean);
+                    event.avg_samples = samples.len() as u64;
+                    event.avg_exact = false;
+                }
+            }
+            Ok(LatencyListing {
+                events,
+                unsupported: false,
+            })
+        }
         Err(e) if reply::is_unsupported(&e) => Ok(LatencyListing {
             unsupported: true,
             ..Default::default()
@@ -136,14 +159,33 @@ fn parse_latest(v: &Value) -> Option<Vec<LatencyEvent>> {
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
+        // Valkey 8.1+ appends the sum and the count of every occurrence
+        // since the last reset; the mean is theirs to give exactly.
+        let (avg_ms, avg_samples, avg_exact) =
+            match (parts.get(4).and_then(reply::int), parts.get(5).and_then(reply::int)) {
+                (Some(sum), Some(count)) if count > 0 => (Some(sum as f64 / count as f64), count as u64, true),
+                _ => (None, 0, false),
+            };
         out.push(LatencyEvent {
             event,
             timestamp: reply::int(&parts[1]).unwrap_or_default(),
             latest_ms: reply::int(&parts[2]).unwrap_or_default(),
             max_ms: reply::int(&parts[3]).unwrap_or_default(),
+            avg_ms,
+            avg_samples,
+            avg_exact,
         });
     }
     Some(out)
+}
+
+/// The plain mean of the samples' latencies, `None` for none.
+fn history_mean(samples: &[LatencySample]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let sum: i64 = samples.iter().map(|sample| sample.latency_ms).sum();
+    Some(sum as f64 / samples.len() as f64)
 }
 
 fn parse_history(v: &Value) -> Option<Vec<LatencySample>> {
@@ -172,6 +214,54 @@ mod tests {
 
     fn bs(s: &str) -> Value {
         Value::BulkString(s.as_bytes().to_vec())
+    }
+
+    /// Redis's four fields leave the mean to HISTORY; Valkey 8.1's six
+    /// carry it as a sum and a count.
+    #[test]
+    fn latest_carries_the_mean_where_the_server_keeps_a_sum() {
+        let redis = Value::Array(vec![Value::Array(vec![
+            bs("command"),
+            Value::Int(1_790_407_875),
+            Value::Int(15),
+            Value::Int(15),
+        ])]);
+        let events = parse_latest(&redis).expect("rows");
+        assert_eq!(events[0].avg_ms, None);
+        assert!(!events[0].avg_exact);
+
+        let valkey = Value::Array(vec![Value::Array(vec![
+            bs("command"),
+            Value::Int(1_790_407_875),
+            Value::Int(16),
+            Value::Int(16),
+            Value::Int(48),
+            Value::Int(3),
+        ])]);
+        let events = parse_latest(&valkey).expect("rows");
+        assert_eq!(events[0].avg_ms, Some(16.0));
+        assert_eq!(events[0].avg_samples, 3);
+        assert!(events[0].avg_exact);
+    }
+
+    #[test]
+    fn history_mean_is_the_plain_mean_and_none_for_nothing() {
+        let samples = vec![
+            LatencySample {
+                timestamp: 1,
+                latency_ms: 10,
+            },
+            LatencySample {
+                timestamp: 2,
+                latency_ms: 20,
+            },
+            LatencySample {
+                timestamp: 3,
+                latency_ms: 45,
+            },
+        ];
+        assert_eq!(history_mean(&samples), Some(25.0));
+        assert_eq!(history_mean(&[]), None);
     }
 
     #[test]

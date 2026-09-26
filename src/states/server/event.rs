@@ -152,6 +152,10 @@ pub enum ServerTask {
 
     /// `BGSAVE` — trigger an asynchronous RDB snapshot fork on all masters.
     Bgsave,
+    /// `BGSAVE CANCEL` — stop the snapshot in progress (Valkey 8.1+).
+    BgsaveCancel,
+    /// `CLIENT UNPAUSE` from the status bar's pause chip.
+    ClientUnpause,
     /// `BGREWRITEAOF` — trigger an asynchronous AOF rewrite on all masters.
     Bgrewriteaof,
 
@@ -271,6 +275,8 @@ impl ServerTask {
             ServerTask::LoadStreamPending => "load_stream_pending",
             ServerTask::PublishMessage => "publish_message",
             ServerTask::Bgsave => "bgsave",
+            ServerTask::BgsaveCancel => "bgsave_cancel",
+            ServerTask::ClientUnpause => "client_unpause",
             ServerTask::Bgrewriteaof => "bgrewriteaof",
             ServerTask::ClusterFailover => "cluster_failover",
             ServerTask::ClusterMeet => "cluster_meet",

@@ -25,7 +25,7 @@
 //! servers get the escalated warning.
 
 use crate::assets::CustomIconName;
-use crate::connection::{Capability, ServerDb, config_get_named, get_server};
+use crate::connection::{Capability, ServerDb, config_get_named, floors, get_server};
 use crate::helpers::{format_duration, format_unix_secs, get_mono_font_family, unix_ts};
 use crate::states::{
     PersistenceNodeSnapshot, RedisMetrics, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
@@ -59,7 +59,14 @@ struct PersistenceActionCard {
     in_progress_elapsed_sec: i64,
     can_write: bool,
     loading: bool,
+    /// A cancel beside the running action, where the server has one
+    /// (`BGSAVE CANCEL`, Valkey 8.1+): `None` hides it.
+    cancel_id: &'static str,
+    cancel_label_key: Option<&'static str>,
 }
+
+/// What the cancel button does; boxed so a card without one passes `None`.
+type CancelHandler = Box<dyn Fn(&mut ZedisPersistence, &mut Window, &mut Context<ZedisPersistence>) + 'static>;
 
 /// Read-only CONFIG subset shown under the status cards.
 #[derive(Debug, Clone, Default)]
@@ -83,6 +90,10 @@ pub struct ZedisPersistence {
     /// Previous in-progress flags — used to fire completion toasts when
     /// a fork transitions 1 → 0 between INFO polls.
     prev_rdb_bgsave: bool,
+    /// A `BGSAVE CANCEL` was just sent: the next "no longer in progress"
+    /// is that, not a snapshot finishing — Valkey reports the cancelled
+    /// save's status as `ok`, so the transition alone cannot tell.
+    bgsave_cancelled: bool,
     prev_aof_rewrite: bool,
     pending_notification: Option<Notification>,
     _config_task: Option<Task<()>>,
@@ -112,6 +123,7 @@ impl ZedisPersistence {
             server_state: server_state.clone(),
             config: None,
             prev_rdb_bgsave: prev_rdb,
+            bgsave_cancelled: false,
             prev_aof_rewrite: prev_aof,
             pending_notification: None,
             _config_task: None,
@@ -166,7 +178,10 @@ impl ZedisPersistence {
         let Some(m) = state.read(cx).redis_info().map(|i| i.metrics) else {
             return;
         };
-        if self.prev_rdb_bgsave && !m.rdb_bgsave_in_progress {
+        if self.prev_rdb_bgsave && !m.rdb_bgsave_in_progress && self.bgsave_cancelled {
+            // The cancel's own notification said what happened.
+            self.bgsave_cancelled = false;
+        } else if self.prev_rdb_bgsave && !m.rdb_bgsave_in_progress {
             let msg = if m.rdb_last_bgsave_success {
                 i18n_persistence(cx, "bgsave_finished_ok")
             } else {
@@ -789,6 +804,7 @@ impl ZedisPersistence {
         cx: &mut Context<Self>,
         card: PersistenceActionCard,
         on_click: impl Fn(&mut ZedisPersistence, &mut Window, &mut Context<ZedisPersistence>) + 'static,
+        on_cancel: Option<CancelHandler>,
     ) -> impl IntoElement {
         let PersistenceActionCard {
             id,
@@ -800,9 +816,23 @@ impl ZedisPersistence {
             in_progress_elapsed_sec,
             can_write,
             loading,
+            cancel_id,
+            cancel_label_key,
         } = card;
         let theme = cx.theme();
         let disabled = !can_write || loading || in_progress;
+        // Only while the action runs, and only where the server can stop it.
+        let cancel_button = match (cancel_label_key, on_cancel) {
+            (Some(key), Some(handler)) if in_progress && can_write && !loading => Some(
+                Button::new(cancel_id)
+                    .outline()
+                    .small()
+                    .label(i18n_persistence(cx, key))
+                    .tooltip(i18n_persistence(cx, "bgsave_cancel_tooltip"))
+                    .on_click(cx.listener(move |this, _, window, cx| handler(this, window, cx))),
+            ),
+            _ => None,
+        };
 
         let tooltip: Option<SharedString> = if !can_write {
             Some(i18n_persistence(cx, "readonly_tooltip"))
@@ -856,6 +886,7 @@ impl ZedisPersistence {
                         }
                         btn
                     })
+                    .when_some(cancel_button, |this, button| this.child(button))
                     .when_some(status_line, |this, s| {
                         this.child(Label::new(s).text_sm().text_color(theme.muted_foreground))
                     }),
@@ -875,8 +906,20 @@ impl ZedisPersistence {
                 in_progress_elapsed_sec: m.rdb_current_bgsave_time_sec,
                 can_write: self.can_write(cx),
                 loading: m.loading,
+                cancel_id: "persistence-bgsave-cancel",
+                cancel_label_key: self
+                    .server_state
+                    .read(cx)
+                    .supports(floors::BGSAVE_CANCEL)
+                    .then_some("bgsave_cancel_button"),
             },
             Self::open_bgsave_dialog,
+            Some(Box::new(
+                |this: &mut ZedisPersistence, _window: &mut Window, cx: &mut Context<ZedisPersistence>| {
+                    this.bgsave_cancelled = true;
+                    this.server_state.update(cx, |state, cx| state.bgsave_cancel(cx));
+                },
+            )),
         )
     }
 
@@ -893,8 +936,11 @@ impl ZedisPersistence {
                 in_progress_elapsed_sec: m.aof_current_rewrite_time_sec,
                 can_write: self.can_write(cx),
                 loading: m.loading,
+                cancel_id: "persistence-bgrewriteaof-cancel",
+                cancel_label_key: None,
             },
             Self::open_bgrewriteaof_dialog,
+            None,
         )
     }
 

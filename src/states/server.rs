@@ -17,17 +17,17 @@ use crate::connection::SentinelMaster;
 use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
-    AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerDb, ServerFeatures,
-    ServerSummary, SlowLogEntry, WRITE_UNLOCK_SECS, forget_client, get_server, get_server_features, get_servers,
-    invalidate_server_features, lock_writes, note_server_command_error, probe_server_features, server_summary,
-    unlock_writes,
+    AccessMode, Capability, CommandStatus, PauseMode, RedisClientDescription, ServerCommand, ServerDb, ServerFeatures,
+    ServerSummary, SlowLogEntry, WRITE_UNLOCK_SECS, client_unpause, forget_client, get_server, get_server_features,
+    get_servers, invalidate_server_features, lock_writes, note_server_command_error, probe_server_features,
+    server_summary, unlock_writes,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
 use crate::helpers::{pacing, unix_ts};
 use crate::states::server::event::{ServerEvent, ServerTask};
 use crate::states::server::history::{KeyHistories, ValueHistoryEntry};
-use crate::states::server::stat::{RedisInfo, get_metrics_cache};
+use crate::states::server::stat::{ClientPause, RedisInfo, client_pause_now, get_metrics_cache};
 use crate::states::{
     HINT_FIRST_CONNECT, QueryMode, ServerView, ZedisGlobalStore, command_unavailable_message, first_connect_hint,
     get_session_option, i18n_common, i18n_status_bar, save_session_option, update_app_state_and_save_quiet,
@@ -196,6 +196,10 @@ pub struct ZedisServerState {
     /// timer that puts it back, and dropping it (a re-lock, a server switch)
     /// cancels the timer.
     write_unlocked_until: Option<Instant>,
+    /// The `CLIENT PAUSE` this app sent (actions, until), for the status
+    /// bar on a server that does not report pauses — Redis; Valkey 8.1+
+    /// says so in `INFO clients` and is believed instead.
+    client_pause: Option<(String, Instant)>,
     /// `Arc` only because the state derives `Clone` and a `Task` cannot;
     /// the last handle dropping is what cancels the timer.
     unlock_task: Option<Arc<Task<()>>>,
@@ -507,6 +511,7 @@ impl ZedisServerState {
     fn reset(&mut self, cx: &mut Context<Self>) {
         // A window belongs to the server it was opened on.
         self.write_unlocked_until = None;
+        self.client_pause = None;
         self.unlock_task = None;
         self.server_id = SharedString::default();
         self.version = SharedString::default();
@@ -969,6 +974,54 @@ impl ZedisServerState {
     /// setting, else its tag — production is.
     pub fn write_locked(&self) -> bool {
         get_server(&self.server_id).is_ok_and(|server| server.write_locked())
+    }
+
+    /// Remember the `CLIENT PAUSE` the clients panel just sent, so the
+    /// status bar can show it on a server that will not say (Redis).
+    pub fn note_client_pause(&mut self, mode: PauseMode, timeout_ms: u64, cx: &mut Context<Self>) {
+        let until = Instant::now() + Duration::from_millis(timeout_ms);
+        self.client_pause = Some((mode.as_str().to_ascii_lowercase(), until));
+        cx.notify();
+    }
+
+    /// The clients panel lifted the pause.
+    pub fn note_client_unpause(&mut self, cx: &mut Context<Self>) {
+        self.client_pause = None;
+        cx.notify();
+    }
+
+    /// Whether clients are paused right now, for how long and by whose
+    /// word — the server's (Valkey 8.1+), else this app's own record.
+    pub fn client_pause(&self) -> Option<ClientPause> {
+        client_pause_now(
+            self.redis_info.as_ref().map(|info| &info.metrics),
+            self.client_pause
+                .as_ref()
+                .map(|(actions, until)| (actions.as_str(), *until)),
+            Instant::now(),
+        )
+    }
+
+    /// `CLIENT UNPAUSE` on every master — the status bar chip's click.
+    /// Idempotent and harmless where nothing is paused, so no question.
+    pub fn unpause_clients(&mut self, cx: &mut Context<Self>) {
+        if !self.can(Capability::KillClient) {
+            self.emit_warning_notification("Read-only mode — client commands blocked".into(), cx);
+            return;
+        }
+        self.client_pause = None;
+        let at = self.at();
+        self.spawn(
+            ServerTask::ClientUnpause,
+            move || async move { Ok(client_unpause(&at).await?) },
+            |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification("CLIENT UNPAUSE".into(), "CLIENT UNPAUSE".into(), cx);
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
     }
 
     /// How much of the open write window is left, if one is open.

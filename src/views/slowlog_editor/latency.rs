@@ -18,6 +18,7 @@
 //! Split out of `slowlog_editor.rs`; the methods are `ZedisSlowlogEditor`'s as before.
 
 use super::*;
+use gpui_kit::component::tooltip::Tooltip;
 
 impl ZedisSlowlogEditor {
     /// Fetch `LATENCY LATEST` and the `latency-monitor-threshold`
@@ -250,6 +251,7 @@ impl ZedisSlowlogEditor {
         let event_label = i18n_slowlog_editor(cx, "latency_event");
         let latest_label = i18n_slowlog_editor(cx, "latency_latest_ms");
         let max_label = i18n_slowlog_editor(cx, "latency_max_ms");
+        let avg_label = i18n_slowlog_editor(cx, "latency_avg_ms");
         let when_label = i18n_slowlog_editor(cx, "latency_when");
 
         // Column header. Widths chosen to roughly match data column
@@ -275,6 +277,11 @@ impl ZedisSlowlogEditor {
                 div()
                     .w(px(110.0))
                     .child(Label::new(max_label).text_xs().text_color(muted)),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .child(Label::new(avg_label).text_xs().text_color(muted)),
             )
             .child(div().flex_1().child(Label::new(when_label).text_xs().text_color(muted)));
 
@@ -406,6 +413,36 @@ impl ZedisSlowlogEditor {
                     .w(px(110.0))
                     .child(Label::new(format!("{} ms", ev.max_ms)).text_sm().text_color(max_color)),
             )
+            .child({
+                // The mean: the server's own where it keeps a sum (Valkey
+                // 8.1+), else over the samples HISTORY still holds — the
+                // tooltip says which, and over how many.
+                let avg_locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                let (text, tooltip, color) = match ev.avg_ms {
+                    Some(avg) => {
+                        let key = if ev.avg_exact {
+                            "slowlog_editor.latency_avg_tooltip_exact"
+                        } else {
+                            "slowlog_editor.latency_avg_tooltip_history"
+                        };
+                        (
+                            SharedString::from(format!("{avg:.1} ms")),
+                            SharedString::from(rust_i18n::t!(key, n = ev.avg_samples, locale = avg_locale).to_string()),
+                            severity_color(avg.round() as i64, cx),
+                        )
+                    }
+                    None => (
+                        SharedString::from("—"),
+                        i18n_slowlog_editor(cx, "latency_avg_unavailable"),
+                        muted,
+                    ),
+                };
+                div()
+                    .id(("latency-avg", id_hash))
+                    .w(px(110.0))
+                    .child(Label::new(text).text_sm().text_color(color))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            })
             .child(div().flex_1().child(Label::new(when_str).text_xs().text_color(muted)))
             .when_some(jump_chip, |this, chip| this.child(chip))
             .child(
