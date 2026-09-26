@@ -45,6 +45,9 @@ pub struct AppState {
     pub logins: auth::Logins,
     /// `--audit-log`: the record of what went through, or nothing.
     pub audit: Audit,
+    /// `--trusted-header` + `--trusted-proxy`: identities a reverse proxy
+    /// asserts, or nothing — then the header is never read.
+    pub trusted: Option<auth::TrustedProxy>,
     /// The login cookie's `Secure` and `Path`, fixed at startup.
     pub cookie: auth::CookiePolicy,
     /// `--base-path`: where the bridge is mounted, as [`normalize_base_path`]
@@ -218,10 +221,29 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-/// Who is calling: HTTP Basic from a script or the CLI, a login cookie from
-/// a browser. The name is the answer rather than a yes, because the routes
-/// below need it to decide which entries the caller sees.
-fn authorize(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
+/// Who is calling: the identity the reverse proxy asserted (when there is
+/// one, and the request came from it), HTTP Basic from a script or the CLI,
+/// a login cookie from a browser. The name is the answer rather than a yes,
+/// because the routes below need it to decide which entries the caller sees.
+///
+/// A proxy identity has to be an account here — the role and the entries
+/// hang on the name — and one that is not is refused outright rather than
+/// falling through to the password paths: the proxy already said who this
+/// is, and a login form behind single sign-on would be the wrong answer.
+fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
+    if let (Some(proxy), Some(peer)) = (&state.trusted, origin.peer_ip)
+        && let Some(name) = proxy.asserted(peer, headers)
+    {
+        if !state.accounts.has(&name) {
+            let tried: String = name.chars().take(MAX_TRIED_NAME).collect();
+            state.audit.record(&tried, origin, Event::NoAccount);
+            return Err(ApiError::Forbidden(format!(
+                "the proxy signed in \"{tried}\", which has no account here"
+            )));
+        }
+        origin.auth = Some("proxy");
+        return Ok(name);
+    }
     let authorization = headers.get("authorization").and_then(|v| v.to_str().ok());
     if let Some(account) = state.accounts.account_for_header(authorization) {
         return Ok(account);
@@ -236,6 +258,11 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
 /// because the page shows it verbatim and the CLI prints it.
 const READ_ONLY_REFUSAL: &str = "this account is read-only";
 
+/// The longest name a failed login, or an unknown proxy identity, is
+/// recorded under: it is whatever was typed into the box or written into
+/// the header, and the log is not the place for a pasted essay.
+const MAX_TRIED_NAME: usize = 64;
+
 /// Who is calling, for a route that *changes* something — the server list,
 /// or Redis itself. Same check as [`authorize`], plus the account's role.
 ///
@@ -244,18 +271,19 @@ const READ_ONLY_REFUSAL: &str = "this account is read-only";
 /// forgetting the test is a compile error's worth of obvious: the route
 /// either asks this function or it does not change anything. `action` is
 /// what the audit log says was refused.
-fn authorize_write(state: &AppState, headers: &HeaderMap, origin: &Origin, action: &'static str) -> ApiResult<String> {
-    let account = authorize(state, headers)?;
+fn authorize_write(
+    state: &AppState,
+    headers: &HeaderMap,
+    origin: &mut Origin,
+    action: &'static str,
+) -> ApiResult<String> {
+    let account = authorize(state, headers, origin)?;
     if state.accounts.is_read_only(&account) {
         state.audit.record(&account, origin, Event::Refused { action });
         return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()));
     }
     Ok(account)
 }
-
-/// The longest name a failed login is recorded under: it is whatever was
-/// typed into the box, and the log is not the place for a pasted essay.
-const MAX_TRIED_NAME: usize = 64;
 
 /// Whether `account` may see `server` — and so use, edit and delete it: its
 /// own entries, and the shared ones, which are those with no owner. Entries
@@ -516,8 +544,13 @@ impl ServerEntry {
 /// Only the entries the caller may see: its own, and the shared ones. `owner`
 /// comes back as stored — the caller's own name or nothing — which is how
 /// the page knows whether its form's *shared* box starts ticked.
-async fn servers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<ServerEntry>>> {
-    let account = authorize(&state, &headers)?;
+async fn servers(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<ServerEntry>>> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
     // A read-only account gets every entry marked read-only, which is the
     // signal the page already understands (`RedisServer::readonly` — the
     // desktop's own "safe mode" switch). The refusal does not depend on it:
@@ -581,8 +614,8 @@ async fn add_server(
     headers: HeaderMap,
     Json(req): Json<AddServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &origin, "server_add")?;
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &mut origin, "server_add")?;
     let (mut server, shared) = match (req.url, req.server) {
         (Some(url), None) => {
             let server = RedisServer::from_import(&url)
@@ -730,8 +763,8 @@ async fn update_server(
     Path(id): Path<String>,
     Json(req): Json<UpdateServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
-    let origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &origin, "server_update")?;
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &mut origin, "server_update")?;
     let stored = visible_server(&id, &account)?;
     let mut server = merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?;
     assign_owner(&mut server, &account, req.shared, Some(&stored));
@@ -765,8 +798,8 @@ async fn delete_server(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &origin, "server_delete")?;
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &mut origin, "server_delete")?;
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
     // Someone else's entry is left alone and answered like one already gone.
     let removed = list
@@ -802,10 +835,12 @@ struct SessionResponse {
 
 async fn open_session(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(req): Json<SessionRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
-    let account = authorize(&state, &headers)?;
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
     visible_server(&req.server, &account)?;
     let session = state
         .sessions
@@ -817,10 +852,11 @@ async fn open_session(
 
 async fn close_session(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult<StatusCode> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
     state.sessions.close(&token).await;
     // Idempotent: closing a session that has already expired is not an error.
     Ok(StatusCode::NO_CONTENT)
@@ -906,8 +942,8 @@ async fn exec(
     headers: HeaderMap,
     Json(req): Json<ExecRequest>,
 ) -> ApiResult<Json<ExecResponse>> {
-    let account = authorize(&state, &headers)?;
-    let origin = Origin::new(peer, &headers);
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
     // Not `authorize_write`: most of what reaches this route *is* a read, and
     // a read-only account has to keep running those. The role is carried down
     // to `policy::check`, which judges each command.

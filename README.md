@@ -241,6 +241,25 @@ Changing an account's password **or its role** ends the logins it already has, s
 
 This is defence in depth and not a substitute for Redis's own: a Redis ACL user with `-@write` is enforced by the server on every connection, whatever talks to it, while this is enforced by the bridge, which is the only thing the browser can reach. Use both — the ACL is the guarantee, the account is what greys the buttons out before the round trip.
 
+### Signing in through your own SSO
+
+A company that already has single sign-on puts an authenticating reverse proxy — oauth2-proxy, Authelia, Pomerium, Cloudflare Access, Tailscale — in front of its applications: the proxy signs the person in and writes who they are into a request header. The bridge can believe that header:
+
+```bash
+-e ZEDIS_BRIDGE_TRUSTED_HEADER=Remote-User          # --trusted-header
+-e ZEDIS_BRIDGE_TRUSTED_PROXY=10.0.0.0/8,172.17.0.5  # --trusted-proxy: the proxy's addresses
+```
+
+Both or neither: anyone can write `Remote-User: alice` into a request, so the header counts only on a connection *from the proxy* — by the socket's peer address, never by `X-Forwarded-For`. The name in the header must be an account in the users file, which may then leave that account's password out; a name that is no account is refused with a `403` (and an audit line), not signed in as somebody new. Roles stay in the users file (`read_only = true`), because the proxy says who someone is and not what they may do.
+
+```toml
+[[users]]
+name = "alice@example.com"   # exactly what the proxy writes in the header
+read_only = true
+```
+
+Two things the proxy must do: strip or overwrite that header on every request it forwards, and be the only way to reach the bridge — a bridge that is also reachable directly is one where the address check protects nothing. The header name is the only thing that differs between proxies: Authelia sends `Remote-User`, oauth2-proxy `X-Auth-Request-User` (with `--set-xauthrequest`), Cloudflare Access `Cf-Access-Authenticated-User-Email`, Tailscale `Tailscale-User-Login`. Without these two settings the header is never read.
+
 ### Audit log
 
 `--audit-log /data/audit.log` (`ZEDIS_BRIDGE_AUDIT_LOG`) appends one JSON line per event: every login and failed login, every refusal of a read-only account, every server entry added, edited (which settings changed and from what; which secrets changed, never to what; a private entry made shared) or deleted, every command that administers the server — `CONFIG SET`, `ACL SETUSER`, `REPLICAOF`, `MODULE LOAD`, `CLIENT KILL`, `FLUSHDB` and the like — and every command someone had to confirm, so an entry with *confirm every write* switched on logs each of its writes. `--audit-writes` (`ZEDIS_BRIDGE_AUDIT_WRITES=1`) adds plain data writes; reads are never logged. Passwords in arguments are blanked, long values cut, a batch of one command is one line with a count, and the file is created owner-only.

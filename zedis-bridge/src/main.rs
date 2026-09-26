@@ -74,7 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         println!(
             "zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] \
-             [--users-file <file>] [--insecure-cookie] [--audit-log <file>] [--audit-writes]"
+             [--users-file <file>] [--insecure-cookie] [--audit-log <file>] [--audit-writes] \
+             [--trusted-header <name> --trusted-proxy <cidr,…>]"
         );
         println!();
         println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
@@ -102,6 +103,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             audit::WRITES_ENV
         );
         println!("are never logged. Passwords in arguments are blanked.");
+        println!(
+            "--trusted-header Remote-User ({}) believes the identity a reverse proxy",
+            auth::TRUSTED_HEADER_ENV
+        );
+        println!("(oauth2-proxy, Authelia, …) writes into that header — only on connections from",);
+        println!(
+            "--trusted-proxy 10.0.0.0/8,… ({}); both or neither. The name must be an",
+            auth::TRUSTED_PROXY_ENV
+        );
+        println!("account in the users file, which may then omit that account's password.");
         return Ok(());
     }
 
@@ -141,6 +152,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|raw| api::normalize_base_path(&raw))
         .transpose()?
         .unwrap_or_default();
+    // Identities from a reverse proxy: both settings or neither, because a
+    // header without the addresses it is believed from is a header anyone
+    // can write (`auth::TrustedProxy`). An account with no password is one
+    // only the proxy can sign in, so without a proxy it is a mistake.
+    let setting = |flag_name: &str, env_name: &str| {
+        flag(flag_name)
+            .or_else(|| std::env::var(env_name).ok())
+            .filter(|v| !v.trim().is_empty())
+    };
+    let trusted = match (
+        setting("--trusted-header", auth::TRUSTED_HEADER_ENV),
+        setting("--trusted-proxy", auth::TRUSTED_PROXY_ENV),
+    ) {
+        (Some(header), Some(networks)) => Some(auth::TrustedProxy::new(&header, &networks)?),
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(
+                "--trusted-header needs --trusted-proxy: without the proxy's addresses, \
+                        anyone could write the header"
+                    .into(),
+            );
+        }
+        (None, Some(_)) => {
+            return Err("--trusted-proxy needs --trusted-header: which header carries the identity?".into());
+        }
+    };
+    let passwordless = accounts.passwordless();
+    match &trusted {
+        Some(proxy) => tracing::info!(
+            header = proxy.header(),
+            networks = %proxy.networks(),
+            proxy_only_accounts = passwordless.len(),
+            "identities from the reverse proxy are trusted"
+        ),
+        None if !passwordless.is_empty() => {
+            return Err(format!(
+                "accounts without a password ({}) need --trusted-header: nothing else could sign them in",
+                passwordless.join(", ")
+            )
+            .into());
+        }
+        None => {}
+    }
+
     // The audit log, when asked for: opened before anything can happen, and
     // a path that cannot be opened stops the bridge — an audit that was
     // configured and is silently absent is worse than none (ADR 11).
@@ -216,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sessions,
         logins,
         audit,
+        trusted,
         cookie: auth::CookiePolicy::new(secure_cookie, &base_path),
         base_path,
         web_root,

@@ -57,7 +57,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -120,6 +120,7 @@ impl Audit {
             account,
             peer: origin.peer.as_deref(),
             forwarded_for: origin.forwarded_for.as_deref(),
+            auth: origin.auth,
             event,
         };
         let mut bytes = match serde_json::to_vec(&line) {
@@ -161,12 +162,20 @@ fn restrict(_path: &Path) {}
 pub struct Origin {
     pub peer: Option<String>,
     pub forwarded_for: Option<String>,
+    /// The peer's address as an address, for the trusted-proxy check.
+    pub peer_ip: Option<IpAddr>,
+    /// How the caller was identified when it was not by a password of its
+    /// own: `proxy` for an identity the reverse proxy asserted. Set by
+    /// `authorize`, written into every line of that request.
+    pub auth: Option<&'static str>,
 }
 
 impl Origin {
     pub fn new(peer: SocketAddr, headers: &HeaderMap) -> Self {
         Self {
             peer: Some(peer.to_string()),
+            peer_ip: Some(peer.ip()),
+            auth: None,
             forwarded_for: headers
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
@@ -185,6 +194,8 @@ struct Line<'a> {
     peer: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     forwarded_for: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth: Option<&'static str>,
     #[serde(flatten)]
     event: Event,
 }
@@ -198,6 +209,9 @@ pub enum Event {
     },
     /// `account` is the name that was tried.
     LoginFailed,
+    /// The reverse proxy signed in a name that is no account here;
+    /// `account` is that name.
+    NoAccount,
     Logout,
     /// A read-only account asked for something that changes the server list.
     Refused {
@@ -599,7 +613,8 @@ mod tests {
         assert!(audit.logs_writes());
         let origin = Origin {
             peer: Some("10.0.0.7:5000".to_string()),
-            forwarded_for: None,
+            auth: Some("proxy"),
+            ..Default::default()
         };
         audit.record("alice", &origin, Event::Login { remember: true });
         audit.record(
@@ -628,6 +643,7 @@ mod tests {
         assert_eq!(lines[0]["account"], "alice");
         assert_eq!(lines[0]["peer"], "10.0.0.7:5000");
         assert_eq!(lines[0]["remember"], true);
+        assert_eq!(lines[0]["auth"], "proxy");
         assert!(lines[0].get("forwarded_for").is_none());
         assert!(lines[0]["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')));
         assert_eq!(lines[1]["event"], "command");
@@ -636,7 +652,7 @@ mod tests {
         assert_eq!(lines[1]["outcome"], "confirmed");
         assert_eq!(lines[1]["error"], "upstream said no");
         assert!(lines[1].get("count").is_none(), "a count of one is not written");
-        assert!(lines[1].get("peer").is_none());
+        assert!(lines[1].get("peer").is_none() && lines[1].get("auth").is_none());
 
         // Off: nothing is written, nothing is opened.
         let off = Audit::off();
@@ -704,7 +720,8 @@ mod tests {
             Origin::new(peer, &headers),
             Origin {
                 peer: Some("10.0.0.7:5000".to_string()),
-                forwarded_for: None
+                peer_ip: Some(peer.ip()),
+                ..Default::default()
             }
         );
         headers.insert("x-forwarded-for", " 203.0.113.9, 10.0.0.1 ".parse().expect("value"));

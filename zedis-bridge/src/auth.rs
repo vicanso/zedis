@@ -45,11 +45,13 @@
 //! of the password in `localStorage` would be neither. Scripts and the CLI
 //! send HTTP Basic.
 
+use axum::http::{HeaderMap, HeaderName};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -62,10 +64,19 @@ pub const USERS_ENV: &str = "ZEDIS_BRIDGE_USERS";
 /// The accounts, as a file: `ZEDIS_BRIDGE_USERS_FILE=/data/users.toml`.
 pub const USERS_FILE_ENV: &str = "ZEDIS_BRIDGE_USERS_FILE";
 
+/// `--trusted-header`: the request header a reverse proxy in front writes
+/// the signed-in identity into.
+pub const TRUSTED_HEADER_ENV: &str = "ZEDIS_BRIDGE_TRUSTED_HEADER";
+/// `--trusted-proxy`: the addresses that header is believed from.
+pub const TRUSTED_PROXY_ENV: &str = "ZEDIS_BRIDGE_TRUSTED_PROXY";
+
 /// One account.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
-    pub password: String,
+    /// `None` for an account that is only ever signed in by the reverse
+    /// proxy ([`TrustedProxy`]): it has a name and a role and no way to
+    /// present a password, so no password matches it — not even an empty one.
+    pub password: Option<String>,
     /// May look at everything it can see, and change none of it. Enforced by
     /// the routes, not here.
     pub read_only: bool,
@@ -80,10 +91,13 @@ struct UsersFile {
 
 /// One `[[users]]` table. `read_only` defaults to false, so an account that
 /// does not mention it is a full one — the same answer the short form gives.
+/// `password` may be left out for an account the reverse proxy signs in;
+/// written empty it is a mistake and refused.
 #[derive(Deserialize)]
 struct UserEntry {
     name: String,
-    password: String,
+    #[serde(default)]
+    password: Option<String>,
     #[serde(default)]
     read_only: bool,
 }
@@ -124,30 +138,52 @@ impl Accounts {
     /// diagnose from "unauthorized" alone.
     fn from_file(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let file: UsersFile = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The contents of a users file.
+    fn from_toml(text: &str) -> Result<Self, String> {
+        let file: UsersFile = toml::from_str(text).map_err(|e| e.to_string())?;
         let mut users = HashMap::new();
         for (index, entry) in file.users.into_iter().enumerate() {
             let position = index + 1;
             let name = entry.name.trim().to_string();
-            check_name(&name, position).map_err(|e| format!("{}: {e}", path.display()))?;
-            if entry.password.is_empty() {
-                return Err(format!(
-                    "{}: user \"{name}\" (entry {position}) has an empty password",
-                    path.display()
-                ));
+            check_name(&name, position)?;
+            if entry.password.as_deref() == Some("") {
+                return Err(format!("user \"{name}\" (entry {position}) has an empty password"));
             }
             let account = Account {
                 password: entry.password,
                 read_only: entry.read_only,
             };
             if users.insert(name.clone(), account).is_some() {
-                return Err(format!("{}: user \"{name}\" is listed twice", path.display()));
+                return Err(format!("user \"{name}\" is listed twice"));
             }
         }
         if users.is_empty() {
-            return Err(format!("{}: no [[users]] entries", path.display()));
+            return Err("no [[users]] entries".to_string());
         }
         Ok(Self(users))
+    }
+
+    /// The accounts with no password — those only a reverse proxy can sign
+    /// in. Named at startup, and refused there when there is no such proxy:
+    /// an account nothing can sign in is a misconfiguration, not a setting.
+    pub fn passwordless(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .0
+            .iter()
+            .filter(|(_, account)| account.password.is_none())
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Whether `name` is an account at all — what a proxy-asserted identity
+    /// has to be to get in, since the role and the entries hang on the name.
+    pub fn has(&self, name: &str) -> bool {
+        self.0.contains_key(name)
     }
 
     pub fn len(&self) -> usize {
@@ -172,7 +208,8 @@ impl Accounts {
     pub fn accepts_password(&self, name: &str, password: &str) -> bool {
         self.0
             .get(name)
-            .is_some_and(|account| same(password.as_bytes(), account.password.as_bytes()))
+            .and_then(|account| account.password.as_deref())
+            .is_some_and(|stored| same(password.as_bytes(), stored.as_bytes()))
     }
 
     /// Whether `name` may change anything. An account that is not there is
@@ -195,7 +232,7 @@ impl Accounts {
         let role = if account.read_only { "ro" } else { "rw" };
         Some(hex(&Sha256::digest(format!(
             "{salt}:{name}:{role}:{}",
-            account.password
+            account.password.as_deref().unwrap_or_default()
         ))))
     }
 }
@@ -266,7 +303,7 @@ pub fn parse_users(spec: &str) -> Result<HashMap<String, Account>, String> {
             );
         }
         let account = Account {
-            password: password.to_string(),
+            password: Some(password.to_string()),
             read_only,
         };
         if users.insert(name.to_string(), account).is_some() {
@@ -277,6 +314,119 @@ pub fn parse_users(spec: &str) -> Result<HashMap<String, Account>, String> {
         return Err("no accounts (set it to user@password,…)".to_string());
     }
     Ok(users)
+}
+
+/// The identity a reverse proxy in front asserts, and where it is believed
+/// from.
+///
+/// A company that already has single sign-on puts an authenticating proxy
+/// (oauth2-proxy, Authelia, Pomerium, Cloudflare Access, Tailscale) in front
+/// of its applications; the proxy signs the person in and writes who they
+/// are into a request header, and the application believes the header. The
+/// one thing that makes that safe is *where the request came from*: anyone
+/// can write `Remote-User: alice` into a request, so the header counts only
+/// on a connection from the proxy's own addresses, by the socket's peer —
+/// never by `X-Forwarded-For`, which is itself a header. Both settings are
+/// therefore required together, and a deployment that sets neither never
+/// reads the header at all.
+#[derive(Clone, Debug)]
+pub struct TrustedProxy {
+    header: HeaderName,
+    networks: Vec<Network>,
+}
+
+impl TrustedProxy {
+    /// `header` as `--trusted-header` names it, `networks` as `--trusted-proxy`
+    /// lists them: addresses or CIDR blocks, comma-separated.
+    pub fn new(header: &str, networks: &str) -> Result<Self, String> {
+        let header = HeaderName::from_bytes(header.trim().as_bytes())
+            .map_err(|_| format!("--trusted-header {header:?} is not a header name"))?;
+        let networks = networks
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(Network::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        if networks.is_empty() {
+            return Err("--trusted-proxy names no address".to_string());
+        }
+        Ok(Self { header, networks })
+    }
+
+    pub fn header(&self) -> &str {
+        self.header.as_str()
+    }
+
+    /// The trusted addresses, for the startup log.
+    pub fn networks(&self) -> String {
+        self.networks
+            .iter()
+            .map(|n| format!("{}/{}", n.addr, n.prefix))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The name the proxy asserted for a request from `peer` — `None` when
+    /// the peer is not the proxy (the header is then somebody's claim and is
+    /// ignored), or the header is absent or blank.
+    pub fn asserted(&self, peer: IpAddr, headers: &HeaderMap) -> Option<String> {
+        if !self.networks.iter().any(|n| n.contains(peer)) {
+            return None;
+        }
+        headers
+            .get(&self.header)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+}
+
+/// An address block: `10.0.0.0/8`, `fd00::/8`, or one address (`/32`, `/128`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Network {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl Network {
+    fn parse(text: &str) -> Result<Self, String> {
+        let (addr, prefix) = match text.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (text, None),
+        };
+        let addr: IpAddr = addr
+            .trim()
+            .parse()
+            .map_err(|_| format!("--trusted-proxy {text:?}: not an address or a CIDR block"))?;
+        let bits = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => bits,
+            Some(p) => p
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= bits)
+                .ok_or_else(|| format!("--trusted-proxy {text:?}: the prefix must be 0..={bits}"))?,
+        };
+        Ok(Self { addr, prefix })
+    }
+
+    /// Whether `ip` is in the block. A v4 peer of a `[::]` listener arrives
+    /// as `::ffff:a.b.c.d` and is compared as the v4 address it is.
+    fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr.to_canonical(), ip.to_canonical()) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let keep = u32::MAX.checked_shl(32 - u32::from(self.prefix)).unwrap_or(0);
+                u32::from(net) & keep == u32::from(ip) & keep
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let keep = u128::MAX.checked_shl(128 - u32::from(self.prefix)).unwrap_or(0);
+                u128::from(net) & keep == u128::from(ip) & keep
+            }
+            _ => false,
+        }
+    }
 }
 
 /// The `name:password` behind an `Authorization: Basic …` header.
@@ -580,6 +730,73 @@ mod tests {
         Accounts(parse_users(spec).expect("a valid spec"))
     }
 
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("an address")
+    }
+
+    #[test]
+    fn a_network_holds_its_addresses_and_a_mapped_v4_peer() {
+        let block = Network::parse("10.0.0.0/8").expect("cidr");
+        assert!(block.contains(ip("10.255.1.2")));
+        assert!(!block.contains(ip("11.0.0.1")));
+        assert!(block.contains(ip("::ffff:10.1.2.3")), "a v4 peer of a [::] listener");
+        let one = Network::parse("172.17.0.5").expect("bare address");
+        assert_eq!(one.prefix, 32);
+        assert!(one.contains(ip("172.17.0.5")) && !one.contains(ip("172.17.0.6")));
+        let v6 = Network::parse("fd00::/8").expect("v6 cidr");
+        assert!(v6.contains(ip("fd12::1")) && !v6.contains(ip("fe80::1")));
+        assert!(!v6.contains(ip("10.0.0.1")), "one family is not the other");
+        assert!(Network::parse("0.0.0.0/0").expect("all").contains(ip("203.0.113.9")));
+        for bad in ["10.0.0.0/33", "fd00::/129", "not-an-address", "10.0.0.0/x", ""] {
+            assert!(Network::parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_proxy_identity_counts_only_from_the_proxy() {
+        let proxy = TrustedProxy::new("Remote-User", "10.0.0.0/8, 127.0.0.1").expect("proxy");
+        assert_eq!(proxy.header(), "remote-user");
+        assert_eq!(proxy.networks(), "10.0.0.0/8,127.0.0.1/32");
+        let mut headers = HeaderMap::new();
+        headers.insert("remote-user", " alice ".parse().expect("value"));
+        assert_eq!(proxy.asserted(ip("10.1.1.1"), &headers).as_deref(), Some("alice"));
+        assert_eq!(proxy.asserted(ip("127.0.0.1"), &headers).as_deref(), Some("alice"));
+        assert_eq!(
+            proxy.asserted(ip("203.0.113.9"), &headers),
+            None,
+            "anyone can write the header; only the proxy is believed"
+        );
+        headers.insert("remote-user", "   ".parse().expect("value"));
+        assert_eq!(proxy.asserted(ip("10.1.1.1"), &headers), None, "blank is absent");
+        assert_eq!(proxy.asserted(ip("10.1.1.1"), &HeaderMap::new()), None);
+        assert!(
+            TrustedProxy::new("Remote-User", " , ").is_err(),
+            "no address is no proxy"
+        );
+        assert!(TrustedProxy::new("not a header", "10.0.0.0/8").is_err());
+    }
+
+    #[test]
+    fn an_account_without_a_password_belongs_to_the_proxy() {
+        let accounts = Accounts::from_toml(
+            "[[users]]\nname = \"alice\"\n[[users]]\nname = \"bob\"\npassword = \"pw\"\nread_only = true\n",
+        )
+        .expect("file");
+        assert_eq!(accounts.passwordless(), vec!["alice".to_string()]);
+        assert!(
+            !accounts.accepts_password("alice", ""),
+            "no password is not an empty password"
+        );
+        assert!(!accounts.accepts_password("alice", "anything"));
+        assert!(accounts.accepts_password("bob", "pw"));
+        assert!(accounts.has("alice") && !accounts.has("carol"));
+        assert!(!accounts.is_read_only("alice") && accounts.is_read_only("bob"));
+        assert!(
+            Accounts::from_toml("[[users]]\nname = \"alice\"\npassword = \"\"\n").is_err(),
+            "an empty password is a mistake, not a proxy account"
+        );
+    }
+
     #[test]
     fn a_cookie_is_found_among_its_neighbours() {
         assert_eq!(cookie_value(Some("zedis_bridge=abc")), Some("abc"));
@@ -743,11 +960,15 @@ mod tests {
         let users = parse_users("alice@secret,bob:ro@hunter2").expect("two accounts");
         assert!(!users["alice"].read_only);
         assert!(users["bob"].read_only);
-        assert_eq!(users["bob"].password, "hunter2", "the role is not part of the password");
+        assert_eq!(
+            users["bob"].password.as_deref(),
+            Some("hunter2"),
+            "the role is not part of the password"
+        );
 
         let users = parse_users("carol:ro@p:ss").expect("a role and a colon in the password");
         assert!(users["carol"].read_only);
-        assert_eq!(users["carol"].password, "p:ss");
+        assert_eq!(users["carol"].password.as_deref(), Some("p:ss"));
     }
 
     /// The spelling people reach for first. It cannot be made to mean what
@@ -757,11 +978,11 @@ mod tests {
     #[test]
     fn the_role_on_the_wrong_side_stays_part_of_the_password() {
         let users = parse_users("alice@secret:ro").expect("parses");
-        assert_eq!(users["alice"].password, "secret:ro");
+        assert_eq!(users["alice"].password.as_deref(), Some("secret:ro"));
         assert!(!users["alice"].read_only, "the role is only ever on the name");
 
         let users = parse_users("alice:ro@secret").expect("parses");
-        assert_eq!(users["alice"].password, "secret");
+        assert_eq!(users["alice"].password.as_deref(), Some("secret"));
         assert!(users["alice"].read_only);
     }
 
@@ -856,15 +1077,19 @@ mod tests {
     fn accounts_are_read_from_the_environment_shape() {
         let users = parse_users("alice@secret,bob@hunter2").expect("two accounts");
         assert_eq!(users.len(), 2);
-        assert_eq!(users["alice"].password, "secret");
-        assert_eq!(users["bob"].password, "hunter2");
+        assert_eq!(users["alice"].password.as_deref(), Some("secret"));
+        assert_eq!(users["bob"].password.as_deref(), Some("hunter2"));
         assert!(!users["alice"].read_only, "a plain entry is a full account");
 
         let users = parse_users(" alice@secret , bob@hunter2 , ").expect("spaces and a trailing comma");
         assert_eq!(users.len(), 2, "empty entries are skipped");
 
         let users = parse_users("alice@p@ss:w0rd").expect("a password may hold @ and :");
-        assert_eq!(users["alice"].password, "p@ss:w0rd", "the first @ is the separator");
+        assert_eq!(
+            users["alice"].password.as_deref(),
+            Some("p@ss:w0rd"),
+            "the first @ is the separator"
+        );
         assert!(
             !users["alice"].read_only,
             "a ':' in the password is not a role — that is why the role is on the name"

@@ -238,6 +238,25 @@ read_only = true
 
 这是纵深防御，不能替代 Redis 自己的 ACL：带 `-@write` 的 Redis ACL 用户由服务端在每条连接上强制执行，无论谁来连；而这里的限制由 bridge 强制执行，它是浏览器唯一能碰到的东西。两者一起用 —— ACL 是保证，账号角色是让按钮在请求发出之前就变灰的那一层。
 
+### 接入你自己的 SSO
+
+公司里已经有单点登录的话，通行做法是在应用前面放一个认证反向代理——oauth2-proxy、Authelia、Pomerium、Cloudflare Access、Tailscale 都是这一类：代理负责登录，把登录者是谁写进一个请求头。bridge 可以相信这个头：
+
+```bash
+-e ZEDIS_BRIDGE_TRUSTED_HEADER=Remote-User          # --trusted-header
+-e ZEDIS_BRIDGE_TRUSTED_PROXY=10.0.0.0/8,172.17.0.5  # --trusted-proxy：代理的地址
+```
+
+两个要么都配，要么都不配：任何人都能在请求里自己写一个 `Remote-User: alice`，所以只有**来自代理**的连接上这个头才算数——判断依据是 socket 对端地址，永远不看 `X-Forwarded-For`。头里的名字必须是 users 文件里的账号，该账号可以不写密码；不是账号的名字会被 `403` 拒绝（并记入审计日志），而不是当成新用户放进来。角色仍然在 users 文件里（`read_only = true`），因为代理只回答"你是谁"，不回答"你能做什么"。
+
+```toml
+[[users]]
+name = "alice@example.com"   # 和代理写进头里的值完全一致
+read_only = true
+```
+
+代理必须做到两件事：转发的每个请求都剥掉或覆盖这个头；并且是访问 bridge 的唯一入口——如果 bridge 还能被直连，地址检查就形同虚设。各家代理只有头名不同：Authelia 是 `Remote-User`，oauth2-proxy 是 `X-Auth-Request-User`（需开 `--set-xauthrequest`），Cloudflare Access 是 `Cf-Access-Authenticated-User-Email`，Tailscale 是 `Tailscale-User-Login`。不配这两项时，这个头根本不会被读取。
+
 ### 审计日志
 
 `--audit-log /data/audit.log`（`ZEDIS_BRIDGE_AUDIT_LOG`）会为每个事件追加一行 JSON：每次登录与登录失败、只读账号被拒绝的每次请求、服务器条目的新增、编辑（改了哪些设置、改前改后的值；改了哪些密钥，只记名字不记值；私有条目被改为共享）和删除、每条管理服务器的命令 —— `CONFIG SET`、`ACL SETUSER`、`REPLICAOF`、`MODULE LOAD`、`CLIENT KILL`、`FLUSHDB` 之类 —— 以及每条需要人确认才放行的命令，所以开了"每次写都要确认"的条目，它的每一次写都会留痕。`--audit-writes`（`ZEDIS_BRIDGE_AUDIT_WRITES=1`）再加上普通的数据写命令；读命令永远不记。参数里的密码会被抹掉，过长的值会截断，同一批里的同名命令合并成一行并记数量，文件以仅属主可读的权限创建。
