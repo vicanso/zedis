@@ -58,7 +58,10 @@ answer at the moment the form opened, before the tag was picked.
   desktop's timer, the bridge's store and the dialog's wording.
 - `SafeMode`'s toggle is unchanged for every other entry; a read-only account
   or ACL user (`StrictReadOnly`) has no window to open and gets no dialog.
-- The pre-existing gap is recorded, not fixed here: a destructive command
-  sent from the browser is refused by the bridge's `428` with no way to
-  answer it. Fixing it means carrying the desktop dialog's answer into
-  `BridgeRequest.confirm` for the operations that have one.
+- The channel the lock did not need was opened right after, for the
+  operations that do: a `ServerDb` may carry the answer a dialog collected
+  (`confirmed(name)`), and every bridge request the operation makes sends
+  it — flush, folder and multi-key delete, `CONFIG SET`, a confirmed
+  terminal line. *Confirm Writes* stays the terminal's rule on both sides:
+  the bridge applies it to session requests only, which are the terminal's,
+  since an editor's write is a question the page could not answer.

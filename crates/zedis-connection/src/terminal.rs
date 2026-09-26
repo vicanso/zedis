@@ -154,7 +154,12 @@ impl TerminalSession {
     /// ([`Self::drops_link`]) forgets it, so the next line reconnects
     /// instead of failing the same way.
     pub async fn run(&self, at: &ServerDb, cmd_name: &str, args: &[String]) -> Result<TerminalReply> {
-        let mut conn = self.connection(at).await?;
+        // The held connection is shared by every line; the confirmation is
+        // this line's, so it goes on this run's clone and not in the slot.
+        let mut conn = self
+            .connection(at)
+            .await?
+            .with_confirmation(at.confirmation().map(str::to_string));
         match cmd(cmd_name).arg(args).query_async::<Value>(&mut conn).await {
             Ok(value) => Ok(TerminalReply {
                 cmd: cmd_name.to_string(),

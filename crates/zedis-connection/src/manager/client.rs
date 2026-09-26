@@ -44,6 +44,13 @@ fn node_label_server(label: &str) -> RedisServer {
 }
 
 impl RedisClient {
+    /// This client's connection carrying `token` as the confirmation on
+    /// every bridge request (`ServerDb::confirmed`); nothing on a socket.
+    pub(crate) fn with_confirmation(mut self, token: Option<String>) -> Self {
+        self.connection = self.connection.with_confirmation(token);
+        self
+    }
+
     pub fn nodes(&self) -> (usize, usize) {
         (self.master_nodes.len(), self.nodes.len())
     }

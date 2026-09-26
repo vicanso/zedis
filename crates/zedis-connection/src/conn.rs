@@ -59,6 +59,23 @@ pub enum RedisAsyncConn {
 }
 
 impl RedisAsyncConn {
+    /// This connection carrying `token` as the confirmation on every bridge
+    /// request; a socket has nothing to carry it on and is returned as is.
+    pub(crate) fn with_confirmation(self, token: Option<String>) -> Self {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            match self {
+                RedisAsyncConn::Bridge(conn) => RedisAsyncConn::Bridge(conn.with_confirmation(token)),
+                other => other,
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let RedisAsyncConn::Bridge(conn) = self;
+            RedisAsyncConn::Bridge(conn.with_confirmation(token))
+        }
+    }
+
     /// The HTTP bridge behind this connection, when it is one.
     ///
     /// An accessor rather than an inline `if let`, because in the browser

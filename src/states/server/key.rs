@@ -1123,7 +1123,7 @@ impl ZedisServerState {
     }
 
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
-        let at = self.at();
+        let at = self.at_confirmed();
         let prefix = self.folder_prefix(&folder);
         let pattern = self.folder_pattern(&folder);
         self.spawn_with_arg(
@@ -1160,7 +1160,7 @@ impl ZedisServerState {
             self.emit_warning_notification(i18n_status_bar(cx, "flush_readonly_blocked"), cx);
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         let task = if all { ServerTask::FlushAll } else { ServerTask::FlushDb };
         self.spawn(
             task,
@@ -1195,7 +1195,7 @@ impl ZedisServerState {
     }
 
     pub fn unlink_keys(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
-        let at = self.at();
+        let at = self.at_confirmed();
         let remove_keys = keys.clone();
         self.spawn_with_arg(
             ServerTask::DeleteKeys,

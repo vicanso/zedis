@@ -1083,7 +1083,16 @@ async fn exec(
     // pipeline smuggle a FLUSHALL in behind a GET.
     let verdicts: Vec<policy::Verdict> = decoded
         .iter()
-        .map(|args| policy::check(&server, args, req.confirm.as_deref(), read_only, unlocked))
+        .map(|args| {
+            policy::check(
+                &server,
+                args,
+                req.confirm.as_deref(),
+                read_only,
+                unlocked,
+                req.session.is_some(),
+            )
+        })
         .collect();
     for (args, verdict) in decoded.iter().zip(&verdicts) {
         let refusal = match verdict {

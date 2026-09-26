@@ -820,12 +820,12 @@ impl ZedisTerminal {
                 let command_for_run = command.clone();
                 confirm_dangerous_command(&server, &kind, Some(&line), window, cx, move |_, cx| {
                     let Some(this) = entity.upgrade() else { return };
-                    this.update(cx, |this, cx| this.run_command_lines(command_for_run.clone(), cx));
+                    this.update(cx, |this, cx| this.run_command_lines(command_for_run.clone(), true, cx));
                 });
                 return;
             }
         }
-        self.run_command_lines(command, cx);
+        self.run_command_lines(command, false, cx);
     }
 
     /// `? <question>` handler: ask the configured AI endpoint for the
@@ -922,10 +922,17 @@ impl ZedisTerminal {
         }
     }
 
-    fn run_command_lines(&mut self, command: SharedString, cx: &mut Context<Self>) {
+    /// `confirmed` is whether the dialog above was shown and answered: the
+    /// lines then run with the answer, which is what the bridge in the
+    /// browser needs to hear (`ServerDb::confirmed`).
+    fn run_command_lines(&mut self, command: SharedString, confirmed: bool, cx: &mut Context<Self>) {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
-        let at = ServerDb::new(server_id.as_str(), server_state.db());
+        let at = if confirmed {
+            server_state.at_confirmed()
+        } else {
+            ServerDb::new(server_id.as_str(), server_state.db())
+        };
         let session = self.session.clone();
         let lines: Vec<String> = command
             .lines()

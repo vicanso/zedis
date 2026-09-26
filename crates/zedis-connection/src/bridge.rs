@@ -255,6 +255,9 @@ pub struct BridgeConn {
     server_id: String,
     db: usize,
     session: Option<String>,
+    /// Sent with every request: the answer to the question the bridge's
+    /// policy would otherwise ask of a destructive command (`ServerDb::confirmed`).
+    confirm: Option<String>,
 }
 
 impl std::fmt::Debug for BridgeConn {
@@ -276,7 +279,14 @@ impl BridgeConn {
             server_id: server_id.into(),
             db,
             session: None,
+            confirm: None,
         }
+    }
+
+    /// Carry `token` as the confirmation on every request from here on.
+    pub fn with_confirmation(mut self, token: Option<String>) -> Self {
+        self.confirm = token;
+        self
     }
 
     /// Pin every command to one backend connection. `session` is the token
@@ -309,7 +319,7 @@ impl BridgeConn {
             pipeline,
             fanout_masters: false,
             fanout_nodes: Vec::new(),
-            confirm: None,
+            confirm: self.confirm.clone(),
         }
     }
 
@@ -647,6 +657,22 @@ mod tests {
         let conn = BridgeConn::new(rec.clone(), "srv", 0);
         let _ = smol::block_on(conn.fanout_masters(vec![Cmd::new().arg("BGSAVE").get_packed_command()]));
         assert!(rec.seen.lock().expect("lock")[0].fanout_nodes.is_empty());
+    }
+
+    /// What a dialog answered rides on every request of a confirmed
+    /// connection — a pipeline's and a fan-out's too — and nothing else's.
+    #[test]
+    fn a_confirmed_connection_sends_its_answer_with_every_request() {
+        let rec = recorder(frames(vec![b"+OK\r\n".to_vec()]));
+        let mut plain = BridgeConn::new(rec.clone(), "srv", 0);
+        let _ = smol::block_on(plain.req_packed_command(&Cmd::new().arg("FLUSHDB").clone()));
+        let mut confirmed = BridgeConn::new(rec.clone(), "srv", 0).with_confirmation(Some("production".to_string()));
+        let _ = smol::block_on(confirmed.req_packed_command(&Cmd::new().arg("FLUSHDB").clone()));
+        let _ = smol::block_on(confirmed.fanout_masters(vec![Cmd::new().arg("FLUSHALL").get_packed_command()]));
+        let seen = rec.seen.lock().expect("lock");
+        assert_eq!(seen[0].confirm, None);
+        assert_eq!(seen[1].confirm.as_deref(), Some("production"));
+        assert_eq!(seen[2].confirm.as_deref(), Some("production"));
     }
 
     #[test]

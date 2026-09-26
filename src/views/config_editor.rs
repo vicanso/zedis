@@ -612,8 +612,15 @@ impl ZedisConfigEditor {
         cx.spawn(async move |handle, cx| {
             let key_clone = key.clone();
             let value_clone = value.clone();
+            // Behind the CONFIG SET dialog, so the bridge hears the answer.
+            let confirmed = get_server(&server_id).map(|s| s.name).unwrap_or_default();
             let task = cx.background_spawn(async move {
-                config_set(&ServerDb::new(server_id, db), key.as_str(), value.as_str()).await?;
+                config_set(
+                    &ServerDb::new(server_id, db).confirmed(confirmed),
+                    key.as_str(),
+                    value.as_str(),
+                )
+                .await?;
                 Ok(())
             });
             let result: Result<()> = task.await;

@@ -1282,6 +1282,13 @@ impl ZedisServerState {
     }
     /// Where this state's operations run: the selected database of the
     /// selected server, as the connection layer takes it (ADR 10).
+    /// [`Self::at`] carrying the confirmation a dialog just collected, for
+    /// an operation that only runs behind one (`ServerDb::confirmed`).
+    pub fn at_confirmed(&self) -> ServerDb {
+        let name = get_server(&self.server_id).map(|s| s.name).unwrap_or_default();
+        self.at().confirmed(name)
+    }
+
     pub fn at(&self) -> ServerDb {
         ServerDb::new(self.server_id.as_str(), self.db)
     }
