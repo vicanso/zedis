@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    assets::Assets,
+    assets::{Assets, CustomIconName},
     connection::get_servers,
     constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
     helpers::{humanize_keystroke, is_quiet_tag, resolve_tag_chip, resolve_tag_color},
@@ -587,8 +587,8 @@ impl ZedisSidebar {
                     .w_full()
                     .h_8()
                     // Collapsed rail centers the monogram; expanded indents the
-                    // name under the group label (its chevron and gap: `pl_5`).
-                    .when(!sidebar_collapsed, |this| this.pl_5().pr_2())
+                    // icon under the group label's chevron.
+                    .when(!sidebar_collapsed, |this| this.pl_4().pr_2())
                     .when(sidebar_collapsed, |this| this.px_1())
                     .rounded_md()
                     // Expanded: the full-row pill marks selection. Collapsed: the
@@ -635,12 +635,19 @@ impl ZedisSidebar {
                                         }),
                                 )
                             })
-                            // Expanded: the name, the environment chip where there is
-                            // one, and the link dot. No icon: a column of identical
-                            // cylinders told nobody anything, and the selection is
-                            // the bar and the fill — the name is not restyled.
+                            // Expanded: the database cylinder, the name, the
+                            // environment chip where there is one, and the link dot.
+                            // The icon is back by request — a bare column of names
+                            // read as a plain list — and carries the accent when the
+                            // row is the current server; the environment is the
+                            // chip's to say, so the icon wears no dot of its own.
                             .when(!sidebar_collapsed, |this| {
                                 this.child(
+                                    div()
+                                        .flex_none()
+                                        .child(Icon::new(CustomIconName::Database).text_color(icon_color)),
+                                )
+                                .child(
                                     Label::new(name)
                                         .text_xs()
                                         .whitespace_nowrap()
