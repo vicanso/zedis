@@ -336,13 +336,14 @@ impl ZedisTopology {
         let slots: usize = legs.iter().map(|leg| leg.slots.len()).sum();
         let atomic = self.atomic_migration_supported(cx);
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let body = rust_i18n::t!(
-            "topology.rebalance_confirm_body",
-            moves = legs.len(),
-            slots = slots,
-            locale = &locale
-        )
-        .to_string();
+        // The legacy body describes the loop this process drives; the
+        // atomic one says the servers move the slots themselves.
+        let body_key = if atomic {
+            "topology.rebalance_confirm_body_atomic"
+        } else {
+            "topology.rebalance_confirm_body"
+        };
+        let body = rust_i18n::t!(body_key, moves = legs.len(), slots = slots, locale = &locale).to_string();
         let title = i18n_topology(cx, "rebalance_confirm_title");
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
