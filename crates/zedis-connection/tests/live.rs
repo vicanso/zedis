@@ -62,6 +62,7 @@ use zedis_connection::{
     value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_card,
     zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
+use zedis_connection::{copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk};
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -6644,5 +6645,242 @@ fn standalone_script_show_reads_the_cache_back_on_valkey() {
                 .expect("an unknown digest is not an error"),
             None
         );
+    });
+}
+
+/// A key of each core type re-created on another database by commands
+/// alone (ADR 16): the value equal, the TTL kept, and the three conflict
+/// answers where the key already exists.
+#[test]
+#[ignore]
+fn standalone_logical_copy_recreates_every_core_type_with_its_ttl() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let src = ServerDb::new(&id, 0);
+        let dst = ServerDb::new(&id, 1);
+        let mut c0 = conn(&id, 0).await;
+        let mut c1 = conn(&id, 1).await;
+        let prefix = unique("logical");
+        let string = format!("{prefix}:s");
+        let hash = format!("{prefix}:h");
+        let list = format!("{prefix}:l");
+        let set = format!("{prefix}:set");
+        let zset = format!("{prefix}:z");
+        let stream = format!("{prefix}:x");
+        let json = format!("{prefix}:j");
+        let set_ok = async |c: &mut RedisAsyncConn, words: &[&str]| {
+            let mut command = cmd(words[0]);
+            for word in &words[1..] {
+                command.arg(*word);
+            }
+            command.exec_async(c).await.expect(words[0]);
+        };
+        set_ok(&mut c0, &["SET", &string, "v\u{1f600}", "PX", "300000"]).await;
+        set_ok(&mut c0, &["HSET", &hash, "a", "1", "b", "2", "c", "3"]).await;
+        set_ok(&mut c0, &["RPUSH", &list, "x", "y", "z", "x"]).await;
+        set_ok(&mut c0, &["SADD", &set, "m", "n", "o"]).await;
+        set_ok(&mut c0, &["ZADD", &zset, "1.5", "a", "2", "b"]).await;
+        set_ok(&mut c0, &["XADD", &stream, "1-1", "f", "v"]).await;
+        set_ok(&mut c0, &["XADD", &stream, "1-2", "f", "w"]).await;
+        set_ok(&mut c0, &["XADD", &stream, "2-0", "g", "h"]).await;
+        let json_ok = cmd("JSON.SET")
+            .arg(&json)
+            .arg("$")
+            .arg("{\"a\":[1,2]}")
+            .exec_async(&mut c0)
+            .await
+            .is_ok();
+        let mut keys = vec![
+            string.clone(),
+            hash.clone(),
+            list.clone(),
+            set.clone(),
+            zset.clone(),
+            stream.clone(),
+        ];
+        if json_ok {
+            keys.push(json.clone());
+        }
+        for key in &keys {
+            let pttl: i64 = cmd("PTTL").arg(key).query_async(&mut c0).await.expect("pttl");
+            let status = copy_key_logically(&src, &dst, key.as_bytes(), pttl, ConflictMode::Skip)
+                .await
+                .expect("copy");
+            assert_eq!(status, RestoreStatus::Recreated, "{key}");
+        }
+
+        let value: String = cmd("GET").arg(&string).query_async(&mut c1).await.expect("get");
+        assert_eq!(value, "v\u{1f600}");
+        let pttl: i64 = cmd("PTTL").arg(&string).query_async(&mut c1).await.expect("pttl");
+        assert!((1..=300_000).contains(&pttl), "the TTL travelled: {pttl}");
+        let fields: HashMap<String, String> = cmd("HGETALL").arg(&hash).query_async(&mut c1).await.expect("hgetall");
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields.get("b").map(String::as_str), Some("2"));
+        let items: Vec<String> = cmd("LRANGE")
+            .arg(&list)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut c1)
+            .await
+            .expect("lrange");
+        assert_eq!(items, ["x", "y", "z", "x"], "order and repeats kept");
+        let mut members: Vec<String> = cmd("SMEMBERS").arg(&set).query_async(&mut c1).await.expect("smembers");
+        members.sort();
+        assert_eq!(members, ["m", "n", "o"]);
+        let scored: Vec<(String, f64)> = cmd("ZRANGE")
+            .arg(&zset)
+            .arg(0)
+            .arg(-1)
+            .arg("WITHSCORES")
+            .query_async(&mut c1)
+            .await
+            .expect("zrange");
+        assert_eq!(scored, [("a".to_string(), 1.5), ("b".to_string(), 2.0)]);
+        let entries: Vec<(String, HashMap<String, String>)> = cmd("XRANGE")
+            .arg(&stream)
+            .arg("-")
+            .arg("+")
+            .query_async(&mut c1)
+            .await
+            .expect("xrange");
+        let ids: Vec<&str> = entries.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["1-1", "1-2", "2-0"], "entries keep their ids");
+        assert_eq!(entries[2].1.get("g").map(String::as_str), Some("h"));
+        if json_ok {
+            let document: String = cmd("JSON.GET").arg(&json).query_async(&mut c1).await.expect("json.get");
+            assert_eq!(document, "{\"a\":[1,2]}");
+        }
+
+        // The key exists now: skip leaves it, overwrite replaces rather than
+        // merges, abort is an error.
+        let skipped = copy_key_logically(&src, &dst, list.as_bytes(), -1, ConflictMode::Skip)
+            .await
+            .expect("skip");
+        assert_eq!(skipped, RestoreStatus::Skipped);
+        let replaced = copy_key_logically(&src, &dst, list.as_bytes(), -1, ConflictMode::Overwrite)
+            .await
+            .expect("overwrite");
+        assert_eq!(replaced, RestoreStatus::Recreated);
+        let len: usize = cmd("LLEN").arg(&list).query_async(&mut c1).await.expect("llen");
+        assert_eq!(len, 4, "overwrite replaced the list instead of appending to it");
+        assert!(
+            copy_key_logically(&src, &dst, list.as_bytes(), -1, ConflictMode::Abort)
+                .await
+                .is_err(),
+            "abort on an existing key"
+        );
+
+        for key in &keys {
+            cmd("DEL").arg(key).exec_async(&mut c0).await.expect("del");
+            cmd("DEL").arg(key).exec_async(&mut c1).await.expect("del");
+        }
+    });
+}
+
+/// The fallback fires on the one refusal it is for: a payload the target
+/// calls another server's. Made here by writing an RDB version no server
+/// has into a real dump; an intact one still goes through `RESTORE`.
+#[test]
+#[ignore]
+fn standalone_restore_or_recreate_falls_back_when_the_payload_is_another_servers() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let src = ServerDb::new(&id, 0);
+        let dst = ServerDb::new(&id, 1);
+        let mut c0 = conn(&id, 0).await;
+        let mut c1 = conn(&id, 1).await;
+        let key = unique("foreign");
+        cmd("HSET")
+            .arg(&key)
+            .arg("a")
+            .arg("1")
+            .arg("b")
+            .arg("2")
+            .exec_async(&mut c0)
+            .await
+            .expect("hset");
+        let entries = dump_keys_chunk(&src, std::slice::from_ref(&key)).await.expect("dump");
+        let mut foreign = entries.first().cloned().expect("one entry");
+        // The two RDB version bytes sit before the eight of the checksum.
+        let n = foreign.payload.len();
+        foreign.payload[n - 10] = 0xff;
+        foreign.payload[n - 9] = 0xff;
+        let refused = restore_keys_chunk(&dst, std::slice::from_ref(&foreign), ConflictMode::Skip)
+            .await
+            .expect("restore");
+        assert!(
+            matches!(&refused[0], RestoreStatus::Failed(message) if is_foreign_payload(message)),
+            "{refused:?}"
+        );
+
+        let statuses = restore_or_recreate_chunk(&src, &dst, std::slice::from_ref(&foreign), ConflictMode::Skip)
+            .await
+            .expect("restore or recreate");
+        assert_eq!(statuses, [RestoreStatus::Recreated]);
+        let fields: HashMap<String, String> = cmd("HGETALL").arg(&key).query_async(&mut c1).await.expect("hgetall");
+        assert_eq!(fields.get("a").map(String::as_str), Some("1"));
+        assert_eq!(fields.len(), 2);
+
+        cmd("DEL").arg(&key).exec_async(&mut c1).await.expect("del");
+        let statuses = restore_or_recreate_chunk(&src, &dst, &entries, ConflictMode::Skip)
+            .await
+            .expect("restore");
+        assert_eq!(
+            statuses,
+            [RestoreStatus::Written],
+            "an intact payload is restored as before"
+        );
+        cmd("DEL").arg(&key).exec_async(&mut c0).await.expect("del");
+        cmd("DEL").arg(&key).exec_async(&mut c1).await.expect("del");
+    });
+}
+
+/// A copy onto a server of the other flavor, run by hand:
+/// `ZEDIS_IT_FOREIGN=host:port` names it (a Redis when the standalone is a
+/// Valkey, or the other way round). `RESTORE` between the two is refused in
+/// every direction but Valkey 8 → Redis, so the key lands re-created —
+/// or written, where the payloads happen to agree — and equal either way.
+#[test]
+#[ignore]
+fn standalone_copy_lands_on_a_server_of_the_other_flavor() {
+    smol::block_on(async {
+        let Some(foreign) = scenario("ZEDIS_IT_FOREIGN") else {
+            eprintln!("skipped: ZEDIS_IT_FOREIGN not set");
+            return;
+        };
+        let id = register(server("it-standalone", standalone())).await;
+        let far = register(server("it-foreign", foreign)).await;
+        let mut near = conn(&id, 0).await;
+        let mut there = conn(&far, 0).await;
+        let key = unique("across");
+        cmd("HSET")
+            .arg(&key)
+            .arg("a")
+            .arg("1")
+            .arg("b")
+            .arg("2")
+            .exec_async(&mut near)
+            .await
+            .expect("hset");
+        cmd("EXPIRE")
+            .arg(&key)
+            .arg(300)
+            .exec_async(&mut near)
+            .await
+            .expect("expire");
+        let status = copy_key(id.clone(), 0, far.clone(), 0, key.clone(), ConflictMode::Skip)
+            .await
+            .expect("copy");
+        assert!(
+            matches!(status, Some(RestoreStatus::Written | RestoreStatus::Recreated)),
+            "{status:?}"
+        );
+        let fields: HashMap<String, String> = cmd("HGETALL").arg(&key).query_async(&mut there).await.expect("hgetall");
+        assert_eq!(fields.get("b").map(String::as_str), Some("2"));
+        let ttl: i64 = cmd("TTL").arg(&key).query_async(&mut there).await.expect("ttl");
+        assert!((1..=300).contains(&ttl), "the TTL travelled: {ttl}");
+        eprintln!("{key} landed on the other flavor as {status:?}");
+        cmd("DEL").arg(&key).exec_async(&mut near).await.expect("del");
+        cmd("DEL").arg(&key).exec_async(&mut there).await.expect("del");
     });
 }

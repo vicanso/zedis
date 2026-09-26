@@ -20,8 +20,8 @@
 use crate::connection::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
     ReadableWriteStatus, RestoreStatus, ServerDb, csv_header, detect_import_format, dump_keys_chunk, entry_to_csv,
-    entry_to_json, get_server, parse_readable_entries, read_readable_chunk, restore_keys_chunk, server_summary,
-    write_readable_chunk,
+    entry_to_json, get_server, is_foreign_payload, parse_readable_entries, read_readable_chunk, restore_keys_chunk,
+    restore_or_recreate_chunk, server_summary, write_readable_chunk,
 };
 use crate::error::Error;
 use chrono::Utc;
@@ -651,7 +651,7 @@ async fn import_binary_worker(
         if batch.is_empty() {
             break;
         }
-        flush_restore_batch(&handle, cx, &at, &mut batch, conflict).await?;
+        flush_restore_batch(&handle, cx, None, &at, &mut batch, conflict).await?;
         if eof {
             break;
         }
@@ -828,7 +828,7 @@ async fn copy_worker(
                 message: Some("missing".into()),
             })
             .collect();
-        flush_restore_batch(&handle, cx, &dst, &mut entries, conflict).await?;
+        flush_restore_batch(&handle, cx, Some(&src), &dst, &mut entries, conflict).await?;
         if !missing.is_empty() {
             let count = missing.len() as u64;
             handle
@@ -844,15 +844,23 @@ async fn copy_worker(
     Ok(())
 }
 
+/// Restore a batch onto `at`. With a `src` — a server-to-server copy — a
+/// payload the target cannot read (Redis and Valkey number their RDB
+/// versions apart) is re-created by type from the source instead; from a
+/// file there is no source to read, so the line says what to do.
 async fn flush_restore_batch(
     handle: &gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
+    src: Option<&ServerDb>,
     at: &ServerDb,
     buffer: &mut Vec<DumpEntry>,
     conflict: ConflictMode,
 ) -> Result<()> {
     let entries = std::mem::take(buffer);
-    let statuses = restore_keys_chunk(at, &entries, conflict).await?;
+    let statuses = match src {
+        Some(src) => restore_or_recreate_chunk(src, at, &entries, conflict).await?,
+        None => restore_keys_chunk(at, &entries, conflict).await?,
+    };
     let mut written = 0u64;
     let mut skipped = 0u64;
     let mut failed = 0u64;
@@ -872,6 +880,16 @@ async fn flush_restore_batch(
                     message: None,
                 });
             }
+            RestoreStatus::Recreated => {
+                written += 1;
+                bytes += size;
+                log_lines.push(LogLine {
+                    key,
+                    bytes: size,
+                    status: LogStatus::Ok,
+                    message: Some("re-created by type: the target does not read this server's DUMP payloads".into()),
+                });
+            }
             RestoreStatus::Skipped => {
                 skipped += 1;
                 log_lines.push(LogLine {
@@ -883,11 +901,19 @@ async fn flush_restore_batch(
             }
             RestoreStatus::Failed(msg) => {
                 failed += 1;
+                let message = if src.is_none() && is_foreign_payload(msg) {
+                    format!(
+                        "{msg} — the file was written by a server whose DUMP payloads this one cannot read \
+                         (Redis and Valkey number their RDB versions apart); export as JSON to move keys between them"
+                    )
+                } else {
+                    msg.clone()
+                };
                 log_lines.push(LogLine {
                     key,
                     bytes: size,
                     status: LogStatus::Failed,
-                    message: Some(msg.clone().into()),
+                    message: Some(message.into()),
                 });
             }
         }

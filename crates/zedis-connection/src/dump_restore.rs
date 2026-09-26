@@ -38,6 +38,7 @@ use super::manager::get_connection_manager;
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::logical_copy::restore_or_recreate_chunk;
 use crate::server_db::ServerDb;
 use futures::future::try_join_all;
 use redis::cmd;
@@ -135,6 +136,10 @@ impl ConflictMode {
 pub enum RestoreStatus {
     Written,
     Skipped,
+    /// Written, but by commands rather than `RESTORE`: the target could not
+    /// read the payload and the key was re-created by type from the source
+    /// (`logical_copy`, ADR 16). Told apart so the log can say so.
+    Recreated,
     Failed(String),
 }
 
@@ -315,9 +320,11 @@ pub struct ConflictPreview {
 }
 
 /// Copy a single key's value (and remaining TTL) to another server / db
-/// via `DUMP` on the source and `RESTORE` on the target. Source and target
-/// may be the same server (e.g. a cross-db copy). Returns `Ok(None)` when
-/// the source key no longer exists, otherwise the restore outcome.
+/// via `DUMP` on the source and `RESTORE` on the target — or, where the
+/// target does not read the source's payloads (Redis and Valkey number
+/// their RDB versions apart), re-created by type from the source. Source
+/// and target may be the same server (e.g. a cross-db copy). Returns
+/// `Ok(None)` when the source key no longer exists, otherwise the outcome.
 pub async fn copy_key(
     source_id: String,
     source_db: usize,
@@ -326,11 +333,12 @@ pub async fn copy_key(
     key: String,
     conflict: ConflictMode,
 ) -> Result<Option<RestoreStatus>> {
-    let entries = dump_keys_chunk(&ServerDb::new(source_id, source_db), std::slice::from_ref(&key)).await?;
+    let source = ServerDb::new(source_id, source_db);
+    let entries = dump_keys_chunk(&source, std::slice::from_ref(&key)).await?;
     let Some(entry) = entries.into_iter().next() else {
         return Ok(None);
     };
     let target = ServerDb::new(target_id, target_db);
-    let mut statuses = restore_keys_chunk(&target, std::slice::from_ref(&entry), conflict).await?;
+    let mut statuses = restore_or_recreate_chunk(&source, &target, std::slice::from_ref(&entry), conflict).await?;
     Ok(statuses.pop())
 }

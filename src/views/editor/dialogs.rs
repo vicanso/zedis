@@ -345,7 +345,7 @@ impl ZedisEditor {
             .await;
             let _ = this.update(cx, move |this, cx| {
                 this.server_state.update(cx, |state, cx| match result {
-                    Ok(Some(RestoreStatus::Written)) => state.emit_success_notification(
+                    Ok(Some(RestoreStatus::Written | RestoreStatus::Recreated)) => state.emit_success_notification(
                         format!("{target_name} / db{target_db}").into(),
                         i18n_copy(cx, "done"),
                         cx,

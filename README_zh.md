@@ -32,7 +32,7 @@
 - 📊 **实时可观测** —— 实时指标、内存分析器（离线 + AI 建议、服务端 key 大小直方图）、热点 Key 跟踪（`HOTKEYS`）、集群每 slot 统计、慢日志 ↔ Latency、`MONITOR`、按值搜索。
 - 🔐 **隐私优先且安全** —— 元数据只存本地文件、密钥用每机唯一密钥加密存储、破坏性操作对生产环境升级确认措辞。
 - 🌐 **连接一切** —— TLS/SSL、SSH 隧道（含带口令的加密密钥）、Cluster/Sentinel、从 Redis Insight / ARDM / Tiny RDM 导入，以及 8 种界面语言。
-- 🔀 **Redis 和 Valkey 同为一等公民** —— 每个版本门槛都单独写明 Valkey 一侧，Valkey 独有的功能有自己的面板（`COMMANDLOG`、原子槽迁移、`CLUSTER SLOT-STATS`、集群多库），识别 valkey-json / valkey-search / valkey-bloom，CI 在 Redis 6.2–8 之外还跑 Valkey 8、9 和 bundle（[支持矩阵](#-redis-与-valkey)）。
+- 🔀 **Redis 和 Valkey 同为一等公民** —— 每个版本门槛都单独写明 Valkey 一侧，Valkey 独有的每项功能都有自己的面板或操作（`COMMANDLOG`、原子槽迁移、`CLUSTER SLOT-STATS`、集群多库、`SCRIPT SHOW`、可用区），能识别 valkey-json / valkey-search / valkey-bloom，Redis 与 Valkey 之间的复制在 `DUMP` 载荷互不相认的情况下也能落地，CI 在 Redis 6.2–8 之外还跑 Valkey 8.0、9.0 和 9.1 bundle（见 [矩阵](#-redis-与-valkey)）。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、表格 / JSON 回复视图 + AI 命令助手、Batch 模式、跨服务器复制/对比。
 - 🕸️ **浏览器里也能用** —— 同一套代码编译成 WebAssembly，一个约 26 MB 的 Docker 镜像即可自托管（见 [Web 版](#-web-版自托管)）。
 - 🤖 **拴着绳子的 AI 助手** —— web bridge 同时是 MCP 服务端：只读账号、同一份命令白名单、每次调用都留审计（见 [MCP](#让-ai-助手走同一扇门mcp)）。
@@ -99,12 +99,12 @@
 
 ## 🔀 Redis 与 Valkey
 
-Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 分叉、此后各自发布的版本线。每一个依赖服务器版本的功能都按 flavor 分别设门槛（`crates/zedis-connection/src/floors.rs`），Valkey 从未发布的命令不会发给它，Valkey 先发布的功能也会更早启用。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8 / 9、`redis-stack` 和 `valkey-bundle`。
+Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 分叉、此后各自发布的版本线。Valkey 在这里不是"兼容模式"：每一个依赖服务器版本的功能都按 flavor 分别设门槛（`crates/zedis-connection/src/floors.rs`），Valkey 从未发布的命令不会发给它，Valkey 先发布的功能会更早启用，而 Valkey 发布的、客户端能呈现给人的每一项功能都有对应的面板或操作 —— 下表就是全部的分歧点，2026-09-26 对照 Redis 7.4 / 8.0 / 8.10 与 Valkey 8.0 / 8.1 / 9.0 / 9.1 的 `COMMAND LIST` 和 `COMMAND DOCS` 逐条核对过。剩下的只有 GUI 用不上的命令（`CLIENT CAPA`、`CLIENT IMPORT-SOURCE`、`DELIFEQ`、`MSETEX`、`CLUSTERSCAN`；Redis 那边的 `DELEX`、`HIMPORT`、`BACKUP` 之类），两边都不会发。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8.0 / 9.0、`redis-stack` 和 `valkey-bundle`（Valkey 9.1 带全部模块）—— Valkey 的 lane 固定在每条线的*首个*版本上，门槛若写错，错的就在那里。
 
 | 功能 | Redis | Valkey |
 |---|---|---|
 | `COMMANDLOG` —— 慢命令、大请求、大回复三种日志 | — | 8.1 |
-| 原子槽迁移（`CLUSTER MIGRATESLOTS`） | — | 9.0 |
+| 原子槽迁移（`CLUSTER MIGRATESLOTS`；Redis 8.4 有自己的 `CLUSTER MIGRATION`，尚未接入，Redis 集群仍走经典 reshard） | — | 9.0 |
 | `CLUSTER SLOT-STATS`（每 slot 的键数、CPU、网络） | 8.2 | 8.0 |
 | 集群模式下的多数据库 | — | 9.0 |
 | Hash 字段 TTL（`HEXPIRE`、`HSETEX`、`HTTL`…） | 7.4 | 9.0 |
@@ -124,6 +124,8 @@ Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 �
 | 时间序列 | RedisTimeSeries | — |
 
 服务器没有的命令不会导致崩溃：需要它的面板会说明，其它一切照常。会让服务器崩溃的命令也不会发出：Redis 8.0–8.2.6 和 Valkey 8.0 在带 `CLIENT NO-TOUCH` 的客户端唤醒另一个阻塞客户端时会在 `lookupKey()` 里段错误，所以 Zedis 在这些版本上不设置该标志，代价只是内存分析里热度一列略欠精确。
+
+**两者之间的复制。** `DUMP` 载荷带着写出它的服务器的 RDB 版本号，而两条线各编各的 —— Redis 7.4 写 12、Redis 8.10 写 15，Valkey 8 写 11、Valkey 9 写 80 —— 所以除了 Valkey 8 → Redis 之外，`RESTORE` 在每个方向上都会拒绝。Zedis 识别这个拒绝，改为从源端按类型重建（string、hash、list、set、sorted set、保留条目 id 的 stream、JSON），TTL 一并带过去，于是 Redis 与 Valkey 之间的迁移和单键复制两个方向都能落地，日志会标出哪些键是这样过去的。带不过去的会说明：Bloom filter、时间序列、vector set 没有可移植的读法，stream 的消费组和 hash 的字段级 TTL 不属于值本身。`.zdis` 文件里存的是 `DUMP` 载荷，在另一个 flavor 上无法重建 —— 要用文件在两者之间搬键，请导出为 JSON。
 
 ## 📦 安装
 

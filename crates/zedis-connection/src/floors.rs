@@ -141,8 +141,10 @@ pub const CLIENT_KILL_MAXAGE: Floor = Floor::both("7.4.0", "8.0.0");
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
 /// Atomic slot migration — `CLUSTER MIGRATESLOTS` / `GETSLOTMIGRATIONS` /
 /// `CANCELSLOTMIGRATIONS`, whole slots moved server-side instead of the
-/// `SETSLOT` + `MIGRATE` loop (Valkey 9.0; Redis has no equivalent, and
-/// the legacy path still works on Valkey).
+/// `SETSLOT` + `MIGRATE` loop (Valkey 9.0). Redis 8.4 ships its own under
+/// another name and shape (`CLUSTER MIGRATION`), which this client does not
+/// send yet: a Redis cluster keeps the legacy path, which still works on
+/// both.
 pub const ATOMIC_SLOT_MIGRATION: Floor = Floor::valkey_only("9.0.0");
 /// `COMMANDLOG` — the slow log generalised into slow / large-request /
 /// large-reply logs (Valkey 8.1; Redis has no equivalent).

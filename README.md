@@ -32,7 +32,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 📊 **Real-time observability** — live metrics, a memory analyzer (offline + AI recommendations, server-side key-size histogram), hot-key tracking (`HOTKEYS`), per-slot cluster stats, Slow Log ↔ Latency, `MONITOR`, and value search.
 - 🔐 **Privacy-first & safe** — metadata stays in a local file, secrets are encrypted with a per-machine key, and destructive actions escalate their confirms on production.
 - 🌐 **Connect anything** — TLS/SSL, SSH tunnels (incl. passphrase-protected keys), Cluster/Sentinel, import from Redis Insight / ARDM / Tiny RDM, and 8 UI languages.
-- 🔀 **Redis and Valkey, both first-class** — every version gate carries a Valkey floor of its own, Valkey-only features get panels (`COMMANDLOG`, atomic slot migration, `CLUSTER SLOT-STATS`, multi-database clusters), valkey-json / valkey-search / valkey-bloom are recognised, and CI runs Valkey 8, 9 and the bundle beside Redis 6.2–8 ([the matrix](#-redis-and-valkey)).
+- 🔀 **Redis and Valkey, both first-class** — every version gate carries a Valkey floor of its own, every Valkey-only feature has its panel or action (`COMMANDLOG`, atomic slot migration, `CLUSTER SLOT-STATS`, multi-database clusters, `SCRIPT SHOW`, availability zones), valkey-json / valkey-search / valkey-bloom are recognised, a copy between a Redis and a Valkey lands even though their `DUMP` payloads do not, and CI runs Valkey 8.0, 9.0 and the 9.1 bundle beside Redis 6.2–8 ([the matrix](#-redis-and-valkey)).
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, table/JSON replies + AI command assistant, batch mode, and cross-server copy/diff.
 - 🕸️ **In the browser too** — the same app compiled to WebAssembly, self-hosted from one ~26 MB Docker image ([Web version](#-web-version-self-hosted)).
 - 🤖 **An AI assistant on a leash** — the web bridge is an MCP server too: a read-only account, the same command allowlist, every call audited ([MCP](#an-ai-assistant-at-the-same-door-mcp)).
@@ -101,12 +101,12 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 
 ## 🔀 Redis and Valkey
 
-Zedis treats the two as what they are: one wire protocol, two release lines that diverged at 7.2.4 and have shipped different things since. Every feature that depends on a server version is gated by a floor per flavor (`crates/zedis-connection/src/floors.rs`), so a Valkey that never shipped a command is never sent it, and a Valkey that shipped it earlier gets it earlier. The live integration suite runs on Redis 6.2 / 7.2 / 8.0, Valkey 8 / 9, `redis-stack` and `valkey-bundle` on every change.
+Zedis treats the two as what they are: one wire protocol, two release lines that diverged at 7.2.4 and have shipped different things since. Valkey is not a compatibility mode here: every feature that depends on a server version is gated by a floor per flavor (`crates/zedis-connection/src/floors.rs`), so a Valkey that never shipped a command is never sent it, a Valkey that shipped it earlier gets it earlier, and everything Valkey ships that a client can put in front of a person has its panel or action — the table below is the whole list of divergences, checked against `COMMAND LIST` and `COMMAND DOCS` of Redis 7.4 / 8.0 / 8.10 and Valkey 8.0 / 8.1 / 9.0 / 9.1 on 2026-09-26. What is left over is what a GUI has no use for (`CLIENT CAPA`, `CLIENT IMPORT-SOURCE`, `DELIFEQ`, `MSETEX`, `CLUSTERSCAN`; on the Redis side `DELEX`, `HIMPORT`, `BACKUP` and the like), which is sent to neither. The live integration suite runs on Redis 6.2 / 7.2 / 8.0, Valkey 8.0 / 9.0, `redis-stack` and `valkey-bundle` (Valkey 9.1 with its modules) on every change — the Valkey lanes are pinned to the *first* release of each line, which is where a floor is wrong if it is wrong.
 
 | Feature | Redis | Valkey |
 |---|---|---|
 | `COMMANDLOG` — slow, large-request and large-reply logs | — | 8.1 |
-| Atomic slot migration (`CLUSTER MIGRATESLOTS`) | — | 9.0 |
+| Atomic slot migration (`CLUSTER MIGRATESLOTS`; Redis 8.4 has its own `CLUSTER MIGRATION`, not used yet — a Redis cluster keeps the classic reshard) | — | 9.0 |
 | `CLUSTER SLOT-STATS` (per-slot keys, CPU, network) | 8.2 | 8.0 |
 | Multiple databases in cluster mode | — | 9.0 |
 | Hash field TTL (`HEXPIRE`, `HSETEX`, `HTTL`…) | 7.4 | 9.0 |
@@ -126,6 +126,8 @@ Zedis treats the two as what they are: one wire protocol, two release lines that
 | Time series | RedisTimeSeries | — |
 
 A command a server does not have is never a crash: the panel that needs it says so, and everything else keeps working. A command that *would* crash the server is not sent either: Redis 8.0–8.2.6 and Valkey 8.0 die in `lookupKey()` when a `CLIENT NO-TOUCH` client unblocks another client, so Zedis withholds that flag there and the memory analyzer's heat column is a little less exact instead.
+
+**Copying between the two.** `DUMP` payloads carry the RDB version of the server that wrote them, and the two flavors number theirs apart — Redis 7.4 writes 12 and Redis 8.10 15, Valkey 8 writes 11 and Valkey 9 80 — so `RESTORE` refuses a copy in every direction but Valkey 8 → Redis. Zedis notices that refusal and re-creates the key by type from the source instead (string, hash, list, set, sorted set, stream with its entry ids, JSON), TTL included, so a migration or a single-key copy between a Redis and a Valkey lands either way; the log says which keys travelled that way. What cannot travel like that says so: a Bloom filter, a time series or a vector set has no portable read, a stream's consumer groups and a hash's per-field TTLs are not part of the value. A `.zdis` file is `DUMP` payloads and cannot be re-created on the other flavor — export as JSON to move keys between them by file.
 
 ## 📦 Installation
 
