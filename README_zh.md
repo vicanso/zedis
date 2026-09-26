@@ -35,6 +35,7 @@
 - 🔀 **Redis 和 Valkey 同为一等公民** —— 每个版本门槛都单独写明 Valkey 一侧，Valkey 独有的功能有自己的面板（`COMMANDLOG`、原子槽迁移、`CLUSTER SLOT-STATS`、集群多库），识别 valkey-json / valkey-search / valkey-bloom，CI 在 Redis 6.2–8 之外还跑 Valkey 8、9 和 bundle（[支持矩阵](#-redis-与-valkey)）。
 - ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、表格 / JSON 回复视图 + AI 命令助手、Batch 模式、跨服务器复制/对比。
 - 🕸️ **浏览器里也能用** —— 同一套代码编译成 WebAssembly，一个约 26 MB 的 Docker 镜像即可自托管（见 [Web 版](#-web-版自托管)）。
+- 🤖 **拴着绳子的 AI 助手** —— web bridge 同时是 MCP 服务端：只读账号、同一份命令白名单、每次调用都留审计（见 [MCP](#让-ai-助手走同一扇门mcp)）。
 
 > ### 🔄 已经在用 Redis Insight?
 > **粘贴它导出的数据库配置,所有连接一次迁入** —— 不用一个个重填地址、端口和密码。花大约一分钟,就能拿你真实的连接试试 Zedis,快不快自己判断。
@@ -306,6 +307,17 @@ read_only = true
 ```
 
 这只是 bridge 这一扇门的日志：`redis-cli` 和应用程序直连 Redis 的操作不在里面；它回答不了"谁改了这个 key"，能回答的是"有没有人手动改过"。bridge 只追加、从不重新打开文件，轮转请用 `copytruncate`。
+
+### 让 AI 助手走同一扇门（MCP）
+
+`POST /v1/mcp` 是一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务端，Claude Code、Cursor 或任何 MCP 客户端都可以经由 bridge 读取你的 Redis —— 只能读。助手像脚本一样用 HTTP Basic 登录，账号**必须是只读的**（`ai:ro@secret`，或 `read_only = true`），完整权限的账号无论问什么都会被拒绝。工具是按模型而不是按终端的习惯设计的：`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一小段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`，跑任意其它只读命令。工具发出的每条命令都过页面同一份只读白名单，再加一层拒绝会改动共享连接状态的命令（`SELECT`、`AUTH`、`CLIENT SETNAME`、`SUBSCRIBE` 等）；写入、脚本和管理命令都会被拒绝，并附上模型读得懂的原因。大值会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，而且**每次调用都是审计日志里的一行** —— 读也记，因为调用者是替人做事的程序。
+
+```sh
+claude mcp add --transport http zedis https://bridge.example.com/v1/mcp \
+  --header "Authorization: Basic $(printf 'ai:secret' | base64)"
+```
+
+它走的是页面同一扇门，而不是另开一条通道：用户文件里的 `servers` 规则决定助手看得见哪些条目，审计日志记录它读了什么，数据不经过任何第三方。
 
 ### Web 版不包含的功能
 

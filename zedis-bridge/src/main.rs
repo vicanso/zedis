@@ -32,6 +32,7 @@
 mod api;
 mod audit;
 mod auth;
+mod mcp;
 mod policy;
 mod resp;
 mod session;
@@ -76,6 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "zedis-bridge [--listen {DEFAULT_LISTEN}] [--base-path /prefix] [--static <dir>] \
              [--users-file <file>] [--insecure-cookie] [--audit-log <file>] [--audit-writes] \
              [--trusted-header <name> --trusted-proxy <cidr,…>]"
+        );
+        println!();
+        println!("POST /v1/mcp is a Model Context Protocol server for an AI assistant (Claude");
+        println!("Code, Cursor, …): HTTP Basic with a read-only account, and tools that list the");
+        println!("servers, scan keys, describe one key, read INFO and SLOWLOG and run any other");
+        println!("read-only command. A full account is refused there, every call is one audit");
+        println!(
+            "line, and an account may make {} calls a minute.",
+            mcp::CALLS_PER_MINUTE
         );
         println!();
         println!("Serves the Zedis web build compiled into this binary, and forwards its RESP");
@@ -287,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cookie: auth::CookiePolicy::new(secure_cookie, &base_path),
         base_path,
         web_root,
+        mcp_calls: mcp::Limiter::new(),
     });
     // With the peer's address, which the audit log records beside whatever
     // a proxy wrote in `X-Forwarded-For`.

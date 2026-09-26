@@ -35,6 +35,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 - 🔀 **Redis and Valkey, both first-class** — every version gate carries a Valkey floor of its own, Valkey-only features get panels (`COMMANDLOG`, atomic slot migration, `CLUSTER SLOT-STATS`, multi-database clusters), valkey-json / valkey-search / valkey-bloom are recognised, and CI runs Valkey 8, 9 and the bundle beside Redis 6.2–8 ([the matrix](#-redis-and-valkey)).
 - ⌨️ **Built for power users** — ⌘K command palette, redis-cli with completion, table/JSON replies + AI command assistant, batch mode, and cross-server copy/diff.
 - 🕸️ **In the browser too** — the same app compiled to WebAssembly, self-hosted from one ~26 MB Docker image ([Web version](#-web-version-self-hosted)).
+- 🤖 **An AI assistant on a leash** — the web bridge is an MCP server too: a read-only account, the same command allowlist, every call audited ([MCP](#an-ai-assistant-at-the-same-door-mcp)).
 
 > ### 🔄 Already using Redis Insight?
 > **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
@@ -309,6 +310,17 @@ A **Prod**-tagged entry starts with its writes locked, on the desktop and in the
 ```
 
 It is the log of this door only: what reaches Redis from `redis-cli` or an application is not in it, and it cannot tell you who changed a key — it can tell you whether anyone did so by hand. The bridge appends and never reopens the file, so rotate it with `copytruncate`.
+
+### An AI assistant at the same door (MCP)
+
+`POST /v1/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server, so Claude Code, Cursor or any other MCP client can read your Redis through the bridge — and only read. The assistant signs in like a script (HTTP Basic) as an account that **must be read-only** (`ai:ro@secret`, or `read_only = true`); a full account is refused there whatever it asks. Its tools are shaped for a model rather than a terminal: `list_servers`, `scan_keys` (paged, across every master of a cluster), `inspect_key` (type, TTL, memory, encoding, length and a short preview), `server_info` and `slowlog` (parsed, per master), and `read_command` for any other read-only command. Every command a tool sends goes through the same read-only allowlist as the page, plus a refusal of the commands that would change the shared connection (`SELECT`, `AUTH`, `CLIENT SETNAME`, `SUBSCRIBE`, …); writes, scripts and administration are refused with a reason the model can read. Large values are cut to a size that fits a context, an account may make 120 calls a minute, and **every call is one line of the audit log** — reads included, because the caller is a program acting for someone.
+
+```sh
+claude mcp add --transport http zedis https://bridge.example.com/v1/mcp \
+  --header "Authorization: Basic $(printf 'ai:secret' | base64)"
+```
+
+It is the door the page uses, not a second one: the `servers` rules of the users file say which entries the assistant sees, the audit log says what it read, and nothing passes through a third party on the way.
 
 ### What the web version leaves out
 

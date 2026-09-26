@@ -20,7 +20,7 @@
 
 use crate::audit::{self, Audit, Event, Origin, ServerRef};
 use crate::static_files::{Representation, WebBuild};
-use crate::{auth, policy, resp, session::Sessions, static_files};
+use crate::{auth, mcp, policy, resp, session::Sessions, static_files};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -58,6 +58,8 @@ pub struct AppState {
     /// `--static <dir>`: serve the web build from this directory instead of
     /// the one compiled in.
     pub web_root: Option<std::path::PathBuf>,
+    /// How often each account may call an MCP tool (ADR 15).
+    pub mcp_calls: mcp::Limiter,
 }
 
 /// The page and the API, under `state.base_path` when there is one.
@@ -84,6 +86,13 @@ pub fn router(state: AppState) -> Router {
         .route(&at("/v1/exec"), post(exec))
         .route(&at("/v1/session"), post(open_session))
         .route(&at("/v1/session/{token}"), delete(close_session))
+        // The MCP entry point (ADR 15): JSON-RPC over POST alone. GET is
+        // the server-initiated stream this bridge does not offer, DELETE a
+        // session it does not keep; both answer 405 as the protocol allows.
+        .route(
+            &at("/v1/mcp"),
+            post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
+        )
         .fallback(web_asset)
         .with_state(state)
 }
@@ -189,7 +198,7 @@ impl ApiError {
 
     /// What the audit log writes in `error`: the `error` word, and the
     /// message when there is one.
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let (_, error, message, _, _) = self.parts();
         if message.is_empty() {
             error.to_string()
@@ -233,7 +242,7 @@ type ApiResult<T> = Result<T, ApiError>;
 /// hang on the name — and one that is not is refused outright rather than
 /// falling through to the password paths: the proxy already said who this
 /// is, and a login form behind single sign-on would be the wrong answer.
-fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
+pub(crate) fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
     if let (Some(proxy), Some(peer)) = (&state.trusted, origin.peer_ip)
         && let Some(name) = proxy.asserted(peer, headers)
     {
@@ -259,7 +268,7 @@ fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiR
 
 /// What a read-only account is told, wherever it is refused. One wording,
 /// because the page shows it verbatim and the CLI prints it.
-const READ_ONLY_REFUSAL: &str = "this account is read-only";
+pub(crate) const READ_ONLY_REFUSAL: &str = "this account is read-only";
 
 /// The longest name a failed login, or an unknown proxy identity, is
 /// recorded under: it is whatever was typed into the box or written into
@@ -293,7 +302,7 @@ fn authorize_write(
 /// ones (those with no owner; entries written before there were owners have
 /// none, so they stay everyone's) that the account's `servers` rules admit,
 /// which without rules is all of them.
-fn visible_to(accounts: &auth::Accounts, server: &RedisServer, account: &str) -> bool {
+pub(crate) fn visible_to(accounts: &auth::Accounts, server: &RedisServer, account: &str) -> bool {
     match server.owner.as_deref() {
         None | Some("") => accounts.may_see_shared(account, server),
         Some(owner) => owner == account,
@@ -977,16 +986,16 @@ async fn close_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-struct PipelineSpecDto {
+#[derive(Default, Deserialize)]
+pub(crate) struct PipelineSpecDto {
     offset: usize,
     count: usize,
     #[serde(default)]
     atomic: bool,
 }
 
-#[derive(Deserialize)]
-struct ExecRequest {
+#[derive(Deserialize, Default)]
+pub(crate) struct ExecRequest {
     server: String,
     #[serde(default)]
     db: usize,
@@ -1021,6 +1030,21 @@ struct ExecRequest {
     /// What the caller sends after being refused once.
     #[serde(default)]
     confirm: Option<String>,
+}
+
+impl ExecRequest {
+    /// The request an MCP tool makes (`mcp.rs`), whose commands arrive
+    /// already decoded — so no frames — for one routed connection, every
+    /// master, or the masters `fanout_nodes` names, one command each.
+    pub(crate) fn decoded(server: &str, db: usize, fanout_nodes: Vec<String>, every_master: bool) -> Self {
+        Self {
+            server: server.to_string(),
+            db,
+            fanout: (every_master || !fanout_nodes.is_empty()).then(|| "masters".to_string()),
+            fanout_nodes,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1130,8 +1154,28 @@ async fn exec(
     result.map(Json)
 }
 
-/// Send the judged commands of `req` and collect the replies.
+/// Send the judged commands of `req` and collect the replies as frames.
 async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) -> ApiResult<ExecResponse> {
+    let (values, nodes) = forward_values(state, req, decoded).await?;
+    let replies = values
+        .iter()
+        .map(|value| {
+            resp::encode_to_vec(value)
+                .map(|bytes| B64.encode(bytes))
+                .map_err(|e| ApiError::Upstream(e.to_string()))
+        })
+        .collect::<ApiResult<Vec<String>>>()?;
+    Ok(ExecResponse { replies, nodes })
+}
+
+/// Send the judged commands of `req` and collect the replies as values,
+/// with the `host:port` of the node behind each one for a fan-out. The
+/// page's route encodes them as frames; the MCP tools (`mcp.rs`) read them.
+pub(crate) async fn forward_values(
+    state: &AppState,
+    req: &ExecRequest,
+    decoded: &[Vec<Vec<u8>>],
+) -> ApiResult<(Vec<redis::Value>, Vec<String>)> {
     // Fan-out is its own path: it needs the client, not a connection, because
     // reaching every master is topology knowledge this process owns.
     if let Some(mode) = &req.fanout {
@@ -1200,16 +1244,8 @@ async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) 
             }
             (answered, values)
         };
-        let replies = values
-            .iter()
-            .map(|value| {
-                resp::encode_to_vec(value)
-                    .map(|bytes| B64.encode(bytes))
-                    .map_err(|e| ApiError::Upstream(e.to_string()))
-            })
-            .collect::<ApiResult<Vec<String>>>()?;
         let nodes = servers.iter().map(|s| format!("{}:{}", s.host, s.port)).collect();
-        return Ok(ExecResponse { replies, nodes });
+        return Ok((values, nodes));
     }
 
     let mut conn = match &req.session {
@@ -1247,18 +1283,7 @@ async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) 
         }
     };
 
-    let replies = values
-        .iter()
-        .map(|value| {
-            resp::encode_to_vec(value)
-                .map(|bytes| B64.encode(bytes))
-                .map_err(|e| ApiError::Upstream(e.to_string()))
-        })
-        .collect::<ApiResult<Vec<String>>>()?;
-    Ok(ExecResponse {
-        replies,
-        nodes: Vec::new(),
-    })
+    Ok((values, Vec::new()))
 }
 
 #[cfg(test)]

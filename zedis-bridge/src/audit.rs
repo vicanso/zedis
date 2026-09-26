@@ -121,6 +121,7 @@ impl Audit {
             peer: origin.peer.as_deref(),
             forwarded_for: origin.forwarded_for.as_deref(),
             auth: origin.auth,
+            via: origin.via,
             event,
         };
         let mut bytes = match serde_json::to_vec(&line) {
@@ -168,6 +169,10 @@ pub struct Origin {
     /// own: `proxy` for an identity the reverse proxy asserted. Set by
     /// `authorize`, written into every line of that request.
     pub auth: Option<&'static str>,
+    /// Which door the request came through when it was not the page or a
+    /// script at the API: `mcp` for a tool call by an AI assistant (ADR 15).
+    /// Set by that handler, written into every line of that request.
+    pub via: Option<&'static str>,
 }
 
 impl Origin {
@@ -176,6 +181,7 @@ impl Origin {
             peer: Some(peer.to_string()),
             peer_ip: Some(peer.ip()),
             auth: None,
+            via: None,
             forwarded_for: headers
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
@@ -196,6 +202,8 @@ struct Line<'a> {
     forwarded_for: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auth: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    via: Option<&'static str>,
     #[serde(flatten)]
     event: Event,
 }
@@ -250,6 +258,22 @@ pub enum Event {
     /// …and closed it before it ended.
     Locked {
         server: ServerRef,
+    },
+    /// A tool call at the MCP entry point (ADR 15) — every one, whatever it
+    /// read. The other lines keep what a person did that mattered; this
+    /// door admits a program acting for someone, and reads are the whole
+    /// of what it does.
+    Tool {
+        tool: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<ServerRef>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        db: Option<usize>,
+        /// The arguments as the caller gave them; a `read_command`'s
+        /// command redacted and cut like a command line's.
+        arguments: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -376,7 +400,7 @@ fn kind_name(kind: &DangerKind) -> &'static str {
 
 /// Arguments as a line keeps them: each cut at [`MAX_ARG_CHARS`], and the
 /// list at [`MAX_ARGS`], with what was dropped counted.
-fn cut(args: Vec<String>) -> Vec<String> {
+pub(crate) fn cut(args: Vec<String>) -> Vec<String> {
     let total = args.len();
     let mut out: Vec<String> = args
         .into_iter()
