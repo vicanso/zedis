@@ -106,7 +106,7 @@ Zedis treats the two as what they are: one wire protocol, two release lines that
 | Feature | Redis | Valkey |
 |---|---|---|
 | `COMMANDLOG` — slow, large-request and large-reply logs | — | 8.1 |
-| Atomic slot migration (`CLUSTER MIGRATESLOTS`; Redis 8.4 has its own `CLUSTER MIGRATION`, not used yet — a Redis cluster keeps the classic reshard) | — | 9.0 |
+| Atomic slot migration (`CLUSTER MIGRATESLOTS` on Valkey, `CLUSTER MIGRATION` on Redis — one Reshard tab, the server's own command behind it) | 8.4 | 9.0 |
 | `CLUSTER SLOT-STATS` (per-slot keys, CPU, network) | 8.2 | 8.0 |
 | Multiple databases in cluster mode | — | 9.0 |
 | Hash field TTL (`HEXPIRE`, `HSETEX`, `HTTL`…) | 7.4 | 9.0 |

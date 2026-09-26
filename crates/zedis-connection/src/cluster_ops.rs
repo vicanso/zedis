@@ -28,11 +28,14 @@
 use crate::async_connection::{open_node_connection, open_node_connection_cached};
 use crate::config::get_server;
 use crate::error::Error;
-use crate::manager::cluster_migrate_slots;
-use crate::manager::{AtomicSlotMigration, cluster_cancel_slot_migrations, cluster_get_slot_migrations};
+use crate::manager::{
+    AtomicSlotMigration, SlotMigrationDialect, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
+    cluster_migrate_slots, get_connection_manager,
+};
 use crate::server_db::ServerDb;
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
+use std::collections::BTreeSet;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -141,30 +144,74 @@ pub async fn node_add_slots(node: &ClusterNode, slots: &[u16]) -> Result<()> {
     Ok(())
 }
 
-/// `CLUSTER MIGRATESLOTS` (Valkey 9) — hand these ranges to `target_id`, the
-/// server doing the moving. Only the source node can start one.
-pub async fn node_migrate_slots(node: &ClusterNode, ranges: &[(u16, u16)], target_id: &str) -> Result<()> {
-    cluster_migrate_slots(&mut node.connection().await?, ranges, target_id)
+/// Which spelling of atomic slot migration this cluster speaks: Valkey's
+/// or Redis's, from the pooled client's flavor.
+async fn dialect_for(server_id: &str) -> Result<SlotMigrationDialect> {
+    let client = get_connection_manager().get_client(server_id, 0).await?;
+    Ok(SlotMigrationDialect::for_flavor(client.is_valkey()))
+}
+
+/// Hand `ranges` from `source` to `target` (`target_id` is the target's
+/// node id), the server doing the moving. Told to the source on Valkey
+/// (`CLUSTER MIGRATESLOTS`), to the target on Redis (`CLUSTER MIGRATION
+/// IMPORT`) — one job either way, and the caller names both ends so it
+/// need not know which.
+pub async fn node_migrate_slots(
+    source: &ClusterNode,
+    target: &ClusterNode,
+    target_id: &str,
+    ranges: &[(u16, u16)],
+) -> Result<()> {
+    let dialect = dialect_for(&source.server_id).await?;
+    let node = if dialect.starts_on_target() { target } else { source };
+    cluster_migrate_slots(&mut node.connection().await?, dialect, ranges, target_id)
         .await
         .map_err(|e| Error::Invalid {
-            message: format!("CLUSTER MIGRATESLOTS on {}: {e}", node.addr),
+            message: format!("{} on {}: {e}", dialect.start_command(), node.addr),
         })
 }
 
-/// `CLUSTER CANCELSLOTMIGRATIONS` — only the node that started a migration
-/// can abort it.
+/// Abort the migrations this node has a hand in. On Valkey only the node
+/// that started a migration can abort it, and this is that node. Redis
+/// tracks a job on both ends and takes the cancel on either, so there the
+/// other end of each of this node's running jobs is told as well — a
+/// cancel that reached one end alone would leave the other retrying.
 pub async fn node_cancel_slot_migrations(node: &ClusterNode) -> Result<()> {
-    cluster_cancel_slot_migrations(&mut node.connection().await?)
-        .await
-        .map_err(|e| Error::Invalid {
-            message: format!("CLUSTER CANCELSLOTMIGRATIONS on {}: {e}", node.addr),
-        })
+    let dialect = dialect_for(&node.server_id).await?;
+    let cancel = |node: ClusterNode| async move {
+        cluster_cancel_slot_migrations(&mut node.connection().await?, dialect)
+            .await
+            .map_err(|e| Error::Invalid {
+                message: format!("{} on {}: {e}", dialect.cancel_command(), node.addr),
+            })
+    };
+    let running = match dialect {
+        SlotMigrationDialect::Valkey => Vec::new(),
+        SlotMigrationDialect::Redis => cluster_get_slot_migrations(&mut node.connection().await?, dialect).await?,
+    };
+    cancel(node.clone()).await?;
+    let other_ends: BTreeSet<String> = running
+        .iter()
+        .filter(|job| job.is_active())
+        .flat_map(|job| [job.source_node.clone(), job.target_node.clone()])
+        .collect();
+    if other_ends.is_empty() {
+        return Ok(());
+    }
+    let client = get_connection_manager().get_client(&node.server_id, 0).await?;
+    for master in client.nodes_description().slot_map.masters {
+        if master.addr != node.addr && other_ends.contains(&master.node_id) {
+            cancel(ClusterNode::new(&node.server_id, master.addr)).await?;
+        }
+    }
+    Ok(())
 }
 
-/// `CLUSTER GETSLOTMIGRATIONS` on this node, on the pooled connection — the
+/// The migrations this node knows of, on the pooled connection — the
 /// Reshard tab polls it.
 pub async fn node_slot_migrations(node: &ClusterNode) -> Result<Vec<AtomicSlotMigration>> {
-    cluster_get_slot_migrations(&mut node.cached_connection().await?).await
+    let dialect = dialect_for(&node.server_id).await?;
+    cluster_get_slot_migrations(&mut node.cached_connection().await?, dialect).await
 }
 
 /// What the load heatmap samples from each master.

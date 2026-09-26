@@ -62,7 +62,9 @@ use zedis_connection::{
     value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_card,
     zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
-use zedis_connection::{copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk};
+use zedis_connection::{
+    SlotMigrationDialect, copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk,
+};
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
@@ -5848,15 +5850,18 @@ fn cluster_rebalance_plan_is_empty_on_a_fresh_cluster() {
     });
 }
 
+/// One job in two dialects: Valkey 9's `MIGRATESLOTS`, told to the source,
+/// and Redis 8.4's `CLUSTER MIGRATION IMPORT`, told to the target. Either
+/// way two slots move and come back, watched from the source's side.
 #[test]
 #[ignore]
-fn cluster_migrates_slots_atomically_on_valkey_9() {
+fn cluster_migrates_slots_atomically_on_valkey_9_and_redis_8_4() {
     smol::block_on(async {
         let addr = skip_unless!("ZEDIS_IT_CLUSTER");
         let id = register(protected_server("it-cluster-atomic", addr)).await;
         let _slots = CLUSTER_SLOTS.lock().await;
         if !supports(&id, floors::ATOMIC_SLOT_MIGRATION).await {
-            eprintln!("skipped: atomic slot migration is Valkey 9.0+");
+            eprintln!("skipped: atomic slot migration is Valkey 9.0+ / Redis 8.4+");
             return;
         }
         let node = |addr: &str| {
@@ -5879,8 +5884,11 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
         }
         /// The names already on the node, so a job from an earlier run (or
         /// an earlier half of this one) cannot satisfy the wait below.
-        async fn migration_names<C: redis::aio::ConnectionLike + Send>(conn: &mut C) -> HashSet<String> {
-            cluster_get_slot_migrations(conn)
+        async fn migration_names<C: redis::aio::ConnectionLike + Send>(
+            conn: &mut C,
+            dialect: SlotMigrationDialect,
+        ) -> HashSet<String> {
+            cluster_get_slot_migrations(conn, dialect)
                 .await
                 .expect("getslotmigrations")
                 .into_iter()
@@ -5894,13 +5902,16 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
         /// why "nothing is active" is not the condition.
         async fn wait_for_export<C: redis::aio::ConnectionLike + Send>(
             conn: &mut C,
+            dialect: SlotMigrationDialect,
             before: &HashSet<String>,
             target_id: &str,
             what: &str,
         ) -> zedis_connection::AtomicSlotMigration {
             let mut last = Vec::new();
             for _ in 0..160 {
-                last = cluster_get_slot_migrations(conn).await.expect("getslotmigrations");
+                last = cluster_get_slot_migrations(conn, dialect)
+                    .await
+                    .expect("migration status");
                 if let Some(found) = last.iter().find(|migration| {
                     migration.is_export()
                         && migration.target_node == target_id
@@ -5914,12 +5925,9 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
             panic!("{what}: {last:?}");
         }
 
-        let map = get_connection_manager()
-            .get_client(&id, 0)
-            .await
-            .expect("client")
-            .nodes_description()
-            .slot_map;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        let dialect = SlotMigrationDialect::for_flavor(client.is_valkey());
+        let map = client.nodes_description().slot_map;
         // The master holding the most slots gives two of them up, so the
         // cluster keeps full coverage whatever happens.
         let source = map
@@ -5954,18 +5962,26 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
             .await
             .expect("connect to the target");
 
-        let before = migration_names(&mut source_conn).await;
-        cluster_migrate_slots(&mut source_conn, &[moving], &target.node_id)
+        let before = migration_names(&mut source_conn, dialect).await;
+        // Valkey's source pushes, Redis's target pulls: the start goes to
+        // whichever end the dialect names, the watch stays on the source.
+        let starter: &mut RedisAsyncConn = if dialect.starts_on_target() {
+            &mut target_conn
+        } else {
+            &mut source_conn
+        };
+        cluster_migrate_slots(starter, dialect, &[moving], &target.node_id)
             .await
-            .expect("migrateslots");
+            .expect("start the migration");
         let job = wait_for_export(
             &mut source_conn,
+            dialect,
             &before,
             &target.node_id,
             "the migration reached a terminal state",
         )
         .await;
-        assert_eq!(job.state, "success", "{job:?}");
+        assert!(matches!(job.state.as_str(), "success" | "completed"), "{job:?}");
         assert_eq!(job.source_node, source.node_id);
         assert!(!job.slot_ranges.is_empty());
         assert_eq!(
@@ -5975,18 +5991,24 @@ fn cluster_migrates_slots_atomically_on_valkey_9() {
         );
 
         // Put them back so the cluster ends where it started.
-        let before = migration_names(&mut target_conn).await;
-        cluster_migrate_slots(&mut target_conn, &[moving], &source.node_id)
+        let before = migration_names(&mut target_conn, dialect).await;
+        let starter: &mut RedisAsyncConn = if dialect.starts_on_target() {
+            &mut source_conn
+        } else {
+            &mut target_conn
+        };
+        cluster_migrate_slots(starter, dialect, &[moving], &source.node_id)
             .await
-            .expect("migrateslots back");
+            .expect("start the migration back");
         let back = wait_for_export(
             &mut target_conn,
+            dialect,
             &before,
             &source.node_id,
             "the migration back reached a terminal state",
         )
         .await;
-        assert_eq!(back.state, "success", "{back:?}");
+        assert!(matches!(back.state.as_str(), "success" | "completed"), "{back:?}");
         assert_eq!(owner_of(&id, moving.1).await, source.node_id, "and back again");
     });
 }

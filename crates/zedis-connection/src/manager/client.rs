@@ -57,6 +57,11 @@ impl RedisClient {
     pub fn version(&self) -> String {
         self.version.to_string()
     }
+    /// Whether the server is a Valkey — what a flavor-dependent command
+    /// shape (atomic slot migration) is chosen by.
+    pub fn is_valkey(&self) -> bool {
+        self.is_valkey
+    }
     pub fn databases(&self) -> usize {
         self.databases
     }

@@ -77,13 +77,13 @@ impl ZedisTopology {
         cx.notify();
     }
 
-    /// Whether this server moves slots atomically (Valkey 9) instead of
-    /// through the app's own `SETSLOT` + `MIGRATE` loop.
+    /// Whether this server moves slots atomically (Valkey 9, Redis 8.4)
+    /// instead of through the app's own `SETSLOT` + `MIGRATE` loop.
     pub(super) fn atomic_migration_supported(&self, cx: &Context<Self>) -> bool {
         self.mode == TopologyMode::Cluster && self.server_state.read(cx).supports(floors::ATOMIC_SLOT_MIGRATION)
     }
 
-    /// Poll `CLUSTER GETSLOTMIGRATIONS` while the Reshard tab is open on a
+    /// Poll the migration status while the Reshard tab is open on a
     /// server that has it. Two seconds: the job list is what tells the user
     /// a migration they just started is alive, and the reply is tiny.
     pub(super) fn ensure_slot_migration_poll(&mut self, cx: &mut Context<Self>) {

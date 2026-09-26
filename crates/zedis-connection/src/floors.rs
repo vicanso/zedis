@@ -141,11 +141,11 @@ pub const CLIENT_KILL_MAXAGE: Floor = Floor::both("7.4.0", "8.0.0");
 pub const HASH_FIELD_TTL: Floor = Floor::both("7.4.0", "9.0.0");
 /// Atomic slot migration — `CLUSTER MIGRATESLOTS` / `GETSLOTMIGRATIONS` /
 /// `CANCELSLOTMIGRATIONS`, whole slots moved server-side instead of the
-/// `SETSLOT` + `MIGRATE` loop (Valkey 9.0). Redis 8.4 ships its own under
-/// another name and shape (`CLUSTER MIGRATION`), which this client does not
-/// send yet: a Redis cluster keeps the legacy path, which still works on
-/// both.
-pub const ATOMIC_SLOT_MIGRATION: Floor = Floor::valkey_only("9.0.0");
+/// `SETSLOT` + `MIGRATE` loop (Valkey 9.0) — and Redis 8.4's own spelling
+/// of the same job, `CLUSTER MIGRATION IMPORT / STATUS / CANCEL`, told to
+/// the target rather than the source (`manager/slot_migration.rs`,
+/// `SlotMigrationDialect`). The legacy path still works on both.
+pub const ATOMIC_SLOT_MIGRATION: Floor = Floor::both("8.4.0", "9.0.0");
 /// `COMMANDLOG` — the slow log generalised into slow / large-request /
 /// large-reply logs (Valkey 8.1; Redis has no equivalent).
 pub const COMMANDLOG: Floor = Floor::valkey_only("8.1.0");
@@ -284,12 +284,22 @@ mod tests {
 
     #[test]
     fn valkey_only_features_never_clear_on_redis() {
-        assert!(ATOMIC_SLOT_MIGRATION.met_by(true, &v("9.0.0")));
-        assert!(!ATOMIC_SLOT_MIGRATION.met_by(true, &v("8.1.0")));
-        assert!(!ATOMIC_SLOT_MIGRATION.met_by(false, &v("99.0.0")));
+        assert!(SCRIPT_SHOW.met_by(true, &v("8.0.0")));
+        assert!(!SCRIPT_SHOW.met_by(true, &v("7.2.9")));
+        assert!(!SCRIPT_SHOW.met_by(false, &v("99.0.0")));
         assert!(COMMANDLOG.met_by(true, &v("8.1.0")));
         assert!(!COMMANDLOG.met_by(true, &v("8.0.4")));
         assert!(!COMMANDLOG.met_by(false, &v("99.0.0")));
+    }
+
+    /// Atomic slot migration is one job in two dialects: Valkey 9.0's
+    /// `MIGRATESLOTS`, Redis 8.4's `CLUSTER MIGRATION`.
+    #[test]
+    fn atomic_slot_migration_is_valkey_9_and_redis_8_4() {
+        assert!(ATOMIC_SLOT_MIGRATION.met_by(true, &v("9.0.0")));
+        assert!(!ATOMIC_SLOT_MIGRATION.met_by(true, &v("8.1.10")));
+        assert!(ATOMIC_SLOT_MIGRATION.met_by(false, &v("8.4.0")));
+        assert!(!ATOMIC_SLOT_MIGRATION.met_by(false, &v("8.2.7")));
     }
 
     #[test]

@@ -49,6 +49,12 @@ jobs:
             image: redis:7.2
           - name: redis-8.0
             image: redis:8.0
+          # The newest Redis: every Redis-side floor above 8.0 is measured
+          # here — CLUSTER SLOT-STATS (8.2), SET IFEQ and CLUSTER MIGRATION
+          # (8.4), HOTKEYS (8.6), XNACK (8.8). The lanes above cannot see
+          # any of them.
+          - name: redis-8.10
+            image: redis:8.10
           # The oldest Valkey: the edge every Valkey floor is measured from
           # (COMMANDLOG and SET IFEQ arrive in 8.1, SCRIPT SHOW and
           # CLUSTER SLOT-STATS are already here). `valkey:8` would resolve to

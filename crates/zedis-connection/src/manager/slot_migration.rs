@@ -12,20 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Atomic slot migration (Valkey 9.0): `CLUSTER MIGRATESLOTS`,
-//! `CLUSTER GETSLOTMIGRATIONS` and `CLUSTER CANCELSLOTMIGRATIONS`.
+//! Atomic slot migration: `CLUSTER MIGRATESLOTS` / `GETSLOTMIGRATIONS` /
+//! `CANCELSLOTMIGRATIONS` on Valkey 9, `CLUSTER MIGRATION IMPORT` /
+//! `STATUS` / `CANCEL` on Redis 8.4 — one job, two dialects.
 //!
 //! The legacy reshard the app drives itself — `SETSLOT MIGRATING` /
 //! `IMPORTING`, a `GETKEYSINSLOT` + `MIGRATE` loop per slot, then
 //! `SETSLOT NODE` fanned out — moves keys one batch at a time and leaves a
-//! slot marked on both ends if anything interrupts it. Valkey 9 moves whole
-//! slots server-side in the AOF format instead: one command starts the job,
-//! the server owns it, and closing the app cannot strand a slot.
-//!
-//! All three commands are sent to the **source** node. The legacy path is
-//! still there on Valkey 9, so this is a second route gated by
+//! slot marked on both ends if anything interrupts it. Both servers move
+//! whole slots server-side instead: one command starts the job, the server
+//! owns it, and closing the app cannot strand a slot. The legacy path is
+//! still there on both, so this is a second route gated by
 //! [`floors::ATOMIC_SLOT_MIGRATION`](crate::floors::ATOMIC_SLOT_MIGRATION),
 //! not a replacement.
+//!
+//! The dialects differ in who is told. Valkey's job is the **source's**:
+//! `MIGRATESLOTS … NODE target` goes to the node giving the slots up, which
+//! pushes them. Redis's is the **target's**: `MIGRATION IMPORT start end`
+//! goes to the node taking them, which pulls them from their owners. Both
+//! track the job on both ends under one id and answer the status from
+//! either, so the poll is the same. [`SlotMigrationDialect`] names which
+//! command each end takes; `cluster_ops` picks the node. The rows are read
+//! into one [`AtomicSlotMigration`] in Valkey's vocabulary: Redis's
+//! `migrate` / `import` operations become `EXPORT` / `IMPORT`, its
+//! millisecond times seconds, its `completed` done beside Valkey's `success`.
 
 use crate::error::Error;
 use redis::aio::ConnectionLike;
@@ -33,14 +43,58 @@ use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// One row of `CLUSTER GETSLOTMIGRATIONS`.
+/// Which server's spelling of the job this is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotMigrationDialect {
+    /// Valkey 9: `CLUSTER MIGRATESLOTS`, told to the source.
+    Valkey,
+    /// Redis 8.4: `CLUSTER MIGRATION IMPORT`, told to the target.
+    Redis,
+}
+
+impl SlotMigrationDialect {
+    pub fn for_flavor(is_valkey: bool) -> Self {
+        if is_valkey { Self::Valkey } else { Self::Redis }
+    }
+
+    /// Whether the start command goes to the node *taking* the slots
+    /// rather than the one giving them up.
+    pub fn starts_on_target(self) -> bool {
+        matches!(self, Self::Redis)
+    }
+
+    pub fn start_command(self) -> &'static str {
+        match self {
+            Self::Valkey => "CLUSTER MIGRATESLOTS",
+            Self::Redis => "CLUSTER MIGRATION IMPORT",
+        }
+    }
+
+    pub fn status_command(self) -> &'static str {
+        match self {
+            Self::Valkey => "CLUSTER GETSLOTMIGRATIONS",
+            Self::Redis => "CLUSTER MIGRATION STATUS",
+        }
+    }
+
+    pub fn cancel_command(self) -> &'static str {
+        match self {
+            Self::Valkey => "CLUSTER CANCELSLOTMIGRATIONS",
+            Self::Redis => "CLUSTER MIGRATION CANCEL",
+        }
+    }
+}
+
+/// One row of `CLUSTER GETSLOTMIGRATIONS` (Valkey) or `CLUSTER MIGRATION
+/// STATUS ALL` (Redis), in Valkey's words.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AtomicSlotMigration {
-    /// The migration's 40-byte name, and what `CANCELSLOTMIGRATIONS`
+    /// The migration's 40-byte name (Redis: its task id), and what a cancel
     /// reports against.
     pub name: String,
     /// `EXPORT` on the source node, `IMPORT` on the target — the same job
-    /// seen from either end.
+    /// seen from either end. Redis says `migrate` for the source's side and
+    /// is read as `EXPORT`.
     pub operation: String,
     /// The slot ranges as the server prints them (`"0-10 20-30"`).
     pub slot_ranges: String,
@@ -50,37 +104,44 @@ pub struct AtomicSlotMigration {
     pub create_time: i64,
     pub last_update_time: i64,
     pub last_ack_time: i64,
-    /// `success`, `failed` and `cancelled` are terminal; anything else is
-    /// a migration still running.
+    /// `success` / `completed`, `failed` and `cancelled` are terminal;
+    /// anything else is a migration still running.
     pub state: String,
     /// The server's explanation when a migration failed.
     pub message: String,
-    /// Copy-on-write memory the fork is holding, in bytes.
+    /// Copy-on-write memory the fork is holding, in bytes (Valkey only).
     pub cow_size: u64,
-    /// Bytes still to send.
+    /// Bytes still to send (Valkey only).
     pub remaining_repl_size: u64,
 }
 
 impl AtomicSlotMigration {
-    /// Still running. The terminal states are named in the command's
-    /// documentation; treating an unknown state as active is deliberate,
-    /// so a state added later shows up as in-flight rather than finished.
+    /// Still running. The terminal states are the ones each server
+    /// documents; treating an unknown state as active is deliberate, so a
+    /// state added later shows up as in-flight rather than finished.
     pub fn is_active(&self) -> bool {
-        !matches!(self.state.as_str(), "success" | "failed" | "cancelled")
+        !matches!(
+            self.state.as_str(),
+            "success" | "completed" | "failed" | "cancelled" | "canceled"
+        )
     }
 
-    /// The source's side of the job — the end that can cancel it.
+    /// The source's side of the job — the end the Reshard tab lists, so a
+    /// job is one row and not two.
     pub fn is_export(&self) -> bool {
         self.operation.eq_ignore_ascii_case("EXPORT")
     }
 }
 
-/// `CLUSTER MIGRATESLOTS SLOTSRANGE <start> <end> … NODE <target-id>` —
-/// hand `ranges` to `target_id`. Sent to the **source** node, which owns
-/// the job from then on. Returns as soon as the server accepted it; the
+/// Start moving `ranges` to `target_id`. On Valkey `conn` is the **source**
+/// (`CLUSTER MIGRATESLOTS SLOTSRANGE … NODE target`), on Redis the
+/// **target** (`CLUSTER MIGRATION IMPORT start end …`, which needs no node
+/// id: the slots' owners are the sources) — [`SlotMigrationDialect::starts_on_target`]
+/// says which. Returns as soon as the server accepted the job; the
 /// migration itself is watched through [`cluster_get_slot_migrations`].
 pub async fn cluster_migrate_slots<C: ConnectionLike + Send>(
     conn: &mut C,
+    dialect: SlotMigrationDialect,
     ranges: &[(u16, u16)],
     target_id: &str,
 ) -> Result<()> {
@@ -90,32 +151,78 @@ pub async fn cluster_migrate_slots<C: ConnectionLike + Send>(
         });
     }
     let mut c = cmd("CLUSTER");
-    c.arg("MIGRATESLOTS").arg("SLOTSRANGE");
-    for (start, end) in ranges {
-        c.arg(*start).arg(*end);
+    match dialect {
+        SlotMigrationDialect::Valkey => {
+            c.arg("MIGRATESLOTS").arg("SLOTSRANGE");
+            for (start, end) in ranges {
+                c.arg(*start).arg(*end);
+            }
+            c.arg("NODE").arg(target_id);
+        }
+        SlotMigrationDialect::Redis => {
+            c.arg("MIGRATION").arg("IMPORT");
+            for (start, end) in ranges {
+                c.arg(*start).arg(*end);
+            }
+        }
     }
-    c.arg("NODE").arg(target_id);
+    // Valkey answers OK, Redis the task id; the status list carries the
+    // id either way, so neither is kept here.
     let _: String = c.query_async(conn).await?;
     Ok(())
 }
 
-/// `CLUSTER GETSLOTMIGRATIONS` — every in-flight job on this node plus the
-/// recently finished ones the server still remembers.
-pub async fn cluster_get_slot_migrations<C: ConnectionLike + Send>(conn: &mut C) -> Result<Vec<AtomicSlotMigration>> {
-    let value: Value = cmd("CLUSTER").arg("GETSLOTMIGRATIONS").query_async(conn).await?;
+/// Every in-flight job on this node plus the recently finished ones the
+/// server still remembers, from whichever end `conn` is.
+pub async fn cluster_get_slot_migrations<C: ConnectionLike + Send>(
+    conn: &mut C,
+    dialect: SlotMigrationDialect,
+) -> Result<Vec<AtomicSlotMigration>> {
+    let value: Value = match dialect {
+        SlotMigrationDialect::Valkey => cmd("CLUSTER").arg("GETSLOTMIGRATIONS").query_async(conn).await?,
+        SlotMigrationDialect::Redis => {
+            cmd("CLUSTER")
+                .arg("MIGRATION")
+                .arg("STATUS")
+                .arg("ALL")
+                .query_async(conn)
+                .await?
+        }
+    };
     let Value::Array(items) = value else {
         return Ok(Vec::new());
     };
     // A row this build cannot read is skipped, never fatal: the list is
     // diagnostic and one odd entry must not hide the others.
-    Ok(items.iter().filter_map(parse_migration).collect())
+    Ok(items
+        .iter()
+        .filter_map(|row| match dialect {
+            SlotMigrationDialect::Valkey => parse_migration(row),
+            SlotMigrationDialect::Redis => parse_redis_migration(row),
+        })
+        .collect())
 }
 
-/// `CLUSTER CANCELSLOTMIGRATIONS` — abort every migration this node
-/// started. Only the source can cancel; the target has to be told through
-/// its own source.
-pub async fn cluster_cancel_slot_migrations<C: ConnectionLike + Send>(conn: &mut C) -> Result<()> {
-    let _: String = cmd("CLUSTER").arg("CANCELSLOTMIGRATIONS").query_async(conn).await?;
+/// Abort every migration this node has a hand in. On Valkey only the source
+/// can cancel; Redis takes the cancel on either end and answers with a
+/// count, which is why `cluster_ops` tells both ends there.
+pub async fn cluster_cancel_slot_migrations<C: ConnectionLike + Send>(
+    conn: &mut C,
+    dialect: SlotMigrationDialect,
+) -> Result<()> {
+    match dialect {
+        SlotMigrationDialect::Valkey => {
+            let _: String = cmd("CLUSTER").arg("CANCELSLOTMIGRATIONS").query_async(conn).await?;
+        }
+        SlotMigrationDialect::Redis => {
+            let _: i64 = cmd("CLUSTER")
+                .arg("MIGRATION")
+                .arg("CANCEL")
+                .arg("ALL")
+                .query_async(conn)
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -138,6 +245,41 @@ fn parse_migration(value: &Value) -> Option<AtomicSlotMigration> {
             _ => {}
         }
     }
+    Some(migration)
+}
+
+/// A `CLUSTER MIGRATION STATUS` row: `id`, `slots`, `source`, `dest`,
+/// `operation` (`import` / `migrate`), `state`, `last_error`, `retries`,
+/// `create_time` / `start_time` / `end_time` in milliseconds,
+/// `write_pause_ms` — read into Valkey's fields.
+fn parse_redis_migration(value: &Value) -> Option<AtomicSlotMigration> {
+    let mut migration = AtomicSlotMigration::default();
+    let (mut created, mut started, mut ended) = (0u64, 0u64, 0u64);
+    for (key, val) in extract_pairs(value)? {
+        match key.as_str() {
+            "id" => migration.name = text(&val),
+            "slots" => migration.slot_ranges = text(&val),
+            "source" => migration.source_node = text(&val),
+            "dest" => migration.target_node = text(&val),
+            "operation" => {
+                migration.operation = match text(&val).to_ascii_lowercase().as_str() {
+                    "migrate" => "EXPORT".to_string(),
+                    "import" => "IMPORT".to_string(),
+                    other => other.to_ascii_uppercase(),
+                }
+            }
+            "state" => migration.state = text(&val),
+            "last_error" => migration.message = text(&val),
+            "create_time" => created = number(&val),
+            "start_time" => started = number(&val),
+            "end_time" => ended = number(&val),
+            _ => {}
+        }
+    }
+    migration.create_time = (created / 1000) as i64;
+    let updated = ended.max(started).max(created) / 1000;
+    migration.last_update_time = updated as i64;
+    migration.last_ack_time = updated as i64;
     Some(migration)
 }
 
@@ -219,19 +361,87 @@ mod tests {
         assert!(parsed.is_export());
     }
 
+    /// What `CLUSTER MIGRATION STATUS ALL` answered on Redis 8.10.2, seen
+    /// from the source (`migrate`) — read as Valkey's `EXPORT`, with the
+    /// millisecond times in seconds.
+    #[test]
+    fn a_redis_status_row_is_read_in_valkey_s_words() {
+        let row = Value::Array(vec![
+            bulk("id"),
+            bulk("7003cd8d76840f0b4ee72ee7c7eb2a11aa79e225"),
+            bulk("slots"),
+            bulk("0-100"),
+            bulk("source"),
+            bulk("a6f810b8"),
+            bulk("dest"),
+            bulk("7c5ab260"),
+            bulk("operation"),
+            bulk("migrate"),
+            bulk("state"),
+            bulk("completed"),
+            bulk("last_error"),
+            bulk(""),
+            bulk("retries"),
+            Value::Int(0),
+            bulk("create_time"),
+            Value::Int(1_790_405_105_443),
+            bulk("start_time"),
+            Value::Int(1_790_405_105_443),
+            bulk("end_time"),
+            Value::Int(1_790_405_105_445),
+            bulk("write_pause_ms"),
+            Value::Int(2),
+        ]);
+        let parsed = parse_redis_migration(&row).expect("row parses");
+        assert_eq!(parsed.name, "7003cd8d76840f0b4ee72ee7c7eb2a11aa79e225");
+        assert_eq!(parsed.slot_ranges, "0-100");
+        assert_eq!(parsed.source_node, "a6f810b8");
+        assert_eq!(parsed.target_node, "7c5ab260");
+        assert!(parsed.is_export(), "migrate is the source's side");
+        assert!(!parsed.is_active(), "completed is done");
+        assert_eq!(parsed.create_time, 1_790_405_105);
+        assert_eq!(parsed.last_update_time, 1_790_405_105);
+
+        let importing = Value::Array(vec![
+            bulk("operation"),
+            bulk("import"),
+            bulk("state"),
+            bulk("wait-stream-eof"),
+        ]);
+        let parsed = parse_redis_migration(&importing).expect("row parses");
+        assert_eq!(parsed.operation, "IMPORT");
+        assert!(parsed.is_active(), "a state on the way is still running");
+    }
+
     #[test]
     fn only_the_documented_states_are_terminal() {
         let finished = |state: &str| AtomicSlotMigration {
             state: state.to_string(),
             ..Default::default()
         };
-        for state in ["success", "failed", "cancelled"] {
+        for state in ["success", "completed", "failed", "cancelled", "canceled"] {
             assert!(!finished(state).is_active(), "{state}");
         }
-        // A state a later Valkey might add reads as still running, which
+        // A state a later server might add reads as still running, which
         // keeps it on screen instead of silently dropping it.
-        for state in ["snapshotting", "streaming", "paused", ""] {
+        for state in ["snapshotting", "streaming", "wait-stream-eof", "paused", ""] {
             assert!(finished(state).is_active(), "{state}");
         }
+    }
+
+    #[test]
+    fn each_dialect_names_its_commands_and_the_end_it_starts_on() {
+        assert_eq!(SlotMigrationDialect::for_flavor(true), SlotMigrationDialect::Valkey);
+        assert_eq!(SlotMigrationDialect::for_flavor(false), SlotMigrationDialect::Redis);
+        assert!(
+            !SlotMigrationDialect::Valkey.starts_on_target(),
+            "Valkey's source pushes"
+        );
+        assert!(SlotMigrationDialect::Redis.starts_on_target(), "Redis's target pulls");
+        assert_eq!(SlotMigrationDialect::Redis.start_command(), "CLUSTER MIGRATION IMPORT");
+        assert_eq!(
+            SlotMigrationDialect::Valkey.cancel_command(),
+            "CLUSTER CANCELSLOTMIGRATIONS"
+        );
     }
 }

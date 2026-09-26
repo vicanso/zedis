@@ -104,7 +104,7 @@ Zedis 把两者当成它们本来的样子：同一套协议，两条自 7.2.4 �
 | 功能 | Redis | Valkey |
 |---|---|---|
 | `COMMANDLOG` —— 慢命令、大请求、大回复三种日志 | — | 8.1 |
-| 原子槽迁移（`CLUSTER MIGRATESLOTS`；Redis 8.4 有自己的 `CLUSTER MIGRATION`，尚未接入，Redis 集群仍走经典 reshard） | — | 9.0 |
+| 原子槽迁移（Valkey 是 `CLUSTER MIGRATESLOTS`，Redis 是 `CLUSTER MIGRATION`—— 同一个 Reshard 页，背后是各自服务器的命令） | 8.4 | 9.0 |
 | `CLUSTER SLOT-STATS`（每 slot 的键数、CPU、网络） | 8.2 | 8.0 |
 | 集群模式下的多数据库 | — | 9.0 |
 | Hash 字段 TTL（`HEXPIRE`、`HSETEX`、`HTTL`…） | 7.4 | 9.0 |

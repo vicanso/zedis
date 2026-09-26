@@ -301,8 +301,8 @@ pub use manager::{
 /// (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 pub use manager::{
-    AtomicSlotMigration, ShardedPubSub, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
-    cluster_migrate_slots,
+    AtomicSlotMigration, ShardedPubSub, SlotMigrationDialect, cluster_cancel_slot_migrations,
+    cluster_get_slot_migrations, cluster_migrate_slots,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

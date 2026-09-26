@@ -586,7 +586,7 @@ impl ZedisTopology {
             locale = locale
         )
         .to_string();
-        // One MIGRATESLOTS per source node, each carrying its own ranges.
+        // One job per source node, each carrying its own ranges.
         let atomic_jobs: Vec<(SharedString, Vec<(u16, u16)>)> = if atomic {
             let mut by_source: std::collections::HashMap<String, Vec<u16>> = std::collections::HashMap::new();
             for (slot, source_addr, _) in &source_by_slot {
@@ -617,7 +617,7 @@ impl ZedisTopology {
                 let jobs = atomic_jobs.clone();
                 server_state.update(cx, |state, cx| {
                     if atomic {
-                        state.cluster_migrate_slots_atomic(jobs, t_id, cx);
+                        state.cluster_migrate_slots_atomic(jobs, t_addr, t_id, cx);
                     } else {
                         state.cluster_reshard(t_addr, t_id, slots, source_by_slot, cx);
                     }

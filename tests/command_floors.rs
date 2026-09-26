@@ -63,6 +63,10 @@ const GATED: &[(&str, &str)] = &[
         "floors::no_touch_is_safe — a regression window, not a floor: it crashes Redis 8.0–8.2.6",
     ),
     ("CLIENT SETINFO", "best-effort: fills lib-name/lib-ver or does not"),
+    (
+        "CLUSTER MIGRATION",
+        "floors::ATOMIC_SLOT_MIGRATION (the Redis dialect; Valkey's MIGRATESLOTS is not in commands.json)",
+    ),
     ("FUNCTION", "floors::FUNCTIONS + ServerCommand::FunctionList"),
     ("FUNCTION DELETE", "floors::FUNCTIONS + ServerCommand::FunctionLoad"),
     ("FUNCTION DUMP", "floors::FUNCTIONS"),

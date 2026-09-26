@@ -288,15 +288,17 @@ impl ZedisServerState {
         );
     }
 
-    /// Valkey 9's atomic slot migration: one `CLUSTER MIGRATESLOTS` per
-    /// source node, each handing its own ranges to `target_id`. The
-    /// command returns as soon as the server accepted the job, so this
-    /// finishes immediately and the Reshard tab watches the result through
-    /// `CLUSTER GETSLOTMIGRATIONS` — unlike the legacy path, closing the
-    /// app no longer strands a slot half-migrated.
+    /// Atomic slot migration (Valkey 9 / Redis 8.4): one job per source
+    /// node, each handing its own ranges to `target_id` at `target_addr` —
+    /// told to the source on Valkey and to the target on Redis, which the
+    /// connection layer settles. The command returns as soon as the server
+    /// accepted the job, so this finishes immediately and the Reshard tab
+    /// watches the result through the status poll — unlike the legacy
+    /// path, closing the app no longer strands a slot half-migrated.
     pub fn cluster_migrate_slots_atomic(
         &mut self,
         jobs: Vec<(SharedString, Vec<(u16, u16)>)>,
+        target_addr: SharedString,
         target_id: SharedString,
         cx: &mut Context<Self>,
     ) {
@@ -322,17 +324,18 @@ impl ZedisServerState {
             ServerTask::ClusterMigrateSlots,
             target_id.clone(),
             move || async move {
+                let target = ClusterNode::new(server_id.as_ref(), target_addr.as_ref());
                 for (source_addr, ranges) in &jobs {
                     let source = ClusterNode::new(server_id.as_ref(), source_addr.as_ref());
-                    node_migrate_slots(&source, ranges, target_id.as_ref()).await?;
+                    node_migrate_slots(&source, &target, target_id.as_ref(), ranges).await?;
                 }
                 Ok(())
             },
             move |this, result, cx| {
                 if result.is_ok() {
                     this.emit_success_notification(
-                        format!("CLUSTER MIGRATESLOTS — {slot_count} slots → {target_for_msg}").into(),
-                        "MIGRATESLOTS".into(),
+                        format!("Atomic slot migration started — {slot_count} slots → {target_for_msg}").into(),
+                        "SLOT MIGRATION".into(),
                         cx,
                     );
                     this.refresh_redis_info(cx);
@@ -342,8 +345,9 @@ impl ZedisServerState {
         );
     }
 
-    /// `CLUSTER CANCELSLOTMIGRATIONS` on each source node — only the node
-    /// that started a migration can abort it.
+    /// Cancel the migrations of each source node (`CLUSTER
+    /// CANCELSLOTMIGRATIONS` on Valkey; `CLUSTER MIGRATION CANCEL` on
+    /// Redis, where the connection layer tells both ends).
     pub fn cluster_cancel_slot_migrations(&mut self, source_addrs: Vec<SharedString>, cx: &mut Context<Self>) {
         if !self.can(Capability::ClusterWrite) {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
@@ -366,8 +370,8 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     this.emit_success_notification(
-                        format!("CLUSTER CANCELSLOTMIGRATIONS sent to {count} node(s)").into(),
-                        "CANCELSLOTMIGRATIONS".into(),
+                        format!("Slot migrations cancelled on {count} node(s)").into(),
+                        "SLOT MIGRATION".into(),
                         cx,
                     );
                     this.refresh_redis_info(cx);
@@ -377,7 +381,7 @@ impl ZedisServerState {
         );
     }
 
-    /// Run a rebalance leg by leg. `atomic` picks the Valkey 9 path (the
+    /// Run a rebalance leg by leg. `atomic` picks the server-side path (Valkey 9 / Redis 8.4) (the
     /// servers own the move and the app can be closed) over the legacy
     /// `SETSLOT` + `MIGRATE` loop.
     pub fn cluster_rebalance(&mut self, legs: Vec<RebalanceLeg>, atomic: bool, cx: &mut Context<Self>) {
@@ -429,8 +433,9 @@ impl ZedisServerState {
                 for leg in &legs {
                     if atomic {
                         let source = ClusterNode::new(server_id.as_ref(), &leg.source_addr);
+                        let target = ClusterNode::new(server_id.as_ref(), &leg.target_addr);
                         let ranges = group_slot_ranges(&leg.slots);
-                        match node_migrate_slots(&source, &ranges, &leg.target_id).await {
+                        match node_migrate_slots(&source, &target, &leg.target_id, &ranges).await {
                             Ok(()) => moved += leg.slots.len() as u32,
                             Err(e) => errors.push(format!("{} → {}: {e}", leg.source_addr, leg.target_id)),
                         }
