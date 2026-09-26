@@ -85,7 +85,7 @@
 | 🗂️ **类型 & 模块查看器** | 位图（`BITOP`）· HyperLogLog（`PFMERGE`）· 向量集(KNN)· 地理地图（`GEOADD` / `GEODIST`，半径 + 矩形搜索）· Bloom / Cuckoo / Count-Min / Top-K · 时间序列（`TS.ADD` / `TS.ALTER` / 聚合规则，以及基于 `TS.MRANGE` 的多序列浏览器）· Streams(实时跟踪、`XSETID`、消费者管理)· Pub/Sub(含分片)· RediSearch（索引大小、`FT.TAGVALS` 取值、`FT.SPELLCHECK` 拼写建议）· Functions |
 | 📊 **可观测性** | 实时指标 + 7 天历史（可导出 CSV）· `MEMORY DOCTOR` / `MEMORY STATS` 与 `LATENCY DOCTOR` 报告 · 内存分析（在线扫描或离线 RDB 文件）· 类型/编码占比 · 逐级下钻前缀 + AI 建议 · 慢日志 ↔ Latency（含 Valkey `COMMANDLOG` 大请求 / 大回复）· `MONITOR` · 按值搜索 · 集群健康、重分片 / 槽位修复 / 再平衡 · 主从复制（`REPLICAOF` / `FAILOVER`）· 持久化 & 键事件 · 带类型的 CONFIG 编辑器（含 `CONFIG REWRITE`） · 原始 INFO 浏览器 |
 | 🔑 **Keys & 数据** | 带 TTL chip 的命名空间树 · 分页加载的 Hash / List / Set / ZSet 编辑器（`HSCAN`/`SSCAN`/`ZSCAN`）· 多选批量删除 · 类型原生操作（`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY` / `INCRBY` / `APPEND` / `GETEX`）· ZSet 分数区间筛选（`ZRANGEBYSCORE`）· 标签 / 备注 / 收藏 · 重命名 · 字段级 TTL · 绝对到期时刻（`EXPIREAT`）· 键栏显示存储编码 / 空闲时间 · 版本历史 · 集合的会话变更记录与结构化 diff · 值编辑器查找替换 · JSON 树视图与路径级操作（`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR`，普通字符串里的 JSON 在本地应用）· 保存前 JSON 校验、格式化与压缩 · 本地回收站(24h)· 文件导入导出 · 批量操作(Tools 导出、前缀过滤、二进制 / JSON / CSV)· 跨服务器复制 & 对比——单键或整个前缀：`DUMP`/`RESTORE` 直传批量复制，以及两库对比 |
-| 🔐 **安全 & 隐私** | 环境标签 + PROD 升级确认 · 只读锁 · ACL 编辑（安全日志、DRYRUN 权限测试、`ACL GENPASS` 生成密码、aclfile 保存/载入）· TLS/SSL & SSH · 分阶段连接诊断 · 断线自愈并跟随 Sentinel/Cluster 故障转移 · 每机密钥加密 · 纯本地、无遥测 |
+| 🔐 **安全 & 隐私** | 环境标签 + PROD 升级确认 · 只读锁 · Prod 默认锁写、每次解锁 15 分钟 · ACL 编辑（安全日志、DRYRUN 权限测试、`ACL GENPASS` 生成密码、aclfile 保存/载入）· TLS/SSL & SSH · 分阶段连接诊断 · 断线自愈并跟随 Sentinel/Cluster 故障转移 · 每机密钥加密 · 纯本地、无遥测 |
 | 🧭 **受限服务端** | 连接后自动探测能力：代理（Twemproxy / Codis / Envoy）、云托管（ElastiCache / Azure / Tair）和 Redis 兼容服务端（Valkey / Dragonfly / KeyDB / Kvrocks）上，依赖缺失命令的面板与按钮会灰显并*说明原因*（`CONFIG GET` 不支持、`SLOWLOG` 无权限）而不是报错 · 没有 `SCAN` 时键编辑器仍可按键名打开 · 完整命令矩阵在 工具 → 服务端能力 中查看 |
 | ⌨️ **效率** | 多连接工作区标签页 · ⌘K 面板 · ⌘P 最近打开的键 · ⌘⇧F 多数据库键搜索 · ⌘/ 快捷键速查 · 自定义快捷键（`keybindings.toml`）· ⌘+/− 缩放 · 单实例 + `redis://` 链接 · redis-cli 带补全、按服务器的历史与 `Ctrl+R` 反向搜索 · AI 命令助手（终端内 `?`）· 多行 Batch 模式 · Lua 脚本库 · 可关闭的更新检查（下载带校验和验证，可含预发布 / nightly）· 时区与日期格式 · 本地数据备份（标签、收藏、脚本）· 可选系统托盘（macOS / Windows）· 应用自身请求可走 HTTP / SOCKS5 代理 · 滚动文件日志 · 导出诊断包（日志、崩溃报告、脱敏配置、连接状态打成一个 zip） |
 
@@ -228,9 +228,16 @@ password = "secret"
 name = "bob"
 password = "hunter2"
 read_only = true
+
+[[users]]
+name = "carol"
+password = "s3cret"
+servers = ["prod-*:ro", "staging", "id:0199…"]   # 能看到哪些共享条目，在哪些上只读
 ```
 
 用文件可以让密码不出现在每次 `docker inspect` 都会打印的环境变量里，也是唯一一种改动账号时不必重写整份列表的写法。行内写法把角色放在**名字**一侧，是因为密码里允许出现 `:`，而名字里不允许。
+
+`servers` 限定账号能看到哪些**共享**条目——按名字匹配（`*`、`?` 是通配符）或按 `id:` 精确指定——规则后加 `:ro` 表示在这些条目上只读，其它地方仍是完整角色。多条规则对同一条目意见不一时，**可写优先**：宽的规则做限制，例外单独点名，`["prod-*:ro", "prod-eu"]` 就是所有生产只读、`prod-eu` 可写。不写这一项，看到全部共享条目；写成空列表，一个都看不到。账号自己添加的条目永远可见可写。只有文件写法支持这一项，行内写法放不下。条目名是主人自己起的，能编辑条目的人可以把它改进或改出某个模式——在意这一点就用 `id:`。
 
 **只读账号**可以查看它能看到的一切，但什么都改不了：不能写 Redis，也不能新增、编辑或删除服务器条目。拒绝由 bridge 做出，而不是由页面做出 —— 任何不是读的请求都会收到 `403`，所以直接向 `/v1/exec` 发请求的脚本和页面被一视同仁地拒绝，确认参数也换不来放行。判定用的是**读命令的白名单**，而不是"要避开的写命令"清单：`EVAL` 能执行任意脚本，`BITFIELD` 名字像读实际会写，`GETDEL` 与 `GETEX` 是写成 get 样子的写，而所有模块命令都是核心命令表从未见过的 —— 因此不认识的一律拒绝；漏掉某个读命令的表现是某个面板提示不可用。
 
@@ -256,6 +263,10 @@ read_only = true
 ```
 
 代理必须做到两件事：转发的每个请求都剥掉或覆盖这个头；并且是访问 bridge 的唯一入口——如果 bridge 还能被直连，地址检查就形同虚设。各家代理只有头名不同：Authelia 是 `Remote-User`，oauth2-proxy 是 `X-Auth-Request-User`（需开 `--set-xauthrequest`），Cloudflare Access 是 `Cf-Access-Authenticated-User-Email`，Tailscale 是 `Tailscale-User-Login`。不配这两项时，这个头根本不会被读取。
+
+### 生产环境的写入锁
+
+打了 **Prod** 标签的条目，桌面和浏览器里写入都默认锁定（任何条目都可以通过“写入锁”设置开启；Prod 条目也可以显式关掉）。状态栏的锁要求输入服务器名，然后打开一个 **15 分钟**的窗口——按钮上显示剩余时间，到点自动重新锁上。浏览器里 bridge 按账号维护同一个窗口（`POST` / `DELETE /v1/servers/{id}/unlock`，审计记为 `unlocked` / `locked`），窗口之外的写入和破坏性命令一样收到 `428`，脚本和页面一视同仁。升级后已有的 Prod 条目会以锁定状态开始；不想要就在条目上把“写入锁”改为不锁定。
 
 ### 审计日志
 

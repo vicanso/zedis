@@ -181,6 +181,14 @@ pub trait BridgeTransport: Send + Sync + 'static {
     /// Release it. The bridge also sweeps idle sessions, which is what covers
     /// a tab that closes mid-transaction and never sends this.
     fn close_session(&self, session: String) -> BoxFuture<'static, Result<(), BridgeError>>;
+
+    /// Open the bridge's write window on `server_id` for this account, with
+    /// `confirm` — the entry's name, which is what production asks for and
+    /// what the page's dialog has just had answered (ADR 14).
+    fn unlock_writes(&self, server_id: String, confirm: String) -> BoxFuture<'static, Result<(), BridgeError>>;
+
+    /// Close it before it would have closed itself.
+    fn lock_writes(&self, server_id: String) -> BoxFuture<'static, Result<(), BridgeError>>;
 }
 
 /// The transport every bridge connection in this process uses.
@@ -513,6 +521,14 @@ mod tests {
         }
 
         fn close_session(&self, _session: String) -> BoxFuture<'static, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn unlock_writes(&self, _server_id: String, _confirm: String) -> BoxFuture<'static, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn lock_writes(&self, _server_id: String) -> BoxFuture<'static, Result<(), BridgeError>> {
             Box::pin(async { Ok(()) })
         }
     }

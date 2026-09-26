@@ -113,6 +113,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth::TRUSTED_PROXY_ENV
         );
         println!("account in the users file, which may then omit that account's password.");
+        println!("A [[users]] table may also list servers = [\"prod-*:ro\", \"staging\", \"id:…\"]:");
+        println!("the shared entries that account sees (by name glob or id), and where it is");
+        println!("read-only (\":ro\"; where rules disagree, write wins). Left out: every shared");
+        println!("entry. Its own entries an account always sees and writes.");
         return Ok(());
     }
 
@@ -137,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         accounts = accounts.len(),
         read_only = accounts.read_only_count(),
+        with_server_rules = accounts.with_server_rules(),
         source = users_file.as_ref().map_or(USERS_ENV, |_| USERS_FILE_ENV),
         "accounts loaded"
     );
@@ -223,8 +228,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(live = logins.len(), "saved logins restored");
 
     let sessions = Sessions::new();
+    let unlocks = policy::Unlocks::new();
     let sweeper = sessions.clone();
     let login_sweeper = logins.clone();
+    let unlock_sweeper = unlocks.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -233,6 +240,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             login_sweeper.flush();
             if expired > 0 {
                 tracing::info!(expired, "swept idle logins");
+            }
+            let ended = unlock_sweeper.sweep();
+            if ended > 0 {
+                tracing::info!(ended, "swept ended write windows");
             }
             let dropped = sweeper.sweep().await;
             if dropped > 0 {
@@ -272,6 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         logins,
         audit,
         trusted,
+        unlocks,
         cookie: auth::CookiePolicy::new(secure_cookie, &base_path),
         base_path,
         web_root,

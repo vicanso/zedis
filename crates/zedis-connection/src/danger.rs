@@ -39,7 +39,17 @@ pub enum DangerKind {
     /// Generic catch-all for write commands when the server has
     /// `require_confirm_writes = true`.
     GenericWrite,
+    /// A write to an entry whose writes are locked (`RedisServer::write_locked`)
+    /// with no unlock window open: what the unlock dialog asks, and what the
+    /// bridge answers a script with.
+    WriteLocked,
 }
+
+/// How long one unlock of a locked entry's writes lasts. Long enough to fix
+/// a thing, short enough that a tab left open re-locks before the day
+/// moves on; the same number on the desktop, whose timer re-engages
+/// `SafeMode`, and on the bridge, which keeps the window per account.
+pub const WRITE_UNLOCK_SECS: u64 = 15 * 60;
 
 impl DangerKind {
     pub fn i18n_key(&self) -> &'static str {
@@ -57,6 +67,7 @@ impl DangerKind {
             DangerKind::KeysGlob => "danger.keys_glob",
             DangerKind::BatchDelete { .. } => "danger.batch_delete",
             DangerKind::GenericWrite => "danger.generic_write",
+            DangerKind::WriteLocked => "danger.write_locked",
         }
     }
     /// Severity affects whether a tagged "PROD" server requires typing the
@@ -279,7 +290,9 @@ pub fn is_write_command(cmd_name: &str) -> bool {
 /// Compose the final policy for a server: which commands need a confirm,
 /// and how strict that confirm should be.
 pub fn confirm_strictness(server: &RedisServer, kind: &DangerKind) -> ConfirmStrictness {
-    if server.is_high_risk_tag() && kind.is_destructive() {
+    // Unlocking production's writes is the one non-destructive act that asks
+    // for the name: it opens the door to every destructive one for a while.
+    if server.is_high_risk_tag() && (kind.is_destructive() || matches!(kind, DangerKind::WriteLocked)) {
         ConfirmStrictness::TypeName
     } else {
         ConfirmStrictness::Click

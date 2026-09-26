@@ -682,7 +682,7 @@ mod slot_migration;
 
 pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
 pub use commandlog::{CommandLogKind, command_log_reset, command_logs};
-pub use pool::set_account_read_only;
+pub use pool::set_account_read_only_on;
 pub use pubsub_channels::{MAX_PUBSUB_CHANNELS, PubsubChannel, PubsubChannelsSnapshot};
 pub use replication::FAILOVER_TIMEOUT_MS;
 #[cfg(not(target_family = "wasm"))]

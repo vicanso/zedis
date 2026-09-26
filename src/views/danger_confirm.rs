@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    connection::{ConfirmStrictness, DangerKind, RedisServer, confirm_strictness},
+    connection::{ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, confirm_strictness},
     states::{ZedisGlobalStore, dialog_button_props, i18n_common},
 };
 use gpui::{App, SharedString, Window};
@@ -87,7 +87,9 @@ fn compose_message(
     };
 
     let body_key = format!("{}_body", kind.i18n_key());
-    let body_raw = t!(&body_key, target = &target, locale = locale).to_string();
+    // `minutes` is what the write lock's body says; the rest ignore it.
+    let minutes = (WRITE_UNLOCK_SECS / 60).to_string();
+    let body_raw = t!(&body_key, target = &target, minutes = &minutes, locale = locale).to_string();
     let body = if body_raw == body_key {
         match kind {
             DangerKind::BatchDelete { count } => t!(

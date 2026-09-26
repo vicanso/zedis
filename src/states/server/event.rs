@@ -67,6 +67,11 @@ pub enum ServerTask {
     /// Scan keys with a specific prefix (for lazy folder loading)
     ScanPrefix,
 
+    /// Open / close the entry's write window (ADR 14); a no-op on the
+    /// desktop, a bridge call in the browser.
+    UnlockWrites,
+    LockWrites,
+
     /// Add a new key
     AddKey,
     /// Update TTL (time-to-live) for a key
@@ -230,6 +235,8 @@ impl ServerTask {
             ServerTask::DeleteKeys => "delete_keys",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
+            ServerTask::UnlockWrites => "unlock_writes",
+            ServerTask::LockWrites => "lock_writes",
             ServerTask::AddKey => "add_key",
             ServerTask::UpdateKeyTtl => "update_key_ttl",
             ServerTask::RenameKey => "rename_key",

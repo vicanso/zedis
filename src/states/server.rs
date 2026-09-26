@@ -18,8 +18,9 @@ use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
     AccessMode, Capability, CommandStatus, RedisClientDescription, ServerCommand, ServerDb, ServerFeatures,
-    ServerSummary, SlowLogEntry, forget_client, get_server, get_server_features, get_servers,
-    invalidate_server_features, note_server_command_error, probe_server_features, server_summary,
+    ServerSummary, SlowLogEntry, WRITE_UNLOCK_SECS, forget_client, get_server, get_server_features, get_servers,
+    invalidate_server_features, lock_writes, note_server_command_error, probe_server_features, server_summary,
+    unlock_writes,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
@@ -34,12 +35,13 @@ use crate::states::{
 use ahash::AHashMap;
 use ahash::AHashSet;
 use bytes::Bytes;
-use gpui::SharedString;
 use gpui::prelude::*;
+use gpui::{SharedString, Task};
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
@@ -187,6 +189,16 @@ pub struct ZedisServerState {
 
     /// Access mode
     access_mode: AccessMode,
+
+    /// When the entry's write lock is open until, if it is (ADR 14). A
+    /// locked entry (`RedisServer::write_locked`) connects in `SafeMode` and
+    /// leaves it for `WRITE_UNLOCK_SECS` at a time; `unlock_task` is the
+    /// timer that puts it back, and dropping it (a re-lock, a server switch)
+    /// cancels the timer.
+    write_unlocked_until: Option<Instant>,
+    /// `Arc` only because the state derives `Clone` and a `Task` cannot;
+    /// the last handle dropping is what cancels the timer.
+    unlock_task: Option<Arc<Task<()>>>,
 
     /// Whether the server supports ReJSON module
     supports_rejson: bool,
@@ -493,6 +505,9 @@ impl ZedisServerState {
 
     /// Reset all state when switching to a different server
     fn reset(&mut self, cx: &mut Context<Self>) {
+        // A window belongs to the server it was opened on.
+        self.write_unlocked_until = None;
+        self.unlock_task = None;
         self.server_id = SharedString::default();
         self.version = SharedString::default();
         self.nodes = (0, 0);
@@ -797,6 +812,12 @@ impl ZedisServerState {
         self.supports_search
     }
 
+    /// Whether writes are refused by something the user cannot switch: a
+    /// read-only ACL user, or a read-only bridge account.
+    pub fn strict_readonly(&self) -> bool {
+        matches!(self.access_mode, AccessMode::StrictReadOnly)
+    }
+
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
@@ -942,6 +963,95 @@ impl ZedisServerState {
         cx.emit(ServerEvent::FeaturesProbed);
         cx.notify();
         true
+    }
+
+    /// Whether this entry's writes are locked by default (ADR 14): its own
+    /// setting, else its tag — production is.
+    pub fn write_locked(&self) -> bool {
+        get_server(&self.server_id).is_ok_and(|server| server.write_locked())
+    }
+
+    /// How much of the open write window is left, if one is open.
+    pub fn unlock_remaining(&self) -> Option<Duration> {
+        let until = self.write_unlocked_until?;
+        let now = Instant::now();
+        (until > now).then(|| until - now)
+    }
+
+    /// Open the write window: leave `SafeMode` for `WRITE_UNLOCK_SECS`, then
+    /// go back by a timer. The caller has had the lock's question answered
+    /// (`DangerKind::WriteLocked`, by name on production). In the browser
+    /// the bridge is told too, and a bridge that refuses closes the window
+    /// again here: a page that believes itself unlocked while the bridge
+    /// refuses every write would be the worse state.
+    pub fn unlock_writes(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.access_mode, AccessMode::StrictReadOnly) {
+            return;
+        }
+        let window = Duration::from_secs(WRITE_UNLOCK_SECS);
+        self.write_unlocked_until = Some(Instant::now() + window);
+        self.access_mode = AccessMode::ReadWrite;
+        self.unlock_task = Some(Arc::new(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(window).await;
+            let _ = this.update(cx, |this, cx| this.expire_unlock(cx));
+        })));
+        let at = self.at();
+        self.spawn(
+            ServerTask::UnlockWrites,
+            move || async move { Ok(unlock_writes(&at).await?) },
+            move |this, result, cx| {
+                if let Err(e) = result {
+                    this.write_unlocked_until = None;
+                    this.unlock_task = None;
+                    this.access_mode = AccessMode::SafeMode;
+                    let message = i18n_status_bar(cx, "unlock_failed").replace("%{error}", &e.to_string());
+                    this.emit_warning_notification(message.into(), cx);
+                    cx.emit(ServerEvent::ServerInfoUpdated);
+                }
+            },
+            cx,
+        );
+        cx.emit(ServerEvent::ServerInfoUpdated);
+        cx.notify();
+    }
+
+    /// Close the window early. The bridge is told the same, so a script
+    /// cannot keep using a window the page has closed.
+    pub fn lock_writes(&mut self, cx: &mut Context<Self>) {
+        if self.write_unlocked_until.is_none() {
+            return;
+        }
+        self.relock(cx);
+        let at = self.at();
+        self.spawn(
+            ServerTask::LockWrites,
+            move || async move { Ok(lock_writes(&at).await?) },
+            |_this, _result, _cx| {},
+            cx,
+        );
+    }
+
+    /// The timer's end: locked again, and said so — the person who unlocked
+    /// may be mid-thought, and the next write refusing without a word would
+    /// read as a bug.
+    fn expire_unlock(&mut self, cx: &mut Context<Self>) {
+        if self.write_unlocked_until.is_none() {
+            return;
+        }
+        self.relock(cx);
+        let server_name = get_server(&self.server_id).map(|s| s.name).unwrap_or_default();
+        let message = i18n_status_bar(cx, "relocked_message").replace("%{server}", &server_name);
+        self.emit_info_notification(message.into(), cx);
+    }
+
+    fn relock(&mut self, cx: &mut Context<Self>) {
+        self.write_unlocked_until = None;
+        self.unlock_task = None;
+        if self.access_mode == AccessMode::ReadWrite {
+            self.access_mode = AccessMode::SafeMode;
+        }
+        cx.emit(ServerEvent::ServerInfoUpdated);
+        cx.notify();
     }
 
     pub fn toggle_readonly(&mut self, cx: &mut Context<Self>) {
@@ -1406,7 +1516,16 @@ impl ZedisServerState {
                                 save_session_option(&sid, option, cx);
                             }
                             this.databases = databases;
-                            this.access_mode = access_mode;
+                            // A locked entry starts in SafeMode — unless this
+                            // connect is a reconnect inside an open window.
+                            this.access_mode = if access_mode == AccessMode::ReadWrite
+                                && this.write_locked()
+                                && this.unlock_remaining().is_none()
+                            {
+                                AccessMode::SafeMode
+                            } else {
+                                access_mode
+                            };
                             this.supports_rejson = supports_rejson;
                             this.supports_search = supports_search;
                             this.probe_features(false, cx);

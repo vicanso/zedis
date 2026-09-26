@@ -294,6 +294,20 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
+            // Three answers, not a checkbox: the default *follows the tag*
+            // (production locked, the rest not), and a box could not say
+            // "whatever the tag says" — it would freeze the answer at the
+            // moment the form opened, before the tag was picked (ADR 14).
+            ZedisFormField::new("write_lock", i18n_servers(cx, "write_lock"))
+                .default_value(write_lock_index(redis_server.write_lock).to_string())
+                // In `write_lock_index` order: follow the tag, locked, unlocked.
+                .options(vec![
+                    i18n_servers(cx, "write_lock_default"),
+                    i18n_servers(cx, "write_lock_locked"),
+                    i18n_servers(cx, "write_lock_unlocked"),
+                ])
+                .tab_index(3)
+                .field_type(ZedisFormFieldType::RadioGroup),
             ZedisFormField::new("group", i18n_servers(cx, "group"))
                 .default_value(redis_server.group.clone().unwrap_or_default())
                 .placeholder({

@@ -149,3 +149,47 @@ pub async fn failover_abort(at: &ServerDb) -> Result<()> {
 pub fn forget_client(at: &ServerDb) {
     get_connection_manager().remove_client(at.server_id(), at.db());
 }
+
+/// Unlock the entry's writes for `WRITE_UNLOCK_SECS`, wherever something
+/// other than this process enforces the lock. On the desktop nothing does —
+/// the lock is the app's own `AccessMode::SafeMode`, re-engaged by its
+/// timer — so there is nothing to tell.
+#[cfg(not(target_family = "wasm"))]
+pub async fn unlock_writes(_at: &ServerDb) -> Result<()> {
+    Ok(())
+}
+
+/// In the browser the bridge enforces the lock and is told: it keeps the
+/// window per account and entry, and refuses writes outside it whatever
+/// the page believes (ADR 14). The confirmation it wants is the entry's
+/// name — production asks for the name, and the page's dialog has just had
+/// it answered.
+#[cfg(target_family = "wasm")]
+pub async fn unlock_writes(at: &ServerDb) -> Result<()> {
+    let transport = crate::bridge::bridge_transport().ok_or_else(|| Error::Invalid {
+        message: "no bridge transport".to_string(),
+    })?;
+    let name = crate::config::get_server(at.server_id())?.name;
+    transport
+        .unlock_writes(at.server_id().to_string(), name)
+        .await
+        .map_err(|e| Error::Invalid { message: e.to_string() })
+}
+
+/// Lock the entry's writes again before the window ends. See
+/// [`unlock_writes`] for why the desktop has nothing to say.
+#[cfg(not(target_family = "wasm"))]
+pub async fn lock_writes(_at: &ServerDb) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn lock_writes(at: &ServerDb) -> Result<()> {
+    let transport = crate::bridge::bridge_transport().ok_or_else(|| Error::Invalid {
+        message: "no bridge transport".to_string(),
+    })?;
+    transport
+        .lock_writes(at.server_id().to_string())
+        .await
+        .map_err(|e| Error::Invalid { message: e.to_string() })
+}

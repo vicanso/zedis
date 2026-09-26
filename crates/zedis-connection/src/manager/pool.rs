@@ -97,22 +97,31 @@ fn cluster_enabled(reply: Value) -> Result<bool> {
 /// Ungated on purpose, even though only `zedis-web` ever writes it: a
 /// `cfg(target_family = "wasm")` export here is invisible to `make lint`,
 /// which builds every crate — `zedis-web` included — for the host.
-static ACCOUNT_READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ACCOUNT_READ_ONLY_ON: std::sync::LazyLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
 
-fn account_is_read_only() -> bool {
-    ACCOUNT_READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+fn account_is_read_only_on(server_id: &str) -> bool {
+    ACCOUNT_READ_ONLY_ON
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(server_id)
 }
 
-/// Record that the signed-in bridge account may not write. Set once from the
-/// server list, before anything is connected.
+/// Record on which entries the signed-in bridge account may not write. Set
+/// from the server list — the whole set each time, so an entry the bridge
+/// no longer marks drops out — before anything is connected.
 ///
-/// It makes every connection [`AccessMode::StrictReadOnly`] — the one the UI
+/// A read-only *account* marks every entry; an account whose `servers`
+/// rules grant an entry as `:ro` marks that entry. Either way the
+/// connection becomes [`AccessMode::StrictReadOnly`] — the one the UI
 /// cannot switch off — rather than the entry-level `SafeMode`, because this
 /// is not a setting the user chose and so is not one they can revoke. The
 /// bridge refuses the write either way; this is what stops the app offering
 /// a button whose only possible outcome is a `403`.
-pub fn set_account_read_only(read_only: bool) {
-    ACCOUNT_READ_ONLY.store(read_only, std::sync::atomic::Ordering::Relaxed);
+pub fn set_account_read_only_on(server_ids: std::collections::HashSet<String>) {
+    *ACCOUNT_READ_ONLY_ON
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = server_ids;
 }
 
 /// What a permission probe learned about the connected ACL user's right to
@@ -564,7 +573,7 @@ impl ConnectionManager {
             #[cfg(not(target_family = "wasm"))]
             rclient,
         } = reached;
-        let access_mode = if account_is_read_only() || safe_check_user_readonly(connection.clone()).await {
+        let access_mode = if account_is_read_only_on(&config.id) || safe_check_user_readonly(connection.clone()).await {
             AccessMode::StrictReadOnly
         } else if config.readonly.unwrap_or(false) {
             AccessMode::SafeMode

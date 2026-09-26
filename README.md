@@ -87,7 +87,7 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM just to display 
 | 🗂️ **Type & Module Viewers** | Bitmap (`BITOP`) · HyperLogLog (`PFMERGE`) · Vector Set (KNN) · Geo map (`GEOADD` / `GEODIST`, radius + box search) · Bloom / Cuckoo / Count-Min / Top-K · Time Series (`TS.ADD` / `TS.ALTER` / compaction rules, plus a multi-series `TS.MRANGE` explorer) · Streams (live-tail, `XSETID`, consumer admin) · Pub/Sub (incl. sharded) · RediSearch (index size, `FT.TAGVALS` values, `FT.SPELLCHECK` suggestions) · Functions |
 | 📊 **Observability** | Live metrics + 7-day history with CSV export · `MEMORY DOCTOR` / `MEMORY STATS` and `LATENCY DOCTOR` reports · memory analyzer (live scan or offline RDB file) with type/encoding shares and drill-down prefixes + AI tips · Slow Log ↔ Latency (+ Valkey `COMMANDLOG` size logs) · `MONITOR` · value search · cluster health, slot reshard / repair / rebalance · primary/replica replication (`REPLICAOF` / `FAILOVER`) · persistence & keyspace events · typed CONFIG editor (+ `CONFIG REWRITE`) · raw INFO browser |
 | 🔑 **Keys & Data** | Namespace tree with TTL chips · paginated Hash / List / Set / ZSet editors (`HSCAN`/`SSCAN`/`ZSCAN`) · multi-select batch delete · type-native ops (`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY` / `INCRBY` / `APPEND` / `GETEX`) · ZSet score-range filter (`ZRANGEBYSCORE`) · tags / notes / favorites · rename · field-level TTL · absolute expiry (`EXPIREAT`) · storage encoding / idle time in the key bar · version history · session change log with structured diff for collections · find & replace in the value editor · JSON tree view with path-level ops (`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR` — applied locally for a plain string holding JSON) · JSON check, format & minify before save · local recycle bin (24h) · file import/export · bulk ops (Tools export, prefix filter, binary / JSON / CSV) · cross-server copy & diff — one key, or a whole prefix: bulk copy straight through `DUMP`/`RESTORE` and a two-database compare |
-| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · ACL editor with security log, dry-run tester, `ACL GENPASS` and aclfile save/load · TLS/SSL & SSH · staged connection diagnostics · self-healing link with Sentinel/Cluster failover · per-machine encrypted secrets · local-only, no telemetry |
+| 🔐 **Security & Privacy** | Env tags with PROD-escalated confirms · read-only lock · Prod starts write-locked, unlocked 15 min at a time · ACL editor with security log, dry-run tester, `ACL GENPASS` and aclfile save/load · TLS/SSL & SSH · staged connection diagnostics · self-healing link with Sentinel/Cluster failover · per-machine encrypted secrets · local-only, no telemetry |
 | 🧭 **Limited servers** | Capability probe after connect: proxies (Twemproxy / Codis / Envoy), managed clouds (ElastiCache / Azure / Tair) and Redis-compatible servers (Valkey / Dragonfly / KeyDB / Kvrocks) get panels and buttons greyed out *with the reason* (`CONFIG GET` missing, `SLOWLOG` denied) instead of failing · key editor keeps working without `SCAN` · the full command matrix lives under Tools → Server capabilities |
 | ⌨️ **Productivity** | Multi-connection workspace tabs · ⌘K palette · ⌘P recent keys · ⌘⇧F multi-database key search · ⌘/ shortcut reference · custom keybindings (`keybindings.toml`) · ⌘+/− zoom · one instance per profile + `redis://` links · redis-cli with per-server history, completion & `Ctrl+R` search · AI command assistant (`?` in terminal) · multi-line batch mode · Lua script library · opt-out update check with checksum-verified download (+ pre-release / nightly channel) · time zone & date format · local-data backup (tags, favorites, scripts) · optional system tray (macOS / Windows) · HTTP / SOCKS5 proxy for the app's own requests · rotating file logs · Export Diagnostics (one zip: logs, crash reports, redacted config, connection state) |
 
@@ -231,9 +231,16 @@ password = "secret"
 name = "bob"
 password = "hunter2"
 read_only = true
+
+[[users]]
+name = "carol"
+password = "s3cret"
+servers = ["prod-*:ro", "staging", "id:0199…"]   # which shared entries, and where read-only
 ```
 
 A file keeps the passwords out of the environment every `docker inspect` prints, and is the only form you can edit without restating the whole list. The role rides on the *name* in the inline form because a password may contain `:` and a name may not.
+
+`servers` narrows which **shared** entries an account sees — by name, with `*` and `?` as wildcards, or by `id:` — and `:ro` on a rule makes the account read-only there while it keeps its full role elsewhere. Where rules disagree about one entry, write wins, so the broad rule is the restriction and the exceptions are named: `["prod-*:ro", "prod-eu"]` reads every prod and writes `prod-eu`. Left out, the account sees every shared entry; an empty list, none. Its own entries an account always sees and writes. Only the file has this; the inline form has no room for it. Names are whatever their owners typed, so an account that can edit an entry can rename it into or out of a pattern — use `id:` where that matters.
 
 A **read-only** account may look at everything it can see and change none of it: no writes to Redis, and no adding, editing or deleting a server entry. The refusal is the bridge's, not the page's — it answers `403` to anything that is not a read, so a script posting straight to `/v1/exec` is refused exactly like the page, and a confirmation does not buy a way past it. The test is an allowlist of reads, not a list of writes to avoid: `EVAL` runs any script, `BITFIELD` writes under a name that reads, `GETDEL` and `GETEX` are writes spelled like gets, and every module command is one the core table has never heard of — so anything unrecognised is refused, and a read that was forgotten shows up as a panel saying it is unavailable.
 
@@ -259,6 +266,10 @@ read_only = true
 ```
 
 Two things the proxy must do: strip or overwrite that header on every request it forwards, and be the only way to reach the bridge — a bridge that is also reachable directly is one where the address check protects nothing. The header name is the only thing that differs between proxies: Authelia sends `Remote-User`, oauth2-proxy `X-Auth-Request-User` (with `--set-xauthrequest`), Cloudflare Access `Cf-Access-Authenticated-User-Email`, Tailscale `Tailscale-User-Login`. Without these two settings the header is never read.
+
+### Locked writes on production
+
+A **Prod**-tagged entry starts with its writes locked, on the desktop and in the browser alike (any entry can, through its *Write lock* setting; a Prod entry can opt out). The status-bar lock asks for the server's name and opens a **15-minute window** — the button shows what is left and locks again by itself. In the browser the bridge keeps the same window per account (`POST` / `DELETE /v1/servers/{id}/unlock`, audited as `unlocked` / `locked`) and refuses a write outside it with the same `428` a destructive command gets, so a script is held to what the page is. An existing Prod entry starts locked after this version; set *Write lock* to unlocked on it if that is not wanted.
 
 ### Audit log
 

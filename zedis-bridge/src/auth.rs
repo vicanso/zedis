@@ -56,6 +56,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use zedis_connection::RedisServer;
 use zedis_core::fs::write_file_atomic;
 
 /// The accounts, inline: `ZEDIS_BRIDGE_USERS="alice@secret,bob:ro@hunter2"`.
@@ -80,6 +81,86 @@ pub struct Account {
     /// May look at everything it can see, and change none of it. Enforced by
     /// the routes, not here.
     pub read_only: bool,
+    /// Which *shared* entries this account sees, and where it is read-only:
+    /// `None` is every shared entry (the default, and the only answer the
+    /// inline form can give), `Some` is the entries a rule names. Its own
+    /// entries it always sees, whatever the rules say.
+    pub servers: Option<Vec<ServerRule>>,
+}
+
+/// One item of an account's `servers` list: `"prod-*"`, `"prod-*:ro"`,
+/// `"id:0199…"`.
+///
+/// A plain rule grants the entry with the account's own role; `:ro` grants
+/// it read-only. Where several rules match one entry, **write wins**, so
+/// the broad rule is the restriction and the exceptions are named:
+/// `["prod-*:ro", "prod-eu"]` reads every prod and writes `prod-eu`. Order
+/// does not matter, which is the point — a hand-edited list should not
+/// change meaning when a line moves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerRule {
+    target: RuleTarget,
+    read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RuleTarget {
+    /// The entry's name, as a glob: `*` any run, `?` one character.
+    Name(String),
+    /// The entry's id, exactly — for a name that is not stable, or that
+    /// itself ends in `:ro`.
+    Id(String),
+}
+
+impl ServerRule {
+    fn parse(text: &str) -> Result<Self, String> {
+        let (body, read_only) = match text.trim().strip_suffix(":ro") {
+            Some(body) => (body.trim(), true),
+            None => (text.trim(), false),
+        };
+        if body.is_empty() {
+            return Err(format!("servers entry {text:?} names nothing"));
+        }
+        let target = match body.strip_prefix("id:") {
+            Some(id) if !id.trim().is_empty() => RuleTarget::Id(id.trim().to_string()),
+            Some(_) => return Err(format!("servers entry {text:?} has an empty id")),
+            None => RuleTarget::Name(body.to_string()),
+        };
+        Ok(Self { target, read_only })
+    }
+
+    fn matches(&self, server: &RedisServer) -> bool {
+        match &self.target {
+            RuleTarget::Name(glob) => glob_matches(glob, &server.name),
+            RuleTarget::Id(id) => server.id == *id,
+        }
+    }
+}
+
+/// `*` matches any run (including none), `?` one character, everything else
+/// itself; case-sensitive, by character, so a CJK name is one character per
+/// `?`. Iterative with one backtrack point per `*`, which is enough because
+/// a later `*` can always take over what an earlier one gave up.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
 }
 
 /// The file `--users-file` names.
@@ -92,7 +173,8 @@ struct UsersFile {
 /// One `[[users]]` table. `read_only` defaults to false, so an account that
 /// does not mention it is a full one — the same answer the short form gives.
 /// `password` may be left out for an account the reverse proxy signs in;
-/// written empty it is a mistake and refused.
+/// written empty it is a mistake and refused. `servers` left out is every
+/// shared entry; written empty it is none of them.
 #[derive(Deserialize)]
 struct UserEntry {
     name: String,
@@ -100,6 +182,8 @@ struct UserEntry {
     password: Option<String>,
     #[serde(default)]
     read_only: bool,
+    #[serde(default)]
+    servers: Option<Vec<String>>,
 }
 
 /// The accounts that may sign in, name → account.
@@ -142,7 +226,7 @@ impl Accounts {
     }
 
     /// The contents of a users file.
-    fn from_toml(text: &str) -> Result<Self, String> {
+    pub(crate) fn from_toml(text: &str) -> Result<Self, String> {
         let file: UsersFile = toml::from_str(text).map_err(|e| e.to_string())?;
         let mut users = HashMap::new();
         for (index, entry) in file.users.into_iter().enumerate() {
@@ -152,9 +236,20 @@ impl Accounts {
             if entry.password.as_deref() == Some("") {
                 return Err(format!("user \"{name}\" (entry {position}) has an empty password"));
             }
+            let servers = entry
+                .servers
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .map(|rule| ServerRule::parse(rule))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()
+                .map_err(|e| format!("user \"{name}\" (entry {position}): {e}"))?;
             let account = Account {
                 password: entry.password,
                 read_only: entry.read_only,
+                servers,
             };
             if users.insert(name.clone(), account).is_some() {
                 return Err(format!("user \"{name}\" is listed twice"));
@@ -184,6 +279,44 @@ impl Accounts {
     /// has to be to get in, since the role and the entries hang on the name.
     pub fn has(&self, name: &str) -> bool {
         self.0.contains_key(name)
+    }
+
+    /// How many accounts carry a `servers` list — a line in the startup log.
+    pub fn with_server_rules(&self) -> usize {
+        self.0.values().filter(|account| account.servers.is_some()).count()
+    }
+
+    /// Whether `name` may see the *shared* entry `server`. An account that
+    /// is not there sees nothing; one without a `servers` list sees every
+    /// shared entry; one with a list sees what a rule names. The account's
+    /// own entries are not asked here — they are its own.
+    pub fn may_see_shared(&self, name: &str, server: &RedisServer) -> bool {
+        self.0.get(name).is_some_and(|account| {
+            account
+                .servers
+                .as_ref()
+                .is_none_or(|rules| rules.iter().any(|rule| rule.matches(server)))
+        })
+    }
+
+    /// Whether `name` may change nothing *on this entry*: a read-only
+    /// account, everywhere; otherwise a shared entry every matching rule
+    /// grants as `:ro` (write wins where rules disagree). An entry the
+    /// account owns follows the account's role alone — it holds the
+    /// credentials, a rule about it would restrict nothing. An account that
+    /// is not there is read-only, as `is_read_only` has it.
+    pub fn is_read_only_on(&self, name: &str, server: &RedisServer) -> bool {
+        let Some(account) = self.0.get(name) else {
+            return true;
+        };
+        if account.read_only || server.owner.as_deref() == Some(name) {
+            return account.read_only;
+        }
+        let Some(rules) = &account.servers else {
+            return false;
+        };
+        let mut matched = rules.iter().filter(|rule| rule.matches(server)).peekable();
+        matched.peek().is_some() && matched.all(|rule| rule.read_only)
     }
 
     pub fn len(&self) -> usize {
@@ -305,6 +438,7 @@ pub fn parse_users(spec: &str) -> Result<HashMap<String, Account>, String> {
         let account = Account {
             password: Some(password.to_string()),
             read_only,
+            servers: None,
         };
         if users.insert(name.to_string(), account).is_some() {
             return Err(format!("user \"{name}\" is listed twice"));
@@ -732,6 +866,120 @@ mod tests {
 
     fn ip(text: &str) -> IpAddr {
         text.parse().expect("an address")
+    }
+
+    fn entry(id: &str, name: &str, owner: Option<&str>) -> RedisServer {
+        RedisServer {
+            id: id.to_string(),
+            name: name.to_string(),
+            owner: owner.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_glob_matches_by_character() {
+        for (pattern, text, want) in [
+            ("prod-*", "prod-eu", true),
+            ("prod-*", "prod-", true),
+            ("prod-*", "prod", false),
+            ("*", "", true),
+            ("*-eu", "prod-eu", true),
+            ("*eu*", "prod-eu-1", true),
+            ("prod-?", "prod-1", true),
+            ("prod-?", "prod-12", false),
+            ("生产-?", "生产-一", true),
+            ("生产-?", "生产-一二", false),
+            ("a*b*c", "axxbyyc", true),
+            ("a*b*c", "axxbyy", false),
+            ("Prod", "prod", false),
+            ("", "", true),
+            ("", "x", false),
+        ] {
+            assert_eq!(glob_matches(pattern, text), want, "{pattern:?} vs {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_rule_names_an_entry_by_name_or_id_and_may_say_ro() {
+        let prod = entry("id-1", "prod-eu", None);
+        let staging = entry("id-2", "staging", None);
+        let by_name = ServerRule::parse("prod-*").expect("rule");
+        assert!(by_name.matches(&prod) && !by_name.matches(&staging) && !by_name.read_only);
+        let ro = ServerRule::parse(" prod-*:ro ").expect("rule");
+        assert!(ro.matches(&prod) && ro.read_only);
+        let by_id = ServerRule::parse("id:id-2:ro").expect("rule");
+        assert!(by_id.matches(&staging) && !by_id.matches(&prod) && by_id.read_only);
+        for bad in ["", ":ro", "id:", "id::ro", "  "] {
+            assert!(ServerRule::parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_servers_list_decides_what_is_seen_and_where_writes_are_allowed() {
+        let accounts = Accounts::from_toml(
+            r#"
+[[users]]
+name = "alice"
+password = "a"
+
+[[users]]
+name = "bob"
+password = "b"
+servers = ["prod-*:ro", "prod-eu", "id:id-9"]
+
+[[users]]
+name = "carol"
+password = "c"
+read_only = true
+servers = ["prod-*"]
+
+[[users]]
+name = "dave"
+password = "d"
+servers = []
+"#,
+        )
+        .expect("file");
+        assert_eq!(accounts.with_server_rules(), 3);
+        let prod_us = entry("id-1", "prod-us", None);
+        let prod_eu = entry("id-2", "prod-eu", None);
+        let staging = entry("id-3", "staging", None);
+        let by_id = entry("id-9", "whatever", None);
+        let bobs_own = entry("id-4", "prod-mine", Some("bob"));
+
+        // No list: every shared entry, with the account's role.
+        for s in [&prod_us, &prod_eu, &staging, &by_id] {
+            assert!(accounts.may_see_shared("alice", s));
+            assert!(!accounts.is_read_only_on("alice", s));
+        }
+        // A list: what it names, and only that.
+        assert!(accounts.may_see_shared("bob", &prod_us));
+        assert!(accounts.may_see_shared("bob", &prod_eu));
+        assert!(accounts.may_see_shared("bob", &by_id), "by id");
+        assert!(!accounts.may_see_shared("bob", &staging));
+        // Write wins where rules disagree: prod-eu matches the :ro glob and
+        // its own plain rule.
+        assert!(accounts.is_read_only_on("bob", &prod_us));
+        assert!(!accounts.is_read_only_on("bob", &prod_eu));
+        assert!(!accounts.is_read_only_on("bob", &by_id));
+        // An entry of one's own is one's own, whatever the rules say of its name.
+        assert!(!accounts.is_read_only_on("bob", &bobs_own));
+        // A read-only account is read-only on everything it sees.
+        assert!(accounts.may_see_shared("carol", &prod_us) && accounts.is_read_only_on("carol", &prod_us));
+        assert!(
+            accounts.is_read_only_on("carol", &entry("id-5", "x", Some("carol"))),
+            "even its own"
+        );
+        // An empty list is no shared entry at all.
+        assert!(!accounts.may_see_shared("dave", &prod_us) && !accounts.may_see_shared("dave", &staging));
+        // Nobody is not an account.
+        assert!(!accounts.may_see_shared("nobody", &staging) && accounts.is_read_only_on("nobody", &staging));
+        // A bad rule is refused with the account named.
+        let Err(err) = Accounts::from_toml("[[users]]\nname = \"e\"\npassword = \"p\"\nservers = [\":ro\"]\n") else {
+            panic!("a bad rule must be refused");
+        };
+        assert!(err.contains("\"e\"") && err.contains(":ro"), "{err}");
     }
 
     #[test]

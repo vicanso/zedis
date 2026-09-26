@@ -18,7 +18,7 @@ use crate::states::{command_status_label, i18n_features};
 use crate::states::i18n_trash;
 use crate::{
     assets::CustomIconName,
-    connection::{KillTarget, RedisClientDescription, ServerFeatures, get_server},
+    connection::{DangerKind, KillTarget, RedisClientDescription, ServerFeatures, WRITE_UNLOCK_SECS, get_server},
     constants::STATUS_BAR_HEIGHT,
     helpers::{format_lag_bytes, get_mono_font_family, group_thousands, humanize_keystroke, pacing, resolve_tag_chip},
     states::{
@@ -27,6 +27,7 @@ use crate::{
         i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar,
         i18n_timeseries, i18n_topology, i18n_value_search, save_session_option,
     },
+    views::confirm_dangerous_command,
 };
 use gpui::{
     Anchor, App, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb,
@@ -1099,23 +1100,70 @@ impl ZedisStatusBar {
                                 ),
                         )
                     })
-                    .child(
+                    .child({
+                        // A locked entry's lock is a window, not a switch (ADR
+                        // 14): closed, the button asks the lock's question and
+                        // opens it for a while; open, it shows what is left and
+                        // closes it. Any other entry keeps the plain toggle.
+                        let (windowed, remaining) = {
+                            let state = self.server_state.read(cx);
+                            // Not for an account or ACL user that may not
+                            // write at all: there is no window to open.
+                            (
+                                state.write_locked() && !state.strict_readonly(),
+                                state.unlock_remaining(),
+                            )
+                        };
+                        let minutes_left = remaining.map(|left| left.as_secs().div_ceil(60));
+                        let tooltip: SharedString = match (windowed, minutes_left) {
+                            (true, Some(minutes)) => i18n_status_bar(cx, "unlocked_tooltip")
+                                .replace("%{minutes}", &minutes.to_string())
+                                .into(),
+                            (true, None) => i18n_status_bar(cx, "write_locked_tooltip")
+                                .replace("%{minutes}", &(WRITE_UNLOCK_SECS / 60).to_string())
+                                .into(),
+                            (false, _) => readonly_tooltip,
+                        };
                         Button::new("zedis-status-bar-server-toggle-readonly")
                             .ghost()
                             .small()
-                            .tooltip(readonly_tooltip)
+                            .tooltip(tooltip)
                             .when(self.readonly, |this| {
                                 this.icon(Icon::new(CustomIconName::Lock).text_color(status_text))
                             })
                             .when(!self.readonly, |this| {
                                 this.icon(Icon::new(CustomIconName::LockOpen).text_color(status_text))
                             })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.server_state.update(cx, |state, cx| {
-                                    state.toggle_readonly(cx);
-                                });
-                            })),
-                    )
+                            .when_some(minutes_left.filter(|_| windowed), |this, minutes| {
+                                this.label(
+                                    i18n_status_bar(cx, "unlocked_chip").replace("%{minutes}", &minutes.to_string()),
+                                )
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if !windowed {
+                                    this.server_state.update(cx, |state, cx| state.toggle_readonly(cx));
+                                    return;
+                                }
+                                if minutes_left.is_some() {
+                                    this.server_state.update(cx, |state, cx| state.lock_writes(cx));
+                                    return;
+                                }
+                                let Ok(server) = get_server(this.server_state.read(cx).server_id()) else {
+                                    return;
+                                };
+                                let server_state = this.server_state.clone();
+                                confirm_dangerous_command(
+                                    &server,
+                                    &DangerKind::WriteLocked,
+                                    None,
+                                    window,
+                                    cx,
+                                    move |_, cx| {
+                                        server_state.update(cx, |state, cx| state.unlock_writes(cx));
+                                    },
+                                );
+                            }))
+                    })
                     .child(
                         Button::new("zedis-status-bar-tools")
                             .ghost()

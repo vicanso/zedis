@@ -242,6 +242,15 @@ pub enum Event {
     ServerDeleted {
         server: ServerRef,
     },
+    /// The caller opened its write window on a locked entry (ADR 14).
+    Unlocked {
+        server: ServerRef,
+        seconds: u64,
+    },
+    /// …and closed it before it ended.
+    Locked {
+        server: ServerRef,
+    },
 }
 
 /// The entry a line is about — enough to find it, and the name a reader

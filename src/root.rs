@@ -312,7 +312,21 @@ impl Zedis {
                         this.activate_tab(ix, None, cx);
                         this.project_active_tab(cx);
                     } else if this.tabs.len() >= MAX_TABS {
-                        this.pending_notification = Some(Notification::warning(i18n_common(cx, "tab_limit")));
+                        // The click still keeps its promise — the server opens
+                        // — just in the tab that is already active, and the
+                        // notice says which limit was hit and what to do about
+                        // it. A refusal alone read as the click doing nothing.
+                        let body = i18n_common(cx, "tab_limit_body").replace("%{max}", &MAX_TABS.to_string());
+                        this.pending_notification =
+                            Some(Notification::warning(body).title(i18n_common(cx, "tab_limit_title")));
+                        let (id, db) = (server_id.to_string(), *db);
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
+                            if id.is_empty() {
+                                state.clear_selected_server(cx);
+                            } else {
+                                state.connect_server(id, db, cx);
+                            }
+                        });
                     } else {
                         // Creating a `ZedisContent` needs a `Window`; stash the
                         // request and let `render` build the tab.

@@ -48,6 +48,8 @@ pub struct AppState {
     /// `--trusted-header` + `--trusted-proxy`: identities a reverse proxy
     /// asserts, or nothing — then the header is never read.
     pub trusted: Option<auth::TrustedProxy>,
+    /// The open write windows on locked entries, per account (ADR 14).
+    pub unlocks: policy::Unlocks,
     /// The login cookie's `Secure` and `Path`, fixed at startup.
     pub cookie: auth::CookiePolicy,
     /// `--base-path`: where the bridge is mounted, as [`normalize_base_path`]
@@ -78,6 +80,7 @@ pub fn router(state: AppState) -> Router {
         .route(&at("/v1/logout"), post(logout))
         .route(&at("/v1/servers"), get(servers).post(add_server))
         .route(&at("/v1/servers/{id}"), delete(delete_server).put(update_server))
+        .route(&at("/v1/servers/{id}/unlock"), post(unlock_writes).delete(lock_writes))
         .route(&at("/v1/exec"), post(exec))
         .route(&at("/v1/session"), post(open_session))
         .route(&at("/v1/session/{token}"), delete(close_session))
@@ -285,24 +288,43 @@ fn authorize_write(
     Ok(account)
 }
 
-/// Whether `account` may see `server` — and so use, edit and delete it: its
-/// own entries, and the shared ones, which are those with no owner. Entries
-/// written before there were owners have none, so they stay everyone's.
-fn visible_to(server: &RedisServer, account: &str) -> bool {
-    server
-        .owner
-        .as_deref()
-        .is_none_or(|owner| owner.is_empty() || owner == account)
+/// Whether `account` may see `server` — and so use it, and edit or delete
+/// it unless its rules say read-only there: its own entries, and the shared
+/// ones (those with no owner; entries written before there were owners have
+/// none, so they stay everyone's) that the account's `servers` rules admit,
+/// which without rules is all of them.
+fn visible_to(accounts: &auth::Accounts, server: &RedisServer, account: &str) -> bool {
+    match server.owner.as_deref() {
+        None | Some("") => accounts.may_see_shared(account, server),
+        Some(owner) => owner == account,
+    }
 }
 
 /// The entry `id` names, if `account` may see it. An entry that exists but
 /// is someone else's answers exactly like one that does not exist, so the
 /// routes never confirm what another account has.
-fn visible_server(id: &str, account: &str) -> ApiResult<RedisServer> {
+fn visible_server(accounts: &auth::Accounts, id: &str, account: &str) -> ApiResult<RedisServer> {
     get_server(id)
         .ok()
-        .filter(|server| visible_to(server, account))
+        .filter(|server| visible_to(accounts, server, account))
         .ok_or_else(|| ApiError::UnknownServer(id.to_string()))
+}
+
+/// Refuse a change to `server` by an account that may not write there —
+/// read-only outright, or read-only on this entry by its rules — the way
+/// `authorize_write` refuses one that may write nowhere.
+fn refuse_read_only_on(
+    state: &AppState,
+    account: &str,
+    server: &RedisServer,
+    origin: &Origin,
+    action: &'static str,
+) -> ApiResult<()> {
+    if state.accounts.is_read_only_on(account, server) {
+        state.audit.record(account, origin, Event::Refused { action });
+        return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()));
+    }
+    Ok(())
 }
 
 /// Settle who owns `server`: nobody (shared) or `account`. Never what the
@@ -541,9 +563,10 @@ impl ServerEntry {
 /// nothing. Passwords, keys and passphrases still never leave this process —
 /// a caller learns that one is stored, not what it is (ADR 9).
 ///
-/// Only the entries the caller may see: its own, and the shared ones. `owner`
-/// comes back as stored — the caller's own name or nothing — which is how
-/// the page knows whether its form's *shared* box starts ticked.
+/// Only the entries the caller may see: its own, and the shared ones its
+/// rules admit. `owner` comes back as stored — the caller's own name or
+/// nothing — which is how the page knows whether its form's *shared* box
+/// starts ticked.
 async fn servers(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -551,17 +574,19 @@ async fn servers(
 ) -> ApiResult<Json<Vec<ServerEntry>>> {
     let mut origin = Origin::new(peer, &headers);
     let account = authorize(&state, &headers, &mut origin)?;
-    // A read-only account gets every entry marked read-only, which is the
-    // signal the page already understands (`RedisServer::readonly` — the
-    // desktop's own "safe mode" switch). The refusal does not depend on it:
-    // the bridge refuses the write whatever the page believes. This is so
-    // that the buttons are grey *before* the round trip rather than after it.
-    let read_only = state.accounts.is_read_only(&account);
+    // An entry the account may not write to is marked read-only, which is
+    // the signal the page already understands (`RedisServer::readonly` —
+    // the desktop's own "safe mode" switch): every entry for a read-only
+    // account, the `:ro` ones for an account with rules. The refusal does
+    // not depend on it: the bridge refuses the write whatever the page
+    // believes. This is so that the buttons are grey *before* the round
+    // trip rather than after it.
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
     Ok(Json(
         list.into_iter()
-            .filter(|server| visible_to(server, &account))
+            .filter(|server| visible_to(&state.accounts, server, &account))
             .map(|mut server| {
+                let read_only = state.accounts.is_read_only_on(&account, &server);
                 if read_only {
                     server.readonly = Some(true);
                 }
@@ -628,7 +653,9 @@ async fn add_server(
     // An id the caller cannot see is either free or someone else's, and the
     // two must look the same: a fresh id, never an overwrite and never a
     // refusal that would confirm the other entry exists.
-    if server.id.trim().is_empty() || get_server(&server.id).is_ok_and(|taken| !visible_to(&taken, &account)) {
+    if server.id.trim().is_empty()
+        || get_server(&server.id).is_ok_and(|taken| !visible_to(&state.accounts, &taken, &account))
+    {
         server.id = Uuid::now_v7().to_string();
     }
     assign_owner(&mut server, &account, shared, None);
@@ -765,7 +792,8 @@ async fn update_server(
 ) -> ApiResult<Json<AddServerResponse>> {
     let mut origin = Origin::new(peer, &headers);
     let account = authorize_write(&state, &headers, &mut origin, "server_update")?;
-    let stored = visible_server(&id, &account)?;
+    let stored = visible_server(&state.accounts, &id, &account)?;
+    refuse_read_only_on(&state, &account, &stored, &origin, "server_update")?;
     let mut server = merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?;
     assign_owner(&mut server, &account, req.shared, Some(&stored));
     let reference = ServerRef::from(&server);
@@ -801,14 +829,18 @@ async fn delete_server(
     let mut origin = Origin::new(peer, &headers);
     let account = authorize_write(&state, &headers, &mut origin, "server_delete")?;
     let list = get_servers().map_err(|e| ApiError::Upstream(e.to_string()))?;
-    // Someone else's entry is left alone and answered like one already gone.
+    // Someone else's entry is left alone and answered like one already gone;
+    // one the account may see but not write to is refused.
     let removed = list
         .iter()
-        .find(|s| s.id == id && visible_to(s, &account))
-        .map(ServerRef::from);
+        .find(|s| s.id == id && visible_to(&state.accounts, s, &account));
+    if let Some(server) = removed {
+        refuse_read_only_on(&state, &account, server, &origin, "server_delete")?;
+    }
+    let removed = removed.map(ServerRef::from);
     let kept: Vec<_> = list
         .into_iter()
-        .filter(|s| s.id != id || !visible_to(s, &account))
+        .filter(|s| s.id != id || !visible_to(&state.accounts, s, &account))
         .collect();
     save_servers(kept)
         .await
@@ -817,6 +849,89 @@ async fn delete_server(
     // the same id changed nothing.
     if let Some(server) = removed {
         state.audit.record(&account, &origin, Event::ServerDeleted { server });
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct UnlockRequest {
+    /// The answer to the lock's question: anything for a plain entry, the
+    /// entry's name for production — the same rule `policy::check` applies
+    /// to a script that confirms one command.
+    confirm: String,
+}
+
+#[derive(Serialize)]
+struct UnlockResponse {
+    /// How long the window is, so the page's countdown says what the
+    /// bridge will do.
+    seconds: u64,
+}
+
+/// Open the caller's write window on a locked entry (ADR 14). Refused for
+/// an account that may not write there at all, and for an entry that is
+/// not locked — there is nothing to open — and asked again, with the
+/// strictness, when the confirmation does not satisfy it.
+async fn unlock_writes(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<UnlockRequest>,
+) -> ApiResult<Json<UnlockResponse>> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
+    let server = visible_server(&state.accounts, &id, &account)?;
+    refuse_read_only_on(&state, &account, &server, &origin, "unlock")?;
+    if !server.write_locked() {
+        return Err(ApiError::BadRequest("writes on this entry are not locked".to_string()));
+    }
+    let strictness = zedis_connection::confirm_strictness(&server, &zedis_connection::DangerKind::WriteLocked);
+    let answered = match strictness {
+        zedis_connection::ConfirmStrictness::Click => !req.confirm.trim().is_empty(),
+        zedis_connection::ConfirmStrictness::TypeName => req.confirm.trim() == server.name.trim(),
+    };
+    if !answered {
+        return Err(ApiError::ConfirmationRequired {
+            kind: zedis_connection::DangerKind::WriteLocked.i18n_key().to_string(),
+            strictness: match strictness {
+                zedis_connection::ConfirmStrictness::Click => "click",
+                zedis_connection::ConfirmStrictness::TypeName => "type_name",
+            },
+        });
+    }
+    let seconds = state.unlocks.unlock(&account, &server.id).as_secs();
+    state.audit.record(
+        &account,
+        &origin,
+        Event::Unlocked {
+            server: ServerRef::from(&server),
+            seconds,
+        },
+    );
+    Ok(Json(UnlockResponse { seconds }))
+}
+
+/// Close the caller's window early. Idempotent: closing one that has ended
+/// is not an error, and only a window that was open makes an audit line.
+async fn lock_writes(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
+    let server = visible_server(&state.accounts, &id, &account)?;
+    if state.unlocks.lock(&account, &server.id) {
+        state.audit.record(
+            &account,
+            &origin,
+            Event::Locked {
+                server: ServerRef::from(&server),
+            },
+        );
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -841,7 +956,7 @@ async fn open_session(
 ) -> ApiResult<Json<SessionResponse>> {
     let mut origin = Origin::new(peer, &headers);
     let account = authorize(&state, &headers, &mut origin)?;
-    visible_server(&req.server, &account)?;
+    visible_server(&state.accounts, &req.server, &account)?;
     let session = state
         .sessions
         .open(&req.server, req.db)
@@ -944,10 +1059,6 @@ async fn exec(
 ) -> ApiResult<Json<ExecResponse>> {
     let mut origin = Origin::new(peer, &headers);
     let account = authorize(&state, &headers, &mut origin)?;
-    // Not `authorize_write`: most of what reaches this route *is* a read, and
-    // a read-only account has to keep running those. The role is carried down
-    // to `policy::check`, which judges each command.
-    let read_only = state.accounts.is_read_only(&account);
     if req.commands.is_empty() {
         return Err(ApiError::BadRequest("no commands".to_string()));
     }
@@ -960,12 +1071,19 @@ async fn exec(
         decoded.push(resp::decode_command(&bytes).map_err(|e| ApiError::BadRequest(format!("command {index}: {e}")))?);
     }
 
-    let server = visible_server(&req.server, &account)?;
+    let server = visible_server(&state.accounts, &req.server, &account)?;
+    // Not `authorize_write`: most of what reaches this route *is* a read, and
+    // a read-only account has to keep running those. The role — on *this*
+    // entry, since an account's rules may grant it read-only here and full
+    // elsewhere — is carried down to `policy::check`, which judges each
+    // command.
+    let read_only = state.accounts.is_read_only_on(&account, &server);
+    let unlocked = state.unlocks.active(&account, &server.id);
     // Every command in a batch is judged. Gating only the first would let a
     // pipeline smuggle a FLUSHALL in behind a GET.
     let verdicts: Vec<policy::Verdict> = decoded
         .iter()
-        .map(|args| policy::check(&server, args, req.confirm.as_deref(), read_only))
+        .map(|args| policy::check(&server, args, req.confirm.as_deref(), read_only, unlocked))
         .collect();
     for (args, verdict) in decoded.iter().zip(&verdicts) {
         let refusal = match verdict {
@@ -1182,26 +1300,52 @@ mod base_path_tests {
 
 #[cfg(test)]
 mod server_tests {
-    use super::{RedisServer, ServerEntry, assign_owner, merge_update, visible_to};
+    use super::{RedisServer, ServerEntry, assign_owner, auth, merge_update, visible_to};
 
     fn owned_by(owner: Option<&str>) -> RedisServer {
         RedisServer {
+            name: "prod-eu".to_string(),
             owner: owner.map(str::to_string),
             ..Default::default()
         }
     }
 
+    fn accounts(toml: &str) -> auth::Accounts {
+        auth::Accounts::from_toml(toml).expect("accounts")
+    }
+
     #[test]
     fn an_account_sees_its_own_entries_and_the_shared_ones() {
-        assert!(visible_to(&owned_by(Some("alice")), "alice"));
+        let all =
+            accounts("[[users]]\nname = \"alice\"\npassword = \"a\"\n[[users]]\nname = \"bob\"\npassword = \"b\"\n");
+        assert!(visible_to(&all, &owned_by(Some("alice")), "alice"));
         assert!(
-            !visible_to(&owned_by(Some("alice")), "bob"),
+            !visible_to(&all, &owned_by(Some("alice")), "bob"),
             "a private entry is its owner's alone"
         );
-        assert!(visible_to(&owned_by(None), "bob"), "no owner: shared");
-        assert!(visible_to(&owned_by(Some("")), "bob"), "an empty owner is no owner");
+        assert!(visible_to(&all, &owned_by(None), "bob"), "no owner: shared");
+        assert!(
+            visible_to(&all, &owned_by(Some("")), "bob"),
+            "an empty owner is no owner"
+        );
         // Names are compared whole: a prefix of someone's name is someone else.
-        assert!(!visible_to(&owned_by(Some("alice")), "alic"));
+        assert!(!visible_to(&all, &owned_by(Some("alice")), "alic"));
+        // A name that is no account sees nothing shared — and its own it
+        // cannot have.
+        assert!(!visible_to(&all, &owned_by(None), "nobody"));
+    }
+
+    #[test]
+    fn a_servers_list_narrows_the_shared_entries_and_never_the_own_ones() {
+        let ruled = accounts("[[users]]\nname = \"bob\"\npassword = \"b\"\nservers = [\"staging*\"]\n");
+        assert!(!visible_to(&ruled, &owned_by(None), "bob"), "prod-eu is not staging*");
+        assert!(
+            visible_to(&ruled, &owned_by(Some("bob")), "bob"),
+            "its own, whatever its name"
+        );
+        let mut staging = owned_by(None);
+        staging.name = "staging-1".to_string();
+        assert!(visible_to(&ruled, &staging, "bob"));
     }
 
     #[test]

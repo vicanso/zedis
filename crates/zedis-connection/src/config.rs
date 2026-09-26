@@ -83,6 +83,26 @@ fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// The server form's *Write lock* choice, by the index of the option the
+/// form shows — follow the tag (`None`), locked, unlocked — or by the word;
+/// also `true` / `false`, which is what an older config or an import says.
+fn write_lock_from_form_value(form_value: Option<&str>) -> Option<bool> {
+    match form_value.map(str::trim) {
+        Some("1") | Some("locked") | Some("true") => Some(true),
+        Some("2") | Some("unlocked") | Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+/// The form index for a stored `write_lock`.
+pub fn write_lock_index(value: Option<bool>) -> usize {
+    match value {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
 pub fn tag_color_index(value: Option<&str>) -> usize {
     let Some(v) = value else { return 0 };
     TAG_COLOR_PRESETS.iter().position(|k| *k == v).unwrap_or(0)
@@ -307,6 +327,10 @@ pub struct RedisServer {
     pub tag: Option<String>,
     pub tag_color: Option<String>,
     pub require_confirm_writes: Option<bool>,
+    /// Whether writes start locked, to be unlocked for a while at a time
+    /// (`WRITE_UNLOCK_SECS`). `None` follows the tag: a Prod entry is
+    /// locked, any other is not — see [`Self::write_locked`].
+    pub write_lock: Option<bool>,
     /// Optional grouping label. Servers with the same `group` string
     /// render under one section header on the servers page. Distinct
     /// from `tag` — tag describes risk/role (PROD/DEV), group
@@ -460,6 +484,7 @@ impl RedisServer {
                 .map(String::from),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),
+            write_lock: write_lock_from_form_value(get_str("write_lock").as_deref()),
             group: get_str("group"),
             // sort_order is owned by reorder buttons / drag-drop, not
             // the edit form. Preserve the existing value (the caller
@@ -941,6 +966,14 @@ impl RedisServer {
     /// so servers tagged before the palette change keep their safety escalation.
     pub fn is_high_risk_tag(&self) -> bool {
         matches!(self.tag_color.as_deref(), Some("magenta") | Some("red"))
+    }
+    /// Whether writes to this entry start locked — the app's `SafeMode`, to
+    /// be unlocked for `WRITE_UNLOCK_SECS` at a time and re-engaged after —
+    /// and, through the bridge, refused outside such a window. Set by the
+    /// entry, else by its tag: production is locked by default, which is
+    /// what the tag is for (ADR 14).
+    pub fn write_locked(&self) -> bool {
+        self.write_lock.unwrap_or_else(|| self.is_high_risk_tag())
     }
     /// Whether the Sentinel nodes carry credentials of their own.
     pub fn has_sentinel_credentials(&self) -> bool {
@@ -1684,6 +1717,41 @@ mod tests {
         assert_eq!(shouted.tls, Some(true));
         // The server form's host field takes one too.
         assert!(parse_url("valkeys://h:6379".to_string()).tls);
+    }
+
+    #[test]
+    fn the_write_lock_follows_the_tag_unless_the_entry_says() {
+        let mut server = RedisServer::default();
+        assert!(!server.write_locked(), "an untagged entry is not locked");
+        server.tag_color = Some("magenta".to_string());
+        assert!(server.write_locked(), "production is, by its tag");
+        server.write_lock = Some(false);
+        assert!(!server.write_locked(), "unless it opts out");
+        server.tag_color = None;
+        server.write_lock = Some(true);
+        assert!(server.write_locked(), "and any entry may opt in");
+        // The form's three answers, and what an older config or an import says.
+        for (given, want) in [
+            (None, None),
+            (Some("0"), None),
+            (Some("default"), None),
+            (Some("1"), Some(true)),
+            (Some("locked"), Some(true)),
+            (Some("true"), Some(true)),
+            (Some("2"), Some(false)),
+            (Some("unlocked"), Some(false)),
+            (Some("false"), Some(false)),
+        ] {
+            assert_eq!(write_lock_from_form_value(given), want, "{given:?}");
+        }
+        assert_eq!(
+            (
+                write_lock_index(None),
+                write_lock_index(Some(true)),
+                write_lock_index(Some(false))
+            ),
+            (0, 1, 2)
+        );
     }
 
     #[test]

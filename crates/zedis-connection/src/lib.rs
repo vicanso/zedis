@@ -139,13 +139,13 @@ pub use config::servers_toml_redacted;
 pub use config::set_servers_cache;
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
-    TAG_ENV_LABELS, get_server_groups, is_connection_uri, tag_color_index,
+    TAG_ENV_LABELS, get_server_groups, is_connection_uri, tag_color_index, write_lock_index,
 };
 pub use config::{get_server, get_servers, save_servers};
 pub use conn::RedisAsyncConn;
 pub use danger::{
-    ConfirmStrictness, DangerKind, classify_dangerous, classify_dangerous_line, confirm_strictness, is_write_command,
-    requires_write_confirm,
+    ConfirmStrictness, DangerKind, WRITE_UNLOCK_SECS, classify_dangerous, classify_dangerous_line, confirm_strictness,
+    is_write_command, requires_write_confirm,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use diagnostics::{
@@ -187,8 +187,8 @@ pub use lua_script::{
     ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1,
 };
 /// Only the browser has an account in front of the Redis user — see
-/// `manager::pool::set_account_read_only`.
-pub use manager::set_account_read_only;
+/// `manager::pool::set_account_read_only_on`.
+pub use manager::set_account_read_only_on;
 #[cfg(not(target_family = "wasm"))]
 pub use master_key::disable_keychain;
 pub use module_ops::{
@@ -232,7 +232,8 @@ pub use server_config::{
 pub use server_db::ServerDb;
 pub use server_ops::{
     ServerSummary, bgrewriteaof, bgsave, dbsize, failover, failover_abort, flush_all, flush_db, forget_client,
-    heartbeat_probe, master_infos, replicaof, replicaof_no_one, server_summary, server_supports, slow_logs,
+    heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one, server_summary, server_supports,
+    slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use set_ops::{set_add, set_card, set_remove, set_replace_member, set_scan};

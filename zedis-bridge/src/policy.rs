@@ -25,9 +25,12 @@
 //! no *semantics* — every judgement is delegated — so adding a Redis feature
 //! to Zedis still changes nothing here.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use zedis_connection::{
-    ConfirmStrictness, DangerKind, RedisServer, classify_dangerous, confirm_strictness, is_read_only_command,
-    is_write_command, requires_write_confirm,
+    ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, classify_dangerous, confirm_strictness,
+    is_read_only_command, is_write_command, requires_write_confirm,
 };
 
 /// What the bridge will do with a command.
@@ -74,12 +77,27 @@ pub enum Verdict {
 /// for a destructive command — is satisfied only by the server's own name.
 /// That mirrors the desktop dialog, where the same escalation makes the user
 /// type the name rather than click once.
-pub fn check(server: &RedisServer, args: &[Vec<u8>], confirm: Option<&str>, read_only: bool) -> Verdict {
+///
+/// `unlocked` is whether this caller has an open write window on this entry
+/// (`Unlocks`). An entry whose writes are locked (`RedisServer::write_locked`)
+/// refuses every non-read outside such a window with
+/// [`DangerKind::WriteLocked`] — a question, like the rest, so a script that
+/// answers it (with the name, on production) gets that one command through,
+/// while the page opens the window once and stops being asked (ADR 14).
+pub fn check(
+    server: &RedisServer,
+    args: &[Vec<u8>],
+    confirm: Option<&str>,
+    read_only: bool,
+    unlocked: bool,
+) -> Verdict {
     if read_only && !reads_only(args) {
         return Verdict::Deny;
     }
-    let Some(kind) = classify(server, args) else {
-        return Verdict::Allow;
+    let kind = match classify(server, args) {
+        Some(kind) => kind,
+        None if server.write_locked() && !unlocked && !reads_only(args) => DangerKind::WriteLocked,
+        None => return Verdict::Allow,
     };
     let strictness = confirm_strictness(server, &kind);
     let satisfied = match (strictness, confirm) {
@@ -116,6 +134,55 @@ fn classify(server: &RedisServer, args: &[Vec<u8>]) -> Option<DangerKind> {
         return Some(DangerKind::GenericWrite);
     }
     None
+}
+
+/// The open write windows: which account has unlocked which entry, until
+/// when. Shared by the routes and swept with the sessions; a window that
+/// has ended is one that was never there.
+#[derive(Clone, Default)]
+pub struct Unlocks(Arc<Mutex<HashMap<(String, String), Instant>>>);
+
+impl Unlocks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Open (or extend) the window for `account` on `server_id`, answering
+    /// how long it is.
+    pub fn unlock(&self, account: &str, server_id: &str) -> Duration {
+        let window = Duration::from_secs(WRITE_UNLOCK_SECS);
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((account.to_string(), server_id.to_string()), Instant::now() + window);
+        window
+    }
+
+    /// Close the window; `true` when there was one to close.
+    pub fn lock(&self, account: &str, server_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(account.to_string(), server_id.to_string()))
+            .is_some_and(|until| until > Instant::now())
+    }
+
+    pub fn active(&self, account: &str, server_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&(account.to_string(), server_id.to_string()))
+            .is_some_and(|until| *until > Instant::now())
+    }
+
+    /// Drop the windows that have ended; how many.
+    pub fn sweep(&self) -> usize {
+        let mut windows = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = windows.len();
+        let now = Instant::now();
+        windows.retain(|_, until| *until > now);
+        before - windows.len()
+    }
 }
 
 /// The command name and its arguments as text, for the classifier and the
@@ -164,16 +231,25 @@ mod tests {
     /// confirmation, there is no token that turns the answer round.
     #[test]
     fn a_read_only_account_may_read_and_nothing_else() {
-        assert_eq!(check(&plain(), &args(&["GET", "k"]), None, true), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["SCAN", "0"]), None, true), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["INFO"]), None, true), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["SET", "k", "v"]), None, true), Verdict::Deny);
-        assert_eq!(check(&plain(), &args(&["DEL", "k"]), None, true), Verdict::Deny);
-        assert_eq!(check(&plain(), &args(&["FLUSHALL"]), None, true), Verdict::Deny);
-        // Feature probe on connect (`ACL LOG 0`) is a read; RESET is not.
-        assert_eq!(check(&plain(), &args(&["ACL", "LOG", "0"]), None, true), Verdict::Allow);
+        assert_eq!(check(&plain(), &args(&["GET", "k"]), None, true, false), Verdict::Allow);
         assert_eq!(
-            check(&plain(), &args(&["ACL", "LOG", "RESET"]), None, true),
+            check(&plain(), &args(&["SCAN", "0"]), None, true, false),
+            Verdict::Allow
+        );
+        assert_eq!(check(&plain(), &args(&["INFO"]), None, true, false), Verdict::Allow);
+        assert_eq!(
+            check(&plain(), &args(&["SET", "k", "v"]), None, true, false),
+            Verdict::Deny
+        );
+        assert_eq!(check(&plain(), &args(&["DEL", "k"]), None, true, false), Verdict::Deny);
+        assert_eq!(check(&plain(), &args(&["FLUSHALL"]), None, true, false), Verdict::Deny);
+        // Feature probe on connect (`ACL LOG 0`) is a read; RESET is not.
+        assert_eq!(
+            check(&plain(), &args(&["ACL", "LOG", "0"]), None, true, false),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check(&plain(), &args(&["ACL", "LOG", "RESET"]), None, true, false),
             Verdict::Deny
         );
     }
@@ -185,14 +261,14 @@ mod tests {
     fn a_confirmation_does_not_buy_a_read_only_account_a_write() {
         for confirm in [None, Some(""), Some("yes"), Some("staging")] {
             assert_eq!(
-                check(&plain(), &args(&["FLUSHALL"]), confirm, true),
+                check(&plain(), &args(&["FLUSHALL"]), confirm, true, false),
                 Verdict::Deny,
                 "confirm={confirm:?}"
             );
         }
         // And on a production server, where the strict token is the name.
         assert_eq!(
-            check(&prod(), &args(&["FLUSHALL"]), Some("production"), true),
+            check(&prod(), &args(&["FLUSHALL"]), Some("production"), true, false),
             Verdict::Deny
         );
     }
@@ -211,7 +287,7 @@ mod tests {
             vec!["SOMETHING.NEW", "k"],
         ] {
             assert_eq!(
-                check(&plain(), &args(&cmd), Some("yes"), true),
+                check(&plain(), &args(&cmd), Some("yes"), true, false),
                 Verdict::Deny,
                 "{cmd:?}"
             );
@@ -222,10 +298,16 @@ mod tests {
     /// subtracts, so every existing verdict has to survive it.
     #[test]
     fn a_full_account_is_judged_exactly_as_before() {
-        assert_eq!(check(&plain(), &args(&["GETDEL", "k"]), None, false), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["EVAL", "x", "0"]), None, false), Verdict::Allow);
+        assert_eq!(
+            check(&plain(), &args(&["GETDEL", "k"]), None, false, false),
+            Verdict::Allow
+        );
+        assert_eq!(
+            check(&plain(), &args(&["EVAL", "x", "0"]), None, false, false),
+            Verdict::Allow
+        );
         assert!(matches!(
-            check(&plain(), &args(&["FLUSHALL"]), None, false),
+            check(&plain(), &args(&["FLUSHALL"]), None, false, false),
             Verdict::Confirm { .. }
         ));
     }
@@ -235,19 +317,22 @@ mod tests {
     /// wrong thing to have behind it.
     #[test]
     fn an_empty_command_is_not_a_read() {
-        assert_eq!(check(&plain(), &[], None, true), Verdict::Deny);
+        assert_eq!(check(&plain(), &[], None, true, false), Verdict::Deny);
     }
 
     #[test]
     fn a_read_goes_straight_through() {
-        assert_eq!(check(&plain(), &args(&["GET", "k"]), None, false), Verdict::Allow);
-        assert_eq!(check(&plain(), &args(&["PING"]), None, false), Verdict::Allow);
+        assert_eq!(
+            check(&plain(), &args(&["GET", "k"]), None, false, false),
+            Verdict::Allow
+        );
+        assert_eq!(check(&plain(), &args(&["PING"]), None, false, false), Verdict::Allow);
     }
 
     #[test]
     fn a_destructive_command_is_refused_until_confirmed() {
         let server = plain();
-        let refused = check(&server, &args(&["FLUSHALL"]), None, false);
+        let refused = check(&server, &args(&["FLUSHALL"]), None, false, false);
         let Verdict::Confirm { kind, .. } = refused else {
             panic!("FLUSHALL must be gated, got {refused:?}");
         };
@@ -255,14 +340,14 @@ mod tests {
         // The same command with a confirmation goes through — as *confirmed*,
         // which is how the audit log tells it from a plain read.
         assert_eq!(
-            check(&server, &args(&["FLUSHALL"]), Some("yes"), false),
+            check(&server, &args(&["FLUSHALL"]), Some("yes"), false, false),
             Verdict::Confirmed {
                 kind: DangerKind::FlushAll,
                 strictness: ConfirmStrictness::Click
             }
         );
         assert_eq!(
-            check(&prod(), &args(&["FLUSHALL"]), Some("production"), false),
+            check(&prod(), &args(&["FLUSHALL"]), Some("production"), false, false),
             Verdict::Confirmed {
                 kind: DangerKind::FlushAll,
                 strictness: ConfirmStrictness::TypeName
@@ -273,7 +358,7 @@ mod tests {
     #[test]
     fn an_empty_confirmation_does_not_count() {
         assert!(matches!(
-            check(&plain(), &args(&["FLUSHALL"]), Some("   "), false),
+            check(&plain(), &args(&["FLUSHALL"]), Some("   "), false, false),
             Verdict::Confirm { .. }
         ));
     }
@@ -283,24 +368,27 @@ mod tests {
         let server = plain();
         let mut a = args(&["GET"]);
         a.push(vec![0xff, 0x00, 0xfe]);
-        assert_eq!(check(&server, &a, None, false), Verdict::Allow);
+        assert_eq!(check(&server, &a, None, false, false), Verdict::Allow);
     }
 
     #[test]
     fn an_empty_command_is_allowed_here_and_refused_by_the_decoder() {
         // `resp::decode_command` rejects an empty frame before policy runs;
         // this only pins that policy itself does not panic on one.
-        assert_eq!(check(&plain(), &[], None, false), Verdict::Allow);
+        assert_eq!(check(&plain(), &[], None, false, false), Verdict::Allow);
     }
 
     #[test]
     fn the_write_confirm_setting_gates_plain_writes() {
         let mut server = plain();
-        assert_eq!(check(&server, &args(&["SET", "k", "v"]), None, false), Verdict::Allow);
+        assert_eq!(
+            check(&server, &args(&["SET", "k", "v"]), None, false, false),
+            Verdict::Allow
+        );
         server.require_confirm_writes = Some(true);
         assert!(
             matches!(
-                check(&server, &args(&["SET", "k", "v"]), None, false),
+                check(&server, &args(&["SET", "k", "v"]), None, false, false),
                 Verdict::Confirm {
                     kind: DangerKind::GenericWrite,
                     ..
@@ -309,6 +397,93 @@ mod tests {
             "require_confirm_writes must gate an ordinary write"
         );
         // Reads stay free even then.
-        assert_eq!(check(&server, &args(&["GET", "k"]), None, false), Verdict::Allow);
+        assert_eq!(check(&server, &args(&["GET", "k"]), None, false, false), Verdict::Allow);
+    }
+
+    /// A locked entry refuses a write until unlocked — as a question, so a
+    /// script that answers it gets the one command through — and reads are
+    /// never asked. A window opened for the caller stops the question.
+    #[test]
+    fn a_locked_entry_asks_for_every_write_until_it_is_unlocked() {
+        let mut locked = plain();
+        locked.write_lock = Some(true);
+        assert_eq!(check(&locked, &args(&["GET", "k"]), None, false, false), Verdict::Allow);
+        assert!(matches!(
+            check(&locked, &args(&["SET", "k", "v"]), None, false, false),
+            Verdict::Confirm {
+                kind: DangerKind::WriteLocked,
+                strictness: ConfirmStrictness::Click
+            }
+        ));
+        assert!(matches!(
+            check(&locked, &args(&["SET", "k", "v"]), Some("yes"), false, false),
+            Verdict::Confirmed {
+                kind: DangerKind::WriteLocked,
+                ..
+            }
+        ));
+        assert_eq!(
+            check(&locked, &args(&["SET", "k", "v"]), None, false, true),
+            Verdict::Allow
+        );
+        // A destructive command keeps its own question inside the window.
+        assert!(matches!(
+            check(&locked, &args(&["FLUSHDB"]), None, false, true),
+            Verdict::Confirm {
+                kind: DangerKind::FlushDb,
+                ..
+            }
+        ));
+        // A read-only account is refused before the lock is consulted.
+        assert_eq!(
+            check(&locked, &args(&["SET", "k", "v"]), Some("yes"), true, true),
+            Verdict::Deny
+        );
+    }
+
+    /// Production is locked by its tag alone, and unlocking it asks for the
+    /// name; an entry may say otherwise either way.
+    #[test]
+    fn production_is_locked_by_default_and_unlocked_by_name() {
+        let production = prod();
+        assert!(production.write_locked());
+        assert!(matches!(
+            check(&production, &args(&["SET", "k", "v"]), Some("yes"), false, false),
+            Verdict::Confirm {
+                kind: DangerKind::WriteLocked,
+                strictness: ConfirmStrictness::TypeName
+            }
+        ));
+        assert!(matches!(
+            check(&production, &args(&["SET", "k", "v"]), Some("production"), false, false),
+            Verdict::Confirmed { .. }
+        ));
+        let mut opted_out = prod();
+        opted_out.write_lock = Some(false);
+        assert_eq!(
+            check(&opted_out, &args(&["SET", "k", "v"]), None, false, false),
+            Verdict::Allow
+        );
+        assert!(!plain().write_locked());
+    }
+
+    #[test]
+    fn a_window_is_per_account_and_entry_and_ends() {
+        let unlocks = Unlocks::new();
+        assert!(!unlocks.active("alice", "s1"));
+        assert_eq!(unlocks.unlock("alice", "s1"), Duration::from_secs(WRITE_UNLOCK_SECS));
+        assert!(unlocks.active("alice", "s1"));
+        assert!(!unlocks.active("alice", "s2"), "another entry");
+        assert!(!unlocks.active("bob", "s1"), "another account");
+        assert!(unlocks.lock("alice", "s1"), "there was a window to close");
+        assert!(!unlocks.active("alice", "s1"));
+        assert!(!unlocks.lock("alice", "s1"), "and now there is not");
+        // An ended window is swept, and was already inactive.
+        unlocks.0.lock().expect("lock").insert(
+            ("alice".to_string(), "s3".to_string()),
+            Instant::now() - Duration::from_secs(1),
+        );
+        assert!(!unlocks.active("alice", "s3"));
+        assert_eq!(unlocks.sweep(), 1);
     }
 }
