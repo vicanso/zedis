@@ -46,9 +46,15 @@ Inside the window, writes are plain `Allow` and the audit log carries one
 `unlocked` line, not one per write — the person confirmed the window, not
 each write. A destructive command keeps its own question inside the window.
 
-The form asks three things, not a checkbox — follow the tag, locked,
-unlocked — because the default *follows the tag*, and a box would freeze the
-answer at the moment the form opened, before the tag was picked.
+The form asks one thing of four answers, on a Safety tab of its own —
+follow the tag, allowed, locked, read-only — over the two stored fields
+(`write_lock`, `readonly`). Read-only and the lock are the same axis at two
+strengths, and as two controls they could both be set, which made the lock
+button open a window on a read-only entry; as one choice read-only simply
+wins (`write_locked()` is false for a read-only entry). A radio rather than
+boxes because the default *follows the tag*, which a box could not say: it
+would freeze the answer at the moment the form opened, before the tag was
+picked. The tag sits first on that tab, so the choice reads downward.
 
 ## Consequences
 

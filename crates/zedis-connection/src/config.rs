@@ -94,12 +94,28 @@ fn write_lock_from_form_value(form_value: Option<&str>) -> Option<bool> {
     }
 }
 
-/// The form index for a stored `write_lock`.
-pub fn write_lock_index(value: Option<bool>) -> usize {
-    match value {
+/// The server form's one *Writes* choice, by option index — follow the tag,
+/// allowed, locked, read-only — as `(readonly, write_lock)`. Read-only wins
+/// whatever the lock says, and every other choice leaves it unset.
+fn writes_from_form_value(choice: &str) -> (Option<bool>, Option<bool>) {
+    match choice.trim() {
+        "1" | "allowed" => (None, Some(false)),
+        "2" | "locked" => (None, Some(true)),
+        "3" | "readonly" => (Some(true), None),
+        _ => (None, None),
+    }
+}
+
+/// The form index for the stored pair, in the order [`writes_from_form_value`]
+/// reads: read-only first, since it is the stronger answer.
+pub fn writes_index(readonly: Option<bool>, write_lock: Option<bool>) -> usize {
+    if readonly.unwrap_or(false) {
+        return 3;
+    }
+    match write_lock {
         None => 0,
-        Some(true) => 1,
-        Some(false) => 2,
+        Some(false) => 1,
+        Some(true) => 2,
     }
 }
 
@@ -391,6 +407,15 @@ impl RedisServer {
 
         let get_bool = |k: &str| get_str(k).map(|s| s == "true" || s == "1");
         let redis_url = parse_url(get_str("host").unwrap_or_default());
+        // The form's one *Writes* choice, or — from an older form, an import
+        // or a script — the two fields it stands for.
+        let (readonly, write_lock) = match get_str("writes") {
+            Some(choice) => writes_from_form_value(&choice),
+            None => (
+                get_bool("readonly"),
+                write_lock_from_form_value(get_str("write_lock").as_deref()),
+            ),
+        };
         let mut username = get_str("username");
         if username.is_none() && !redis_url.username.is_empty() {
             username = Some(redis_url.username.clone());
@@ -445,7 +470,7 @@ impl RedisServer {
             tls,
             insecure: get_bool("insecure"),
             ssh_tunnel: get_bool("ssh_tunnel"),
-            readonly: get_bool("readonly"),
+            readonly,
             databases: get_str("databases")
                 .and_then(|s| s.parse::<usize>().ok())
                 .filter(|&n| n > 0),
@@ -484,7 +509,7 @@ impl RedisServer {
                 .map(String::from),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),
-            write_lock: write_lock_from_form_value(get_str("write_lock").as_deref()),
+            write_lock,
             group: get_str("group"),
             // sort_order is owned by reorder buttons / drag-drop, not
             // the edit form. Preserve the existing value (the caller
@@ -973,7 +998,9 @@ impl RedisServer {
     /// entry, else by its tag: production is locked by default, which is
     /// what the tag is for (ADR 14).
     pub fn write_locked(&self) -> bool {
-        self.write_lock.unwrap_or_else(|| self.is_high_risk_tag())
+        // Read-only is the stronger answer: an entry that may not write at
+        // all has no window to open.
+        !self.readonly.unwrap_or(false) && self.write_lock.unwrap_or_else(|| self.is_high_risk_tag())
     }
     /// Whether the Sentinel nodes carry credentials of their own.
     pub fn has_sentinel_credentials(&self) -> bool {
@@ -1730,6 +1757,12 @@ mod tests {
         server.tag_color = None;
         server.write_lock = Some(true);
         assert!(server.write_locked(), "and any entry may opt in");
+        server.readonly = Some(true);
+        assert!(
+            !server.write_locked(),
+            "read-only is the stronger answer: nothing to unlock"
+        );
+        server.readonly = None;
         // The form's three answers, and what an older config or an import says.
         for (given, want) in [
             (None, None),
@@ -1744,14 +1777,25 @@ mod tests {
         ] {
             assert_eq!(write_lock_from_form_value(given), want, "{given:?}");
         }
-        assert_eq!(
-            (
-                write_lock_index(None),
-                write_lock_index(Some(true)),
-                write_lock_index(Some(false))
-            ),
-            (0, 1, 2)
-        );
+        // The form's one choice, what it stores, and the way back.
+        for (choice, want) in [
+            ("0", (None, None)),
+            ("1", (None, Some(false))),
+            ("2", (None, Some(true))),
+            ("3", (Some(true), None)),
+        ] {
+            assert_eq!(writes_from_form_value(choice), want, "{choice}");
+            let (readonly, write_lock) = want;
+            assert_eq!(
+                writes_index(readonly, write_lock).to_string(),
+                choice,
+                "{choice} round-trips"
+            );
+        }
+        assert_eq!(writes_from_form_value("readonly"), (Some(true), None));
+        assert_eq!(writes_from_form_value("nonsense"), (None, None));
+        assert_eq!(writes_index(Some(true), Some(true)), 3, "read-only wins over the lock");
+        assert_eq!(writes_index(Some(false), Some(true)), 2);
     }
 
     #[test]

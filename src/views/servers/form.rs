@@ -174,6 +174,21 @@ impl ZedisServers {
                 .default_value(redis_server.description.clone().unwrap_or_default())
                 .placeholder(i18n_common(cx, "description_placeholder"))
                 .tab_index(0),
+            ZedisFormField::new("group", i18n_servers(cx, "group"))
+                .default_value(redis_server.group.clone().unwrap_or_default())
+                .placeholder({
+                    // Show the list of existing groups as a placeholder hint
+                    // so users naturally reuse labels instead of creating
+                    // near-duplicates ("Team A" vs "team a"). Falls back
+                    // to a static prompt when no groups exist yet.
+                    let existing = get_server_groups();
+                    if existing.is_empty() {
+                        i18n_servers(cx, "group_placeholder")
+                    } else {
+                        format!("{}: {}", i18n_servers(cx, "group_existing_hint"), existing.join(" / ")).into()
+                    }
+                })
+                .tab_index(0),
             // tab tls
             ZedisFormField::new("tls", i18n_common(cx, "tls"))
                 .default_value(redis_server.tls.unwrap_or(false).to_string())
@@ -284,51 +299,13 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "cluster_read_replicas_check_label"))
                 .tab_index(3)
                 .field_type(ZedisFormFieldType::Checkbox),
-            ZedisFormField::new("readonly", i18n_servers(cx, "readonly"))
-                .default_value(redis_server.readonly.unwrap_or(false).to_string())
-                .placeholder(i18n_servers(cx, "readonly_check_label"))
-                .tab_index(3)
-                .field_type(ZedisFormFieldType::Checkbox),
-            ZedisFormField::new("require_confirm_writes", i18n_servers(cx, "require_confirm_writes"))
-                .default_value(redis_server.require_confirm_writes.unwrap_or(false).to_string())
-                .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
-                .tab_index(3)
-                .field_type(ZedisFormFieldType::Checkbox),
-            // Three answers, not a checkbox: the default *follows the tag*
-            // (production locked, the rest not), and a box could not say
-            // "whatever the tag says" — it would freeze the answer at the
-            // moment the form opened, before the tag was picked (ADR 14).
-            ZedisFormField::new("write_lock", i18n_servers(cx, "write_lock"))
-                .default_value(write_lock_index(redis_server.write_lock).to_string())
-                // In `write_lock_index` order: follow the tag, locked, unlocked.
-                .options(vec![
-                    i18n_servers(cx, "write_lock_default"),
-                    i18n_servers(cx, "write_lock_locked"),
-                    i18n_servers(cx, "write_lock_unlocked"),
-                ])
-                .tab_index(3)
-                .field_type(ZedisFormFieldType::RadioGroup),
-            ZedisFormField::new("group", i18n_servers(cx, "group"))
-                .default_value(redis_server.group.clone().unwrap_or_default())
-                .placeholder({
-                    // Show the list of existing groups as a placeholder hint
-                    // so users naturally reuse labels instead of creating
-                    // near-duplicates ("Team A" vs "team a"). Falls back
-                    // to a static prompt when no groups exist yet.
-                    let existing = get_server_groups();
-                    if existing.is_empty() {
-                        i18n_servers(cx, "group_placeholder")
-                    } else {
-                        format!("{}: {}", i18n_servers(cx, "group_existing_hint"), existing.join(" / ")).into()
-                    }
-                })
-                .tab_index(3),
-            // Single "Environment" preset (None/Local/Dev/UAT/Prod/Archive)
-            // drives the display tag, chip color, and high-risk (PROD)
-            // escalation. The option index maps straight onto
+            // —— Safety tab: the tag first, because the writes choice below
+            // follows it ——
+            // Single "Environment" preset (None/Dev/UAT/Prod) drives the
+            // display tag, chip color, the high-risk (PROD) escalation and the
+            // default write lock. The option index maps straight onto
             // TAG_COLOR_PRESETS, so the stored `tag_color` key stays the
-            // source of truth and `from_form_data` derives the label from it —
-            // replacing the old free-text tag + separate color picker.
+            // source of truth and `from_form_data` derives the label from it.
             ZedisFormField::new("tag_color", i18n_servers(cx, "tag"))
                 .default_value(tag_color_index(redis_server.tag_color.as_deref()).to_string())
                 .options(
@@ -337,17 +314,40 @@ impl ZedisServers {
                         .map(|s| SharedString::from(*s))
                         .collect::<Vec<SharedString>>(),
                 )
-                .tab_index(3)
+                .tab_index(4)
                 .field_type(ZedisFormFieldType::RadioGroup),
+            // One axis for how much the app lets you write — follow the tag,
+            // allowed, locked, read-only — over the two stored fields
+            // (`write_lock`, `readonly`), which used to be two controls of
+            // overlapping meaning that could both be set (ADR 14). A radio
+            // rather than boxes because the default *follows the tag*, which a
+            // box could not say: it would freeze the answer at the moment the
+            // form opened, before the tag was picked.
+            ZedisFormField::new("writes", i18n_servers(cx, "writes"))
+                .default_value(writes_index(redis_server.readonly, redis_server.write_lock).to_string())
+                // In `writes_index` order.
+                .options(vec![
+                    i18n_servers(cx, "writes_follow_tag"),
+                    i18n_servers(cx, "writes_allowed"),
+                    i18n_servers(cx, "writes_locked"),
+                    i18n_servers(cx, "writes_readonly"),
+                ])
+                .tab_index(4)
+                .field_type(ZedisFormFieldType::RadioGroup),
+            ZedisFormField::new("require_confirm_writes", i18n_servers(cx, "require_confirm_writes"))
+                .default_value(redis_server.require_confirm_writes.unwrap_or(false).to_string())
+                .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
+                .tab_index(4)
+                .field_type(ZedisFormFieldType::Checkbox),
             // —— Keys tab: key-tree / SCAN behaviour (per-server overrides) ——
             ZedisFormField::new("key_separator", i18n_servers(cx, "key_separator"))
                 .default_value(redis_server.key_separator.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "key_separator_placeholder"))
-                .tab_index(4),
+                .tab_index(5),
             ZedisFormField::new("key_scan_count", i18n_servers(cx, "key_scan_count"))
                 .default_value(redis_server.key_scan_count.map(|n| n.to_string()).unwrap_or_default())
                 .placeholder(i18n_servers(cx, "key_scan_count_placeholder"))
-                .tab_index(4),
+                .tab_index(5),
             ZedisFormField::new("max_key_tree_depth", i18n_servers(cx, "max_key_tree_depth"))
                 .default_value(
                     redis_server
@@ -356,7 +356,7 @@ impl ZedisServers {
                         .unwrap_or_default(),
                 )
                 .placeholder(i18n_servers(cx, "max_key_tree_depth_placeholder"))
-                .tab_index(4),
+                .tab_index(5),
             ZedisFormField::new("auto_expand_threshold", i18n_servers(cx, "auto_expand_threshold"))
                 .default_value(
                     redis_server
@@ -365,7 +365,7 @@ impl ZedisServers {
                         .unwrap_or_default(),
                 )
                 .placeholder(i18n_servers(cx, "auto_expand_threshold_placeholder"))
-                .tab_index(4),
+                .tab_index(5),
             ZedisFormField::new("show_key_tree_ttl", i18n_servers(cx, "show_key_tree_ttl"))
                 .default_value(redis_server.show_key_tree_ttl_form_index().to_string())
                 .options(vec![
@@ -373,7 +373,7 @@ impl ZedisServers {
                     i18n_servers(cx, "show_key_tree_ttl_show"),
                     i18n_servers(cx, "show_key_tree_ttl_hide"),
                 ])
-                .tab_index(4)
+                .tab_index(5)
                 .field_type(ZedisFormFieldType::RadioGroup),
         ];
         // Only a bridge has accounts, so only the browser's form asks who an
@@ -410,6 +410,7 @@ impl ZedisServers {
                 i18n_servers(cx, "tab_tls"),
                 i18n_servers(cx, "tab_ssh"),
                 i18n_servers(cx, "tab_advanced"),
+                i18n_servers(cx, "tab_safety"),
                 i18n_servers(cx, "tab_keys"),
             ])
             .confirm_label(i18n_common(cx, "confirm"))

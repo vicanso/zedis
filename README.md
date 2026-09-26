@@ -269,7 +269,7 @@ Two things the proxy must do: strip or overwrite that header on every request it
 
 ### Locked writes on production
 
-A **Prod**-tagged entry starts with its writes locked, on the desktop and in the browser alike (any entry can, through its *Write lock* setting; a Prod entry can opt out). The status-bar lock asks for the server's name and opens a **15-minute window** — the button shows what is left and locks again by itself. In the browser the bridge keeps the same window per account (`POST` / `DELETE /v1/servers/{id}/unlock`, audited as `unlocked` / `locked`) and refuses a write outside it with the same `428` a destructive command gets, so a script is held to what the page is. An existing Prod entry starts locked after this version; set *Write lock* to unlocked on it if that is not wanted.
+A **Prod**-tagged entry starts with its writes locked, on the desktop and in the browser alike (any entry can, through the *Writes* choice on its Safety tab — follow the tag, allowed, locked, read-only). The status-bar lock asks for the server's name and opens a **15-minute window** — the button shows what is left and locks again by itself. In the browser the bridge keeps the same window per account (`POST` / `DELETE /v1/servers/{id}/unlock`, audited as `unlocked` / `locked`) and refuses a write outside it with the same `428` a destructive command gets, so a script is held to what the page is. An existing Prod entry starts locked after this version; set its *Writes* to *Allowed* if that is not wanted.
 
 ### Audit log
 

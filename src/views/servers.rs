@@ -19,7 +19,7 @@ use crate::assets::CustomIconName;
 use crate::connection::test_connection;
 use crate::connection::{
     ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, sentinel_master_names, tag_color_index,
-    write_lock_index,
+    writes_index,
 };
 use crate::error::Error;
 use crate::helpers::{

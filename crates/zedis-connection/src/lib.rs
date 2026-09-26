@@ -139,7 +139,7 @@ pub use config::servers_toml_redacted;
 pub use config::set_servers_cache;
 pub use config::{
     ImportError, RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE,
-    TAG_ENV_LABELS, get_server_groups, is_connection_uri, tag_color_index, write_lock_index,
+    TAG_ENV_LABELS, get_server_groups, is_connection_uri, tag_color_index, writes_index,
 };
 pub use config::{get_server, get_servers, save_servers};
 pub use conn::RedisAsyncConn;
