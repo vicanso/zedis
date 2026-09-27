@@ -188,7 +188,14 @@ pub async fn node_cancel_slot_migrations(node: &ClusterNode) -> Result<()> {
     };
     let running = match dialect {
         SlotMigrationDialect::Valkey => Vec::new(),
-        SlotMigrationDialect::Redis => cluster_get_slot_migrations(&mut node.connection().await?, dialect).await?,
+        // Named like the cancel it precedes: on a Redis before 8.4 this is
+        // the command that is missing, and the reply alone did not say
+        // which node refused it.
+        SlotMigrationDialect::Redis => cluster_get_slot_migrations(&mut node.connection().await?, dialect)
+            .await
+            .map_err(|e| Error::Invalid {
+                message: format!("{} on {}: {e}", dialect.status_command(), node.addr),
+            })?,
     };
     cancel(node.clone()).await?;
     let other_ends: BTreeSet<String> = running

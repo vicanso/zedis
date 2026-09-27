@@ -300,20 +300,21 @@ async fn get_databases(mut conn: RedisAsyncConn, is_cluster: bool) -> Result<usi
     // value: a default 9.0 cluster node answers `databases` with 16 and
     // `SELECT 1` with "DB index is out of range", so the standalone count
     // would put fifteen databases the server refuses into the switcher.
-    // Redis and Valkey 8 know no such parameter and answer an empty list,
-    // which falls through to `databases` — and both force that to 1 in
-    // cluster mode ("Changing databases number from 16 to 1 since we are in
-    // cluster mode"), so a stock cluster of either flavor offers db 0 alone.
+    // Redis and Valkey 8 know no such parameter and answer an empty list:
+    // their clusters have db 0 alone, and that is the answer. `databases` is
+    // not asked — newer servers force it to 1 in cluster mode ("Changing
+    // databases number from 16 to 1 since we are in cluster mode"), but
+    // Redis 6.2 leaves it at 16 and refuses every `SELECT`, so reading it
+    // offered fifteen databases that do not exist. Only a refused `CONFIG`
+    // (a managed cloud) falls through, to the proven count of INFO keyspace.
     if is_cluster {
         let reply: redis::RedisResult<Vec<String>> = cmd("CONFIG")
             .arg("GET")
             .arg("cluster-databases")
             .query_async(&mut conn)
             .await;
-        if let Ok(reply) = reply
-            && let Some(count) = configured_count(&reply)
-        {
-            return Ok(count);
+        if let Ok(reply) = reply {
+            return Ok(configured_count(&reply).unwrap_or(1));
         }
     }
 

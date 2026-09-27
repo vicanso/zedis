@@ -5331,7 +5331,7 @@ fn cluster_discovers_nodes_and_scans_every_master() {
         // and write keys between the two snapshots, so on a mismatch take
         // both again rather than fail on a one-key race.
         let mut agreed = false;
-        for _ in 0..10 {
+        for _ in 0..50 {
             let routed = client.dbsize().await.expect("dbsize");
             let (_, per_master): (_, Vec<u64>) = client
                 .query_async_masters(vec![cmd("DBSIZE")])
@@ -5341,6 +5341,9 @@ fn cluster_discovers_nodes_and_scans_every_master() {
                 agreed = true;
                 break;
             }
+            // Back-to-back retries can all land inside another test's burst
+            // of writes; a short pause lets one pair fall between them.
+            smol::Timer::after(std::time::Duration::from_millis(20)).await;
         }
         assert!(agreed, "routed DBSIZE sums every master");
 
@@ -5652,8 +5655,9 @@ fn standalone_batch_ttl_conditions_report_skipped_keys() {
 
 /// The database count a cluster client reports is the one `SELECT`
 /// accepts: `cluster-databases` where the server has it (Valkey 9, default
-/// 1), else `databases`, which Redis and Valkey 8 force to 1 in cluster
-/// mode. Found on a default Valkey 9.0 cluster: it keeps `databases` at 16
+/// 1), else 1 — never `databases`, which Redis 6.2 leaves at 16 in cluster
+/// mode while refusing every `SELECT`. Found on a default Valkey 9.0
+/// cluster first: it keeps `databases` at 16
 /// and answers `SELECT 1` with "DB index is out of range", and the switcher
 /// listed fifteen databases that did not exist. With more than one
 /// database (`--cluster-databases 16`), a key written to the last one is
@@ -6349,14 +6353,19 @@ fn cluster_node_operations_address_the_node_they_name() {
         let replicate = node_replicate(&source_node, &target.node_id).await;
         assert!(replicate.is_err(), "a master holding slots stays one");
 
-        // A node with no migration running answers `CANCELSLOTMIGRATIONS`
-        // where it has the command, and says so where it does not.
+        // A node with no migration running takes the cancel where it has the
+        // command (Valkey 9's `CANCELSLOTMIGRATIONS`, Redis 8.4's
+        // `MIGRATION CANCEL`), and where it does not, the refusal names the
+        // node it was sent to — whichever dialect's command it was.
         match node_cancel_slot_migrations(&source_node).await {
             Ok(()) => {}
-            Err(e) => assert!(
-                e.to_string().contains("CLUSTER CANCELSLOTMIGRATIONS on "),
-                "the error names the node it was sent to: {e}"
-            ),
+            Err(e) => {
+                let message = e.to_string();
+                assert!(
+                    message.contains(&format!(" on {}: ", source.addr)),
+                    "the error names the node it was sent to: {message}"
+                );
+            }
         }
     });
 }
