@@ -23,7 +23,10 @@ crate-type = ["cdylib", "rlib"]
 gpui = { workspace = true }
 # The application itself, as a library: the views, the states, the assets.
 # What this crate adds is only the browser's way in (ADR 9).
-zedis-gui = { path = "..", version = "0.11.0" }
+# No `version`: this crate is never published (`publish = false`), and a
+# pinned one broke every minor bump — `scripts/bump-version.sh` moves the
+# workspace version, and `^0.11.0` does not accept 0.12.0.
+zedis-gui = { path = ".." }
 zedis-connection = { workspace = true }
 zedis-core = { workspace = true }
 

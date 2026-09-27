@@ -25,6 +25,25 @@ case "$KIND" in
 esac
 NEXT="$MAJ.$MIN.$PAT"
 
+# A bump that fails part-way leaves the tree as it found it. The version is
+# read back from Cargo.toml, so a half-applied bump re-run skipped a version:
+# the failed run had already written 0.12.0, and the retry went to 0.13.0.
+TOUCHED=(Cargo.toml Cargo.lock docs/index.html docs/zh/index.html SECURITY.md)
+SNAPSHOT=$(mktemp -d)
+for f in "${TOUCHED[@]}"; do
+  mkdir -p "$SNAPSHOT/$(dirname "$f")"
+  cp "$f" "$SNAPSHOT/$f"
+done
+finish() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    for f in "${TOUCHED[@]}"; do cp "$SNAPSHOT/$f" "$f"; done
+    echo "bump failed; ${TOUCHED[*]} restored" >&2
+  fi
+  rm -rf "$SNAPSHOT"
+}
+trap finish EXIT
+
 # Replace only the first `version = "…"` line — that is [workspace.package]
 # (the root [package] uses `version.workspace = true`, which doesn't match).
 CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
