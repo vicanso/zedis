@@ -47,6 +47,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use std::sync::Arc;
 use tracing::info;
 use zedis_ui::{ZedisDialog, stable_gutter_padding};
 
@@ -111,7 +112,10 @@ struct RunResult {
 
 pub struct ZedisFunctionEditor {
     server_state: Entity<ZedisServerState>,
-    libraries: Vec<FunctionLibrary>,
+    /// Shared, so the filtered list a frame draws — and the Edit button of
+    /// each card — holds a handle instead of a copy of every library with
+    /// its source code.
+    libraries: Vec<Arc<FunctionLibrary>>,
     stats: Option<FunctionStats>,
     /// Library names whose code panel is currently expanded inline.
     expanded: AHashSet<SharedString>,
@@ -221,7 +225,7 @@ impl ZedisFunctionEditor {
                 match result {
                     Ok((listing, stats)) => {
                         this.unsupported = listing.unsupported;
-                        this.libraries = listing.libraries;
+                        this.libraries = listing.libraries.into_iter().map(Arc::new).collect();
                         this.stats = stats;
                         this.code_editors.clear();
                         this.error = None;
@@ -657,7 +661,7 @@ impl ZedisFunctionEditor {
             .open(window, cx);
     }
 
-    fn filtered_libraries(&self, cx: &gpui::Context<Self>) -> Vec<FunctionLibrary> {
+    fn filtered_libraries(&self, cx: &gpui::Context<Self>) -> Vec<Arc<FunctionLibrary>> {
         let q = self.filter.read(cx).value().to_string();
         let q = q.trim().to_ascii_lowercase();
         if q.is_empty() {
@@ -923,7 +927,7 @@ impl ZedisFunctionEditor {
 
     fn render_library_card(
         &mut self,
-        lib: FunctionLibrary,
+        lib: Arc<FunctionLibrary>,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
@@ -1050,9 +1054,9 @@ impl ZedisFunctionEditor {
                                 .icon(CustomIconName::FilePenLine)
                                 .label(i18n_functions(cx, "edit"))
                                 .disabled(self.submitting)
-                                .on_click(
-                                    cx.listener(move |this, _, w, cx| this.open_form(Some(&lib_for_edit), w, cx)),
-                                ),
+                                .on_click(cx.listener(move |this, _, w, cx| {
+                                    this.open_form(Some(lib_for_edit.as_ref()), w, cx)
+                                })),
                         )
                     })
                     .when(can_write, |this| {

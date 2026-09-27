@@ -817,9 +817,10 @@ impl gpui::Render for ZedisAclManager {
                 )
                 .into_any_element()
         } else {
-            let users = self.users.clone();
-            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(users.len());
-            for (idx, user) in users.into_iter().enumerate() {
+            // Borrowed: every row used to be a deep copy of its user — rules,
+            // keys, selectors — made again on each repaint.
+            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(self.users.len());
+            for (idx, user) in self.users.iter().enumerate() {
                 rows.push(self.render_user_row(idx, user, cx).into_any_element());
             }
             v_flex().gap_2().p_4().w_full().children(rows).into_any_element()
@@ -844,14 +845,14 @@ impl gpui::Render for ZedisAclManager {
 }
 
 impl ZedisAclManager {
-    fn render_user_row(&self, idx: usize, user: AclUser, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render_user_row(&self, idx: usize, user: &AclUser, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let can_write = self.server_state.read(cx).can(Capability::AclWrite);
         let muted = cx.theme().muted_foreground;
         let bg = cx.theme().background;
         let border = cx.theme().border;
         let primary = cx.theme().primary;
         let red = cx.theme().red;
-        let user_for_edit = user.clone();
+        let user_for_edit = user.username.clone();
         let user_for_delete = user.username.clone();
         let user_for_dryrun = user.username.clone();
         let is_default = user.username.as_str() == "default";
@@ -948,7 +949,13 @@ impl ZedisAclManager {
                                         .icon(CustomIconName::FilePenLine)
                                         .tooltip(i18n_acl(cx, "edit_tooltip"))
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_editor(user_for_edit.clone(), false, window, cx);
+                                            // Looked up at the click: the list may have
+                                            // been reloaded since this row was drawn.
+                                            let user =
+                                                this.users.iter().find(|user| user.username == user_for_edit).cloned();
+                                            if let Some(user) = user {
+                                                this.open_editor(user, false, window, cx);
+                                            }
                                         })),
                                 )
                                 .child(

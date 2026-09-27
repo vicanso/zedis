@@ -265,6 +265,8 @@ fn char_width(window: &Window) -> Pixels {
 fn columns_for(width: Pixels, char_width: Pixels, number_digits: usize) -> Columns {
     let usable = (width - SCROLLBAR_ROOM).max(px(0.));
     let fit = |text: Pixels| ((text / char_width).floor().max(0.) as usize).max(MIN_COLUMNS);
+    // The gutter (digits and padding either side), the two-column marker, and
+    // the text's right padding — what `render_row` lays out beside the text.
     let chrome = char_width * (number_digits + 2) as f32 + ROW_PADDING * 3.;
     Columns {
         side: fit(usable / 2. - chrome),
@@ -579,7 +581,9 @@ impl ZedisValueDiff {
             patch_bg: theme.muted.opacity(0.15),
             muted: theme.muted_foreground,
             border: theme.border,
-            gutter: ch * digits as f32 + ROW_PADDING,
+            // Padding either side of the right-aligned number: a one-digit
+            // gutter otherwise put it against the pane's edge.
+            gutter: ch * digits as f32 + ROW_PADDING * 2.,
             marker: ch * 2.,
             fold_label: i18n_editor(cx, "diff_folded"),
             patch_caption: i18n_editor(cx, "diff_patch_label"),

@@ -48,6 +48,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 use zedis_ui::{ZedisDialog, stable_gutter_padding};
@@ -130,7 +131,10 @@ struct RunResult {
 
 pub struct ZedisLuaScriptLibrary {
     server_state: Entity<ZedisServerState>,
-    scripts: Vec<(String, LuaScript)>,
+    /// Each script shared, so the filtered list a frame draws — and each
+    /// card's Edit and Copy buttons — hold a handle instead of a copy of the
+    /// script and its source.
+    scripts: Vec<(String, Arc<LuaScript>)>,
     run_forms: AHashMap<String, RunForm>,
     run_expanded: AHashMap<String, bool>,
     code_expanded: AHashMap<String, bool>,
@@ -190,7 +194,10 @@ impl ZedisLuaScriptLibrary {
     /// Refresh the in-memory list without dropping code viewers
     /// (callers that change source should invalidate specifically).
     fn refresh_list(&mut self, cx: &mut gpui::Context<Self>) {
-        self.scripts = LuaScriptManager::list_with_id();
+        self.scripts = LuaScriptManager::list_with_id()
+            .into_iter()
+            .map(|(id, script)| (id, Arc::new(script)))
+            .collect();
         cx.notify();
     }
 
@@ -779,7 +786,7 @@ impl ZedisLuaScriptLibrary {
             .open(window, cx);
     }
 
-    fn filtered_scripts(&self, cx: &gpui::Context<Self>) -> Vec<(String, LuaScript)> {
+    fn filtered_scripts(&self, cx: &gpui::Context<Self>) -> Vec<(String, Arc<LuaScript>)> {
         let q = self.filter.read(cx).value().to_string();
         let q = q.trim().to_ascii_lowercase();
         if q.is_empty() {
@@ -1009,7 +1016,7 @@ impl ZedisLuaScriptLibrary {
     fn render_card(
         &mut self,
         id: String,
-        script: LuaScript,
+        script: Arc<LuaScript>,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
@@ -1062,7 +1069,7 @@ impl ZedisLuaScriptLibrary {
         let script_for_edit = script.clone();
         let id_for_edit = id.clone();
         let name_for_delete = SharedString::from(script.name.clone());
-        let code_for_copy = script.code.clone();
+        let script_for_copy = script.clone();
 
         let code_block: Option<gpui::AnyElement> = if code_expanded {
             self.code_viewers.get(&id).map(|viewer| {
@@ -1263,7 +1270,7 @@ impl ZedisLuaScriptLibrary {
                             .icon(IconName::Copy)
                             .tooltip(i18n_lua_scripts(cx, "copy_code_tooltip"))
                             .on_click(cx.listener(move |_, _, w, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(code_for_copy.clone()));
+                                cx.write_to_clipboard(ClipboardItem::new_string(script_for_copy.code.clone()));
                                 w.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
                             })),
                     )
@@ -1317,7 +1324,7 @@ impl ZedisLuaScriptLibrary {
                             .icon(CustomIconName::FilePenLine)
                             .label(i18n_lua_scripts(cx, "edit"))
                             .on_click(cx.listener(move |this, _, w, cx| {
-                                let pair = (id_for_edit.clone(), script_for_edit.clone());
+                                let pair = (id_for_edit.clone(), LuaScript::clone(&script_for_edit));
                                 this.open_form(Some(&pair), w, cx);
                                 let _ = id_edit;
                             })),

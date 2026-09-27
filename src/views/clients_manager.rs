@@ -258,6 +258,18 @@ fn node_key(node: &RedisServer) -> String {
     format!("{}:{}", node.host, node.port)
 }
 
+/// A row the batch kill reaches — not a replica link, listed from a known
+/// node — as its client id and that node.
+fn killable_target<'a>(
+    cells: &'a [SharedString],
+    nodes: &'a HashMap<String, RedisServer>,
+) -> Option<(&'a SharedString, &'a RedisServer)> {
+    if cells.get(FLAGS_COLUMN).is_some_and(|flags| is_replica_link(flags)) {
+        return None;
+    }
+    Some((cells.get(ID_COLUMN)?, nodes.get(cells.get(CELL_NODE)?.as_ref())?))
+}
+
 impl ClientRow {
     fn cells(&self) -> Vec<SharedString> {
         vec![
@@ -558,6 +570,11 @@ pub struct ZedisClientsManager {
     /// Client-type filter (`CLIENT LIST` flag letter) — see [`FLAG_FILTERS`].
     flag_state: Entity<SelectState<Vec<FlagOption>>>,
     row_count: usize,
+    /// How many of the visible rows the batch kill would reach. Counted
+    /// where the rows or the filter change: the toolbar needs only the
+    /// number, and working it out in `render` copied every row — and the
+    /// node of each — on every repaint.
+    killable_count: usize,
     /// Set when `CLIENT LIST` fails, so the empty body shows the error
     /// instead of a misleading "no clients" message.
     error: Option<SharedString>,
@@ -638,6 +655,7 @@ impl ZedisClientsManager {
             age_state,
             flag_state,
             row_count: 0,
+            killable_count: 0,
             error: None,
             _fetch_task: None,
             _kill_task: None,
@@ -669,6 +687,7 @@ impl ZedisClientsManager {
             delegate.set_row_filter(row_predicate(min_idle, min_age, flag));
         });
         self.row_count = self.table_state.read(cx).delegate().visible_len();
+        self.killable_count = self.count_killable(cx);
         cx.notify();
     }
 
@@ -709,6 +728,7 @@ impl ZedisClientsManager {
                             delegate.set_row_filter(row_predicate(min_idle, min_age, flag));
                         });
                         this.row_count = table_state.read(cx).delegate().visible_len();
+                        this.killable_count = this.count_killable(cx);
                         this.error = None;
                         this.setup_kill_callback(cx);
                     }
@@ -729,15 +749,21 @@ impl ZedisClientsManager {
         self.table_state
             .read(cx)
             .delegate()
-            .visible_rows()
-            .iter()
-            .filter(|cells| !cells.get(FLAGS_COLUMN).is_some_and(|f| is_replica_link(f)))
-            .filter_map(|cells| {
-                let id = cells.get(ID_COLUMN)?;
-                let node = kill.nodes.get(cells.get(CELL_NODE)?.as_ref())?;
-                Some((id.clone(), node.clone()))
-            })
+            .visible_iter()
+            .filter_map(|cells| killable_target(cells, &kill.nodes))
+            .map(|(id, node)| (id.clone(), node.clone()))
             .collect()
+    }
+
+    /// [`Self::killable_targets`]' length, without copying a row.
+    fn count_killable(&self, cx: &gpui::Context<Self>) -> usize {
+        let kill = self.kill.borrow();
+        self.table_state
+            .read(cx)
+            .delegate()
+            .visible_iter()
+            .filter(|cells| killable_target(cells, &kill.nodes).is_some())
+            .count()
     }
 
     fn setup_kill_callback(&mut self, cx: &mut gpui::Context<Self>) {
@@ -1110,7 +1136,7 @@ impl gpui::Render for ZedisClientsManager {
         let readonly = self.kill.borrow().readonly;
         // Batch kill targets = the filtered rows minus replica links (S/M),
         // mirroring the per-row kill button's rule.
-        let killable = self.killable_targets(cx).len();
+        let killable = self.killable_count;
         let count_label = if self.row_count == total {
             format!("({})", total)
         } else {
@@ -1306,6 +1332,32 @@ mod tests {
         let nodes: HashMap<String, RedisServer> = [&a, &b].into_iter().map(|n| (node_key(n), n.clone())).collect();
         assert_eq!(nodes.get(row_a[CELL_NODE].as_ref()).map(|n| n.port), Some(7000));
         assert_eq!(nodes.get(row_b[CELL_NODE].as_ref()).map(|n| n.port), Some(7001));
+    }
+
+    /// The batch kill skips replica links and rows whose node is not known;
+    /// the toolbar's count is the same test.
+    #[test]
+    fn the_batch_kill_reaches_clients_not_replica_links() {
+        let node = RedisServer {
+            host: "10.0.0.1".to_string(),
+            port: 7000,
+            ..Default::default()
+        };
+        let raw = "id=1 addr=10.0.0.9:50000 age=1 idle=0 flags=N db=0 cmd=get\n\
+                   id=2 addr=10.0.0.2:6379 age=1 idle=0 flags=M db=0 cmd=replconf\n\
+                   id=3 addr=10.0.0.3:6379 age=1 idle=0 flags=S db=0 cmd=replconf\n";
+        let rows: Vec<Vec<SharedString>> = parse_client_list(raw, &node).iter().map(ClientRow::cells).collect();
+        let known: HashMap<String, RedisServer> = HashMap::from([(node_key(&node), node.clone())]);
+        let reached: Vec<&str> = rows
+            .iter()
+            .filter_map(|cells| killable_target(cells, &known))
+            .map(|(id, _)| id.as_ref())
+            .collect();
+        assert_eq!(reached, ["1"]);
+        assert!(
+            rows.iter()
+                .all(|cells| killable_target(cells, &HashMap::new()).is_none())
+        );
     }
 
     #[test]

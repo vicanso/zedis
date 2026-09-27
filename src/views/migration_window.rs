@@ -81,6 +81,9 @@ enum Destination {
     Server,
 }
 
+/// The newest log lines the progress panel shows.
+const LOG_LINES_SHOWN: usize = 200;
+
 /// What kind of job the window was opened for.
 #[derive(Clone)]
 pub enum MigrationWindowMode {
@@ -407,15 +410,19 @@ impl ZedisMigrationWindow {
     /// The export key list after the prefix filter (export mode only;
     /// empty filter passes everything through).
     fn filtered_export_keys(&self, cx: &App) -> Vec<SharedString> {
-        let MigrationWindowMode::Export { keys, .. } = &self.mode else {
-            return Vec::new();
+        self.export_keys(cx).cloned().collect()
+    }
+
+    /// The export keys the prefix field lets through, borrowed — the count in
+    /// the window is this iterator's length, where it used to be a copy of
+    /// every key (10,000 and more from a large folder) on every repaint.
+    fn export_keys<'a>(&'a self, cx: &App) -> impl Iterator<Item = &'a SharedString> + use<'a> {
+        let keys: &[SharedString] = match &self.mode {
+            MigrationWindowMode::Export { keys, .. } => keys,
+            _ => &[],
         };
-        let prefix = self.prefix_input_state.read(cx).value();
-        let prefix = prefix.trim();
-        if prefix.is_empty() {
-            return keys.clone();
-        }
-        keys.iter().filter(|k| k.starts_with(prefix)).cloned().collect()
+        let prefix = self.prefix_input_state.read(cx).value().trim().to_string();
+        keys.iter().filter(move |key| key.starts_with(prefix.as_str()))
     }
 
     fn handle_pick_and_start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -590,7 +597,12 @@ impl Render for ZedisMigrationWindow {
         let state = self.state.read(cx);
         let phase = state.phase().clone();
         let progress = state.progress().clone();
-        let log_lines: Vec<_> = state.log().iter().cloned().collect();
+        // Only the lines the panel shows: the log keeps more than that.
+        let log = state.log();
+        let log_lines: Vec<_> = log
+            .range(log.len().saturating_sub(LOG_LINES_SHOWN)..)
+            .cloned()
+            .collect();
         let is_running = matches!(phase, MigrationPhase::Running);
         let is_finished = matches!(phase, MigrationPhase::Finished);
         let saved_path = self.chosen_path.clone();
@@ -645,7 +657,7 @@ impl Render for ZedisMigrationWindow {
         // Export: format choice — must be picked before the file dialog,
         // since choosing a file starts the job immediately. Locked while
         // running so the worker's format can't be pulled out from under it.
-        let filtered_count = self.filtered_export_keys(cx).len();
+        let filtered_count = self.export_keys(cx).count();
         let total_count = match &self.mode {
             MigrationWindowMode::Export { keys, .. } => keys.len(),
             MigrationWindowMode::Import { .. } => 0,
@@ -956,7 +968,7 @@ impl Render for ZedisMigrationWindow {
                     .px_2()
                     .py_1()
                     .overflow_y_scrollbar()
-                    .children(log_lines.iter().rev().take(200).rev().map(|line| {
+                    .children(log_lines.iter().map(|line| {
                         let color = match line.status {
                             LogStatus::Ok => theme.foreground,
                             LogStatus::Skipped => muted,

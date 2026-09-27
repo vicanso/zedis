@@ -381,22 +381,17 @@ impl ZedisCompareWindow {
     }
 
     /// The keys the target lacks or holds differently — what a copy would
-    /// fix. Keys that could not be compared are left alone.
+    /// fix. Keys that could not be compared are left alone. Borrowed, so the
+    /// copy button's count costs no allocation per repaint; it used to build
+    /// every one of up to 20,000 names just to count them.
+    fn target_keys(&self) -> impl Iterator<Item = &str> + '_ {
+        self.report.iter().flat_map(keys_to_copy)
+    }
+
+    /// [`Self::target_keys`], owned — what the copy dialog is opened with.
     fn keys_for_target(&self) -> Vec<SharedString> {
-        let Some(report) = &self.report else {
-            return Vec::new();
-        };
-        report
-            .only_source
-            .iter()
-            .map(|(key, _)| SharedString::from(key.clone()))
-            .chain(
-                report
-                    .differing
-                    .iter()
-                    .filter(|entry| !matches!(entry.difference, KeyDifference::Unchecked))
-                    .map(|entry| SharedString::from(entry.key.clone())),
-            )
+        self.target_keys()
+            .map(|key| SharedString::from(key.to_string()))
             .collect()
     }
 
@@ -533,7 +528,7 @@ impl Render for ZedisCompareWindow {
                 report.differing.len(),
             ]
         });
-        let copy_keys = self.keys_for_target().len();
+        let copy_keys = self.target_keys().count();
 
         let source_line: SharedString = i18n_compare(cx, "source_summary")
             .replace("{server}", &self.source_name)
@@ -780,4 +775,49 @@ pub fn open_compare_window(server_id: SharedString, server_name: SharedString, d
         let view = cx.new(|cx| ZedisCompareWindow::new(server_id.clone(), server_name.clone(), db, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });
+}
+
+/// The keys of `report` a copy to the target would fix: the ones only the
+/// source has, and the ones that differ — not those that could not be
+/// compared.
+fn keys_to_copy(report: &CompareReport) -> impl Iterator<Item = &str> + '_ {
+    report.only_source.iter().map(|(key, _)| key.as_str()).chain(
+        report
+            .differing
+            .iter()
+            .filter(|entry| !matches!(entry.difference, KeyDifference::Unchecked))
+            .map(|entry| entry.key.as_str()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::DifferingKey;
+
+    #[test]
+    fn a_copy_fixes_missing_and_differing_keys_but_not_unchecked_ones() {
+        let differing = |key: &str, difference| DifferingKey {
+            key: key.to_string(),
+            key_type: "string".to_string(),
+            difference,
+        };
+        let report = CompareReport {
+            only_source: vec![("a".to_string(), "string".to_string())],
+            only_target: vec![("z".to_string(), "string".to_string())],
+            differing: vec![
+                differing("b", KeyDifference::Value),
+                differing("c", KeyDifference::Unchecked),
+                differing(
+                    "d",
+                    KeyDifference::Type {
+                        source: "hash".to_string(),
+                        target: "set".to_string(),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(keys_to_copy(&report).collect::<Vec<_>>(), ["a", "b", "d"]);
+    }
 }

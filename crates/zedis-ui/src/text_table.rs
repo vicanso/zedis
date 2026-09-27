@@ -426,11 +426,22 @@ impl ZedisTextTable {
 
     /// A copy of the visible rows, for exports.
     pub fn visible_rows(&self) -> Vec<Vec<SharedString>> {
-        if self.shows_view() {
-            self.filtered.clone()
+        self.visible_iter().map(<[SharedString]>::to_vec).collect()
+    }
+
+    /// The visible rows, borrowed, in display order — for a caller that
+    /// counts or picks a few of them, which [`Self::visible_rows`] would
+    /// make copy every row first.
+    pub fn visible_iter(&self) -> impl Iterator<Item = &[SharedString]> + '_ {
+        let (view, rows) = if self.shows_view() {
+            (Some(self.filtered.iter()), None)
         } else {
-            self.rows.iter().cloned().collect()
-        }
+            (None, Some(self.rows.iter()))
+        };
+        view.into_iter()
+            .flatten()
+            .chain(rows.into_iter().flatten())
+            .map(Vec::as_slice)
     }
 
     fn visible_row(&self, ix: usize) -> Option<&Vec<SharedString>> {
