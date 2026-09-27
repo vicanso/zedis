@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::async_connection::{resolve_connection_timeout, resolve_response_timeout};
+use super::async_connection::{client_name, resolve_connection_timeout, resolve_response_timeout};
 use super::config::RedisServer;
 use super::ssh_stream::SshRedisStream;
 use crate::error::Error;
-use redis::{RedisConnectionInfo, aio::MultiplexedConnection, cmd};
+use futures::Stream;
+use redis::{Cmd, RedisConnectionInfo, Value, aio::MultiplexedConnection, cmd};
 use russh::client::AuthResult;
 use russh::Channel;
 use russh::client::{Handle, Handler, Msg};
@@ -38,6 +39,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::{LazyLock, Once, OnceLock};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::runtime::Runtime;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info, warn};
@@ -1086,26 +1088,51 @@ pub async fn open_single_ssh_tunnel_push_connection(
     open_single_ssh_tunnel_connection_inner(config, Some(push_tx)).await
 }
 
-async fn open_single_ssh_tunnel_connection_inner(
-    config: &RedisServer,
-    push_tx: Option<smol::channel::Sender<redis::PushInfo>>,
-) -> Result<MultiplexedConnection> {
-    let target = resolve_ssh_target(config);
-    let (host, port) = config.primary_endpoint();
-    // The certificate names the endpoint's DNS name; through a tunnel the
-    // dialed host is often an internal IP, so the user can name it.
-    let server_name = tls_server_name(config).unwrap_or_else(|| host.clone());
-    let connection_timeout = resolve_connection_timeout(config);
-    let response_timeout = resolve_response_timeout(config);
-    let username = config.username.clone();
-    let password = config.password.clone();
-    let tls_connector = if config.tls.unwrap_or(false) {
-        Some(build_tls_connector(config)?)
-    } else {
-        None
-    };
+/// A forwarded stream, with TLS on it when the entry asks for TLS.
+trait TunnelIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> TunnelIo for T {}
 
-    run_in_tokio(async move {
+/// What reaching an entry's endpoint through its tunnel takes, read from the
+/// entry before the work moves onto the tokio runtime.
+struct TunnelDial {
+    target: SshTarget,
+    host: String,
+    port: u16,
+    /// The certificate names the endpoint's DNS name; through a tunnel the
+    /// dialed host is often an internal IP, so the user can name it.
+    server_name: String,
+    connection_timeout: Duration,
+    tls_connector: Option<TlsConnector>,
+}
+
+impl TunnelDial {
+    fn new(config: &RedisServer) -> Result<Self> {
+        let (host, port) = config.primary_endpoint();
+        Ok(Self {
+            target: resolve_ssh_target(config),
+            server_name: tls_server_name(config).unwrap_or_else(|| host.clone()),
+            host,
+            port,
+            connection_timeout: resolve_connection_timeout(config),
+            tls_connector: if config.tls.unwrap_or(false) {
+                Some(build_tls_connector(config)?)
+            } else {
+                None
+            },
+        })
+    }
+
+    /// The forwarded stream to the endpoint, TLS already negotiated. Runs on
+    /// the tokio runtime, like everything russh does.
+    async fn open(self) -> Result<Box<dyn TunnelIo>> {
+        let Self {
+            target,
+            host,
+            port,
+            server_name,
+            connection_timeout,
+            tls_connector,
+        } = self;
         // The connection timeout covers the tunnel too: russh puts no limit
         // on the TCP dial, the handshake or the channel open, so a bastion
         // that accepts and then stalls held a connect (and a Test click)
@@ -1127,6 +1154,37 @@ async fn open_single_ssh_tunnel_connection_inner(
         })??;
         debug!(ssh = target.cache_id(), host, port, "open direct tcpip success");
         let ssh_stream = SshRedisStream::new(channel.into_stream());
+        let Some(tls_connector) = tls_connector else {
+            return Ok(Box::new(ssh_stream));
+        };
+        let server_name = ServerName::try_from(server_name.as_str())
+            .map_err(|_| Error::Invalid {
+                message: format!("Invalid TLS server name: {server_name}"),
+            })?
+            .to_owned();
+        let tls_stream = tls_connector
+            .connect(server_name, ssh_stream)
+            .await
+            .map_err(|e| Error::Invalid {
+                message: format!("TLS handshake over SSH tunnel failed: {e}"),
+            })?;
+        debug!("TLS handshake over SSH tunnel succeeded");
+        Ok(Box::new(tls_stream))
+    }
+}
+
+async fn open_single_ssh_tunnel_connection_inner(
+    config: &RedisServer,
+    push_tx: Option<smol::channel::Sender<redis::PushInfo>>,
+) -> Result<MultiplexedConnection> {
+    let dial = TunnelDial::new(config)?;
+    let connection_timeout = dial.connection_timeout;
+    let response_timeout = resolve_response_timeout(config);
+    let username = config.username.clone();
+    let password = config.password.clone();
+
+    run_in_tokio(async move {
+        let stream = dial.open().await?;
         let mut info = RedisConnectionInfo::default();
         let mut conn_config = redis::AsyncConnectionConfig::new()
             .set_connection_timeout(Some(connection_timeout))
@@ -1137,39 +1195,139 @@ async fn open_single_ssh_tunnel_connection_inner(
             info = info.set_protocol(redis::ProtocolVersion::RESP3);
             conn_config = conn_config.set_push_sender(move |push_info| push_tx.try_send(push_info));
         }
-
-        let mut connection = if let Some(tls_connector) = tls_connector {
-            let server_name = ServerName::try_from(server_name.as_str())
-                .map_err(|_| Error::Invalid {
-                    message: format!("Invalid TLS server name: {server_name}"),
-                })?
-                .to_owned();
-            let tls_stream = tls_connector
-                .connect(server_name, ssh_stream)
-                .await
-                .map_err(|e| Error::Invalid {
-                    message: format!("TLS handshake over SSH tunnel failed: {e}"),
-                })?;
-            debug!("TLS handshake over SSH tunnel succeeded");
-            let (conn, driver) = MultiplexedConnection::new_with_config(&info, tls_stream, conn_config).await?;
-            tokio::spawn(async move {
-                driver.await;
-                info!("Redis driver task finished");
-            });
-            conn
-        } else {
-            let (conn, driver) = MultiplexedConnection::new_with_config(&info, ssh_stream, conn_config).await?;
-            tokio::spawn(async move {
-                driver.await;
-                info!("Redis driver task finished");
-            });
-            conn
-        };
+        let (mut connection, driver) = MultiplexedConnection::new_with_config(&info, stream, conn_config).await?;
+        tokio::spawn(async move {
+            driver.await;
+            info!("Redis driver task finished");
+        });
         authenticate_redis(&mut connection, username, password).await?;
 
         Ok(connection)
     })
     .await
+}
+
+/// Lines a tunnelled `MONITOR` may run ahead of its reader. Past this the
+/// reader stops reading and the tunnel's flow control holds the server back,
+/// as a socket's does for a direct feed.
+const MONITOR_BACKLOG: usize = 1024;
+
+/// `MONITOR` through the entry's SSH tunnel: the server's lines, one per
+/// command it receives, until the stream is dropped.
+///
+/// Read by hand, because redis-rs will not do it over a tunnel: its
+/// `Monitor` is built only on a socket it dialed itself (`Monitor::new` is
+/// crate-private), and the multiplexed connection the rest of this file
+/// builds has nowhere to put replies nobody asked for — which is all
+/// `MONITOR` sends, plain `+…` lines on RESP2 and RESP3 alike, not pushes.
+/// Without it the Monitor panel dialed an SSH entry's host from this
+/// machine, where the far side's `127.0.0.1` is another Redis or none.
+pub async fn open_ssh_tunnel_monitor(config: &RedisServer) -> Result<impl Stream<Item = String> + Send + 'static> {
+    let dial = TunnelDial::new(config)?;
+    let response_timeout = resolve_response_timeout(config);
+    // `(command, must succeed)`, sent in one write and answered in order.
+    let mut handshake: Vec<(Cmd, bool)> = Vec::with_capacity(3);
+    if let Some(password) = config.password.as_deref() {
+        let mut auth = cmd("AUTH");
+        if let Some(user) = config.username.as_deref() {
+            auth.arg(user);
+        }
+        auth.arg(password);
+        handshake.push((auth, true));
+    }
+    // Named like every connection this app opens, so an operator can tell
+    // whose feed it is in `CLIENT LIST`; best effort, as there.
+    let mut setname = cmd("CLIENT");
+    setname.arg("SETNAME").arg(client_name());
+    handshake.push((setname, false));
+    handshake.push((cmd("MONITOR"), true));
+
+    let (tx, lines) = smol::channel::bounded::<String>(MONITOR_BACKLOG);
+    let reader = run_in_tokio(async move {
+        let mut stream = BufReader::new(dial.open().await?);
+        tokio::time::timeout(response_timeout, start_monitor(&mut stream, &handshake))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("MONITOR did not start within {}s", response_timeout.as_secs()),
+                )
+            })??;
+        Ok::<_, Error>(AbortOnDrop(tokio::spawn(forward_monitor_lines(stream, tx)).abort_handle()))
+    })
+    .await?;
+    Ok(futures::stream::unfold((lines, reader), |(lines, reader)| async move {
+        let line = lines.recv().await.ok()?;
+        Some((line, (lines, reader)))
+    }))
+}
+
+/// Send the handshake and read its replies: an error to a command that must
+/// succeed (`AUTH`, `MONITOR` itself — `NOPERM` where the ACL forbids it)
+/// ends the attempt; one to a courtesy (`SETNAME`) is only logged.
+async fn start_monitor(stream: &mut BufReader<Box<dyn TunnelIo>>, handshake: &[(Cmd, bool)]) -> Result<()> {
+    let packed: Vec<u8> = handshake.iter().flat_map(|(command, _)| command.get_packed_command()).collect();
+    stream.write_all(&packed).await?;
+    stream.flush().await?;
+    let mut line = Vec::new();
+    for (_, required) in handshake {
+        line.clear();
+        if stream.read_until(b'\n', &mut line).await? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the server closed the connection before MONITOR started",
+            )
+            .into());
+        }
+        match redis::parse_redis_value(&line).and_then(Value::extract_error) {
+            Ok(_) => {}
+            Err(e) if *required => return Err(e.into()),
+            Err(e) => warn!(error = %e, "the tunnelled MONITOR connection kept no name"),
+        }
+    }
+    Ok(())
+}
+
+/// Hand the feed's lines to `tx` until the server closes the connection,
+/// or the receiving side is gone.
+async fn forward_monitor_lines(mut stream: BufReader<Box<dyn TunnelIo>>, tx: smol::channel::Sender<String>) {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if !matches!(stream.read_until(b'\n', &mut line).await, Ok(n) if n > 0) {
+            break;
+        }
+        // Anything but a simple string is the end of the feed: the error a
+        // killed client is sent on its way out.
+        let Some(text) = monitor_line(&line) else {
+            break;
+        };
+        if tx.send(text).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// One `MONITOR` line as the server wrote it: the simple string, without
+/// its `+` and line ending. `None` for any other reply.
+fn monitor_line(raw: &[u8]) -> Option<String> {
+    let body = raw.strip_prefix(b"+")?;
+    let body = body
+        .strip_suffix(b"\r\n")
+        .or_else(|| body.strip_suffix(b"\n"))
+        .unwrap_or(body);
+    Some(String::from_utf8_lossy(body).into_owned())
+}
+
+/// Stops the task behind a tunnelled feed when the feed is dropped. The task
+/// waits on the socket, so without this an idle server would hold it — and
+/// its tunnel channel — open until the next command came along.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// `AUTH` on a hand-built connection (the URL-based client does this
@@ -1256,6 +1414,81 @@ pub fn clear_expired_ssh_sessions() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn a_monitor_line_is_the_simple_string_without_its_framing() {
+        assert_eq!(
+            monitor_line(b"+1700000000.1 [0 127.0.0.1:1] \"GET\" \"k\"\r\n").as_deref(),
+            Some("1700000000.1 [0 127.0.0.1:1] \"GET\" \"k\"")
+        );
+        assert_eq!(monitor_line(b"+OK\n").as_deref(), Some("OK"));
+        assert_eq!(monitor_line(b"-ERR killed\r\n"), None);
+        assert_eq!(monitor_line(b"$3\r\n"), None);
+    }
+
+    fn handshake() -> Vec<(Cmd, bool)> {
+        let mut auth = cmd("AUTH");
+        auth.arg("secret");
+        let mut setname = cmd("CLIENT");
+        setname.arg("SETNAME").arg("zedis");
+        vec![(auth, true), (setname, false), (cmd("MONITOR"), true)]
+    }
+
+    /// The whole exchange over an in-memory stream in place of the tunnel:
+    /// one write for the handshake, a refused courtesy that does not matter,
+    /// then one line per command until the error a killed client is sent.
+    #[tokio::test]
+    async fn a_tunnelled_monitor_starts_then_hands_over_one_line_per_command() {
+        let (ours, mut server) = tokio::io::duplex(4096);
+        let mut stream = BufReader::new(Box::new(ours) as Box<dyn TunnelIo>);
+        server
+            .write_all(
+                b"+OK\r\n-NOPERM no names here\r\n+OK\r\n\
+                  +1.5 [0 10.0.0.1:5000] \"GET\" \"k\"\r\n\
+                  +1.6 [0 10.0.0.1:5000] \"PING\"\r\n\
+                  -ERR killed\r\n\
+                  +never read\r\n",
+            )
+            .await
+            .expect("write the replies");
+        start_monitor(&mut stream, &handshake()).await.expect("the handshake");
+
+        let (tx, lines) = smol::channel::bounded(8);
+        forward_monitor_lines(stream, tx).await;
+        let lines: Vec<String> = std::iter::from_fn(|| lines.try_recv().ok()).collect();
+        assert_eq!(
+            lines,
+            ["1.5 [0 10.0.0.1:5000] \"GET\" \"k\"", "1.6 [0 10.0.0.1:5000] \"PING\""]
+        );
+
+        let mut sent = vec![0; 256];
+        let n = server.read(&mut sent).await.expect("read what was sent");
+        let sent = String::from_utf8_lossy(&sent[..n]);
+        let order = ["AUTH", "SETNAME", "MONITOR"].map(|word| sent.find(word));
+        assert!(
+            order.iter().all(Option::is_some) && order.is_sorted(),
+            "the handshake went out as {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_login_or_monitor_is_an_error() {
+        for replies in [
+            b"-WRONGPASS invalid password\r\n+OK\r\n+OK\r\n".as_slice(),
+            b"+OK\r\n+OK\r\n-NOPERM this user has no permissions to run the 'monitor' command\r\n",
+        ] {
+            let (ours, mut server) = tokio::io::duplex(4096);
+            let mut stream = BufReader::new(Box::new(ours) as Box<dyn TunnelIo>);
+            server.write_all(replies).await.expect("write the replies");
+            assert!(start_monitor(&mut stream, &handshake()).await.is_err());
+        }
+        // A server that hangs up mid-handshake.
+        let (ours, server) = tokio::io::duplex(4096);
+        drop(server);
+        let mut stream = BufReader::new(Box::new(ours) as Box<dyn TunnelIo>);
+        assert!(start_monitor(&mut stream, &handshake()).await.is_err());
+    }
 
     // Throwaway key generated for this test — never used anywhere.
     const SAMPLE_PUB: &str =

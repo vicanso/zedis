@@ -29,6 +29,7 @@ use crate::config::RedisServer;
 use crate::error::Error;
 use crate::manager::{ShardedPubSub, get_connection_manager, open_push_connection};
 use crate::server_db::ServerDb;
+use crate::ssh_tunnel::open_ssh_tunnel_monitor;
 use futures::{Stream, StreamExt};
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{Msg, PushInfo, PushKind, cmd};
@@ -210,13 +211,21 @@ pub async fn open_monitor_feeds(at: &ServerDb) -> Result<MonitorFeeds> {
     };
     for server in servers {
         let node = format!("{}:{}", server.host, server.port);
-        match open_monitor_connection(&server).await {
-            Ok(monitor) => opened.feeds.push(MonitorFeed {
-                node,
-                lines: Box::pin(monitor.into_on_message::<String>()),
-            }),
+        match monitor_lines(&server).await {
+            Ok(lines) => opened.feeds.push(MonitorFeed { node, lines }),
             Err(e) => opened.failures.push((node, e)),
         }
     }
     Ok(opened)
+}
+
+/// One node's feed: redis-rs's own `Monitor` on a socket, or — for an SSH
+/// entry, whose address means something only at the far end of the tunnel —
+/// the feed read through the tunnel.
+async fn monitor_lines(server: &RedisServer) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>> {
+    if server.is_ssh_tunnel() {
+        return Ok(Box::pin(open_ssh_tunnel_monitor(server).await?));
+    }
+    let monitor = open_monitor_connection(server).await?;
+    Ok(Box::pin(monitor.into_on_message::<String>()))
 }

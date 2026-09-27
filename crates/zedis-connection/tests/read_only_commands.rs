@@ -142,10 +142,13 @@ const WRITES: &[&str] = &[
     "SENTINEL FAILOVER",
     "SENTINEL SET",
     "SLOWLOG RESET",
-    // Both hold the connection they run on, which is why the read-only
+    // These hold the connection they run on, which is why the read-only
     // allowlist does not name them: they are only ever sent on a dedicated
-    // connection of the desktop's own (`subscription.rs`), never through the
-    // bridge's shared one.
+    // connection of the desktop's own (`subscription.rs`, and the tunnelled
+    // MONITOR in `ssh_tunnel.rs`), never through the bridge's shared one.
+    // MONITOR would not be a read for a read-only account anyway: it shows
+    // every other client's commands, values and all.
+    "MONITOR",
     "PSUBSCRIBE",
     "SSUBSCRIBE",
 ];

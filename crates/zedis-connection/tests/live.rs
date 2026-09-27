@@ -63,8 +63,8 @@ use zedis_connection::{
     zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_connection::{
-    SlotMigrationDialect, SlotMove, bgsave_cancel, copy_key, copy_key_logically, function_delete, function_load,
-    function_stats, is_foreign_payload, migrate_slot, restore_or_recreate_chunk,
+    MonitorFeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, copy_key, copy_key_logically,
+    function_delete, function_load, function_stats, is_foreign_payload, migrate_slot, restore_or_recreate_chunk,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -3996,6 +3996,18 @@ fn standalone_monitor_feed_carries_the_commands_the_server_receives() {
     });
 }
 
+/// The first line of `feed` that mentions `marker`. The suite runs in
+/// parallel against the same servers, so a feed carries everyone's commands.
+async fn monitored(feed: &mut MonitorFeed, marker: &str) -> Option<String> {
+    for _ in 0..5_000 {
+        let line = feed.next_line().await?;
+        if line.contains(marker) {
+            return Some(line);
+        }
+    }
+    None
+}
+
 /// The operations the server form and the recycle bin got when their commands
 /// left the view: a sentinel lists the masters it watches, Test means the
 /// data node was reached, one CONFIG parameter is read by name, and RESTORE
@@ -4799,6 +4811,88 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
             (format!("{channel}:a").as_str(), b"hello".as_slice())
         );
         drop(subscription);
+
+        // MONITOR through the tunnel as well. redis-rs's `Monitor` cannot be
+        // built on a tunnel, so the feed dialled the entry's address from
+        // here; the tunnelled one is read by hand and names itself, which is
+        // how this test tells the two apart — sshd and Redis share a host
+        // here, so the old direct dial would have worked too.
+        let is_our_monitor = |client: &str| {
+            client
+                .split(' ')
+                .any(|field| field == format!("name={}", client_name()))
+                && client
+                    .split(' ')
+                    .any(|field| field.strip_prefix("flags=").is_some_and(|flags| flags.contains('O')))
+        };
+        let our_monitors = |list: String| list.lines().filter(|client| is_our_monitor(client)).count();
+        let opened = open_monitor_feeds(&ServerDb::new(&*id, 0)).await.expect("feeds");
+        assert!(opened.failures.is_empty(), "{:?}", opened.failures);
+        let [mut feed] = <[_; 1]>::try_from(opened.feeds)
+            .ok()
+            .expect("a standalone has one master");
+        let clients: String = cmd("CLIENT")
+            .arg("LIST")
+            .query_async(&mut direct_conn)
+            .await
+            .expect("client list");
+        assert_eq!(our_monitors(clients), 1, "the feed is not the tunnelled MONITOR");
+        let marker = unique("ssh-monitored");
+        let _: Option<String> = cmd("GET")
+            .arg(&marker)
+            .query_async(&mut direct_conn)
+            .await
+            .expect("get");
+        let line = monitored(&mut feed, &marker)
+            .await
+            .expect("the GET never came through the tunnelled feed");
+        assert!(line.to_ascii_uppercase().contains("\"GET\""), "{line}");
+        // Dropping the feed closes its connection, busy server or idle.
+        drop(feed);
+        let mut closed = false;
+        for _ in 0..50 {
+            let clients: String = cmd("CLIENT")
+                .arg("LIST")
+                .query_async(&mut direct_conn)
+                .await
+                .expect("client list");
+            if our_monitors(clients) == 0 {
+                closed = true;
+                break;
+            }
+            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(closed, "the tunnelled MONITOR outlived its feed");
+
+        // And through a password, which the tunnelled feed sends itself:
+        // Sentinel's master is the topology's password-protected data node.
+        if let Some(sentinel) = scenario("ZEDIS_IT_SENTINEL") {
+            let sentinel_id = register(sentinel_server("it-ssh-monitor-sentinel", sentinel)).await;
+            let masters = master_addrs(&ServerDb::new(&*sentinel_id, 0)).await.expect("masters");
+            let (host, port) = masters
+                .first()
+                .and_then(|addr| addr.rsplit_once(':'))
+                .expect("the master's host:port");
+            let addr = (host.to_string(), port.parse::<u16>().expect("port"));
+            let mut protected = protected_server("it-ssh-monitor-auth", addr.clone());
+            protected.ssh_tunnel = Some(true);
+            protected.ssh_addr = Some(ssh_addr.clone());
+            protected.ssh_username = Some(user.clone());
+            protected.ssh_key = Some(env::var("ZEDIS_IT_SSH_KEY").expect("ZEDIS_IT_SSH_KEY"));
+            let protected_id = register(protected).await;
+            let opened = open_monitor_feeds(&ServerDb::new(&*protected_id, 0))
+                .await
+                .expect("feeds");
+            assert!(opened.failures.is_empty(), "{:?}", opened.failures);
+            let [mut feed] = <[_; 1]>::try_from(opened.feeds).ok().expect("one node");
+            let direct = register(protected_server("it-ssh-monitor-auth-direct", addr)).await;
+            let mut direct = conn(&direct, 0).await;
+            let marker = unique("ssh-monitored-auth");
+            let _: Option<String> = cmd("GET").arg(&marker).query_async(&mut direct).await.expect("get");
+            monitored(&mut feed, &marker)
+                .await
+                .expect("the GET never came through the authenticated tunnelled feed");
+        }
 
         // 4. A login the sshd cannot grant. Its own `user@addr`, so the
         //    successful session above is not reused for it.
