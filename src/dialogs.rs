@@ -22,7 +22,7 @@ mod desktop;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use desktop::{install_host_key_prompt, open_crash_dialog, open_install_quit_dialog, open_update_dialog};
 
-use crate::helpers::{ConfigRecovery, humanize_keystroke};
+use crate::helpers::{ConfigRecovery, with_hot_key};
 use crate::states::{ZedisGlobalStore, i18n_hints};
 use gpui::{App, SharedString, Window, prelude::*, px, rems};
 use gpui_kit::component::{IconName, text::TextViewStyle, v_flex};
@@ -68,12 +68,7 @@ pub(crate) fn open_welcome_dialog(window: &mut Window, cx: &mut App) {
     let steps: [SharedString; 3] = [
         i18n_hints(cx, "welcome_step_connect"),
         i18n_hints(cx, "welcome_step_browse"),
-        format!(
-            "{} ({})",
-            i18n_hints(cx, "welcome_step_palette"),
-            humanize_keystroke("secondary-k")
-        )
-        .into(),
+        with_hot_key("command_palette", &i18n_hints(cx, "welcome_step_palette")).into(),
     ];
     ZedisDialog::new(i18n_hints(cx, "welcome_title"))
         .icon(IconName::Info)

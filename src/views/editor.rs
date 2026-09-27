@@ -28,7 +28,7 @@ use crate::{
     db::get_favorites_manager,
     helpers::{
         EditorAction, KeyOpAction, card_background, format_duration, format_duration_units, format_unix_secs,
-        get_mono_font_family, humanize_keystroke, ttl_secs, unix_ts, validate_ttl,
+        get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs, unix_ts, validate_ttl, with_hot_key,
     },
     states::{
         DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
@@ -894,9 +894,25 @@ impl ZedisEditor {
 
 #[cfg(test)]
 mod tests {
+    use super::render::{ACT_HINTS, FIND_HINTS};
     use super::{format_ttl_string, suggested_value_filename, ttl_field_text, value_export_extension};
+    use crate::helpers::hot_key_table;
     use crate::states::DataFormat;
     use zedis_core::validate::ttl_secs;
+
+    /// The no-key screen draws each id's shortcut and, as its description,
+    /// the `shortcuts.` entry of the same name — the one the ⌘/ overlay uses.
+    #[test]
+    fn the_no_key_screen_lists_hot_keys_under_their_own_descriptions() {
+        for id in FIND_HINTS.iter().chain(&ACT_HINTS) {
+            let description = hot_key_table()
+                .iter()
+                .find(|hot_key| hot_key.id == *id)
+                .and_then(|hot_key| hot_key.reference)
+                .map(|(_, description)| description);
+            assert_eq!(description, Some(*id), "`{id}` is not a hot key described as itself");
+        }
+    }
 
     #[test]
     fn the_ttl_field_opens_with_the_time_left_in_a_form_it_reads_back() {

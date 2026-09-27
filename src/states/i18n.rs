@@ -14,7 +14,7 @@
 
 use super::{ServerView, ZedisGlobalStore};
 use crate::connection::{CommandStatus, ServerCommand};
-use crate::helpers::humanize_keystroke;
+use crate::helpers::{hot_key_label, humanize_keystroke};
 use gpui::App;
 use gpui::SharedString;
 use rust_i18n::t;
@@ -48,14 +48,15 @@ pub fn i18n_hints<'a>(cx: &'a App, key: &'a str) -> SharedString {
 }
 
 /// Toast body for the one-time first-connection hint, with the two global
-/// shortcuts resolved for the current platform (⌘ on macOS, Ctrl elsewhere).
+/// shortcuts as they are bound (`keybindings.toml` included) and drawn for
+/// this keyboard (⌘ on macOS, Ctrl elsewhere).
 #[cfg(not(target_family = "wasm"))]
 pub fn first_connect_hint(cx: &App) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(
         "hints.first_connect",
-        palette = humanize_keystroke("secondary-k"),
-        search = humanize_keystroke("secondary-shift-f"),
+        palette = hot_key_label("command_palette").unwrap_or_default(),
+        search = hot_key_label("multi_search").unwrap_or_default(),
         locale = locale
     )
     .into()
@@ -70,20 +71,19 @@ pub fn first_connect_hint(cx: &App) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(
         "hints.first_connect_web",
-        palette = humanize_keystroke("secondary-k"),
+        palette = hot_key_label("command_palette").unwrap_or_default(),
         locale = locale
     )
     .into()
 }
 
-/// Body of the key tree's no-SCAN banner, with the recent-keys shortcut
-/// resolved for the current platform (matches `RecentKeysAction::Toggle`'s
-/// `secondary-p` binding).
+/// Body of the key tree's no-SCAN banner, with the recent-keys shortcut as
+/// it is bound.
 pub fn key_tree_no_scan_body(cx: &App) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(
         "features.key_tree_no_scan_body",
-        shortcut = humanize_keystroke("secondary-p"),
+        shortcut = hot_key_label("recent_keys").unwrap_or_default(),
         locale = locale
     )
     .into()

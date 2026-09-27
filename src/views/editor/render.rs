@@ -18,16 +18,15 @@
 
 use super::*;
 
-/// The "New key" button's shortcut hint. The desktop's ⌘N; nothing in the
-/// browser, where that chord opens a browser window and never reaches a page.
-#[cfg(not(target_family = "wasm"))]
-fn new_key_chord() -> Option<String> {
-    Some(humanize_keystroke("cmd-n"))
-}
-#[cfg(target_family = "wasm")]
-fn new_key_chord() -> Option<String> {
-    None
-}
+/// The no-key screen's shortcut list, by hot key id — only actions that work
+/// with nothing selected (key-bound ones like save / TTL / rename / delete
+/// would be misleading there), find/browse on the left, act on the right.
+/// Each id is also its description key in the `shortcuts.` section, as in
+/// the ⌘/ overlay. A shortcut that does not work here drops out through
+/// [`hot_key_label`]: in the browser, ⌘N (a browser window) and
+/// multi-database search (not in the web build).
+pub(super) const FIND_HINTS: [&str; 4] = ["search", "command_palette", "recent_keys", "multi_search"];
+pub(super) const ACT_HINTS: [&str; 4] = ["new_key", "reload_keys", "terminal", "keyboard_shortcuts"];
 
 impl ZedisEditor {
     /// Render the appropriate editor based on the key type
@@ -483,41 +482,9 @@ impl ZedisEditor {
         let card_bg = card_background(cx);
         let mono = get_mono_font_family();
 
-        // Only actions that work with nothing selected — key-bound ones
-        // (save / TTL / rename / delete) would be misleading here. Two
-        // columns: find/browse on the left, act on the right.
-        #[cfg(not(target_family = "wasm"))]
-        const FIND_HINTS: [(&str, &str); 4] = [
-            ("cmd-f", "search"),
-            ("cmd-k", "command_palette"),
-            ("cmd-p", "recent_keys"),
-            ("cmd-shift-f", "multi_search"),
-        ];
-        #[cfg(not(target_family = "wasm"))]
-        const ACT_HINTS: [(&str, &str); 4] = [
-            ("cmd-n", "new_key"),
-            ("cmd-r", "reload_keys"),
-            ("cmd-j", "terminal"),
-            ("cmd-/", "keyboard_shortcuts"),
-        ];
-        // The browser build has no multi-database search, and ⌘N never
-        // reaches a page — it opens a browser window.
-        #[cfg(target_family = "wasm")]
-        const FIND_HINTS: [(&str, &str); 3] = [
-            ("cmd-f", "search"),
-            ("cmd-k", "command_palette"),
-            ("cmd-p", "recent_keys"),
-        ];
-        #[cfg(target_family = "wasm")]
-        const ACT_HINTS: [(&str, &str); 3] = [
-            ("cmd-r", "reload_keys"),
-            ("cmd-j", "terminal"),
-            ("cmd-/", "keyboard_shortcuts"),
-        ];
-
         // Chip-first rows: fixed min width on the keystroke so labels
         // start on one vertical line inside each column.
-        let kbd_chip = |keystroke: &str| {
+        let kbd_chip = |shortcut: String| {
             div()
                 .min_w(px(52.))
                 .px_1p5()
@@ -530,21 +497,24 @@ impl ZedisEditor {
                 .items_center()
                 .justify_center()
                 .child(
-                    Label::new(humanize_keystroke(keystroke))
+                    Label::new(shortcut)
                         .text_xs()
                         .font_family(mono.clone())
                         .text_color(fg.alpha(0.9)),
                 )
         };
-        let hint_column = |cx: &mut Context<Self>, hints: &[(&str, &str)]| {
+        let hint_column = |cx: &mut Context<Self>, hints: &[&str]| {
             let mut column = v_flex().flex_1().min_w(px(168.)).gap_1p5();
-            for (keystroke, desc_key) in hints {
+            for id in hints {
+                let Some(shortcut) = hot_key_label(id) else {
+                    continue;
+                };
                 column = column.child(
                     h_flex()
                         .items_center()
                         .gap_2()
-                        .child(kbd_chip(keystroke))
-                        .child(Label::new(i18n_shortcuts(cx, desc_key)).text_sm().text_color(muted)),
+                        .child(kbd_chip(shortcut))
+                        .child(Label::new(i18n_shortcuts(cx, id)).text_sm().text_color(muted)),
                 );
             }
             column
@@ -579,7 +549,7 @@ impl ZedisEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(i18n_shortcuts(cx, "new_key"))
-                    .when_some(new_key_chord(), |button, chord| button.tooltip(chord))
+                    .when_some(hot_key_label("new_key"), |button, chord| button.tooltip(chord))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state
                             .update(cx, |state, cx| state.emit_editor_action(EditorAction::Create, cx));
@@ -591,7 +561,7 @@ impl ZedisEditor {
                     .small()
                     .icon(IconName::Search)
                     .label(i18n_shortcuts(cx, "search"))
-                    .tooltip(humanize_keystroke("cmd-f"))
+                    .when_some(hot_key_label("search"), |button, chord| button.tooltip(chord))
                     .on_click(cx.listener(|_this, _, window, cx| {
                         window.dispatch_action(Box::new(EditorAction::Search), cx);
                     })),
@@ -602,7 +572,7 @@ impl ZedisEditor {
                     .small()
                     .icon(IconName::SquareTerminal)
                     .label(i18n_shortcuts(cx, "terminal"))
-                    .tooltip(humanize_keystroke("cmd-j"))
+                    .when_some(hot_key_label("terminal"), |button, chord| button.tooltip(chord))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.server_state.update(cx, |state, cx| state.toggle_terminal(cx));
                     })),
@@ -617,7 +587,7 @@ impl ZedisEditor {
                 .small()
                 .icon(IconName::Globe)
                 .label(i18n_shortcuts(cx, "multi_search"))
-                .tooltip(humanize_keystroke("cmd-shift-f"))
+                .when_some(hot_key_label("multi_search"), |button, chord| button.tooltip(chord))
                 .on_click(cx.listener(|_this, _, window, cx| {
                     window.dispatch_action(Box::new(MultiSearchAction::Toggle), cx);
                 })),

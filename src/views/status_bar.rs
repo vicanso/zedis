@@ -20,7 +20,7 @@ use crate::{
     assets::CustomIconName,
     connection::{DangerKind, KillTarget, RedisClientDescription, ServerFeatures, WRITE_UNLOCK_SECS, get_server},
     constants::STATUS_BAR_HEIGHT,
-    helpers::{format_lag_bytes, get_mono_font_family, group_thousands, humanize_keystroke, pacing, resolve_tag_chip},
+    helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing, resolve_tag_chip, with_hot_key},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
         ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
@@ -1009,11 +1009,7 @@ impl ZedisStatusBar {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
         let nodes_description = server_state.nodes_description.clone();
-        let terminal_tooltip = format!(
-            "{} ({})",
-            i18n_status_bar(cx, "toggle_terminal_tooltip"),
-            humanize_keystroke("cmd-j")
-        );
+        let terminal_tooltip = with_hot_key("terminal", &i18n_status_bar(cx, "toggle_terminal_tooltip"));
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
         let tag_text = server_state.tag.clone();
         let tag_chip = resolve_tag_chip(server_state.tag_color_key.as_deref(), cx.theme().is_dark());

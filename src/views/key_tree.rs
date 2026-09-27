@@ -27,8 +27,8 @@ use crate::{
     },
     helpers::{
         EditorAction, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
-        humanize_keystroke, single_child_expanded_set, split_key_segments, theme_color_for_tag, ttl_chip_kind,
-        ttl_secs, validate_long_string,
+        single_child_expanded_set, split_key_segments, theme_color_for_tag, ttl_chip_kind, ttl_secs,
+        validate_long_string, with_hot_key,
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, ProbKind, QueryMode, ServerEvent, ServerView, ZedisGlobalStore,
@@ -404,16 +404,11 @@ impl ZedisKeyTree {
         let keyword_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
-                // Placeholder carries the focus shortcut (⌘F / Ctrl+F via
-                // `humanize_keystroke`, matching `EditorAction::Search`'s
-                // `secondary-f` binding) so the affordance is discoverable
-                // right where it lands. Single-line — a `\n` in a
-                // placeholder panics the wrapped-lines cache (see CLAUDE.md).
-                .placeholder(format!(
-                    "{} ({})",
-                    i18n_common(cx, "keyword_placeholder"),
-                    humanize_keystroke("cmd-f")
-                ))
+                // Placeholder carries the focus shortcut (`EditorAction::Search`
+                // as bound) so the affordance is discoverable right where it
+                // lands. Single-line — a `\n` in a placeholder panics the
+                // wrapped-lines cache (see CLAUDE.md).
+                .placeholder(with_hot_key("search", &i18n_common(cx, "keyword_placeholder")))
         });
         // initial focus
         keyword_state.update(cx, |state, cx| {

@@ -19,6 +19,7 @@ use gpui::KeyBinding;
 use gpui_kit::component::input::Replace;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::HashMap;
 #[cfg(target_family = "wasm")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -458,10 +459,11 @@ pub struct HotKey {
 impl HotKey {
     /// The keystroke in effect: the user's override, else the default.
     pub fn effective(&self) -> &str {
-        keybinding_overrides()
-            .get(self.id)
-            .map(String::as_str)
-            .unwrap_or(self.default)
+        self.effective_in(keybinding_overrides())
+    }
+
+    fn effective_in<'a>(&'a self, overrides: &'a HashMap<String, String>) -> &'a str {
+        overrides.get(self.id).map(String::as_str).unwrap_or(self.default)
     }
 }
 
@@ -611,6 +613,35 @@ pub fn hot_key_table() -> &'static [HotKey] {
     HOT_KEYS
 }
 
+/// The shortcut hot key `id` is bound to, drawn for this keyboard — the hint
+/// in a tooltip, a placeholder, a toast or the welcome card. Read from the
+/// table, never written at the call site: the hints used to spell out the
+/// defaults and kept saying ⌘K after `keybindings.toml` had moved the
+/// palette. `None` where the chord does not work — in the browser, ⌘N and
+/// multi-database search ([`listed_in_reference`]) — so a hint never
+/// teaches a dead key.
+pub fn hot_key_label(id: &str) -> Option<String> {
+    hot_key_label_in(id, keybinding_overrides())
+}
+
+fn hot_key_label_in(id: &str, overrides: &HashMap<String, String>) -> Option<String> {
+    HOT_KEYS
+        .iter()
+        .find(|hot_key| hot_key.id == id)
+        .filter(|hot_key| listed_in_reference(hot_key))
+        .map(|hot_key| humanize_keystroke(hot_key.effective_in(overrides)))
+}
+
+/// `text (⌘K)`: `text` followed by hot key `id`'s shortcut, or `text` alone
+/// where [`hot_key_label`] has none. The id comes first, as in
+/// `hot_key_label`, which is where the test that checks them looks.
+pub fn with_hot_key(id: &str, text: &str) -> String {
+    match hot_key_label(id) {
+        Some(label) => format!("{text} ({label})"),
+        None => text.to_string(),
+    }
+}
+
 /// One section of the keyboard-shortcuts reference overlay.
 pub struct ShortcutGroup {
     /// i18n key (under the `shortcuts.` section) for the group heading.
@@ -726,6 +757,66 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn a_hint_follows_the_binding_the_user_chose() {
+        let defaults = HashMap::new();
+        assert_eq!(
+            hot_key_label_in("command_palette", &defaults),
+            Some(humanize_keystroke("secondary-k"))
+        );
+        let moved = HashMap::from([("command_palette".to_string(), "secondary-shift-p".to_string())]);
+        assert_eq!(
+            hot_key_label_in("command_palette", &moved),
+            Some(humanize_keystroke("secondary-shift-p"))
+        );
+        assert_eq!(
+            hot_key_label_in("recent_keys", &moved),
+            Some(humanize_keystroke("secondary-p")),
+            "only the moved shortcut moves"
+        );
+        assert_eq!(hot_key_label_in("no_such_shortcut", &defaults), None);
+    }
+
+    /// A hint names its shortcut by id, and a misspelt id would quietly draw
+    /// no hint at all — so every id written at a `hot_key_label` /
+    /// `with_hot_key` call in the sources is looked up here.
+    #[test]
+    fn every_hint_names_a_hot_key() {
+        // Spelled apart so this file's own text does not count as a call.
+        let calls = [concat!("hot_key_label", "("), concat!("with_hot_key", "(")];
+        let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut checked = 0;
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(&path).expect("read a source directory") {
+                    pending.push(entry.expect("a directory entry").path());
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            for call in calls {
+                for (at, _) in source.match_indices(call) {
+                    // An id passed through a variable, or the definition.
+                    let Some(literal) = source[at + call.len()..].trim_start().strip_prefix('"') else {
+                        continue;
+                    };
+                    let id = literal.split('"').next().unwrap_or_default();
+                    assert!(
+                        HOT_KEYS.iter().any(|hot_key| hot_key.id == id),
+                        "{}: no hot key `{id}`",
+                        path.display()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 10, "only {checked} hints found — was the call renamed?");
+    }
 
     #[test]
     fn the_chords_a_browser_keeps_are_the_bare_window_and_tab_ones() {

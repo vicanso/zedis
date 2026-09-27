@@ -19,7 +19,7 @@ use crate::{
     components::{
         KvTableColumn, KvTableColumnType, KvTableMode, ZedisKvDelegate, ZedisKvFetcher, with_leading_columns,
     },
-    helpers::{EditorAction, KeyOpAction, build_csv, humanize_keystroke},
+    helpers::{EditorAction, KeyOpAction, build_csv, hot_key_label},
     states::{
         DataFormat, KeyType, KvElement, ServerEvent, ZedisGlobalStore, ZedisServerState, detect_and_decode,
         dialog_button_props, i18n_common, i18n_editor, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor,
@@ -1261,7 +1261,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             .on_cancel(on_cancel)
             .cancel_label(i18n_common(cx, "cancel"))
             .when(is_adding || can_update, |this| {
-                this.on_submit(on_submit).confirm_tooltip(humanize_keystroke("cmd-s"))
+                this.on_submit(on_submit)
+                    .when_some(hot_key_label("save"), |this, shortcut| this.confirm_tooltip(shortcut))
             })
             .when_else(
                 is_adding,

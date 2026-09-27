@@ -144,12 +144,7 @@ impl ZedisEditor {
             } else if readonly {
                 i18n_editor(cx, "can_not_edit_value")
             } else {
-                format!(
-                    "{} ({})",
-                    i18n_editor(cx, "save_data_tooltip"),
-                    humanize_keystroke("cmd-s")
-                )
-                .into()
+                with_hot_key("save", &i18n_editor(cx, "save_data_tooltip")).into()
             };
 
             btns.push(
@@ -185,12 +180,7 @@ impl ZedisEditor {
                 let action = if self.readonly {
                     i18n_common(cx, "disable_in_readonly")
                 } else {
-                    format!(
-                        "{} ({})",
-                        i18n_editor(cx, "update_ttl_tooltip"),
-                        humanize_keystroke("cmd-t")
-                    )
-                    .into()
+                    with_hot_key("update_ttl", &i18n_editor(cx, "update_ttl_tooltip")).into()
                 };
                 // The button face is a remaining duration ("6.9d"); the exact
                 // expiry instant goes here, in the configured zone and layout,
@@ -235,12 +225,7 @@ impl ZedisEditor {
             btns.push(ttl_btn);
         }
 
-        let reload_tooltip: SharedString = format!(
-            "{} ({})",
-            i18n_editor(cx, "reload_key_tooltip"),
-            humanize_keystroke("cmd-shift-r")
-        )
-        .into();
+        let reload_tooltip: SharedString = with_hot_key("reload_value", &i18n_editor(cx, "reload_key_tooltip")).into();
         // reload
         let auto_refresh_interval_sec = self.auto_refresh_interval_sec;
         btns.push(

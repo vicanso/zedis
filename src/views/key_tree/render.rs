@@ -642,13 +642,7 @@ impl ZedisKeyTree {
                 menu.menu_element_with_icon(
                     Icon::new(CustomIconName::RotateCw),
                     Box::new(KeyTreeAction::RefreshAll),
-                    move |_, cx| {
-                        Label::new(format!(
-                            "{} ({})",
-                            i18n_key_tree(cx, "refresh_keys"),
-                            humanize_keystroke("cmd-r")
-                        ))
-                    },
+                    move |_, cx| Label::new(with_hot_key("reload_keys", &i18n_key_tree(cx, "refresh_keys"))),
                 )
                 // Read-class capabilities: allowed on read-only connections
                 // today, but routed through the matrix so a future stricter
@@ -758,12 +752,7 @@ impl ZedisKeyTree {
                     .disabled(!can_create)
                     .when(!can_create, |this| this.tooltip(i18n_common(cx, "disable_in_readonly")))
                     .when(can_create, |this| {
-                        let tooltip = format!(
-                            "{} ({})",
-                            i18n_key_tree(cx, "add_key_tooltip"),
-                            humanize_keystroke("cmd-n")
-                        );
-                        this.tooltip(tooltip)
+                        this.tooltip(with_hot_key("new_key", &i18n_key_tree(cx, "add_key_tooltip")))
                     })
                     .outline()
                     .icon(CustomIconName::FilePlusCorner)
