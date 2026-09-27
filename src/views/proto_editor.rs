@@ -449,6 +449,11 @@ impl ZedisProtoEditor {
         self.content_state.update(cx, |state, cx| {
             state.set_value(String::new(), window, cx);
         });
+        // Every field, the include paths too: a new viewer kept the last
+        // one's and compiled its schema against them.
+        self.includes_state.update(cx, |state, cx| {
+            state.set_value(String::new(), window, cx);
+        });
     }
     fn update_target_message_select_state(
         &mut self,

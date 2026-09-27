@@ -63,7 +63,8 @@ use zedis_connection::{
     zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_connection::{
-    SlotMigrationDialect, bgsave_cancel, copy_key, copy_key_logically, is_foreign_payload, restore_or_recreate_chunk,
+    SlotMigrationDialect, SlotMove, bgsave_cancel, copy_key, copy_key_logically, function_delete, function_load,
+    function_stats, is_foreign_payload, migrate_slot, restore_or_recreate_chunk,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
@@ -298,18 +299,20 @@ fn standalone_connect_reports_metadata() {
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         client.ping().await.expect("ping");
         assert!(!client.version().is_empty(), "version must be read from INFO server");
+        // The setup goes out as one pipeline of best-effort commands: one a
+        // server refuses (SETINFO before 7.2) must not take the rest with it.
+        let mut c = conn(&id, 0).await;
+        let info: String = cmd("CLIENT")
+            .arg("INFO")
+            .query_async(&mut c)
+            .await
+            .expect("client info");
+        assert!(info.contains("name=zedis:v"), "CLIENT SETNAME must apply: {info}");
         if supports(&id, floors::CLIENT_SETINFO).await {
-            let mut c = conn(&id, 0).await;
-            let info: String = cmd("CLIENT")
-                .arg("INFO")
-                .query_async(&mut c)
-                .await
-                .expect("client info");
             assert!(
-                info.contains("lib-name=zedis"),
+                info.contains("lib-name=zedis") && info.contains("lib-ver="),
                 "CLIENT SETINFO must name the client: {info}"
             );
-            assert!(info.contains("name=zedis:v"), "CLIENT SETNAME must still apply: {info}");
         }
         assert!(client.databases() >= 1);
         assert_eq!(client.nodes(), (1, 1), "standalone: one master, one node in total");
@@ -1184,14 +1187,22 @@ fn standalone_geo_hll_and_bitmap_writes() {
         let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
         assert_eq!(
             bit_field(&at, &bits_a, &args("GET u8 0")).await.expect("bitfield get"),
-            vec![0x0f]
+            vec![Some(0x0f)]
         );
         assert_eq!(
             bit_field(&at, &bits_a, &args("SET u4 0 15 GET u8 0"))
                 .await
                 .expect("bitfield set"),
-            vec![0, 0xff],
+            vec![Some(0), Some(0xff)],
             "one integer per sub-command: the old u4, then the new u8"
+        );
+        // OVERFLOW FAIL refuses the increment past u8 with a nil, and the
+        // rest of the command still answers.
+        assert_eq!(
+            bit_field(&at, &bits_a, &args("OVERFLOW FAIL INCRBY u8 0 1 GET u8 0"))
+                .await
+                .expect("an overflow is an answer, not an error"),
+            vec![None, Some(0xff)]
         );
         let _: () = cmd("SET")
             .arg(&bits_a)
@@ -2197,6 +2208,18 @@ fn standalone_compare_prefix_reports_each_side() {
         .await
         .expect("compare");
         assert!(capped.source_capped, "{capped:?}");
+        // A key the capped side did not list is asked for by name, not
+        // called missing: only the keys one side really lacks are listed.
+        assert!(
+            capped.only_source.iter().all(|(k, _)| *k == key("only0")),
+            "{:?}",
+            capped.only_source
+        );
+        assert!(
+            capped.only_target.iter().all(|(k, _)| *k == key("only1")),
+            "{:?}",
+            capped.only_target
+        );
 
         // The copy dry run: what the target already has of the source's keys.
         let preview = preview_key_conflicts(&id, 1, &[key("same"), key("only0")], 10, &cancel)
@@ -3277,6 +3300,17 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
             .expect("scan")
             .1;
         assert_eq!(typed.len(), 1, "the TYPE filter is the server's: {typed:?}");
+        // Filtered with TTLs: the type comes from the filter, the TTL still
+        // from the server (a hash with no expiry answers -1).
+        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, true, Some("hash"))
+            .await
+            .expect("scan")
+            .1;
+        assert_eq!(
+            typed,
+            [(format!("{prefix}:h"), "hash".to_string(), -1)],
+            "type named by the filter, TTL asked of the server"
+        );
 
         // Renamed, with and without the overwrite the dialog offers.
         assert!(
@@ -3350,9 +3384,12 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
         if supports(&id, floors::MEMORY_USAGE).await {
             assert!(impact.estimated_bytes().is_some_and(|bytes| bytes > 0), "{impact:?}");
         }
-        delete_keys_matching(&at, &format!("{prefix}:*"))
-            .await
-            .expect("del prefix");
+        assert!(
+            delete_keys_matching(&at, &format!("{prefix}:*"))
+                .await
+                .expect("del prefix"),
+            "a small prefix is deleted in one walk"
+        );
         assert!(
             scan_page(&at, None, &format!("{prefix}:*"), 1000, false, None)
                 .await
@@ -3428,6 +3465,24 @@ fn standalone_stream_operations_page_describe_and_administer() {
         let (next, rest) = stream_page(&at, &key, Some(&cursor), 2, false).await.expect("xrange");
         assert_eq!(rest.len(), 1, "the cursor is exclusive");
         assert!(next.is_empty(), "the end of the stream");
+        // A binary field value does not fail the page: it is shown lossily.
+        let binary_key = format!("{key}:binary");
+        cmd("XADD")
+            .arg(&binary_key)
+            .arg("*")
+            .arg("payload")
+            .arg(b"\x80\xffok".as_slice())
+            .exec_async(&mut c)
+            .await
+            .expect("xadd binary");
+        let (_, binary) = stream_page(&at, &binary_key, None, 10, false)
+            .await
+            .expect("a page with a non-UTF-8 value");
+        assert_eq!(binary.len(), 1);
+        assert_eq!(binary[0].1[0].0, "payload");
+        assert!(binary[0].1[0].1.ends_with("ok"), "{:?}", binary[0].1);
+        cmd("DEL").arg(&binary_key).exec_async(&mut c).await.expect("cleanup");
+
         let (_, newest) = stream_page(&at, &key, None, 1, true).await.expect("xrevrange");
         assert_eq!(
             newest[0].1,
@@ -3665,6 +3720,28 @@ fn standalone_terminal_session_keeps_its_own_connection_state() {
         assert_eq!(replies.len(), 2);
         let text = replies.render(&args(&["INCR n", "GET k"]), ReplyFormat::Text);
         assert!(text.contains("INCR n") && text.contains('v'), "{text}");
+
+        // One command of a transaction failing at run time fails that
+        // command, not the EXEC: the SET before it was applied and is shown.
+        let list_key = format!("{key}:not-a-list");
+        assert!(session.run(&at, "MULTI", &[]).await.expect("multi").is_ok());
+        session
+            .run(&at, "SET", &args(&[&list_key, "x"]))
+            .await
+            .expect("queue set");
+        session
+            .run(&at, "LPUSH", &args(&[&list_key, "y"]))
+            .await
+            .expect("queue lpush");
+        let exec = session
+            .run(&at, "EXEC", &[])
+            .await
+            .expect("an EXEC with one failed command is still an answer");
+        let replies = exec.exec_replies().expect("EXEC answers an array");
+        assert_eq!(replies.len(), 2);
+        let text = replies.render(&args(&["SET", "LPUSH"]), ReplyFormat::Text);
+        assert!(text.contains("OK") && text.contains("WRONGTYPE"), "{text}");
+        session.run(&at, "DEL", &args(&[&list_key])).await.expect("cleanup");
 
         // A reply is rendered on demand, in any format, from the same value.
         let _ = session
@@ -3932,6 +4009,17 @@ fn entry_checks_and_single_key_restore_work_through_their_operations() {
         test_connection(&server("it-entry-check-probe", standalone()))
             .await
             .expect("a reachable standalone passes the test");
+        // A wrong password against a server whose `default` user needs none:
+        // the password-less retry (meant for sentinels) used to connect as
+        // `default` and report success.
+        let mut wrong = server("it-entry-check-wrong-password", standalone());
+        wrong.username = Some("zedis_it_no_such_user".to_string());
+        wrong.password = Some("not-the-password".to_string());
+        let err = test_connection(&wrong)
+            .await
+            .expect_err("a wrong password must not pass");
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Auth, "{err}");
+
         let (host, _) = standalone();
         let err = test_connection(&server("it-entry-check-closed", (host, 1)))
             .await
@@ -4172,12 +4260,12 @@ fn standalone_client_pause_and_filtered_kill() {
             .await
             .expect("client id");
         let second_id = second_id.to_string();
-        assert!(client_kill_id(node, 0, &second_id).await.expect("kill by id"));
+        assert!(client_kill_id(&at, node, &second_id).await.expect("kill by id"));
         let after: Result<String, redis::RedisError> = cmd("PING").query_async(&mut second).await;
         assert!(after.is_err(), "the second victim's connection is gone");
         // Already gone: the filter form of CLIENT KILL answers 0, not an error.
         assert!(
-            !client_kill_id(node, 0, &second_id)
+            !client_kill_id(&at, node, &second_id)
                 .await
                 .expect("kill a client that left")
         );
@@ -6073,6 +6161,157 @@ fn cluster_rebalance_plan_is_empty_on_a_fresh_cluster() {
             plan.is_empty(),
             "an evenly created cluster needs no rebalance: {plan:?}"
         );
+    });
+}
+
+/// A cluster connection sends `LATENCY` and `FUNCTION STATS` to every node
+/// and answers a map of node to reply: the panels read that, and count a
+/// library loaded on every node once.
+#[test]
+#[ignore]
+fn cluster_latency_and_function_stats_read_every_node() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-per-node", addr)).await;
+        let at = ServerDb::new(&*id, 0);
+        let listing = latency_latest(&at).await.expect("latency latest");
+        assert!(!listing.unsupported, "every node has LATENCY");
+        latency_history(&at, "command").await.expect("latency history");
+
+        if !supports(&id, floors::FUNCTIONS).await {
+            eprintln!("skipped: functions are Redis 7.0+");
+            return;
+        }
+        let library = format!("zedis_it_cluster_{}", std::process::id());
+        let code = format!("#!lua name={library}\nredis.register_function('{library}_f', function() return 1 end)");
+        let before = function_stats(&at).await.expect("stats").libraries_count;
+        function_load(&at, &code, true).await.expect("load on every master");
+        let stats = function_stats(&at).await.expect("stats");
+        function_delete(&at, &library).await.expect("delete");
+        assert_eq!(
+            stats.libraries_count,
+            before + 1,
+            "one node's count, not none and not the sum over nodes: {stats:?}"
+        );
+    });
+}
+
+/// The hand reshard every server has: a slot with a key in it moves to
+/// another master — the key with it, the ownership committed on every
+/// master — and back again.
+#[test]
+#[ignore]
+fn cluster_moves_a_slot_by_hand_with_its_keys() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-hand", addr)).await;
+        let at = ServerDb::new(&*id, 0);
+        let _slots = CLUSTER_SLOTS.lock().await;
+        let entry = |label: &str, addr: &str| {
+            let (host, port) = addr.rsplit_once(':').expect("host:port");
+            protected_server(label, (host.to_string(), port.parse().expect("port")))
+        };
+        /// Who owns `slot`, by node id, from a freshly read topology.
+        async fn owner_of(id: &str, slot: u16) -> String {
+            get_connection_manager()
+                .get_client_without_cache(id, 0)
+                .await
+                .expect("re-read the cluster")
+                .nodes_description()
+                .slot_map
+                .owners
+                .iter()
+                .find(|range| range.start <= slot && slot <= range.end)
+                .map(|range| range.node_id.clone())
+                .unwrap_or_default()
+        }
+
+        let map = get_connection_manager()
+            .get_client_without_cache(&id, 0)
+            .await
+            .expect("client")
+            .nodes_description()
+            .slot_map;
+        let key = "{zedis-it-hand}:moved";
+        let first = map.masters.first().expect("a master");
+        let mut probe = open_single_connection(&entry("it-cluster-hand-probe", &first.addr), 0, false)
+            .await
+            .expect("connect");
+        let slot: u16 = cmd("CLUSTER")
+            .arg("KEYSLOT")
+            .arg(key)
+            .query_async(&mut probe)
+            .await
+            .expect("keyslot");
+        let source_id = owner_of(&id, slot).await;
+        let source = map
+            .masters
+            .iter()
+            .find(|master| master.node_id == source_id)
+            .expect("the slot's owner is a master")
+            .clone();
+        let target = map
+            .masters
+            .iter()
+            .find(|master| master.node_id != source_id)
+            .expect("a second master")
+            .clone();
+        let mut source_conn = open_single_connection(&entry("it-cluster-hand-src", &source.addr), 0, false)
+            .await
+            .expect("connect to the source");
+        let mut target_conn = open_single_connection(&entry("it-cluster-hand-dst", &target.addr), 0, false)
+            .await
+            .expect("connect to the target");
+        let _: () = cmd("SET")
+            .arg(key)
+            .arg("payload")
+            .query_async(&mut source_conn)
+            .await
+            .expect("set");
+        let masters = master_addrs(&at).await.expect("masters");
+        let source_node = ClusterNode::new(&*id, &source.addr);
+        let target_node = ClusterNode::new(&*id, &target.addr);
+
+        migrate_slot(SlotMove {
+            slot,
+            source: &source_node,
+            source_id: &source.node_id,
+            target: &target_node,
+            target_id: &target.node_id,
+            master_addrs: &masters,
+        })
+        .await
+        .expect("move the slot");
+        let moved: Option<String> = cmd("GET")
+            .arg(key)
+            .query_async(&mut target_conn)
+            .await
+            .expect("get on the target");
+        assert_eq!(moved.as_deref(), Some("payload"), "the key went with its slot");
+        assert_eq!(owner_of(&id, slot).await, target.node_id, "ownership moved");
+
+        migrate_slot(SlotMove {
+            slot,
+            source: &target_node,
+            source_id: &target.node_id,
+            target: &source_node,
+            target_id: &source.node_id,
+            master_addrs: &masters,
+        })
+        .await
+        .expect("move it back");
+        let back: Option<String> = cmd("GET")
+            .arg(key)
+            .query_async(&mut source_conn)
+            .await
+            .expect("get on the source");
+        assert_eq!(back.as_deref(), Some("payload"), "and back with it");
+        assert_eq!(owner_of(&id, slot).await, source.node_id, "and back again");
+        let _: i64 = cmd("DEL")
+            .arg(key)
+            .query_async(&mut source_conn)
+            .await
+            .expect("clean up");
     });
 }
 

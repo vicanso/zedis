@@ -292,6 +292,11 @@ impl ZedisVectorSetEditor {
         self.search_error = None;
         if let Some(data) = self.data.as_mut() {
             data.queried = Some(element.clone());
+            // What was read for the previous element is not this one's: a
+            // search that fails left them, and "edit attributes" wrote the
+            // last element's attributes onto the new one.
+            data.queried_attrs = None;
+            data.queried_vector = None;
         }
         cx.notify();
         let element_str = element.to_string();

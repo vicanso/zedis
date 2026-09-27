@@ -263,9 +263,110 @@ pub fn is_read_only_command(name: &str, args: &[&str]) -> bool {
     is_container_read(&name, &sub)
 }
 
+/// Server settings whose values are credentials.
+const SECRET_CONFIG: [&str; 5] = [
+    "requirepass",
+    "masterauth",
+    "primaryauth",
+    "tls-key-file-pass",
+    "tls-client-key-file-pass",
+];
+
+/// Whether a read would hand back a credential: `CONFIG GET` of a password
+/// setting — by name, or by a pattern that can match one, `*` included —
+/// or `ACL GETUSER` / `ACL LIST`, whose replies carry every user's password
+/// hashes. They read, but a read-only account is not one that may read the
+/// server's passwords, so the bridge refuses these to it on top of
+/// [`is_read_only_command`].
+pub fn reveals_secrets(name: &str, args: &[&str]) -> bool {
+    let Some(sub) = args.first() else {
+        return false;
+    };
+    match (name.to_ascii_uppercase().as_str(), sub.to_ascii_uppercase().as_str()) {
+        ("CONFIG", "GET") => args[1..].iter().any(|pattern| {
+            SECRET_CONFIG
+                .iter()
+                .any(|secret| config_pattern_may_match(pattern, secret))
+        }),
+        ("ACL", "GETUSER" | "LIST") => true,
+        _ => false,
+    }
+}
+
+/// Whether `CONFIG GET`'s glob `pattern` can match `name`, erring towards
+/// yes: `*` and `?` as Redis reads them, case folded, and a `[…]` set (or an
+/// escape) read as any one character — a superset of what the server would
+/// match, which is the safe direction for a refusal.
+fn config_pattern_may_match(pattern: &str, name: &str) -> bool {
+    let mut simplified = Vec::new();
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '[' => {
+                for inner in chars.by_ref() {
+                    if inner == ']' {
+                        break;
+                    }
+                }
+                simplified.push('?');
+            }
+            '\\' => {
+                chars.next();
+                simplified.push('?');
+            }
+            other => simplified.push(other.to_ascii_lowercase()),
+        }
+    }
+    let text: Vec<char> = name.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star, mut star_ti) = (None, 0);
+    while ti < text.len() {
+        if pi < simplified.len() && (simplified[pi] == '?' || simplified[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < simplified.len() && simplified[pi] == '*' {
+            star = Some(pi);
+            star_ti = ti;
+            pi += 1;
+        } else if let Some(at) = star {
+            pi = at + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    simplified[pi..].iter().all(|c| *c == '*')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_of_a_password_is_named() {
+        for (line, reveals) in [
+            ("CONFIG GET requirepass", true),
+            ("config get MASTERAUTH", true),
+            ("CONFIG GET *", true),
+            ("CONFIG GET *pass*", true),
+            ("CONFIG GET maxmemory requirepass", true),
+            ("CONFIG GET re[q]uirepass", true),
+            ("CONFIG GET primary*", true),
+            ("CONFIG GET maxmemory", false),
+            ("CONFIG GET max*", false),
+            ("CONFIG GET tls-*-file", false),
+            ("ACL GETUSER default", true),
+            ("ACL LIST", true),
+            ("ACL WHOAMI", false),
+            ("GET requirepass", false),
+        ] {
+            let mut words = line.split_whitespace();
+            let name = words.next().expect("a name");
+            let args: Vec<&str> = words.collect();
+            assert_eq!(reveals_secrets(name, &args), reveals, "{line}");
+        }
+    }
 
     fn allowed(line: &str) -> bool {
         let mut parts = line.split_whitespace();

@@ -34,6 +34,8 @@ use std::collections::HashMap;
 #[cfg(not(target_os = "linux"))]
 use std::process::Command;
 use std::sync::RwLock;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use tracing::debug;
 use ureq::Proxy;
 
@@ -111,7 +113,7 @@ fn system_proxy() -> Option<Proxy> {
     if let Some(proxy) = Proxy::try_from_env() {
         return Some(proxy);
     }
-    let uri = os_proxy_uri()?;
+    let uri = cached_os_proxy_uri()?;
     match Proxy::new(&uri) {
         Ok(proxy) => {
             debug!(%uri, "system proxy: using OS proxy settings");
@@ -122,6 +124,26 @@ fn system_proxy() -> Option<Proxy> {
             None
         }
     }
+}
+
+/// How long an OS proxy lookup is reused. Every HTTP request asks, and each
+/// lookup is a process — `scutil`, or `reg` — so a download or a burst of AI
+/// requests used to start one per request; a proxy change still lands within
+/// the minute.
+const OS_PROXY_TTL: Duration = Duration::from_secs(60);
+
+/// [`os_proxy_uri`], reused for [`OS_PROXY_TTL`].
+fn cached_os_proxy_uri() -> Option<String> {
+    static CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, uri)) = cache.as_ref()
+        && at.elapsed() < OS_PROXY_TTL
+    {
+        return uri.clone();
+    }
+    let uri = os_proxy_uri();
+    *cache = Some((Instant::now(), uri.clone()));
+    uri
 }
 
 #[cfg(target_os = "macos")]
@@ -135,11 +157,16 @@ fn os_proxy_uri() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn os_proxy_uri() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    /// `CREATE_NO_WINDOW`: a console program started from a GUI app opens a
+    /// console window of its own, which flashed on screen at every lookup.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new("reg")
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if !out.status.success() {

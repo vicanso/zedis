@@ -321,18 +321,27 @@ pub async fn ft_alter_add(at: &ServerDb, index: &str, field: &CreateFieldSpec) -
     let conn = &mut at.connection().await?;
     let mut c = cmd("FT.ALTER");
     c.arg(index).arg("SCHEMA").arg("ADD");
+    push_field_options(&mut c, field);
+    let _: () = c.query_async(conn).await?;
+    Ok(())
+}
+
+/// A field's name, type and options, in the order RediSearch parses them:
+/// `NOSTEM` belongs to the TEXT options that follow the type, and the
+/// generic `SORTABLE` / `NOINDEX` come after. `… TEXT SORTABLE NOSTEM` read
+/// `NOSTEM` as the next field's name, and the index was refused ("Field
+/// `NOSTEM` does not have a type").
+fn push_field_options(c: &mut redis::Cmd, field: &CreateFieldSpec) {
     c.arg(field.name.as_str()).arg(field.field_type.as_str());
-    if field.sortable {
-        c.arg("SORTABLE");
-    }
     if field.no_stem {
         c.arg("NOSTEM");
+    }
+    if field.sortable {
+        c.arg("SORTABLE");
     }
     if field.no_index {
         c.arg("NOINDEX");
     }
-    let _: () = c.query_async(conn).await?;
-    Ok(())
 }
 
 pub async fn ft_create(at: &ServerDb, opts: &CreateIndexOptions) -> Result<()> {
@@ -351,18 +360,8 @@ pub async fn ft_create(at: &ServerDb, opts: &CreateIndexOptions) -> Result<()> {
         // For JSON-backed indexes the identifier uses JSONPath form, but
         // the form lets users type either `$.title` or `title`; pass it
         // through verbatim. AS-aliases aren't surfaced here yet.
-        c.arg(f.name.as_str()).arg(f.field_type.as_str());
-        if f.sortable {
-            c.arg("SORTABLE");
-        }
-        if f.no_stem {
-            // NOSTEM only meaningful for TEXT; harmless on other types
-            // would be rejected by RediSearch, so the form gates it.
-            c.arg("NOSTEM");
-        }
-        if f.no_index {
-            c.arg("NOINDEX");
-        }
+        // NOSTEM is only meaningful for TEXT; the form gates it.
+        push_field_options(&mut c, f);
     }
     let _: () = c.query_async(conn).await?;
     Ok(())
@@ -402,10 +401,16 @@ pub async fn ft_list(at: &ServerDb) -> Result<IndexListing> {
     let conn = &mut at.connection().await?;
     let res: redis::RedisResult<Vec<String>> = cmd("FT._LIST").query_async(conn).await;
     match res {
-        Ok(names) => Ok(IndexListing {
-            names: names.into_iter().collect(),
-            unsupported: false,
-        }),
+        Ok(names) => {
+            // On a cluster every master answers with the index list (an
+            // index lives on all of them) and the replies are joined: one
+            // name per master. Each once, in the order first seen.
+            let mut seen = std::collections::HashSet::new();
+            Ok(IndexListing {
+                names: names.into_iter().filter(|name| seen.insert(name.clone())).collect(),
+                unsupported: false,
+            })
+        }
         Err(e) if reply::is_unsupported(&e) => Ok(IndexListing {
             unsupported: true,
             ..Default::default()
@@ -725,6 +730,29 @@ fn parse_suggestions(v: &Value) -> Vec<(String, f64)> {
         .collect()
 }
 
+/// Bare flags an attribute array may carry that [`parse_field_definition`]
+/// does not track — a slot each, never a key and its value.
+const BARE_FLAGS: [&str; 6] = [
+    "casesensitive",
+    "withsuffixtrie",
+    "unf",
+    "indexempty",
+    "indexmissing",
+    "nocase",
+];
+
+/// The tokens [`parse_field_definition`] reads, key or flag.
+const KNOWN_TOKENS: [&str; 8] = [
+    "identifier",
+    "attribute",
+    "type",
+    "weight",
+    "separator",
+    "sortable",
+    "noindex",
+    "nostem",
+];
+
 fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
     // Attribute arrays mix `key value` pairs with bare flag tokens
     // (`SORTABLE`, `NOINDEX`, `NOSTEM`), so a plain pair iterator can't
@@ -810,8 +838,19 @@ fn parse_field_definition(v: &Value) -> Option<FieldSchema> {
                 if i == 0 && legacy_name_candidate.is_none() {
                     legacy_name_candidate = Some(token);
                     i += 1;
+                } else if BARE_FLAGS.contains(&lower.as_str())
+                    || items
+                        .get(i + 1)
+                        .and_then(reply::text)
+                        .is_none_or(|next| KNOWN_TOKENS.contains(&next.to_ascii_lowercase().as_str()))
+                {
+                    // A flag this parser does not track (`CASESENSITIVE`,
+                    // `WITHSUFFIXTRIE`, …), or one followed by a token it
+                    // knows: one slot. Skipping two here swallowed the next
+                    // key, so a `SORTABLE` after `CASESENSITIVE` was lost.
+                    i += 1;
                 } else {
-                    // Unknown key elsewhere — skip a pair conservatively.
+                    // An unknown key with its value.
                     i += 2;
                 }
             }
@@ -1080,6 +1119,28 @@ fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nostem_comes_before_sortable() {
+        let field = CreateFieldSpec {
+            name: "title".to_string(),
+            field_type: "TEXT".to_string(),
+            sortable: true,
+            no_stem: true,
+            no_index: false,
+        };
+        let mut c = redis::cmd("FT.ALTER");
+        push_field_options(&mut c, &field);
+        let words: Vec<String> = c
+            .args_iter()
+            .filter_map(|arg| match arg {
+                redis::Arg::Simple(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(words, ["FT.ALTER", "title", "TEXT", "NOSTEM", "SORTABLE"]);
+    }
+
     use super::*;
     use redis::Arg;
 
@@ -1319,6 +1380,10 @@ mod tests {
                     bs("TAG"),
                     bs("SEPARATOR"),
                     bs(","),
+                    // A flag the parser does not track, then one it does:
+                    // one slot each.
+                    bs("CASESENSITIVE"),
+                    bs("SORTABLE"),
                 ]),
             ]),
             bs("index_definition"),
@@ -1340,6 +1405,7 @@ mod tests {
         let tags = &info.fields[1];
         assert_eq!(tags.kind(), FieldKind::Tag);
         assert_eq!(tags.separator.as_ref().map(|s| s.as_ref()), Some(","));
+        assert!(tags.sortable, "SORTABLE after an unknown flag is still read");
         assert_eq!(info.key_type.as_str(), "HASH");
         assert_eq!(info.prefixes, vec![String::from("post:")]);
     }

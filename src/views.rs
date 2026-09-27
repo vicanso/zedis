@@ -148,7 +148,7 @@ pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 pub use compare_window::open_compare_window;
 pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
-pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
+pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas, value_range};
 #[cfg(not(target_family = "wasm"))]
 pub use migration_window::{
     CopyPreset, ExportSource, open_migration_copy_window, open_migration_export_window, open_migration_import_window,

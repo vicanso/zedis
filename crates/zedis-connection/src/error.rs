@@ -161,6 +161,9 @@ impl Error {
                     K::Unknown
                 }
             }
+            // A deadline this crate put on a dial (an SSH handshake has no
+            // timeout of its own) says so; any other IO failure is the host.
+            Error::Io { source } if source.kind() == std::io::ErrorKind::TimedOut => K::Timeout,
             Error::Io { .. } => K::Network,
             #[cfg(not(target_family = "wasm"))]
             Error::Ssh { .. } | Error::SshForward { .. } | Error::Key { .. } => K::Tunnel,
@@ -251,6 +254,10 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
         };
         assert_eq!(io.connection_kind(), ConnectionErrorKind::Network);
+        let timed_out = Error::Io {
+            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "ssh handshake"),
+        };
+        assert_eq!(timed_out.connection_kind(), ConnectionErrorKind::Timeout);
 
         // A redis auth-kind error maps to Auth.
         let auth = Error::Redis {

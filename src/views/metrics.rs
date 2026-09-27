@@ -26,7 +26,7 @@ use gpui::{
 use gpui_kit::component::h_flex;
 use gpui_kit::component::plot::{
     AXIS_GAP, AxisText, Grid, PlotAxis, StrokeStyle,
-    scale::{Scale, ScaleBand, ScaleLinear, ScalePoint},
+    scale::{Scale, ScaleBand, ScaleLinear},
     shape::{Area, Bar, Line},
 };
 use gpui_kit::component::{
@@ -50,11 +50,29 @@ const Y_TICK_COUNT: usize = 4;
 /// primitives without duplicating the y-tick / x-label logic.
 pub(crate) struct ChartParams {
     pub dates: Arc<Vec<SharedString>>,
+    /// The bottom of the y axis: 0 for the counts and sizes most charts
+    /// draw, the lowest sample for a series that can go negative.
+    pub y_min: f64,
     pub y_max: f64,
     pub y_format: Box<dyn Fn(f64) -> String>,
     pub tick_margin: usize,
     pub border: Hsla,
     pub muted_fg: Hsla,
+}
+
+/// The y axis for a series: from 0, or from below its lowest sample when
+/// that is negative (a temperature, a balance) — the axis started at 0 and
+/// drew those under it — to a little above its highest.
+pub(crate) fn value_range(values: &[f64]) -> (f64, f64) {
+    let max = values.iter().copied().fold(0.0_f64, f64::max);
+    let min = values.iter().copied().fold(0.0_f64, f64::min);
+    let y_max = if max <= 0.0 {
+        if min < 0.0 { 0.0 } else { 1.0 }
+    } else {
+        max * 1.1
+    };
+    let y_min = if min < 0.0 { min * 1.1 } else { 0.0 };
+    (y_min, y_max)
 }
 
 struct ChartFrame {
@@ -310,9 +328,13 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
         min_connected_clients = min_connected_clients.min(clients);
         connected_clients.push(clients);
 
+        // Per second: samples come every 2s in front and every 30s in a
+        // background tab, and a count per sample drew each switch between
+        // the two as a spike (or a drop) fifteen times its size.
         let processed = metrics
             .total_commands_processed
-            .saturating_sub(prev_metrics.total_commands_processed) as f64;
+            .saturating_sub(prev_metrics.total_commands_processed) as f64
+            / delta_time;
         max_total_commands_processed = max_total_commands_processed.max(processed);
         min_total_commands_processed = min_total_commands_processed.min(processed);
         total_commands_processed.push(processed);
@@ -399,32 +421,28 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
 }
 
 fn make_y_ticks(
+    min_val: f64,
     max_val: f64,
     y: &ScaleLinear<f64>,
     format_fn: &dyn Fn(f64) -> String,
     muted_fg: Hsla,
 ) -> (Vec<f32>, Vec<AxisText>) {
-    let grid: Vec<f32> = (0..=Y_TICK_COUNT)
-        .filter_map(|i| {
-            let v = max_val * i as f64 / Y_TICK_COUNT as f64;
-            y.tick(&v)
-        })
-        .collect();
+    let at = |i: usize| min_val + (max_val - min_val) * i as f64 / Y_TICK_COUNT as f64;
+    let grid: Vec<f32> = (0..=Y_TICK_COUNT).filter_map(|i| y.tick(&at(i))).collect();
     let labels: Vec<AxisText> = (0..=Y_TICK_COUNT)
         .filter_map(|i| {
-            let v = max_val * i as f64 / Y_TICK_COUNT as f64;
+            let v = at(i);
             y.tick(&v).map(|tick| AxisText::new(format_fn(v), tick, muted_fg))
         })
         .collect();
     (grid, labels)
 }
 
-fn make_x_labels_point(
-    dates: &[SharedString],
-    x: &ScalePoint<SharedString>,
-    tick_margin: usize,
-    muted_fg: Hsla,
-) -> Vec<AxisText> {
+/// The x-axis labels of a point chart, each at its sample's position — by
+/// index, like the points ([`point_x`]): placing them by their text put a
+/// label at the first sample that read the same (a day-long window has two
+/// `12:00`s), so the newest label sat at the left edge.
+fn make_x_labels_point(dates: &[SharedString], range: [f32; 2], tick_margin: usize, muted_fg: Hsla) -> Vec<AxisText> {
     let n = dates.len();
     // Pre-scan to know which indices will actually be drawn — we need
     // first/last to pick the right alignment. Avoids two pitfalls
@@ -453,19 +471,17 @@ fn make_x_labels_point(
 
     drawn
         .into_iter()
-        .filter_map(|i| {
-            x.tick(&dates[i]).map(|x_tick| {
-                let align = if n == 1 {
-                    TextAlign::Center
-                } else if Some(i) == first_drawn {
-                    TextAlign::Left
-                } else if Some(i) == last_drawn {
-                    TextAlign::Right
-                } else {
-                    TextAlign::Center
-                };
-                AxisText::new(dates[i].clone(), x_tick + Y_LABEL_WIDTH, muted_fg).align(align)
-            })
+        .map(|i| {
+            let align = if n == 1 {
+                TextAlign::Center
+            } else if Some(i) == first_drawn {
+                TextAlign::Left
+            } else if Some(i) == last_drawn {
+                TextAlign::Right
+            } else {
+                TextAlign::Center
+            };
+            AxisText::new(dates[i].clone(), point_x(i, n, range) + Y_LABEL_WIDTH, muted_fg).align(align)
         })
         .collect()
 }
@@ -518,6 +534,7 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Backg
         |_, _, _| {},
         move |bounds, _, window, cx| {
             let ChartParams {
+                y_min,
                 dates,
                 y_max,
                 y_format,
@@ -534,11 +551,10 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Backg
             let width = bounds.size.width.as_f32();
             let height = bounds.size.height.as_f32() - AXIS_GAP;
 
-            let x = ScalePoint::new(dates.clone(), vec![0., width - Y_LABEL_WIDTH]);
-            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
 
-            let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
             ChartFrame {
                 height,
                 x_labels,
@@ -583,6 +599,7 @@ fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, st
         |_, _, _| {},
         move |bounds, _, window, cx| {
             let ChartParams {
+                y_min,
                 dates,
                 y_max,
                 y_format,
@@ -599,11 +616,10 @@ fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, st
             let width = bounds.size.width.as_f32();
             let height = bounds.size.height.as_f32() - AXIS_GAP;
 
-            let x = ScalePoint::new(dates.clone(), vec![0., width - Y_LABEL_WIDTH]);
-            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
 
-            let x_labels = make_x_labels_point(dates, &x, *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
             ChartFrame {
                 height,
                 x_labels,
@@ -640,6 +656,7 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_c
         |_, _, _| {},
         move |bounds, _, window, cx| {
             let ChartParams {
+                y_min,
                 dates,
                 y_max,
                 y_format,
@@ -660,10 +677,10 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_c
                 .padding_inner(0.4)
                 .padding_outer(0.2);
             let band_width = x.band_width();
-            let y = ScaleLinear::new(vec![0., *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
 
             let x_labels = make_x_labels_band(dates, &x, band_width, *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_max, &y, y_format.as_ref(), *muted_fg);
+            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
             ChartFrame {
                 height,
                 x_labels,
@@ -712,15 +729,16 @@ impl ZedisMetrics {
     }
 
     /// `name - type(masters)`, or `--` while the tab has no connection yet.
+    /// The count of masters — the field it used to print is their addresses.
     fn title_for(server_state: &Entity<ZedisServerState>, cx: &App) -> SharedString {
         let state = server_state.read(cx);
         let name = get_server(state.server_id())
             .map(|server| server.name)
             .unwrap_or_else(|_| "--".to_string());
-        let nodes_description = state.nodes_description();
         format!(
             "{name} - {}({})",
-            nodes_description.server_type, nodes_description.master_nodes
+            state.nodes_description().server_type,
+            state.nodes().0
         )
         .into()
     }
@@ -780,9 +798,11 @@ impl ZedisMetrics {
         let server_id = self.server_state.read(cx).server_id().to_string();
         if server_id != self.server_id {
             self.server_id = server_id;
-            self.title = Self::title_for(&self.server_state, cx);
             self.range = MetricsRange::Live;
         }
+        // Every beat: the topology lands after the switch that changed the
+        // id, and a title made then kept saying `(0)`.
+        self.title = Self::title_for(&self.server_state, cx);
         if self.server_id.is_empty() {
             return;
         }
@@ -823,6 +843,7 @@ impl ZedisMetrics {
         y_format: impl Fn(f64) -> String + 'static,
     ) -> ChartParams {
         ChartParams {
+            y_min: 0.0,
             dates,
             y_max,
             y_format: Box::new(y_format),
@@ -1024,7 +1045,7 @@ impl ZedisMetrics {
 
     fn render_total_commands_processed_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = format!(
-            "{}: {:.0} - {:.0}",
+            "{}: {:.0} - {:.0} /s",
             i18n_metrics(cx, "total_commands_processed"),
             self.metrics_chart_data.min_total_commands_processed,
             self.metrics_chart_data.max_total_commands_processed
@@ -1336,6 +1357,17 @@ fn metrics_csv(samples: &[RedisMetrics]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::component::plot::scale::ScalePoint;
+
+    #[test]
+    fn a_negative_series_gets_an_axis_below_zero() {
+        assert_eq!(value_range(&[1.0, 10.0]), (0.0, 11.0));
+        let (low, high) = value_range(&[-5.0, 2.0]);
+        assert!(low < -5.0 && high > 2.0, "{low}..{high}");
+        let (low, high) = value_range(&[-5.0, -1.0]);
+        assert!(low < -5.0 && high == 0.0, "{low}..{high}");
+        assert_eq!(value_range(&[]), (0.0, 1.0), "nothing to draw still has an axis");
+    }
 
     #[test]
     fn a_point_lands_where_the_point_scale_would_put_it() {

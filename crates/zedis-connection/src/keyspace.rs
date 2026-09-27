@@ -301,18 +301,22 @@ async fn sample_memory(at: &ServerDb, keys: &[String]) -> Option<(u64, u64)> {
     (asked > 0).then_some((asked, bytes))
 }
 
-pub async fn delete_keys_matching(at: &ServerDb, pattern: &str) -> Result<()> {
+/// `UNLINK` every key matching `pattern`, over at most
+/// [`DELETE_SCAN_ROUNDS`] SCAN rounds. `true` when the walk reached the end
+/// of the keyspace; `false` when the round limit stopped it, so keys may be
+/// left — which the caller must not report as all gone.
+pub async fn delete_keys_matching(at: &ServerDb, pattern: &str) -> Result<bool> {
     let client = at.client().await?;
     let mut cursors: Option<Vec<u64>> = None;
     for _ in 0..DELETE_SCAN_ROUNDS {
         let (next, keys_per_node) = client.scan_nodes(cursors, pattern, PREFIX_SCAN_COUNT, None).await?;
         client.unlike_keys(keys_per_node).await?;
         if next.iter().sum::<u64>() == 0 {
-            break;
+            return Ok(true);
         }
         cursors = Some(next);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// `RENAME`, or `RENAMENX` unless `overwrite` — then `false` means the new

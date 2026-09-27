@@ -27,8 +27,8 @@ use crate::helpers::{
     is_share_token, resolve_path, resolve_tag_chip, unix_ts,
 };
 use crate::states::{
-    GlobalEvent, NotificationAction, ReorderDirection, Route, ZedisGlobalStore, dialog_button_props,
-    escalate_dangerous_body, get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
+    GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, escalate_dangerous_body,
+    get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::views::open_connection_diagnostics;
@@ -747,8 +747,14 @@ impl Render for ZedisServers {
                         let update_server = server.clone();
                         // Server id carried by the footer "⋯" dropdown actions.
                         let more_server_id: SharedString = server.id.clone().into();
-                        let move_up_id = server.id.clone();
-                        let move_down_id = server.id.clone();
+                        // Moves swap with the card shown beside this one.
+                        let move_up = in_group_index
+                            .checked_sub(1)
+                            .and_then(|above| group_servers.get(above))
+                            .map(|above| (server.id.clone(), above.id.clone()));
+                        let move_down = group_servers
+                            .get(in_group_index + 1)
+                            .map(|below| (server.id.clone(), below.id.clone()));
 
                         let description = server.description.as_deref().unwrap_or_default();
                         let updated_at = if let Some(updated_at) = &server.updated_at {
@@ -791,10 +797,12 @@ impl Render for ZedisServers {
                                     .disabled(is_first)
                                     .on_click(cx.listener(move |_this, _, _window, cx| {
                                         cx.stop_propagation();
-                                        let id = move_up_id.clone();
+                                        let Some((id, neighbor)) = move_up.clone() else {
+                                            return;
+                                        };
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                             store.update(cx, |state, cx| {
-                                                state.reorder_server(&id, ReorderDirection::Up, cx);
+                                                state.reorder_server(&id, &neighbor, cx);
                                             });
                                         });
                                     })),
@@ -807,10 +815,12 @@ impl Render for ZedisServers {
                                     .disabled(is_last)
                                     .on_click(cx.listener(move |_this, _, _window, cx| {
                                         cx.stop_propagation();
-                                        let id = move_down_id.clone();
+                                        let Some((id, neighbor)) = move_down.clone() else {
+                                            return;
+                                        };
                                         cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                             store.update(cx, |state, cx| {
-                                                state.reorder_server(&id, ReorderDirection::Down, cx);
+                                                state.reorder_server(&id, &neighbor, cx);
                                             });
                                         });
                                     })),

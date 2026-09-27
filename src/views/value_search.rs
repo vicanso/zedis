@@ -38,7 +38,8 @@ use crate::components::KeyTypeBadge;
 use crate::connection::{MatchLocation, ServerDb, ValueMatch, ValueSearchRound, scan_values_round, value_preview};
 use crate::helpers::{build_csv, get_mono_font_family};
 use crate::states::{
-    KeyType, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_value_search,
+    KeyType, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common,
+    i18n_value_search,
 };
 use crate::views::export_to_file;
 use gpui::{
@@ -181,6 +182,17 @@ impl ZedisValueSearch {
                 cx.notify();
             }
         }));
+        // A database switch is a `ServerSelected` too: the hits name keys of
+        // the database they were found in, and a preview or an Open would
+        // read the same name in the new one — and a running scan would keep
+        // reading the old one.
+        subscriptions.push(cx.subscribe(&server_state, |this, _s, event: &ServerEvent, cx| {
+            if matches!(event, ServerEvent::ServerSelected(_)) {
+                this.task = None;
+                this.clear_results();
+                cx.notify();
+            }
+        }));
 
         Self {
             server_state,
@@ -230,18 +242,7 @@ impl ZedisValueSearch {
         };
         let needle = query.to_lowercase();
 
-        self.matches.clear();
-        self.matches_rev += 1;
-        self.scanned = 0;
-        self.skipped = 0;
-        self.truncated = false;
-        self.stop_reason = None;
-        self.error = None;
-        self.selected = None;
-        self.selected_type = None;
-        self.selected_location = None;
-        self.preview = None;
-        self.preview_task = None;
+        self.clear_results();
         self.running = true;
         cx.notify();
 
@@ -266,17 +267,25 @@ impl ZedisValueSearch {
             let start = Instant::now();
             let mut cursors = None;
             loop {
-                let round = match scan_values_round(
-                    &at,
-                    &pattern,
-                    &needle,
-                    MAX_VALUE_BYTES,
-                    MAX_CONTAINER_ELEMS,
-                    cursors.clone(),
-                    PAGE_COUNT,
-                )
-                .await
-                {
+                // Off the UI thread: a round decodes and lower-cases every
+                // value it reads to match it, which is CPU work that grows
+                // with the values, not just a wait on the server.
+                let round = cx.background_spawn({
+                    let (at, pattern, needle, cursors) = (at.clone(), pattern.clone(), needle.clone(), cursors.clone());
+                    async move {
+                        scan_values_round(
+                            &at,
+                            &pattern,
+                            &needle,
+                            MAX_VALUE_BYTES,
+                            MAX_CONTAINER_ELEMS,
+                            cursors,
+                            PAGE_COUNT,
+                        )
+                        .await
+                    }
+                });
+                let round = match round.await {
                     Ok(r) => r,
                     Err(e) => {
                         let _ = this.update(cx, |this, cx| this.finish_error(e.to_string().into(), cx));
@@ -322,6 +331,23 @@ impl ZedisValueSearch {
                 }
             }
         }));
+    }
+
+    /// Forget the previous search's hits, summary and preview.
+    fn clear_results(&mut self) {
+        self.matches.clear();
+        self.matches_rev += 1;
+        self.scanned = 0;
+        self.skipped = 0;
+        self.truncated = false;
+        self.stop_reason = None;
+        self.error = None;
+        self.running = false;
+        self.selected = None;
+        self.selected_type = None;
+        self.selected_location = None;
+        self.preview = None;
+        self.preview_task = None;
     }
 
     fn finish(&mut self, reason: StopReason, cx: &mut Context<Self>) {

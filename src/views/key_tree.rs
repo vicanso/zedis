@@ -33,7 +33,8 @@ use crate::{
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, ProbKind, QueryMode, ServerEvent, ServerView, ZedisGlobalStore,
         ZedisServerState, dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_editor,
-        i18n_features, i18n_key_tag, i18n_key_tree, key_tree_no_scan_body, save_session_option,
+        i18n_features, i18n_key_tag, i18n_key_tree, i18n_timeseries, i18n_vector_set, key_tree_no_scan_body,
+        save_session_option,
     },
     views::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog},
 };
@@ -122,12 +123,8 @@ struct KeyTreeState {
     /// `new_key_tree_items` requires sorted input, and
     /// `apply_local_key_filters` preserves relative order.
     cached_keys: Arc<Vec<(SharedString, KeyType)>>,
-    /// Whether the tree is empty (no keys found)
-    is_empty: bool,
     /// Current query mode (All/Prefix/Exact)
     query_mode: QueryMode,
-    /// Error message to display if key loading fails
-    error: Option<SharedString>,
     /// Set of expanded folder paths (persisted during tree rebuilds)
     expanded_items: AHashSet<SharedString>,
     /// Folders the user explicitly collapsed. The single-child
@@ -533,8 +530,13 @@ impl ZedisKeyTree {
         }));
     }
 
-    fn reset(&mut self, _cx: &mut Context<Self>) {
+    fn reset(&mut self, cx: &mut Context<Self>) {
         self.state = KeyTreeState::default();
+        // Picks are key names, and a rebuild keeps the ones that still have
+        // a row — so another server or database, which may well have keys of
+        // the same names, has to start with none.
+        self.key_tree_list_state
+            .update(cx, |state, _| state.delegate_mut().clear_selection());
     }
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
@@ -546,20 +548,36 @@ impl ZedisKeyTree {
             let s = self.server_state.read(cx);
             (s.key_separator().to_string(), s.max_key_tree_depth())
         };
-        if !selected_key.contains(separator.as_str()) {
-            return;
-        }
-        let parts: Vec<&str> = selected_key.splitn(max_depth, separator.as_str()).collect();
+        // The tree's own segmentation, so a hash tag or a timestamp in the
+        // key opens the folders the tree really has.
         let mut inserted_count = 0;
-        for i in 1..parts.len() {
-            let prefix: SharedString = parts[..i].join(separator.as_str()).into();
-            if self.state.expanded_items.insert(prefix) {
+        for prefix in folder_prefixes(&selected_key, &separator, max_depth) {
+            // Jumping to a key opens its folders, closed by hand or not.
+            self.state.suppressed_auto_expand.remove(prefix.as_str());
+            if self.state.expanded_items.insert(prefix.into()) {
                 inserted_count += 1;
             }
         }
         if inserted_count > 0 {
             self.check_and_expand_keys(cx);
             self.update_key_tree(true, cx);
+            return;
+        }
+        // Nothing to open, so no rebuild will come to take the pending
+        // scroll: the row is already there, or it never will be. Settle it
+        // now rather than let the next SCAN page jump the list.
+        if let Some(key) = self.state.pending_scroll_key.take() {
+            let index = self
+                .key_tree_list_state
+                .read(cx)
+                .delegate()
+                .items
+                .iter()
+                .position(|item| item.id == key);
+            if let Some(index) = index {
+                self.state.scroll_to_index = Some(IndexPath::new(index));
+                cx.notify();
+            }
         }
     }
     /// Bring a just-created view in line with a scan that already finished.
@@ -608,19 +626,20 @@ impl ZedisKeyTree {
         let server_state = self.server_state.read(cx);
         let keys = server_state.keys();
         let key_separator = server_state.key_separator().to_string();
+        let max_depth = server_state.max_key_tree_depth();
         let auto_expand_threshold = server_state.auto_expand_threshold();
         if keys.len() < auto_expand_threshold {
+            // Every folder, except the ones the user closed: a refresh or a
+            // jump re-ran this and opened them all again.
+            let suppressed = &self.state.suppressed_auto_expand;
             let mut expanded_items: AHashSet<SharedString> = AHashSet::new();
-            keys.iter().for_each(|(key, _)| {
-                if !key.contains(key_separator.as_str()) {
-                    return;
+            for key in keys.keys() {
+                for prefix in folder_prefixes(key, &key_separator, max_depth) {
+                    if !suppressed.contains(prefix.as_str()) {
+                        expanded_items.insert(prefix.into());
+                    }
                 }
-                let parts: Vec<&str> = key.split(key_separator.as_str()).collect();
-                for i in 1..parts.len() {
-                    let prefix = parts[..i].join(key_separator.as_str());
-                    expanded_items.insert(prefix.into());
-                }
-            });
+            }
             self.state.expanded_items = expanded_items;
         }
     }
@@ -858,8 +877,8 @@ impl ZedisKeyTree {
                     cx.notify();
                 });
                 let _ = handle.update(cx, |this, cx| {
-                    this.delegate_mut().clear_selection();
                     this.delegate_mut().items = result;
+                    this.delegate_mut().retain_selection();
                     this.delegate_mut().readonly = readonly;
                     cx.notify();
                 });
@@ -958,6 +977,7 @@ impl ZedisKeyTree {
         // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5, Json=6(optional)
         let json_index = category_list.iter().position(|&s| s == "Json");
         let ttl_invalid = i18n_common(cx, "ttl_invalid");
+        let key_too_long = i18n_key_tree(cx, "key_too_long");
         let fields = vec![
             ZedisFormField::new("category", i18n_key_tree(cx, "category"))
                 .field_type(ZedisFormFieldType::RadioGroup)
@@ -971,7 +991,7 @@ impl ZedisKeyTree {
                     if validate_long_string(s) {
                         None
                     } else {
-                        Some("Too long".into())
+                        Some(key_too_long.clone())
                     }
                 }),
             ZedisFormField::new("ttl", i18n_common(cx, "ttl"))

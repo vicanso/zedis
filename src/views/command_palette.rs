@@ -390,22 +390,26 @@ impl ZedisCommandPalette {
                         command: PaletteCommand::Server(server.id.clone()),
                     });
                 }
-                // Scored live on every keystroke: the loaded set is the SCAN-
-                // paginated subset the tree holds (not the whole keyspace), and
-                // fuzzy-scoring a few thousand short keys is sub-millisecond, so
-                // no debounce is needed. Whole-keyspace search lives in the ⌘F
-                // tree filter.
+                // Scored live on every keystroke against the SCAN-paginated
+                // subset the tree holds (not the whole keyspace; that search
+                // is the ⌘F tree filter). "Load more" can grow that subset to
+                // hundreds of thousands, so a hit is a borrow until it makes
+                // the shown few: the best `KEY_RESULT_CAP` are picked out
+                // without sorting — or cloning — every key that matched.
                 if in_server_context && !query.is_empty() {
                     let state = self.server_state.read(cx);
                     // Lowercase the query once for the whole batch.
                     let prepared = prepare_fuzzy_query(query);
-                    let mut scored: Vec<(i32, gpui::SharedString, &'static str)> = state
+                    let mut scored: Vec<(i32, &gpui::SharedString, &'static str)> = state
                         .keys()
                         .iter()
-                        .filter_map(|(k, t)| fuzzy_score_prepared(&prepared, k).map(|s| (s, k.clone(), t.as_str())))
+                        .filter_map(|(k, t)| fuzzy_score_prepared(&prepared, k).map(|s| (s, k, t.as_str())))
                         .collect();
+                    if scored.len() > KEY_RESULT_CAP {
+                        scored.select_nth_unstable_by_key(KEY_RESULT_CAP - 1, |(s, _, _)| std::cmp::Reverse(*s));
+                        scored.truncate(KEY_RESULT_CAP);
+                    }
                     scored.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
-                    scored.truncate(KEY_RESULT_CAP);
                     for (score, key, type_hint) in scored {
                         items.push(PaletteItem {
                             label: key.clone(),
@@ -414,7 +418,7 @@ impl ZedisCommandPalette {
                             // Carry the score so `ranked` doesn't fuzzy-match
                             // the same key against the same query again.
                             prescore: Some(score),
-                            command: PaletteCommand::Key(key),
+                            command: PaletteCommand::Key(key.clone()),
                         });
                     }
                 }
@@ -544,6 +548,17 @@ impl Render for ZedisCommandPalette {
             .as_ref()
             .is_some_and(|(s, q, id)| *s == scope && q == &query_str && id == &key_tree_id);
         if !signature_current {
+            // A new query (or scope) is a new list: the best match is the
+            // one to highlight, not whatever row the old list had selected.
+            // A scan page landing under the same query keeps the selection.
+            let query_changed = self
+                .items_signature
+                .as_ref()
+                .is_none_or(|(s, q, _)| *s != scope || q != &query_str);
+            if query_changed {
+                self.selected = 0;
+                self.scroll_handle.scroll_to_item(0);
+            }
             self.cached_items = self.build_items(scope, &query_str, cx);
             self.cached_order = Self::ranked(&self.cached_items, &query_str);
             self.items_signature = Some((scope, query_str.clone(), key_tree_id));

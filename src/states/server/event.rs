@@ -32,6 +32,10 @@ pub enum ServerTask {
     /// Connect to and load metadata from a server
     SelectServer,
 
+    /// Discover a cluster's nodes and slots again after an operation that
+    /// changed them
+    ReloadTopology,
+
     /// Background probe of which commands the server offers this user
     /// (`ServerFeatures`); runs once per server after connect.
     ProbeFeatures,
@@ -228,6 +232,7 @@ impl ServerTask {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
             ServerTask::AutoRefresh => "auto_refresh",
             ServerTask::SelectServer => "select_server",
+            ServerTask::ReloadTopology => "reload_topology",
             ServerTask::ProbeFeatures => "probe_features",
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",

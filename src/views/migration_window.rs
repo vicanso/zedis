@@ -293,6 +293,7 @@ impl ZedisMigrationWindow {
         let target_db = self.target_db(cx);
         self.preview_cancel = Arc::new(AtomicBool::new(false));
         let cancel = self.preview_cancel.clone();
+        let superseded = self.preview_cancel.clone();
         self.preview_running = true;
         self.preview_error = None;
         self.preview = None;
@@ -304,6 +305,11 @@ impl ZedisMigrationWindow {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
+                // The target (or the destination) changed while this ran:
+                // it describes a server the window no longer points at.
+                if superseded.load(Ordering::Acquire) {
+                    return;
+                }
                 view.preview_running = false;
                 match result {
                     Ok(preview) => {
@@ -327,16 +333,23 @@ impl ZedisMigrationWindow {
             return;
         }
         self.destination = destination;
-        self.preview = None;
-        self.preview_error = None;
+        self.drop_preview();
         cx.notify();
     }
 
     fn select_target(&mut self, id: SharedString, cx: &mut Context<Self>) {
         self.target_server_id = Some(id);
+        self.drop_preview();
+        cx.notify();
+    }
+
+    /// Forget the conflict preview, and stop one still running: its answer
+    /// was about the previous target and used to land after the switch.
+    fn drop_preview(&mut self) {
+        self.preview_cancel.store(true, Ordering::Release);
+        self.preview_running = false;
         self.preview = None;
         self.preview_error = None;
-        cx.notify();
     }
 
     fn source_summary(&self, cx: &App) -> SharedString {

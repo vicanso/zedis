@@ -22,7 +22,7 @@ use super::logs_dir;
 use super::zip::ZipWriter;
 use chrono::Local;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use zedis_core::fs::{get_download_dir, get_or_create_config_dir, write_file_atomic};
 
@@ -88,18 +88,25 @@ fn collect_logs(dir: &Path) -> Vec<(String, Vec<u8>)> {
         .into_iter()
         .take(LOG_FILES)
         .chain(crashes)
-        .filter_map(|name| fs::read(dir.join(name)).ok().map(|bytes| (name.clone(), tail(bytes))))
+        .filter_map(|name| read_tail(&dir.join(name)).ok().map(|bytes| (name.clone(), bytes)))
         .collect()
 }
 
-fn tail(mut bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.len() > LOG_BYTES {
-        let keep = bytes.split_off(bytes.len() - LOG_BYTES);
-        let mut out = b"[... truncated: only the last 2 MiB is included ...]\n".to_vec();
-        out.extend_from_slice(&keep);
-        return out;
+/// The last [`LOG_BYTES`] of a file, read from there — a long-running
+/// session's log is read for its tail, not loaded whole to keep the end.
+fn read_tail(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let cap = LOG_BYTES as u64;
+    if len <= cap {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        return Ok(bytes);
     }
-    bytes
+    file.seek(SeekFrom::Start(len - cap))?;
+    let mut out = b"[... truncated: only the last 2 MiB is included ...]\n".to_vec();
+    file.take(cap).read_to_end(&mut out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -150,13 +157,25 @@ mod tests {
 
     #[test]
     fn oversized_logs_keep_only_their_tail() {
-        let big = vec![b'a'; LOG_BYTES + 10];
-        let out = tail(big);
+        let dir = std::env::temp_dir().join(format!("zedis-diag-tail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch");
+        let mut big = vec![b'a'; LOG_BYTES + 10];
+        big[..10].copy_from_slice(b"0123456789");
+        fs::write(dir.join("big.log"), &big).expect("big");
+        fs::write(dir.join("small.log"), b"small").expect("small");
+
+        let out = read_tail(&dir.join("big.log")).expect("tail");
         assert!(out.starts_with(b"[... truncated"));
         assert_eq!(
             out.len(),
             LOG_BYTES + "[... truncated: only the last 2 MiB is included ...]\n".len()
         );
-        assert_eq!(tail(b"small".to_vec()), b"small".to_vec());
+        assert!(
+            !out.windows(10).any(|w| w == b"0123456789"),
+            "the head is what is dropped"
+        );
+        assert_eq!(read_tail(&dir.join("small.log")).expect("small"), b"small".to_vec());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

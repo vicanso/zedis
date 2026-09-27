@@ -49,6 +49,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::PopupMenuItem,
     scroll::ScrollableElement,
     spinner::Spinner,
     tooltip::Tooltip,
@@ -261,7 +262,7 @@ impl ZedisSearchManager {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| match event {
-            ServerEvent::ServerSelected(_) | ServerEvent::ServerInfoUpdated => {
+            ServerEvent::ServerSelected(_) => {
                 this.indexes.clear();
                 this.selected_index = None;
                 this.index_info = None;
@@ -269,6 +270,19 @@ impl ZedisSearchManager {
                 this.error = None;
                 this.module_unsupported = false;
                 this.refresh_indexes(cx);
+            }
+            // Also sent when writes are unlocked, the lock runs out or
+            // read-only is toggled. Clearing on it threw the user's work away
+            // and re-selected the *first* index, so a Drop or Add-field meant
+            // for the index on screen went to another one. It only loads what
+            // was never loaded — a panel restored before the connection
+            // finished — and otherwise just redraws the write buttons.
+            ServerEvent::ServerInfoUpdated => {
+                if this.indexes.is_empty() && this.selected_index.is_none() {
+                    this.refresh_indexes(cx);
+                } else {
+                    cx.notify();
+                }
             }
             _ => {}
         }));

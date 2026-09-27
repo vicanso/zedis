@@ -22,14 +22,14 @@
 //! questions a transcript needs (`is_ok`, `is_queued`, which db a `SELECT`
 //! picked) instead of matching on a `redis::Value` itself (ADR 10).
 
-#[cfg(target_family = "wasm")]
-use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::{ConnectionErrorKind, Error};
 use crate::reply_format::{ReplyFormat, format_exec, format_reply};
 use crate::server_db::ServerDb;
 use futures::lock::Mutex;
-use redis::{Value, cmd, parse_redis_value};
+#[cfg(not(target_family = "wasm"))]
+use redis::aio::ConnectionLike as _;
+use redis::{Cmd, RedisError, Value, cmd, parse_redis_value};
 use std::sync::Arc;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -160,7 +160,9 @@ impl TerminalSession {
             .connection(at)
             .await?
             .with_confirmation(at.confirmation().map(str::to_string));
-        match cmd(cmd_name).arg(args).query_async::<Value>(&mut conn).await {
+        let mut command = cmd(cmd_name);
+        command.arg(args);
+        match send_raw(&mut conn, &command).await.and_then(top_level_error) {
             Ok(value) => Ok(TerminalReply {
                 cmd: cmd_name.to_string(),
                 args: args.to_vec(),
@@ -187,8 +189,55 @@ impl TerminalSession {
     }
 }
 
+/// The reply as the server sent it. Not `query_async`: it turns a reply
+/// with an error *anywhere* inside into a failure, so an `EXEC` whose third
+/// command hit `WRONGTYPE` read as the whole transaction failing — the
+/// commands before it, already applied, never shown, and the terminal left
+/// believing its `MULTI` was still open.
+#[cfg(not(target_family = "wasm"))]
+async fn send_raw(conn: &mut RedisAsyncConn, command: &Cmd) -> Result<Value, RedisError> {
+    conn.req_packed_command(command).await
+}
+
+/// The same through the bridge, whose frames are parsed as they came.
+#[cfg(target_family = "wasm")]
+async fn send_raw(conn: &mut RedisAsyncConn, command: &Cmd) -> Result<Value, RedisError> {
+    let RedisAsyncConn::Bridge(conn) = conn;
+    conn.send_command(command).await
+}
+
+/// An error reply to the command itself is a failure; one nested in an
+/// `EXEC` array is that command's reply and is shown as such.
+fn top_level_error(value: Value) -> Result<Value, RedisError> {
+    match value {
+        Value::ServerError(error) => Err(error.into()),
+        other => Ok(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_exec_with_one_failed_command_is_its_replies_not_a_failure() {
+        // `MULTI; SET a 1; LPUSH a x; EXEC`: the SET applied, the LPUSH hit
+        // WRONGTYPE. The EXEC reply is an array holding both.
+        let exec = TerminalReply::from_resp(
+            "EXEC",
+            &[],
+            b"*2\r\n+OK\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        )
+        .expect("valid RESP");
+        let replies = exec.exec_replies().expect("an EXEC reply");
+        let text = replies.render(&["SET a 1".to_string(), "LPUSH a x".to_string()], ReplyFormat::Text);
+        assert!(text.contains("OK"), "{text}");
+        assert!(text.contains("WRONGTYPE"), "{text}");
+        // Only an error reply to the command itself fails the line.
+        assert!(top_level_error(exec.value.clone()).is_ok());
+        let refused = parse_redis_value(b"-ERR unknown command\r\n").expect("valid RESP");
+        assert!(top_level_error(refused).is_err());
+    }
+
     use super::*;
 
     fn args(list: &[&str]) -> Vec<String> {

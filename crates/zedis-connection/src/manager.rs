@@ -17,7 +17,8 @@ use super::config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_T
 use super::{
     async_connection::{
         open_multiplexed_connection, open_seed_connection, query_async_masters, query_async_masters_pipeline,
-        remove_connection_from_pool, resolve_connection_timeout, resolve_response_timeout,
+        remove_connection_from_pool, remove_node_connection_from_pool, resolve_connection_timeout,
+        resolve_response_timeout,
     },
     ssh_cluster_connection::SshMultiplexedConnection,
 };

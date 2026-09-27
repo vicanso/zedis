@@ -127,7 +127,7 @@ pub fn parse_command_reply(text: &str) -> AiCommandReply {
                 .unwrap_or(trimmed);
             // `redis>` / `127.0.0.1:6379>` style prompts.
             let cleaned = match cleaned.split_once("> ") {
-                Some((prompt, rest)) if prompt.ends_with("redis") || prompt.contains(':') => rest,
+                Some((prompt, rest)) if is_cli_prompt(prompt) => rest,
                 _ => cleaned,
             };
             if !cleaned.is_empty() {
@@ -142,6 +142,27 @@ pub fn parse_command_reply(text: &str) -> AiCommandReply {
         commands,
         explanation: explanation.trim().to_string(),
     }
+}
+
+/// Whether the text before a `> ` is a redis-cli prompt — one word, `redis`
+/// or `redis-cli`, or `host:port` with an optional `[db]` — rather than
+/// part of the command: `SET user:1 "a> b"` has a colon before its `> `
+/// too, and lost everything up to it.
+fn is_cli_prompt(prompt: &str) -> bool {
+    if prompt.is_empty() || prompt.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+        return false;
+    }
+    if prompt.ends_with("redis") || prompt.ends_with("redis-cli") {
+        return true;
+    }
+    let endpoint = match prompt.strip_suffix(']').and_then(|p| p.rsplit_once('[')) {
+        Some((endpoint, db)) if !db.is_empty() && db.chars().all(|c| c.is_ascii_digit()) => endpoint,
+        Some(_) => return false,
+        None => prompt,
+    };
+    endpoint
+        .rsplit_once(':')
+        .is_some_and(|(host, port)| !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Ask the model for the Redis command matching a natural-language
@@ -318,6 +339,14 @@ fn extract_error_message(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prompt_is_stripped_and_a_command_that_only_looks_like_one_is_not() {
+        let reply = parse_command_reply(
+            "```\n127.0.0.1:6379> GET k\n127.0.0.1:6379[2]> DBSIZE\nredis> PING\nSET user:1 \"a> b\"\n```",
+        );
+        assert_eq!(reply.commands, ["GET k", "DBSIZE", "PING", "SET user:1 \"a> b\""]);
+    }
 
     #[test]
     fn chat_completions_url_appends_or_passes_through() {

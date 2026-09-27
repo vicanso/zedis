@@ -50,6 +50,19 @@ fn range_selection(
     selection
 }
 
+/// Drop the picks that name no key row of `items`.
+fn retain_picks_with_rows(picks: &mut AHashSet<SharedString>, items: &[KeyTreeItem]) {
+    if picks.is_empty() {
+        return;
+    }
+    let rows: AHashSet<&SharedString> = items
+        .iter()
+        .filter(|item| !item.is_folder && item.load_more_prefix.is_none())
+        .map(|item| &item.id)
+        .collect();
+    picks.retain(|id| rows.contains(id));
+}
+
 pub(super) struct KeyTreeDelegate {
     pub(super) items: Vec<KeyTreeItem>,
     pub(super) enabled_multiple_selection: bool,
@@ -75,6 +88,17 @@ impl KeyTreeDelegate {
     pub(super) fn clear_selection(&mut self) {
         self.selected_items.clear();
         self.range_base.clear();
+        self.range_anchor = None;
+    }
+
+    /// Keep the picks that still have a row after a rebuild. They are key
+    /// names, so an expand, a SCAN page or a refresh need not drop them; a
+    /// key that went away (or sits in a folder now closed) does, since an
+    /// action on the selection should only reach rows the user can see. The
+    /// Shift anchor is a row index, which a rebuild moves, so it restarts.
+    pub(super) fn retain_selection(&mut self) {
+        retain_picks_with_rows(&mut self.selected_items, &self.items);
+        self.range_base = self.selected_items.clone();
         self.range_anchor = None;
     }
 
@@ -785,6 +809,19 @@ mod tests {
             folder("order"),
             leaf("order:1"),
         ]
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_picks_that_still_have_a_row() {
+        let mut picks: AHashSet<SharedString> = ["user:1", "order:1", "gone", "user"]
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        retain_picks_with_rows(&mut picks, &rows());
+        let mut kept: Vec<&str> = picks.iter().map(|id| id.as_ref()).collect();
+        kept.sort_unstable();
+        // A deleted key and a folder id are not picks a row can carry.
+        assert_eq!(kept, vec!["order:1", "user:1"]);
     }
 
     #[test]

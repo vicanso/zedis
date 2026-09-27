@@ -123,13 +123,26 @@ pub fn claim_instance(message: &InstanceMessage) -> InstanceRole {
     };
     if let Some(record) = read_record(&path) {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, record.port));
-        if forward(addr, &record.token, message) {
-            info!(
-                port = record.port,
-                pid = record.pid,
-                "handed off to the running instance"
-            );
-            return InstanceRole::Forwarded;
+        // A listener that took the connection but did not answer is an
+        // instance still starting — it binds before it serves. Taking over
+        // then pointed the record at this launch, and once it was gone at a
+        // dead port while the first ran on: every later launch started a
+        // new instance. So it is asked again; only a refused connection (no
+        // one there) is a stale record at once.
+        let mut attempt = 0;
+        loop {
+            match forward(addr, &record.token, message) {
+                Forward::Delivered => {
+                    info!(
+                        port = record.port,
+                        pid = record.pid,
+                        "handed off to the running instance"
+                    );
+                    return InstanceRole::Forwarded;
+                }
+                Forward::Unanswered if attempt < FORWARD_RETRIES => attempt += 1,
+                Forward::Unanswered | Forward::Refused => break,
+            }
         }
         info!(
             port = record.port,
@@ -185,21 +198,38 @@ pub fn release_instance() {
 /// `true` only when the peer answered `OK` — anything else (nobody
 /// listening, a foreign service on a reused port, a token mismatch) means
 /// the caller must run the app itself.
-fn forward(addr: SocketAddr, token: &str, message: &InstanceMessage) -> bool {
+/// How a hand-off went.
+enum Forward {
+    Delivered,
+    /// Nothing is listening: the record is stale.
+    Refused,
+    /// Something took the connection and gave no `OK` in time.
+    Unanswered,
+}
+
+/// Times an unanswered hand-off is tried again before this launch takes
+/// over — each waits up to [`IO_TIMEOUT`] for the starting instance.
+const FORWARD_RETRIES: usize = 3;
+
+fn forward(addr: SocketAddr, token: &str, message: &InstanceMessage) -> Forward {
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) else {
-        return false;
+        return Forward::Refused;
     };
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let Ok(body) = serde_json::to_string(message) else {
-        return false;
+        return Forward::Unanswered;
     };
     if stream.write_all(format!("{token}\n{body}\n").as_bytes()).is_err() {
-        return false;
+        return Forward::Unanswered;
     }
     let mut reply = String::new();
     let mut reader = BufReader::new(stream.take(MAX_REQUEST_BYTES));
-    reader.read_line(&mut reply).is_ok() && reply.trim() == "OK"
+    if reader.read_line(&mut reply).is_ok() && reply.trim() == "OK" {
+        Forward::Delivered
+    } else {
+        Forward::Unanswered
+    }
 }
 
 impl InstanceServer {
@@ -261,9 +291,9 @@ mod tests {
         let message = InstanceMessage {
             urls: vec!["redis://localhost:6379/2".to_string()],
         };
-        assert!(forward(addr, "secret", &message));
+        assert!(matches!(forward(addr, "secret", &message), Forward::Delivered));
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).expect("delivered"), message);
-        assert!(!forward(addr, "wrong", &message));
+        assert!(matches!(forward(addr, "wrong", &message), Forward::Unanswered));
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
@@ -272,6 +302,23 @@ mod tests {
         let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
         let addr = probe.local_addr().expect("addr");
         drop(probe);
-        assert!(!forward(addr, "secret", &InstanceMessage::default()));
+        assert!(matches!(
+            forward(addr, "secret", &InstanceMessage::default()),
+            Forward::Refused
+        ));
+    }
+
+    /// A listener that is bound but not serving yet — an instance still
+    /// starting — takes the connection and answers nothing: that is not
+    /// a stale record.
+    #[test]
+    fn a_bound_listener_that_does_not_serve_is_unanswered_not_refused() {
+        let starting = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let addr = starting.local_addr().expect("addr");
+        assert!(matches!(
+            forward(addr, "secret", &InstanceMessage::default()),
+            Forward::Unanswered
+        ));
+        drop(starting);
     }
 }

@@ -49,6 +49,7 @@ use rust_i18n::t;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::info;
+use zedis_core::json::numbers_survive_round_trip;
 use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
 
 pub const FOOTER_HEIGHT: f32 = 50.0;
@@ -730,19 +731,28 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             return;
         };
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
-        let doc = match (element.format(), &self.editor_form, &self.edit_element_column) {
+        // A number a double cannot hold would be rewritten by any edit to
+        // the document, which the tree re-serializes whole: read-only then.
+        let (doc, exact) = match (element.format(), &self.editor_form, &self.edit_element_column) {
             (DataFormat::Json, Some(form), Some(column)) => {
                 let text = form.read(cx).get_field_value(column, cx);
-                serde_json::from_str::<Value>(text.as_ref()).ok()
+                (
+                    serde_json::from_str::<Value>(text.as_ref()).ok(),
+                    numbers_survive_round_trip(text.as_ref()),
+                )
             }
-            _ => element_json_document(&element, max_truncate_length),
+            _ => (
+                element_json_document(&element, max_truncate_length),
+                numbers_survive_round_trip(element.edit_text().as_ref()),
+            ),
         };
-        let editable = tree_editable(
-            element.format(),
-            self.is_adding_row(),
-            self.readonly,
-            self.fetcher.readonly_on_edit(),
-        );
+        let editable = exact
+            && tree_editable(
+                element.format(),
+                self.is_adding_row(),
+                self.readonly,
+                self.fetcher.readonly_on_edit(),
+            );
         self.json_tree.update(cx, |tree, cx| {
             tree.set_document(doc, JsonTreeTarget::Local, editable, cx)
         });

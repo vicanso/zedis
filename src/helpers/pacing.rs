@@ -67,6 +67,30 @@ pub const LATENCY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_family = "wasm")]
 pub const LATENCY_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
+/// The size / top-commands log's `COMMANDLOG GET`, while one of them is the
+/// log the Slow Log panel shows (the slow log itself rides the heartbeat).
+#[cfg(not(target_family = "wasm"))]
+pub const COMMANDLOG_POLL_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(target_family = "wasm")]
+pub const COMMANDLOG_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The Topology page's per-master load sample, while its Load tab is open.
+#[cfg(not(target_family = "wasm"))]
+pub const CLUSTER_LOAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(target_family = "wasm")]
+pub const CLUSTER_LOAD_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+/// The Reshard tab's atomic slot migration status, while it is open.
+#[cfg(not(target_family = "wasm"))]
+pub const SLOT_MIGRATION_POLL_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(target_family = "wasm")]
+pub const SLOT_MIGRATION_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// The tray menu's memory / ops line. Local only — it reads the metrics the
+/// heartbeat already gathered — and the desktop's alone.
+#[cfg(not(target_family = "wasm"))]
+pub const TRAY_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 /// The Server Load panel's `INFO commandstats` sample, while it is open (a
 /// payload that grows with the number of distinct commands). Seconds, because
 /// the panel prints it ("sampled Ns ago · every Ns").
@@ -172,6 +196,10 @@ mod tests {
         assert_eq!(DBSIZE_REFRESH_SECS, 60);
         assert_eq!(SLOW_LOG_CHECK_SECS, 60);
         assert_eq!(LATENCY_POLL_INTERVAL, Duration::from_secs(5));
+        assert_eq!(COMMANDLOG_POLL_INTERVAL, Duration::from_secs(30));
+        assert_eq!(CLUSTER_LOAD_POLL_INTERVAL, Duration::from_secs(5));
+        assert_eq!(SLOT_MIGRATION_POLL_INTERVAL, Duration::from_secs(2));
+        assert_eq!(TRAY_REFRESH_INTERVAL, Duration::from_secs(5));
         assert_eq!(SERVER_LOAD_POLL_SECS, 3);
         assert_eq!(HOTKEYS_POLL_SECS, 2);
         assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));

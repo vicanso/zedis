@@ -68,25 +68,24 @@ impl ZedisKeyTree {
                     .into_any_element(),
             );
         }
-        if !self.state.is_empty && self.state.error.is_none() {
+        if !self.key_tree_list_state.read(cx).delegate().items.is_empty() {
             return None;
         }
 
-        let mut text = SharedString::default();
-
-        if self.state.query_mode == QueryMode::Exact {
-            if let Some(value) = server_state.value()
-                && value.is_expired()
-            {
-                text = i18n_key_tree(cx, "key_not_exists");
+        // No rows and nothing scanning. In Exact mode the lookup is the
+        // selected value; otherwise a scan that has finished since the
+        // server was selected found nothing (a failed connect finishes none,
+        // and says so elsewhere).
+        let text = if self.state.query_mode == QueryMode::Exact {
+            match server_state.value() {
+                Some(value) if value.is_expired() => i18n_key_tree(cx, "key_not_exists"),
+                _ => SharedString::default(),
             }
+        } else if self.state.last_scan.is_some() {
+            i18n_key_tree(cx, "no_keys_found")
         } else {
-            text = self
-                .state
-                .error
-                .clone()
-                .unwrap_or_else(|| i18n_key_tree(cx, "no_keys_found"))
-        }
+            SharedString::default()
+        };
         if text.is_empty() {
             return Some(h_flex().into_any_element());
         }
@@ -488,17 +487,17 @@ impl ZedisKeyTree {
                                 .menu_element_with_check(
                                     type_filter == Some(KeyType::TimeSeries),
                                     Box::new(KeyTypeFilter::TimeSeries),
-                                    |_, _| Label::new("Time Series"),
+                                    |_, cx| Label::new(i18n_timeseries(cx, "title")),
                                 )
                                 .menu_element_with_check(
                                     type_filter == Some(KeyType::Vectorset),
                                     Box::new(KeyTypeFilter::Vectorset),
-                                    |_, _| Label::new("Vector Set"),
+                                    |_, cx| Label::new(i18n_vector_set(cx, "title")),
                                 )
                                 .menu_element_with_check(
                                     matches!(type_filter, Some(KeyType::Probabilistic(_))),
                                     Box::new(KeyTypeFilter::Probabilistic),
-                                    |_, _| Label::new("Probabilistic"),
+                                    |_, cx| Label::new(i18n_key_tree(cx, "type_probabilistic")),
                                 );
                             // Module types the loaded keys have, by their raw
                             // TYPE name — there is nothing to translate.

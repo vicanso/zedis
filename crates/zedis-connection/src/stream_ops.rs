@@ -185,7 +185,11 @@ pub async fn stream_page(
     } else {
         (bound.as_str(), "+")
     };
-    let raw: Vec<(String, Vec<String>)> = cmd(if reverse { "XREVRANGE" } else { "XRANGE" })
+    // Fields and values as bytes, shown lossily: read as `String`, one field
+    // that is not UTF-8 (a msgpack or compressed payload) failed the page
+    // and the editor showed none of its entries. Entries are only ever
+    // appended, never written back from this text.
+    let raw: Vec<(String, Vec<Vec<u8>>)> = cmd(if reverse { "XREVRANGE" } else { "XRANGE" })
         .arg(key)
         .arg(from)
         .arg(to)
@@ -195,7 +199,16 @@ pub async fn stream_page(
         .await?;
 
     let done = raw.len() < count;
-    let entries: Vec<StreamEntry> = raw.into_iter().map(|(id, flat)| (id, pairs(flat))).collect();
+    let entries: Vec<StreamEntry> = raw
+        .into_iter()
+        .map(|(id, flat)| {
+            let flat = flat
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .collect();
+            (id, pairs(flat))
+        })
+        .collect();
     let next = if done {
         String::new()
     } else {

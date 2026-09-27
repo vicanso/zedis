@@ -14,26 +14,12 @@
 
 use crate::constants::KEY_TREE_MAX_WIDTH;
 use crate::constants::KEY_TREE_MIN_WIDTH;
-use crate::error::Error;
 use gpui::Pixels;
-use ruzstd::decoding::StreamingDecoder;
-use std::io::Read;
-
-type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn get_key_tree_widths(width: Pixels) -> (Pixels, Pixels, Pixels) {
     let min_width = KEY_TREE_MIN_WIDTH;
     let max_width = KEY_TREE_MAX_WIDTH;
     (width.max(min_width), min_width, max_width)
-}
-
-pub fn decompress_zstd(bytes: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = StreamingDecoder::new(bytes).map_err(|e| Error::Invalid { message: e.to_string() })?;
-    let mut decompressed_vec = Vec::with_capacity(bytes.len());
-    decoder
-        .read_to_end(&mut decompressed_vec)
-        .map_err(|e| Error::Invalid { message: e.to_string() })?;
-    Ok(decompressed_vec)
 }
 
 /// Compact human form for replication lag in bytes. Drops the unit when zero

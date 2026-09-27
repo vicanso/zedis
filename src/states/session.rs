@@ -123,6 +123,11 @@ struct SessionOptions {
 static SESSION_OPTION_MAP: LazyLock<ArcSwap<HashMap<String, SessionOption>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
+/// Held while `redis-sessions.toml` is written, so saves reach the file in
+/// turn.
+#[cfg(not(target_family = "wasm"))]
+static SESSION_FILE_WRITE: smol::lock::Mutex<()> = smol::lock::Mutex::new(());
+
 fn get_session_options() -> Result<Arc<HashMap<String, SessionOption>>> {
     #[cfg(not(target_family = "wasm"))]
     if SESSION_OPTION_MAP.load().is_empty() {
@@ -158,23 +163,24 @@ pub fn save_session_option(id: &str, mut option: SessionOption, cx: &App) {
     option.id = id.clone();
     cx.spawn(async move |cx| {
         let task = cx.background_spawn(async move {
-            let mut options = vec![option.clone()];
-            let mut new_options = HashMap::new();
-            new_options.insert(id.to_string(), option.clone());
-
-            for (key, value) in get_session_options()?.iter() {
-                if *key == id {
-                    continue;
-                }
-                options.push(value.clone());
-                new_options.insert(key.to_string(), value.clone());
-            }
-
-            SESSION_OPTION_MAP.store(Arc::new(new_options));
+            // Loaded from the file first, if it has not been yet.
+            get_session_options()?;
+            // One read-modify-write: two saves in flight used to read the
+            // same map and store their own copies, and the second dropped
+            // the first's change.
+            SESSION_OPTION_MAP.rcu(|current| {
+                let mut next = HashMap::clone(current);
+                next.insert(id.clone(), option.clone());
+                next
+            });
             // The cache above is what the UI reads; the file is only how it
-            // survives a restart, and a browser tab has neither.
+            // survives a restart, and a browser tab has neither. One writer
+            // at a time, each writing the map as it is when its turn comes,
+            // so the last file written holds every change.
             #[cfg(not(target_family = "wasm"))]
             {
+                let _turn = SESSION_FILE_WRITE.lock().await;
+                let options: Vec<SessionOption> = SESSION_OPTION_MAP.load().values().cloned().collect();
                 let path = get_or_create_session_config()?;
                 let value = toml::to_string(&SessionOptions { options })?;
                 fs::write(&path, value).await?;

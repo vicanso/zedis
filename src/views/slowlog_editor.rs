@@ -144,8 +144,15 @@ impl SlowLogRow {
 
         let (amount, amount_fine, amount_text) = if kind.is_slow() {
             let ms = entry.duration.as_millis() as u64;
-            let text = humantime::format_duration(Duration::from_millis(ms)).to_string();
-            (ms, entry.duration.as_micros() as u64, text)
+            let us = entry.duration.as_micros() as u64;
+            // Under a second in milliseconds with a decimal, as the totals
+            // are: whole milliseconds put every sub-millisecond entry at 0s.
+            let text = if ms < 1000 {
+                format_us_as_ms(us)
+            } else {
+                humantime::format_duration(Duration::from_millis(ms)).to_string()
+            };
+            (ms, us, text)
         } else {
             (entry.amount, entry.amount, format_bytes(entry.amount))
         };
@@ -263,9 +270,10 @@ fn format_amount(kind: CommandLogKind, value: u64) -> String {
 }
 
 /// What one unit in the "≥" box is worth in `SlowLogRow::amount`: the slow
-/// log takes milliseconds, a size log kilobytes.
+/// log takes milliseconds, a size log kilobytes — decimal ones, the kB the
+/// column shows ([`format_bytes`]); 1024 made "≥ 2" hide a row reading 2.0 kB.
 fn filter_unit(kind: CommandLogKind) -> u64 {
-    if kind.is_slow() { 1 } else { 1024 }
+    if kind.is_slow() { 1 } else { 1000 }
 }
 
 /// The export column for the measure.
@@ -651,8 +659,10 @@ pub struct ZedisSlowlogEditor {
     script_show_supported: Rc<Cell<bool>>,
     /// Shared table state that owns the [`SlowlogTableDelegate`] and drives rendering.
     table_state: Entity<TableState<ZedisTextTable>>,
-    /// Timestamp of the most recently seen slow-log entry, used to skip redundant refreshes.
-    last_time_stamp: SharedString,
+    /// The [`ZedisServerState::slow_logs_generation`] the rows were built
+    /// from: a heartbeat that brought no new log (all but one a minute)
+    /// rebuilds nothing.
+    shown_slow_logs: Option<u64>,
     /// Total number of filtered rows currently displayed.
     row_count: usize,
     /// All unfiltered rows from the server.
@@ -737,6 +747,7 @@ impl ZedisSlowlogEditor {
         // Latency tab. Initial rows therefore have no correlation chips,
         // which is correct (we have nothing to correlate against yet).
         let all_rows = Self::build_all_rows(server_state.read(cx).slow_logs(), CommandLogKind::Slow, &[]);
+        let shown_slow_logs = Some(server_state.read(cx).slow_logs_generation());
         let available_commands = Self::extract_commands(&all_rows);
         let filtered = all_rows.clone();
         let row_count = filtered.len();
@@ -814,16 +825,17 @@ impl ZedisSlowlogEditor {
                     event,
                     ServerEvent::ServerRedisInfoUpdated | ServerEvent::ServerSelected(_)
                 ) {
+                    // Skip the rebuild — every row formatted, per master —
+                    // when the log is the one already shown.
+                    let generation = this.server_state.read(cx).slow_logs_generation();
+                    if this.shown_slow_logs == Some(generation) {
+                        return;
+                    }
+                    this.shown_slow_logs = Some(generation);
                     // Use the current latency_events snapshot so chips appear
                     // immediately when slowlog refreshes after latency was
                     // already populated.
                     let new_rows = this.rows_from_current_log(cx);
-                    let new_time_stamp = new_rows.first().map(|row| row.timestamp.clone()).unwrap_or_default();
-                    // Skip re-render if the newest entry's timestamp hasn't changed.
-                    if this.last_time_stamp == new_time_stamp {
-                        return;
-                    }
-                    this.last_time_stamp = new_time_stamp;
                     this.replace_rows(new_rows, cx);
                 }
             }),
@@ -833,7 +845,7 @@ impl ZedisSlowlogEditor {
             server_state,
             script_show_supported,
             table_state,
-            last_time_stamp: SharedString::default(),
+            shown_slow_logs,
             row_count,
             all_rows,
             available_commands,
@@ -1042,6 +1054,12 @@ impl ZedisSlowlogEditor {
             cx.notify();
             return;
         }
+        self.load_event_detail(event, cx);
+    }
+
+    /// `LATENCY HISTORY` for `event`, whether or not one is already held —
+    /// which stays on screen until the new one lands.
+    fn load_event_detail(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         if server_id.is_empty() {

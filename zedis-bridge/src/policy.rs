@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zedis_connection::{
     ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, classify_dangerous, confirm_strictness,
-    is_read_only_command, is_write_command, requires_write_confirm,
+    is_read_only_command, is_write_command, requires_write_confirm, reveals_secrets,
 };
 
 /// Commands that change or hold the connection they run on.
@@ -182,7 +182,7 @@ pub fn check(
     unlocked: bool,
     typed: bool,
 ) -> Verdict {
-    if read_only && !reads_only(args) {
+    if read_only && (!reads_only(args) || reveals(args)) {
         return Verdict::Deny;
     }
     let kind = match classify(server, args, typed) {
@@ -206,6 +206,15 @@ pub fn check(
 /// Whether this command only reads. An empty frame is not a read: the
 /// decoder refuses it anyway, and a gate must not be the place that lets an
 /// unnameable command through.
+/// Whether `args` read a credential back (`zedis_connection::reveals_secrets`).
+fn reveals(args: &[Vec<u8>]) -> bool {
+    let Some((name, rest)) = words(args) else {
+        return false;
+    };
+    let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+    reveals_secrets(&name, &rest)
+}
+
 fn reads_only(args: &[Vec<u8>]) -> bool {
     let Some((name, rest)) = words(args) else {
         return false;
@@ -385,6 +394,35 @@ mod tests {
         assert_eq!(
             check(&plain(), &args(&["ACL", "LOG", "RESET"]), None, true, false, true),
             Verdict::Deny
+        );
+        // Reads, but of the server's passwords: not for a read-only account,
+        // and still for a full one.
+        for line in [
+            &["CONFIG", "GET", "requirepass"][..],
+            &["CONFIG", "GET", "*"],
+            &["ACL", "GETUSER", "default"],
+        ] {
+            assert_eq!(
+                check(&plain(), &args(line), None, true, false, true),
+                Verdict::Deny,
+                "{line:?}"
+            );
+            assert_eq!(
+                check(&plain(), &args(line), None, false, false, false),
+                Verdict::Allow,
+                "{line:?}"
+            );
+        }
+        assert_eq!(
+            check(
+                &plain(),
+                &args(&["CONFIG", "GET", "maxmemory"]),
+                None,
+                true,
+                false,
+                true
+            ),
+            Verdict::Allow
         );
     }
 

@@ -344,8 +344,10 @@ pub enum Outcome {
 
 /// The lines an exec request produces, from the verdict each of its commands
 /// got. A command without a verdict of note (a read, or a write while
-/// `--audit-writes` is off) produces none; commands with the same name and
-/// outcome collapse into one line with a count.
+/// `--audit-writes` is off) produces none. Data commands with the same name
+/// and outcome collapse into one line with a count; an administrative one
+/// only with its exact arguments — a batch's second `CONFIG SET` changed
+/// another setting, and a count on the first line's said nothing of which.
 pub fn command_lines<'a>(
     server: &RedisServer,
     db: usize,
@@ -370,7 +372,12 @@ pub fn command_lines<'a>(
                 }
             }
         };
-        if let Some(line) = lines.iter_mut().find(|l| l.command == name && l.outcome == outcome) {
+        let args = cut(redact_secrets(&name, &rest));
+        let by_name = !is_administration_command(&name, &rest);
+        if let Some(line) = lines
+            .iter_mut()
+            .find(|l| l.command == name && l.outcome == outcome && (by_name || l.args == args))
+        {
             line.count += 1;
             continue;
         }
@@ -378,7 +385,7 @@ pub fn command_lines<'a>(
             server: ServerRef::from(server),
             db,
             command: name.clone(),
-            args: cut(redact_secrets(&name, &rest)),
+            args,
             count: 1,
             outcome,
             kind: kind.map(kind_name),
@@ -595,6 +602,26 @@ mod tests {
 
         let kept = lines(&[(args(&["DEL", "k"]), Verdict::Deny)], false);
         assert_eq!((kept[0].outcome, kept[0].kind), (Outcome::Denied, None));
+    }
+
+    #[test]
+    fn each_administrative_change_in_a_batch_keeps_its_arguments() {
+        let kept = lines(
+            &[
+                (args(&["CONFIG", "SET", "maxmemory", "1gb"]), Verdict::Allow),
+                (args(&["CONFIG", "SET", "appendonly", "no"]), Verdict::Allow),
+                (args(&["CONFIG", "SET", "maxmemory", "1gb"]), Verdict::Allow),
+            ],
+            false,
+        );
+        let seen: Vec<(Vec<String>, usize)> = kept.iter().map(|l| (l.args.clone(), l.count)).collect();
+        assert_eq!(
+            seen,
+            [
+                (vec!["SET".to_string(), "maxmemory".into(), "1gb".into()], 2),
+                (vec!["SET".to_string(), "appendonly".into(), "no".into()], 1),
+            ]
+        );
     }
 
     #[test]

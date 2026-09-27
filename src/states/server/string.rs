@@ -15,7 +15,6 @@
 use super::value::{DataFormat, RedisBytesValue, detect_format};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{ProtoManager, ScriptManager};
-use crate::helpers::decompress_zstd;
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
 use crate::{
     connection::{ServerDb, string_get},
@@ -26,6 +25,7 @@ use chrono::DateTime;
 use flate2::read::GzDecoder;
 use gpui::SharedString;
 use lz4_flex::block::decompress_size_prepended;
+use ruzstd::decoding::StreamingDecoder;
 use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
@@ -34,6 +34,46 @@ use tracing::warn;
 use zedis_core::codec::{base64_text, bson, java, jwt, php, pickle, url};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// The most a compressed value is inflated to for its preview. Past it the
+/// preview is the head of the value: a few megabytes of gzip or zstd can
+/// inflate to gigabytes, and inflating whole was one allocation that size.
+const MAX_INFLATED_PREVIEW: usize = 32 * 1024 * 1024;
+
+/// Read `reader` to its end or to [`MAX_INFLATED_PREVIEW`] bytes, whichever
+/// comes first — and a cut head ends on a whole character, so it still
+/// reads as text.
+fn inflate_capped(reader: impl Read) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    reader
+        .take(MAX_INFLATED_PREVIEW as u64 + 1)
+        .read_to_end(&mut out)
+        .ok()?;
+    if out.len() > MAX_INFLATED_PREVIEW {
+        out.truncate(MAX_INFLATED_PREVIEW);
+        if let Err(e) = std::str::from_utf8(&out)
+            && e.error_len().is_none()
+        {
+            out.truncate(e.valid_up_to());
+        }
+    }
+    Some(out)
+}
+
+/// LZ4 with its size prepended — sniffed on any value that is not text, so
+/// the four bytes it reads as the inflated size are often not one, and the
+/// decoder allocates that size before decoding a byte: up to 4 GiB for an
+/// arbitrary binary value. A block inflates at most about 255:1, so a size
+/// beyond that, or beyond the preview cap, is not this format.
+fn inflate_lz4_prepended(data: &[u8]) -> Option<Vec<u8>> {
+    let size_bytes: [u8; 4] = data.get(..4)?.try_into().ok()?;
+    let size = usize::try_from(u32::from_le_bytes(size_bytes)).ok()?;
+    let limit = MAX_INFLATED_PREVIEW.min((data.len() - 4).saturating_mul(255));
+    if size == 0 || size > limit {
+        return None;
+    }
+    decompress_size_prepended(data).ok()
+}
 
 fn truncate_long_strings(max_truncate_length: usize, v: &mut Value, truncated: &mut bool) {
     match v {
@@ -196,19 +236,11 @@ pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .map(|s| (DataFormat::Preview, SharedString::from(s))),
 
-        DataFormat::Gzip => process_decompressed({
-            let mut decoder = GzDecoder::new(data);
-            let mut vec = Vec::with_capacity(data.len() * 2);
-            decoder.read_to_end(&mut vec).ok().map(|_| vec)
-        }),
+        DataFormat::Gzip => process_decompressed(inflate_capped(GzDecoder::new(data))),
 
-        DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
+        DataFormat::Zstd => process_decompressed(StreamingDecoder::new(data).ok().and_then(inflate_capped)),
 
-        DataFormat::Snappy => process_decompressed({
-            let mut decoder = FrameDecoder::new(data);
-            let mut vec = Vec::with_capacity(data.len() * 2);
-            decoder.read_to_end(&mut vec).ok().map(|_| vec)
-        }),
+        DataFormat::Snappy => process_decompressed(inflate_capped(FrameDecoder::new(data))),
 
         DataFormat::Svg | DataFormat::Jpeg | DataFormat::Png | DataFormat::Webp | DataFormat::Gif => None,
 
@@ -226,10 +258,7 @@ pub fn detect_and_decode(data: &[u8], max_truncate_length: usize) -> (DataFormat
             // would "decompress" into an empty preview.
             let has_nul = data.contains(&0);
             let is_utf8 = !has_nul && simdutf8::basic::from_utf8(data).is_ok();
-            if !is_utf8
-                && let Ok(decompressed) = decompress_size_prepended(data)
-                && !decompressed.is_empty()
-            {
+            if !is_utf8 && let Some(decompressed) = inflate_lz4_prepended(data) {
                 process_decompressed(Some(decompressed))
             } else if has_nul {
                 None
@@ -274,19 +303,11 @@ impl RedisBytesValue {
                     .and_then(|v| serde_json::to_string_pretty(&v).ok())
                     .map(|s| (DataFormat::Preview, SharedString::from(s))),
 
-                DataFormat::Gzip => process_decompressed({
-                    let mut decoder = GzDecoder::new(data);
-                    let mut vec = Vec::with_capacity(data.len() * 2);
-                    decoder.read_to_end(&mut vec).ok().map(|_| vec)
-                }),
+                DataFormat::Gzip => process_decompressed(inflate_capped(GzDecoder::new(data))),
 
-                DataFormat::Zstd => process_decompressed(decompress_zstd(data).ok()),
+                DataFormat::Zstd => process_decompressed(StreamingDecoder::new(data).ok().and_then(inflate_capped)),
 
-                DataFormat::Snappy => process_decompressed({
-                    let mut decoder = FrameDecoder::new(data);
-                    let mut vec = Vec::with_capacity(data.len() * 2);
-                    decoder.read_to_end(&mut vec).ok().map(|_| vec)
-                }),
+                DataFormat::Snappy => process_decompressed(inflate_capped(FrameDecoder::new(data))),
 
                 DataFormat::Timestamp => format_unix_timestamp(data).map(|text| (DataFormat::Preview, text)),
 
@@ -306,10 +327,7 @@ impl RedisBytesValue {
                     // would "decompress" into an empty preview.
                     let has_nul = data.contains(&0);
                     let is_utf8 = !has_nul && simdutf8::basic::from_utf8(data).is_ok();
-                    if !is_utf8
-                        && let Ok(decompressed) = decompress_size_prepended(data)
-                        && !decompressed.is_empty()
-                    {
+                    if !is_utf8 && let Some(decompressed) = inflate_lz4_prepended(data) {
                         process_decompressed(Some(decompressed))
                     } else if has_nul {
                         None
@@ -406,7 +424,44 @@ fn run_script_viewer(id: &str, key: &str, data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
     use lz4_flex::block::compress_prepend_size;
+    use std::io::Write;
+
+    /// A value that inflates past the cap previews its head instead of
+    /// inflating whole.
+    #[test]
+    fn an_inflated_preview_stops_at_the_cap() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder
+            .write_all(&vec![b'a'; MAX_INFLATED_PREVIEW + 1024])
+            .expect("compress");
+        let gzip = encoder.finish().expect("finish");
+        let inflated = inflate_capped(GzDecoder::new(gzip.as_slice())).expect("inflate");
+        assert_eq!(inflated.len(), MAX_INFLATED_PREVIEW);
+        // And a cut through a character ends before it.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let mut text = vec![b'a'; MAX_INFLATED_PREVIEW - 1];
+        text.extend_from_slice("é".repeat(8).as_bytes());
+        encoder.write_all(&text).expect("compress");
+        let gzip = encoder.finish().expect("finish");
+        let inflated = inflate_capped(GzDecoder::new(gzip.as_slice())).expect("inflate");
+        assert_eq!(inflated.len(), MAX_INFLATED_PREVIEW - 1);
+    }
+
+    /// Four bytes that only look like an LZ4 size prefix are not taken at
+    /// their word: the decoder would allocate what they say first.
+    #[test]
+    fn an_lz4_size_beyond_what_the_block_could_hold_is_not_lz4() {
+        assert!(inflate_lz4_prepended(&[0xff, 0xff, 0xff, 0x7f, 1, 2, 3]).is_none());
+        assert!(inflate_lz4_prepended(&[0, 0, 0, 0, 1]).is_none());
+        assert!(inflate_lz4_prepended(&[1, 2]).is_none());
+        let block = compress_prepend_size(b"hello hello hello hello");
+        assert_eq!(
+            inflate_lz4_prepended(&block).as_deref(),
+            Some(&b"hello hello hello hello"[..])
+        );
+    }
 
     /// The LZ4 sniff in `detect_and_decode`'s fallback arm: a value that does
     /// not read as text but decompresses into some is shown as a decoded

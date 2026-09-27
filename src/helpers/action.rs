@@ -15,6 +15,8 @@
 use crate::helpers::keybinding_overrides;
 use gpui::Action;
 use gpui::KeyBinding;
+#[cfg(target_os = "macos")]
+use gpui_kit::component::input::Replace;
 use schemars::JsonSchema;
 use serde::Deserialize;
 #[cfg(target_family = "wasm")]
@@ -327,12 +329,14 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     let separator = if mac { "" } else { "+" };
     let mut display_text = String::new();
 
-    for (i, part) in keystroke.split('-').enumerate() {
+    for (i, part) in keystroke_parts(keystroke).into_iter().enumerate() {
         if i > 0 {
             display_text.push_str(separator);
         }
 
-        let symbol = match (part, mac) {
+        // Names folded: a keybindings.toml entry may spell them `Cmd-8`.
+        let lower = part.to_ascii_lowercase();
+        let symbol = match (lower.as_str(), mac) {
             // `secondary` and `cmd` both render as the platform command key:
             // ⌘ on macOS, Ctrl elsewhere. Bindings use `secondary` (so they map
             // to Ctrl on Linux/Windows); display strings may use either.
@@ -358,6 +362,24 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     }
 
     display_text
+}
+
+/// A keystroke's modifiers and key. The key may itself be `-` (zoom out is
+/// `secondary--`), which a plain split on `-` turned into two empty parts —
+/// the label read `Ctrl++`.
+fn keystroke_parts(keystroke: &str) -> Vec<&str> {
+    let (modifiers, key) = if keystroke == "-" {
+        ("", "-")
+    } else if let Some(modifiers) = keystroke.strip_suffix("--") {
+        (modifiers, "-")
+    } else {
+        keystroke.rsplit_once('-').unwrap_or(("", keystroke))
+    };
+    modifiers
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .chain(std::iter::once(key))
+        .collect()
 }
 
 /// The ⌘ spelling of a `secondary-…` keystroke, for the browser only.
@@ -689,6 +711,15 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         }
         keys.push(KeyBinding::new(&keystroke, WorkspaceTabAction::Select(index), None));
     }
+    // ⌘⇧F is two shortcuts on macOS: gpui-component's Replace in a
+    // searchable editor (the value editor's menu names it) and multi-db
+    // search everywhere else. A binding with no context outranks one scoped
+    // to `Input`, so Replace never ran. Bound again here, context-free and
+    // after the hot keys, it is tried first; a focused input that is not
+    // searchable, and focus outside any input, leave it unhandled, and the
+    // keystroke goes on to multi-db search.
+    #[cfg(target_os = "macos")]
+    keys.push(KeyBinding::new("cmd-shift-f", Replace, None));
     keys
 }
 
@@ -731,6 +762,17 @@ mod tests {
             assert_eq!(drawn, "Ctrl+Shift+K");
         }
         assert_eq!(humanize_keystroke("cmd-k"), humanize_keystroke("secondary-k"));
+        // A `-` key, and a name spelled in capitals.
+        let zoom_out = humanize_keystroke("secondary--");
+        if uses_command_key() {
+            assert_eq!(zoom_out, "⌘-");
+            assert_eq!(humanize_keystroke("Cmd-8"), "⌘8");
+        } else {
+            assert_eq!(zoom_out, "Ctrl+-");
+            assert_eq!(humanize_keystroke("Cmd-8"), "Ctrl+8");
+        }
+        assert_eq!(keystroke_parts("-"), ["-"]);
+        assert_eq!(keystroke_parts("secondary-shift--"), ["secondary", "shift", "-"]);
     }
 
     #[test]

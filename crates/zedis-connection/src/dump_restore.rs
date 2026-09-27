@@ -190,6 +190,20 @@ async fn dump_single_key(conn: &mut RedisAsyncConn, key: String) -> Result<Optio
     }))
 }
 
+/// A dumped key's TTL as of `now_ms`, from what `PTTL` said at the dump
+/// and the time the dump began (`created_at_ms`, a little before any one
+/// key was read, so the answer errs long rather than short): `None` once
+/// that time has run out — the key would have expired by now, and
+/// restoring it with its old TTL brought it back. No TTL (`-1`), or no
+/// recorded time, is kept as it is.
+pub fn ttl_left(pttl_ms: i64, created_at_ms: i64, now_ms: i64) -> Option<i64> {
+    if pttl_ms < 0 || created_at_ms <= 0 {
+        return Some(pttl_ms);
+    }
+    let left = pttl_ms - (now_ms - created_at_ms).max(0);
+    (left > 0).then_some(left)
+}
+
 /// `RESTORE key ttl payload` — put one dumped key back. No `REPLACE`: a key
 /// that exists again is a `BUSYKEY` error for the caller to show, never an
 /// overwrite. `pttl_ms` is what `PTTL` said when the key was dumped; a key
@@ -345,4 +359,28 @@ pub async fn copy_key(
     let target = ServerDb::new(target_id, target_db);
     let mut statuses = restore_or_recreate_chunk(&source, &target, std::slice::from_ref(&entry), conflict).await?;
     Ok(statuses.pop())
+}
+
+#[cfg(test)]
+mod ttl_left_tests {
+    use super::ttl_left;
+
+    #[test]
+    fn a_dumped_ttl_counts_down_from_the_dump() {
+        let dumped_at = 1_000_000;
+        assert_eq!(
+            ttl_left(-1, dumped_at, dumped_at + 5_000),
+            Some(-1),
+            "no TTL stays none"
+        );
+        assert_eq!(ttl_left(10_000, dumped_at, dumped_at + 4_000), Some(6_000));
+        assert_eq!(ttl_left(10_000, dumped_at, dumped_at + 10_000), None, "expired by now");
+        assert_eq!(ttl_left(10_000, dumped_at, dumped_at + 60_000), None);
+        assert_eq!(ttl_left(10_000, 0, dumped_at), Some(10_000), "no time recorded");
+        assert_eq!(
+            ttl_left(10_000, dumped_at, dumped_at - 5),
+            Some(10_000),
+            "a clock behind the file"
+        );
+    }
 }

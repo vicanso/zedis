@@ -1106,8 +1106,25 @@ async fn open_single_ssh_tunnel_connection_inner(
     };
 
     run_in_tokio(async move {
-        let session = get_or_init_ssh_session(&target).await?;
-        let channel = open_forward_channel(&session.handle, &target.cache_id(), &host, port).await?;
+        // The connection timeout covers the tunnel too: russh puts no limit
+        // on the TCP dial, the handshake or the channel open, so a bastion
+        // that accepts and then stalls held a connect (and a Test click)
+        // for as long as it liked.
+        let channel = tokio::time::timeout(connection_timeout, async {
+            let session = get_or_init_ssh_session(&target).await?;
+            open_forward_channel(&session.handle, &target.cache_id(), &host, port).await
+        })
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "the SSH tunnel through {} did not open within {}s",
+                    target.cache_id(),
+                    connection_timeout.as_secs()
+                ),
+            )
+        })??;
         debug!(ssh = target.cache_id(), host, port, "open direct tcpip success");
         let ssh_stream = SshRedisStream::new(channel.into_stream());
         let mut info = RedisConnectionInfo::default();

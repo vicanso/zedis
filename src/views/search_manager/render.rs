@@ -149,13 +149,6 @@ impl ZedisSearchManager {
                         this.select_index(name, cx);
                     }
                 }
-                SearchManagerAction::SetReducer(idx) => {
-                    let all = ReducerFn::all();
-                    if let Some(r) = all.get(*idx as usize) {
-                        this.reducer_fn = r.clone();
-                        cx.notify();
-                    }
-                }
             }))
     }
 
@@ -750,6 +743,11 @@ impl ZedisSearchManager {
                     .into_any_element()
             }
             SearchMode::Aggregate => {
+                // The menu calls back into the view directly: an action it
+                // dispatched went to the focused element, and the handler
+                // sat on the toolbar — focus in any field outside it (the
+                // GROUP BY box beside this picker) and the pick was lost.
+                let picker = cx.entity().downgrade();
                 let reducer_label = i18n_search(cx, "reducer_label");
                 let current_reducer_label: SharedString = self.reducer_fn.as_str().to_string().into();
                 let arity = self.reducer_fn.arity();
@@ -777,12 +775,18 @@ impl ZedisSearchManager {
                                     )
                                     .dropdown_menu(move |menu, _w, _cx| {
                                         let mut menu = menu;
-                                        for (idx, r) in ReducerFn::all().iter().enumerate() {
-                                            let label: SharedString = r.as_str().to_string().into();
-                                            menu = menu.menu_element(
-                                                Box::new(SearchManagerAction::SetReducer(idx as u32)),
-                                                move |_w, _cx| Label::new(label.clone()),
-                                            );
+                                        for reducer in ReducerFn::all() {
+                                            let picker = picker.clone();
+                                            let label: SharedString = reducer.as_str().to_string().into();
+                                            menu =
+                                                menu.item(PopupMenuItem::new(label).on_click(move |_, _window, cx| {
+                                                    if let Some(view) = picker.upgrade() {
+                                                        view.update(cx, |this, cx| {
+                                                            this.reducer_fn = reducer.clone();
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                }));
                                         }
                                         menu
                                     }),
@@ -1554,5 +1558,4 @@ fn render_highlighted_value(value: &str, mark_bg: gpui::Hsla, fg: gpui::Hsla) ->
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 enum SearchManagerAction {
     SelectIndex(u32),
-    SetReducer(u32),
 }

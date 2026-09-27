@@ -323,8 +323,13 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
     let credentials = get_server(&source.server_id)
         .ok()
         .and_then(|server| migrate_auth(server.username.as_deref(), server.password.as_deref()));
-    let source_conn = &mut source.connection().await?;
-    let target_conn = &mut target.connection().await?;
+    // The pooled per-node connections: `SETSLOT`, `GETKEYSINSLOT` and
+    // `MIGRATE` change node state, not connection state, and a hand
+    // reshard calls this once per slot — thousands of times — where a
+    // fresh handshake to both ends and every master per slot added up to
+    // tens of thousands of them.
+    let source_conn = &mut source.cached_connection().await?;
+    let target_conn = &mut target.cached_connection().await?;
 
     let _: String = cmd("CLUSTER")
         .arg("SETSLOT")
@@ -383,7 +388,7 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
             .arg(slot)
             .arg("NODE")
             .arg(target_id)
-            .query_async(&mut node.connection().await?)
+            .query_async(&mut node.cached_connection().await?)
             .await
             .map_err(|e| Error::Invalid {
                 message: format!("SETSLOT NODE on {addr}: {e}"),

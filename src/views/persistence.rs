@@ -100,19 +100,23 @@ pub struct ZedisPersistence {
     _subscriptions: Vec<Subscription>,
 }
 
+/// `name - type(masters)`: the count of masters.
+fn persistence_title(state: &ZedisServerState) -> SharedString {
+    let name = get_server(state.server_id())
+        .map(|s| s.name)
+        .unwrap_or_else(|_| "--".to_string());
+    format!(
+        "{name} - {}({})",
+        state.nodes_description().server_type,
+        state.nodes().0
+    )
+    .into()
+}
+
 impl ZedisPersistence {
     pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = server_state.read(cx);
-        let server_id = state.server_id();
-        let name = get_server(server_id)
-            .map(|s| s.name)
-            .unwrap_or_else(|_| "--".to_string());
-        let nodes_description = state.nodes_description();
-        let title = format!(
-            "{name} - {}({})",
-            nodes_description.server_type, nodes_description.master_nodes
-        )
-        .into();
+        let title = persistence_title(state);
 
         let metrics = state.redis_info().map(|i| i.metrics);
         let prev_rdb = metrics.is_some_and(|m| m.rdb_bgsave_in_progress);
@@ -136,15 +140,14 @@ impl ZedisPersistence {
                     this.detect_completion(&state, cx);
                     cx.notify();
                 }
+                // The topology lands after the switch: the title follows it
+                // there too, or it kept the `(0)` it had at the switch.
+                ServerEvent::ServerInfoUpdated => {
+                    this.title = persistence_title(state.read(cx));
+                    cx.notify();
+                }
                 ServerEvent::ServerSelected(_) => {
-                    this.title = {
-                        let st = state.read(cx);
-                        let name = get_server(st.server_id())
-                            .map(|s| s.name)
-                            .unwrap_or_else(|_| "--".to_string());
-                        let nodes = st.nodes_description();
-                        format!("{name} - {}({})", nodes.server_type, nodes.master_nodes).into()
-                    };
+                    this.title = persistence_title(state.read(cx));
                     this.config = None;
                     this.prev_rdb_bgsave = false;
                     this.prev_aof_rewrite = false;

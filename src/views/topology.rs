@@ -49,7 +49,7 @@ use crate::connection::{
     cluster_slot_stats, floors, get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
-use crate::helpers::{format_lag_bytes, get_mono_font_family};
+use crate::helpers::{format_lag_bytes, get_mono_font_family, pacing};
 use crate::states::{
     ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ZedisGlobalStore,
     ZedisServerState, dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, fetch_slot_migrations,
@@ -68,7 +68,6 @@ use gpui_kit::component::{
     progress::Progress,
     v_flex,
 };
-use std::time::Duration;
 use tracing::info;
 use zedis_ui::{ZedisDialog, hint_banner};
 
@@ -249,6 +248,13 @@ impl ZedisTopology {
             }
             if matches!(event, ServerEvent::ServerSelected(_)) {
                 this.sentinel_info_requested = false;
+                // Slot statistics are the last cluster's: drop them (and a
+                // fetch still on its way for it) so the Slots tab asks the
+                // new one instead of showing the old numbers.
+                this.slot_stats = None;
+                this.slot_stats_task = None;
+                this.slot_stats_error = None;
+                this.slot_migrations.clear();
             }
             if matches!(
                 event,
@@ -264,6 +270,8 @@ impl ZedisTopology {
                 }
                 if this.mode == TopologyMode::Cluster {
                     this.ensure_load_poll(cx);
+                    // Re-fetched after a switch dropped them, if showing.
+                    this.ensure_slot_stats(cx);
                     // The version only lands with the first INFO, so a
                     // Reshard tab opened before that starts polling here.
                     this.ensure_slot_migration_poll(cx);

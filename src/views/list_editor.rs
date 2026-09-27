@@ -28,7 +28,9 @@ use zedis_ui::ZedisFormFieldType;
 /// Handles both filtered and unfiltered views of list data, maintaining
 /// a mapping between visible items and their original indices when filtering.
 struct ZedisListValues {
-    /// Currently visible items (filtered subset or all items)
+    /// The items a keyword filter kept; empty when there is no filter, where
+    /// the rows are the loaded values themselves (copying them all on every
+    /// value event only to count them was the old way).
     visible_items: Vec<KvElement>,
     /// Maps visible item indices to original list indices (Some when filtered, None otherwise)
     visible_item_indexes: Option<Vec<usize>>,
@@ -55,9 +57,9 @@ impl ZedisListValues {
 
         let keyword = value.keyword.clone().unwrap_or_default().to_lowercase();
 
-        // No filter: show all items
+        // No filter: the rows are the loaded values.
         if keyword.is_empty() {
-            self.visible_items = value.values.clone();
+            self.visible_items = Vec::new();
             self.visible_item_indexes = None;
             return;
         }
@@ -98,7 +100,7 @@ impl ZedisKvFetcher for ZedisListValues {
 
     fn element(&self, row_ix: usize, _col_ix: usize) -> Option<KvElement> {
         let value = self.value.list_value()?;
-        if value.keyword.is_some() {
+        if self.visible_item_indexes.is_some() {
             self.visible_items.get(row_ix).cloned()
         } else {
             value.values.get(row_ix).cloned()
@@ -115,10 +117,14 @@ impl ZedisKvFetcher for ZedisListValues {
     /// When filtered, returns the count of matching items.
     /// Otherwise, returns the count of loaded items.
     fn rows_count(&self) -> usize {
-        if self.value.list_value().is_none() {
+        let Some(value) = self.value.list_value() else {
             return 0;
+        };
+        if self.visible_item_indexes.is_some() {
+            self.visible_items.len()
+        } else {
+            value.values.len()
         }
-        self.visible_items.len()
     }
 
     /// Checks whether all list items have been loaded from Redis.

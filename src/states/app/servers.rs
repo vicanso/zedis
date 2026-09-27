@@ -127,8 +127,13 @@ impl ZedisAppState {
     /// values, then (c) perform the index swap. This guarantees the
     /// operation is observable even on data saved before this field
     /// existed (everyone tied at `None` would otherwise no-op).
-    pub fn reorder_server(&mut self, server_id: &str, direction: ReorderDirection, cx: &mut Context<Self>) {
+    ///
+    /// `neighbor_id` is the card the view shows beside it, which the move
+    /// swaps with: the next entry of the whole group was a hidden one while
+    /// a search filtered the list, and the click moved nothing visible.
+    pub fn reorder_server(&mut self, server_id: &str, neighbor_id: &str, cx: &mut Context<Self>) {
         let server_id = server_id.to_string();
+        let neighbor_id = neighbor_id.to_string();
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let mut servers = get_servers()?;
@@ -164,11 +169,10 @@ impl ZedisAppState {
                     return Ok(());
                 };
 
-                // (c) Determine the swap partner's position in-group.
-                let swap_pos = match direction {
-                    ReorderDirection::Up if pos_in_group > 0 => pos_in_group - 1,
-                    ReorderDirection::Down if pos_in_group + 1 < group_indices.len() => pos_in_group + 1,
-                    _ => return Ok(()), // at edge — nothing to do
+                // (c) The swap partner's position in-group — it has to be in
+                // the same group, or there is nothing to swap.
+                let Some(swap_pos) = group_indices.iter().position(|&i| servers[i].id == neighbor_id) else {
+                    return Ok(());
                 };
 
                 // (b) Renumber 0..n in current order, then write the

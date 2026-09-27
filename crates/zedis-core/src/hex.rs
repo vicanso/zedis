@@ -38,10 +38,15 @@ pub fn bytes_to_hex_text(bytes: &[u8], bytes_per_row: usize) -> String {
                 out.push(' ');
             }
         }
-        out.push_str(&format!("{byte:02x}"));
+        out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
     out
 }
+
+/// Lowercase hex digits by nibble — a byte is two table lookups, where a
+/// `format!` per byte was a heap allocation per byte of the value.
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// Parse a user-edited hex string back into raw bytes.
 ///

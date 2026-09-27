@@ -529,7 +529,7 @@ impl ZedisMemoryAnalysis {
     /// - waste ≥ floor AND ratio ≥ 2.0 → red
     /// - waste ≥ floor AND ratio ≥ 1.5 → yellow
     /// - otherwise → green
-    pub(super) fn render_fragmentation_chart(&self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_fragmentation_chart(&mut self, cx: &mut gpui::Context<Self>) -> Option<gpui::AnyElement> {
         // 200MB. Below this much absolute overhead, jemalloc's fixed
         // costs dominate and the ratio carries no signal. Any modern
         // server can absorb a few hundred MB of allocator slack.
@@ -539,26 +539,36 @@ impl ZedisMemoryAnalysis {
         if server_id.is_empty() {
             return None;
         }
-        let history = get_metrics_cache().list_metrics(&server_id);
-        // Filter out zero ratios — INFO emits 0 before sampling finishes.
-        let samples: Vec<(i64, f64, i64)> = history
-            .iter()
-            .filter(|m| m.mem_fragmentation_ratio > 0.0)
-            .map(|m| {
-                // fragmentation_bytes = RSS - used; saturating sub
-                // because in rare cases RSS can momentarily be
-                // smaller than used (RSS lags by one sampling tick).
-                let frag_bytes = (m.used_memory_rss as i64).saturating_sub(m.used_memory as i64);
-                (m.timestamp_ms, m.mem_fragmentation_ratio, frag_bytes)
-            })
-            .collect();
-        if samples.len() < 2 {
+        let newest = get_metrics_cache().latest_metrics(&server_id)?.timestamp_ms;
+        let source = (server_id, newest);
+        if self.frag_series.as_ref().is_none_or(|series| series.source != source) {
+            let history = get_metrics_cache().list_metrics(&source.0);
+            // Filter out zero ratios — INFO emits 0 before sampling finishes.
+            let samples: Vec<(i64, f64, i64)> = history
+                .iter()
+                .filter(|m| m.mem_fragmentation_ratio > 0.0)
+                .map(|m| {
+                    // fragmentation_bytes = RSS - used; saturating sub
+                    // because in rare cases RSS can momentarily be
+                    // smaller than used (RSS lags by one sampling tick).
+                    let frag_bytes = (m.used_memory_rss as i64).saturating_sub(m.used_memory as i64);
+                    (m.timestamp_ms, m.mem_fragmentation_ratio, frag_bytes)
+                })
+                .collect();
+            self.frag_series = Some(FragSeries {
+                source,
+                dates: Arc::new(samples.iter().map(|(ts, _, _)| format_timestamp_ms(*ts)).collect()),
+                values: Arc::new(samples.iter().map(|(_, v, _)| *v).collect()),
+                latest_frag_bytes: samples.last().map(|(_, _, b)| *b).unwrap_or(0),
+            });
+        }
+        let series = self.frag_series.as_ref()?;
+        if series.values.len() < 2 {
             return None;
         }
-        let dates: Vec<SharedString> = samples.iter().map(|(ts, _, _)| format_timestamp_ms(*ts)).collect();
-        let values: Vec<f64> = samples.iter().map(|(_, v, _)| *v).collect();
+        let values = &series.values;
         let latest_ratio = *values.last().unwrap_or(&1.0);
-        let latest_frag_bytes = samples.last().map(|(_, _, b)| *b).unwrap_or(0);
+        let latest_frag_bytes = series.latest_frag_bytes;
         // Pad y_max slightly above the peak so the line doesn't touch
         // the top edge; clamp the floor at 2.0 so a flat-healthy chart
         // still has room for a future spike.
@@ -605,16 +615,17 @@ impl ZedisMemoryAnalysis {
         // first label's right edge overlapped the second's left edge.
         // 5 labels gives comfortable spacing even at narrow widths.
         const TARGET_X_LABELS: usize = 5;
-        let tick_margin = samples.len().div_ceil(TARGET_X_LABELS).max(1);
+        let tick_margin = values.len().div_ceil(TARGET_X_LABELS).max(1);
         let params = ChartParams {
-            dates: Arc::new(dates),
+            y_min: 0.0,
+            dates: series.dates.clone(),
             y_max,
             y_format: Box::new(|v| format!("{v:.2}")),
             tick_margin,
             border: theme.border,
             muted_fg: theme.muted_foreground,
         };
-        let chart = make_line_canvas(params, Arc::new(values), stroke, false);
+        let chart = make_line_canvas(params, series.values.clone(), stroke, false);
 
         Some(
             v_flex()
@@ -664,6 +675,7 @@ impl ZedisMemoryAnalysis {
         let raw_max = values.iter().cloned().fold(0.0_f64, f64::max);
         let y_max = (raw_max * 1.1).max(1.0);
         let params = ChartParams {
+            y_min: 0.0,
             dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.0}")),
@@ -965,6 +977,7 @@ impl ZedisMemoryAnalysis {
 
         // 6 buckets and the chart is usually wide → label every bar.
         let params = ChartParams {
+            y_min: 0.0,
             dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.0}")),
@@ -988,8 +1001,9 @@ impl ZedisMemoryAnalysis {
         // population + no-TTL share (the "are we leaking?" signal).
         let summary_text: SharedString = {
             let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-            let estimated = if self.ratio > 0.0 && self.ratio < 1.0 {
-                ((total as f64) / self.ratio as f64) as u64
+            let ratio = self.row_ratio();
+            let estimated = if ratio > 0.0 && ratio < 1.0 {
+                ((total as f64) / ratio as f64) as u64
             } else {
                 total
             };

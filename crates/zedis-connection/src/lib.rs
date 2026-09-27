@@ -156,7 +156,7 @@ pub use diagnostics::{
 };
 pub use dump_restore::{
     ConflictMode, ConflictPreview, DumpEntry, RestoreStatus, copy_key, dump_keys_chunk, preview_key_conflicts,
-    restore_key, restore_keys_chunk,
+    restore_key, restore_keys_chunk, ttl_left,
 };
 /// The `.zdis` file itself: desktop only, there being no file in a tab.
 #[cfg(not(target_family = "wasm"))]
@@ -209,7 +209,7 @@ pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
 };
-pub use read_only::is_read_only_command;
+pub use read_only::{is_read_only_command, reveals_secrets};
 pub use readable_export::{
     ReadLimits, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json, next_stream_id,
     read_readable_chunk,

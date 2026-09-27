@@ -145,6 +145,10 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // Offline: no optimistic change a dropped task could not take back.
+        if self.refuse_while_offline(cx) {
+            return;
+        }
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };

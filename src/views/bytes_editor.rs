@@ -43,7 +43,7 @@ use crate::states::KeyType;
 use rust_i18n::t;
 use serde_json::Value;
 use tracing::info;
-use zedis_core::json::{JsonSyntaxError, format_json, minify_json};
+use zedis_core::json::{JsonSyntaxError, format_json, minify_json, numbers_survive_round_trip};
 use zedis_ui::stable_gutter_padding;
 
 // Constants for editor configuration
@@ -363,17 +363,18 @@ impl ZedisBytesEditor {
         // snapped back to the original here.
         subscriptions.push(cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
             if let InputEvent::Change = &event {
-                let value = editor.read(cx).value();
-
-                // Compare with original value to determine if modified
+                // Compare with the original to determine if modified — as
+                // the rope the editor holds: `value()` copied the whole text
+                // (up to the 5 MiB inline cap) into a string per keystroke.
                 let original = this.data.to_string().unwrap_or_default();
+                let modified = *editor.read(cx).text() != *original.as_ref();
 
-                if this.readonly && original != value.as_str() {
+                if this.readonly && modified {
                     editor.update(cx, |state, cx| state.set_value(original, window, cx));
                     this.value_modified = false;
                     return;
                 }
-                this.value_modified = original != value.as_str();
+                this.value_modified = modified;
                 this.json_tree_stale = true;
                 cx.notify();
             }
@@ -565,9 +566,9 @@ impl ZedisBytesEditor {
         self.editor
             .update(cx, |state, cx| state.set_readonly(component_readonly, cx));
 
-        if !matches!(self.data, ByteEditorData::Hex(_)) {
-            self.hex_viewer_state = None;
-        }
+        // The hex list holds its own copy of the bytes, so a new value —
+        // another binary key included — needs a new list.
+        self.hex_viewer_state = None;
 
         self.is_hex_text = hex_mode;
 
@@ -731,7 +732,10 @@ impl ZedisBytesEditor {
         let editable = !self.readonly
             && match target {
                 JsonTreeTarget::Server => server_state.can(Capability::JsonPathWrite),
-                JsonTreeTarget::Local => true,
+                // A local edit re-serializes the whole document, rewriting
+                // any number a double cannot hold: the tree stays read-only
+                // for such a document (the text is still editable).
+                JsonTreeTarget::Local => numbers_survive_round_trip(text.as_ref()),
             };
         self.json_tree
             .update(cx, |tree, cx| tree.set_document(doc, target, editable, cx));

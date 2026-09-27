@@ -34,7 +34,7 @@ impl ZedisSlowlogEditor {
         self.duration_input_state.update(cx, |state, cx| {
             state.set_value(SharedString::default(), window, cx);
         });
-        self.last_time_stamp = SharedString::default();
+        self.shown_slow_logs = None;
         let editor_weak = cx.entity().downgrade();
         let script_show_supported = self.script_show_supported.clone();
         self.table_state = cx.new(|cx| {
@@ -113,13 +113,17 @@ impl ZedisSlowlogEditor {
         }
         self._commandlog_poll_task = Some(cx.spawn(async move |handle, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(30)).await;
+                cx.background_executor().timer(pacing::COMMANDLOG_POLL_INTERVAL).await;
                 let still_active = handle
                     .update(cx, |this, cx| {
                         if this.log_kind.is_slow() {
                             false
                         } else {
-                            this.fetch_commandlog(cx);
+                            // A background tab or an unattended app skips the
+                            // round, like every other poll (ADR 5).
+                            if !this.server_state.read(cx).is_background() {
+                                this.fetch_commandlog(cx);
+                            }
                             true
                         }
                     })

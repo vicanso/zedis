@@ -24,17 +24,21 @@ use crate::{auth, mcp, policy, resp, session::Sessions, static_files};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{ConnectInfo, Path, State},
-    http::{HeaderMap, StatusCode, Uri},
+    extract::{ConnectInfo, Path, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use redis::aio::ConnectionLike;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path as FsPath;
+use std::sync::{LazyLock, Mutex, PoisonError};
 use uuid::Uuid;
 use zedis_connection::{PipelineSpec, RedisServer, get_connection_manager, get_server, get_servers, save_servers};
 
@@ -93,8 +97,29 @@ pub fn router(state: AppState) -> Router {
             &at("/v1/mcp"),
             post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
         )
+        // On the API routes only — the page's files need no login.
+        .route_layer(middleware::from_fn_with_state(state.clone(), renew_login_cookie))
         .fallback(web_asset)
         .with_state(state)
+}
+
+/// Renew the login cookie's `Max-Age` on every request it authorized. The
+/// server side counts idleness from the last request, but the browser
+/// dropped the cookie `Max-Age` after it was *set* — so "signed out after 8
+/// hours idle" was "signed out 8 hours after signing in", busy or not.
+async fn renew_login_cookie(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let cookie = request.headers().get("cookie").and_then(|v| v.to_str().ok());
+    let id = auth::cookie_value(cookie).map(str::to_string);
+    let mut response = next.run(request).await;
+    // A route that set a cookie of its own (login, logout) has the last word.
+    if let Some(id) = id
+        && !response.headers().contains_key("set-cookie")
+        && let Some(timeout) = state.logins.idle_timeout_of(&id)
+        && let Ok(value) = HeaderValue::from_str(&state.cookie.set(&id, timeout))
+    {
+        response.headers_mut().insert("set-cookie", value);
+    }
+    response
 }
 
 /// What a request path names below `base_path`.
@@ -415,12 +440,61 @@ async fn logout(
 
 /// A file of the web build as it is about to be sent.
 struct StoredFile {
-    /// Borrowed when it is embedded: the binary's own read-only pages.
-    bytes: Cow<'static, [u8]>,
+    /// Static when it is embedded: the binary's own read-only pages, sent
+    /// without a copy.
+    bytes: Bytes,
     /// Its SHA-256 where one is already known (rust-embed computes it at
-    /// build time); `None` for a file off disk or an inflated body, which
-    /// are hashed when the `ETag` is made.
+    /// build time, and an inflated embedded body is hashed once); `None` for
+    /// a file off disk, which is hashed when the `ETag` is made.
     hash: Option<[u8; 32]>,
+}
+
+/// Embedded files inflated for a caller that accepts no coding, by the
+/// stored file's hash: the body and its own hash. The embedded build cannot
+/// change while the bridge runs, so this costs one inflate and one SHA-256
+/// per file per process — where every such request, a `304` included, used
+/// to inflate the 20 MB module again and hash it to learn its `ETag`.
+static INFLATED: LazyLock<Mutex<HashMap<Sha256Hash, (Bytes, Sha256Hash)>>> = LazyLock::new(Default::default);
+
+/// A SHA-256 digest, as rust-embed hands one over.
+type Sha256Hash = [u8; 32];
+
+/// `stored`'s gzip inflated, off the async threads, and remembered when the
+/// file is an embedded one (it has a hash).
+async fn inflated(stored: StoredFile) -> std::io::Result<StoredFile> {
+    let cached = |hash: &[u8; 32]| {
+        INFLATED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(hash)
+            .cloned()
+    };
+    if let Some(stored_hash) = stored.hash
+        && let Some((bytes, hash)) = cached(&stored_hash)
+    {
+        return Ok(StoredFile {
+            bytes,
+            hash: Some(hash),
+        });
+    }
+    let StoredFile { bytes, hash } = stored;
+    tokio::task::spawn_blocking(move || {
+        let raw = Bytes::from(static_files::inflate(&bytes)?);
+        let Some(stored_hash) = hash else {
+            return Ok(StoredFile { bytes: raw, hash: None });
+        };
+        let raw_hash: [u8; 32] = Sha256::digest(&raw).into();
+        INFLATED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(stored_hash, (raw.clone(), raw_hash));
+        Ok(StoredFile {
+            bytes: raw,
+            hash: Some(raw_hash),
+        })
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 /// Anything that is not an API route is a file of the web build: the one
@@ -470,25 +544,27 @@ async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: Uri) 
     let stored = match root {
         Some(root) => match static_files::resolve(root, stored_key) {
             Some(path) => tokio::fs::read(&path).await.ok().map(|bytes| StoredFile {
-                bytes: Cow::Owned(bytes),
+                bytes: Bytes::from(bytes),
                 hash: None,
             }),
             None => None,
         },
         None => WebBuild::get(stored_key).map(|file| StoredFile {
             hash: Some(file.metadata.sha256_hash()),
-            bytes: file.data,
+            // Borrowed is the release case: `from_static` sends the binary's
+            // own pages without a copy.
+            bytes: match file.data {
+                Cow::Borrowed(bytes) => Bytes::from_static(bytes),
+                Cow::Owned(bytes) => Bytes::from(bytes),
+            },
         }),
     };
     let Some(stored) = stored else {
         return not_found();
     };
     let StoredFile { bytes, hash } = if inflate {
-        match static_files::inflate(&stored.bytes) {
-            Ok(raw) => StoredFile {
-                bytes: Cow::Owned(raw),
-                hash: None,
-            },
+        match inflated(stored).await {
+            Ok(raw) => raw,
             Err(e) => {
                 tracing::error!(error = %e, key = stored_key.as_str(), "a stored gzip could not be inflated");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -517,14 +593,8 @@ async fn web_asset(State(state): State<AppState>, headers: HeaderMap, uri: Uri) 
     if let Some(encoding) = encoding {
         response = response.header("content-encoding", encoding);
     }
-    let body = match bytes {
-        // Borrowed is the release case: the bytes are the binary's own
-        // read-only pages, and `from_static` sends them without a copy.
-        Cow::Borrowed(bytes) => Body::from(Bytes::from_static(bytes)),
-        Cow::Owned(bytes) => Body::from(bytes),
-    };
     response
-        .body(body)
+        .body(Body::from(bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 

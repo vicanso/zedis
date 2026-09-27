@@ -247,7 +247,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tick.tick().await;
             let expired = login_sweeper.sweep();
-            login_sweeper.flush();
+            // File work, fsync included: off the async workers.
+            let flusher = login_sweeper.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || flusher.flush()).await {
+                tracing::warn!(error = %e, "the logins flush did not finish");
+            }
             if expired > 0 {
                 tracing::info!(expired, "swept idle logins");
             }

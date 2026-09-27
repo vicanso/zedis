@@ -177,12 +177,36 @@ struct RedisUrl {
 }
 
 fn parse_url(host: String) -> RedisUrl {
+    // A Unix socket path is the host as it is (`is_unix_socket`); parsed as
+    // `redis:///var/run/redis.sock` it had no host and the path was lost.
+    if host.starts_with('/') {
+        return RedisUrl {
+            host,
+            ..Default::default()
+        };
+    }
     let input_to_parse = if host.contains("://") {
         host.to_string()
     } else {
         format!("redis://{host}")
     };
     if let Ok(u) = Url::parse(input_to_parse.as_str()) {
+        // Userinfo arrives percent-encoded (`p%40ss` for `p@ss`); stored as
+        // it came, the password was encoded a second time when the URL was
+        // built again and the server saw `p%40ss`. The import path already
+        // decodes the same way.
+        let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
+        let username = decode(u.username());
+        let password = u.password().map(decode);
+        // `redis+unix:///path` / `unix:///path`: the socket is the path.
+        if u.scheme().eq_ignore_ascii_case("unix") || u.scheme().eq_ignore_ascii_case("redis+unix") {
+            return RedisUrl {
+                host: u.path().to_string(),
+                username,
+                password,
+                ..Default::default()
+            };
+        }
         // `url` keeps the brackets on an IPv6 host; the stored host is the
         // bare literal, bracketed again only where a URL is built.
         let host = strip_ipv6_brackets(u.host_str().unwrap_or(""));
@@ -190,8 +214,8 @@ fn parse_url(host: String) -> RedisUrl {
         RedisUrl {
             host: host.to_string(),
             port,
-            username: u.username().to_string(),
-            password: u.password().map(|p| p.to_string()),
+            username,
+            password,
             tls: scheme_tls(u.scheme()).unwrap_or(false),
         }
     } else {
@@ -1344,6 +1368,27 @@ pub fn get_server(id: &str) -> Result<RedisServer> {
 /// Real `redis-servers.toml` files from earlier releases: every entry must
 /// keep parsing (an upgrade that loses connections is the worst regression
 /// this file can have) and every field that still exists must survive.
+#[cfg(test)]
+mod host_field_tests {
+    use super::parse_url;
+
+    #[test]
+    fn a_pasted_url_gives_its_credentials_decoded() {
+        let url = parse_url("redis://app:p%40ss%3Aw0rd@10.0.0.5:6380".to_string());
+        assert_eq!((url.host.as_str(), url.port), ("10.0.0.5", Some(6380)));
+        assert_eq!(url.username, "app");
+        assert_eq!(url.password.as_deref(), Some("p@ss:w0rd"));
+    }
+
+    #[test]
+    fn a_socket_path_stays_the_host() {
+        assert_eq!(parse_url("/var/run/redis.sock".to_string()).host, "/var/run/redis.sock");
+        let url = parse_url("redis+unix:///tmp/redis.sock".to_string());
+        assert_eq!(url.host, "/tmp/redis.sock");
+        assert_eq!(parse_url("unix:///tmp/r.sock".to_string()).host, "/tmp/r.sock");
+    }
+}
+
 #[cfg(all(test, not(target_family = "wasm")))]
 mod secret_tests {
     use super::*;

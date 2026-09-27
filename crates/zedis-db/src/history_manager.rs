@@ -155,6 +155,41 @@ impl HistoryManager {
         Ok(history)
     }
 
+    /// Add `keyword` if it is absent, remove it if present — in one write
+    /// transaction, so two quick toggles see each other's result instead of
+    /// both deciding from the same stale read. Answers whether it is now in.
+    pub fn toggle_record(&self, server_id: &str, keyword: &str) -> Result<bool> {
+        let keyword = self.entry(keyword);
+        if keyword.is_empty() {
+            return Ok(false);
+        }
+        let db = get_database()?;
+        let write_txn = db.begin_write()?;
+        let present = {
+            let mut table = write_txn.open_table(self.definition)?;
+            let mut history = if let Some(history) = self.history_cache.get(server_id) {
+                history.clone()
+            } else if let Some(v) = table.get(server_id)? {
+                serde_json::from_str(v.value())?
+            } else {
+                Vec::new()
+            };
+            let present = if history.iter().any(|x| x.as_str() == keyword) {
+                history.retain(|x| x.as_str() != keyword);
+                false
+            } else {
+                add_normalize_history(&mut history, keyword.to_string(), self.max_history_size);
+                true
+            };
+            self.history_cache.insert(server_id.to_string(), history.clone());
+            let json_val = serde_json::to_string(&history)?;
+            table.insert(server_id, json_val.as_str())?;
+            present
+        };
+        write_txn.commit()?;
+        Ok(present)
+    }
+
     pub fn clear_history(&self, server_id: &str) -> Result<()> {
         self.history_cache.remove(server_id);
         let db = get_database()?;
@@ -318,6 +353,16 @@ mod tests {
         assert!(m.records("hm-clear").expect("records").is_empty());
         assert!(on_disk("hm-clear").is_none());
         assert!(manager(20).records("hm-clear").expect("cold records").is_empty());
+    }
+
+    #[test]
+    fn a_toggle_adds_what_is_absent_and_removes_what_is_present() {
+        let m = manager(20);
+        m.add_record("hm-toggle", "kept").expect("add");
+        assert!(m.toggle_record("hm-toggle", "star").expect("toggle on"));
+        assert_eq!(m.records("hm-toggle").expect("records"), vec!["star", "kept"]);
+        assert!(!m.toggle_record("hm-toggle", "star").expect("toggle off"));
+        assert_eq!(m.records("hm-toggle").expect("records"), vec!["kept"]);
     }
 
     #[test]

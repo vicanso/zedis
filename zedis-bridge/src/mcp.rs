@@ -170,7 +170,9 @@ pub async fn post(
     };
     let rpc = match Rpc::parse(request) {
         Ok(rpc) => rpc,
-        Err(error) => return reply(StatusCode::OK, rpc_error(Json::Null, error.code, error.message)),
+        // The request's own id where it had one: a client matches replies
+        // to requests by it, and a null answered nothing it had sent.
+        Err((id, error)) => return reply(StatusCode::OK, rpc_error(id, error.code, error.message)),
     };
     // A notification has no id and gets no reply: `notifications/initialized`
     // after the handshake, `notifications/cancelled` for a call that is
@@ -229,20 +231,25 @@ struct Rpc {
 }
 
 impl Rpc {
-    fn parse(request: Json) -> Result<Self, RpcError> {
+    /// The request, or why it is not one with the id to answer under —
+    /// its own where it named one (a string or a number), else null.
+    fn parse(request: Json) -> Result<Self, (Json, RpcError)> {
         let Json::Object(mut fields) = request else {
             let what = if request.is_array() {
                 "one request at a time: JSON-RPC batches are not supported"
             } else {
                 "a request is a JSON object"
             };
-            return Err(RpcError::new(INVALID_REQUEST, what));
-        };
-        let method = match fields.remove("method") {
-            Some(Json::String(method)) => method,
-            _ => return Err(RpcError::new(INVALID_REQUEST, "a request names a method")),
+            return Err((Json::Null, RpcError::new(INVALID_REQUEST, what)));
         };
         let id = fields.remove("id").filter(|id| !id.is_null());
+        let method = match fields.remove("method") {
+            Some(Json::String(method)) => method,
+            _ => {
+                let answer_to = id.filter(|id| id.is_string() || id.is_number()).unwrap_or(Json::Null);
+                return Err((answer_to, RpcError::new(INVALID_REQUEST, "a request names a method")));
+            }
+        };
         let params = fields.remove("params").unwrap_or_else(|| json!({}));
         Ok(Self { id, method, params })
     }
@@ -1031,10 +1038,17 @@ mod tests {
         assert!(rpc.id.is_none());
 
         for bad in [json!([]), json!("ping"), json!({ "id": 1 }), json!({ "method": 3 })] {
-            let error = Rpc::parse(bad.clone()).err().expect("refused");
+            let (_, error) = Rpc::parse(bad.clone()).err().expect("refused");
             assert_eq!(error.code, INVALID_REQUEST, "{bad}");
         }
-        let batch = Rpc::parse(json!([{ "method": "ping" }])).err().expect("refused");
+        // Refused under its own id where it named one.
+        let (id, _) = Rpc::parse(json!({ "id": 1 })).err().expect("refused");
+        assert_eq!(id, json!(1));
+        let (id, _) = Rpc::parse(json!({ "id": "a", "method": 3 })).err().expect("refused");
+        assert_eq!(id, json!("a"));
+        let (id, _) = Rpc::parse(json!({ "id": [1], "method": 3 })).err().expect("refused");
+        assert_eq!(id, Json::Null, "an id that is no id");
+        let (_, batch) = Rpc::parse(json!([{ "method": "ping" }])).err().expect("refused");
         assert!(batch.message.contains("batches"), "{}", batch.message);
     }
 

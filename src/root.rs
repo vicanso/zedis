@@ -476,23 +476,29 @@ impl Zedis {
                 app_config,
                 servers_config,
             };
-            match export_diagnostics(&input) {
-                Ok(path) => {
-                    info!(path = %path.display(), "diagnostics bundle written");
-                    let message = t!(
-                        "sidebar.diagnostics_saved",
-                        path = path.display().to_string(),
-                        locale = &locale
-                    );
-                    window.push_notification(Notification::success(message.to_string()), cx);
-                    cx.reveal_path(&path);
-                }
-                Err(e) => {
-                    error!(error = %e, "diagnostics bundle failed");
-                    let message = t!("sidebar.diagnostics_failed", error = e.to_string(), locale = &locale);
-                    window.push_notification(Notification::error(message.to_string()), cx);
-                }
-            }
+            // Reading the logs and writing the zip is file work: off the UI
+            // thread, and the notice lands when it is done.
+            cx.spawn_in(window, async move |_, cx| {
+                let result = cx.background_spawn(async move { export_diagnostics(&input) }).await;
+                let _ = cx.update(|window, cx| match result {
+                    Ok(path) => {
+                        info!(path = %path.display(), "diagnostics bundle written");
+                        let message = t!(
+                            "sidebar.diagnostics_saved",
+                            path = path.display().to_string(),
+                            locale = &locale
+                        );
+                        window.push_notification(Notification::success(message.to_string()), cx);
+                        cx.reveal_path(&path);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "diagnostics bundle failed");
+                        let message = t!("sidebar.diagnostics_failed", error = e.to_string(), locale = &locale);
+                        window.push_notification(Notification::error(message.to_string()), cx);
+                    }
+                });
+            })
+            .detach();
         }
         #[cfg(target_family = "wasm")]
         {

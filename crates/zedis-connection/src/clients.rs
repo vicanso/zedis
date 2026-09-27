@@ -20,11 +20,8 @@
 //! connected to one node and the panel shows them all; `KILL ID` goes to the
 //! one node that listed that client, since an id means nothing anywhere else.
 
-#[cfg(target_family = "wasm")]
-use crate::bridge::BridgeQuery as _;
 use crate::config::RedisServer;
 use crate::error::Error;
-use crate::open_single_connection;
 use crate::server_db::ServerDb;
 use redis::{Cmd, cmd};
 
@@ -49,15 +46,33 @@ pub async fn client_list(at: &ServerDb) -> Result<Vec<(RedisServer, String)>> {
     Ok(nodes.into_iter().zip(replies).collect())
 }
 
-/// `CLIENT KILL ID id` on `node` — the node whose `CLIENT LIST` had the id.
-/// `false` when no such client was connected any more: the filter form of
-/// `CLIENT KILL` answers with a count, not with the old form's "No such
-/// client" error, so a client that left between the listing and the click is
-/// not a failure — and not a kill either.
-pub async fn client_kill_id(node: &RedisServer, db: usize, id: &str) -> Result<bool> {
-    let mut conn = open_single_connection(node, db, true).await?;
-    let killed: i64 = client_cmd(&["KILL", "ID", id]).query_async(&mut conn).await?;
-    Ok(killed > 0)
+/// `CLIENT KILL ID id` on `node` — the master whose `CLIENT LIST` had the id
+/// (ids are per node, so it goes nowhere else). `false` when no such client
+/// was connected any more: the filter form of `CLIENT KILL` answers with a
+/// count, not with the old form's "No such client" error, so a client that
+/// left between the listing and the click is not a failure — and not a kill
+/// either.
+///
+/// Sent through the entry's own per-master path rather than a connection
+/// dialed to `node`: that is what reaches a node through the bridge, where
+/// the listed node is a label without an entry of its own and dialing it
+/// failed every time.
+pub async fn client_kill_id(at: &ServerDb, node: &RedisServer, id: &str) -> Result<bool> {
+    let client = at.client().await?;
+    let masters = client.master_servers();
+    let Some(target) = masters
+        .iter()
+        .position(|master| master.host == node.host && master.port == node.port)
+    else {
+        return Err(Error::Invalid {
+            message: format!("{}:{} is no longer a master of this server", node.host, node.port),
+        });
+    };
+    let commands = (0..masters.len())
+        .map(|ix| (ix == target).then(|| client_cmd(&["KILL", "ID", id])))
+        .collect();
+    let killed: Vec<Option<i64>> = client.query_async_masters_with_option(commands).await?;
+    Ok(killed.get(target).copied().flatten().unwrap_or(0) > 0)
 }
 
 /// `CLIENT PAUSE timeout [WRITE|ALL]` on every master ([`pause_args`]).

@@ -30,6 +30,19 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 static PROTO_META_CACHE: LazyLock<DashMap<String, ProtoConfig>> = LazyLock::new(DashMap::new);
 
+/// Compiled descriptor pools of viewers whose schema is inline text, with the
+/// message to decode, by viewer id — dropped when the viewer is saved or
+/// deleted. Every key a viewer matches used to cost a database read, a temp
+/// directory and a full `protox` compile. A schema that names a `.proto` file
+/// on disk is still compiled on every use: the file can change under it.
+static PROTO_POOL_CACHE: LazyLock<DashMap<String, (DescriptorPool, String)>> = LazyLock::new(DashMap::new);
+
+/// Compiled `Regex` match patterns, by their text (`None`: it does not
+/// compile, so it matches nothing). Matching runs for every key opened,
+/// against every viewer on its server, and compiling each pattern each time
+/// was the cost of it.
+static REGEX_CACHE: LazyLock<DashMap<String, Option<Regex>>> = LazyLock::new(DashMap::new);
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum MatchMode {
     #[default]
@@ -37,6 +50,26 @@ pub enum MatchMode {
     Suffix,
     Regex,
     Exact,
+}
+
+impl MatchMode {
+    /// Whether `key` matches `pattern` under this mode.
+    pub(crate) fn matches(&self, pattern: &str, key: &str) -> bool {
+        match self {
+            MatchMode::Exact => key == pattern,
+            MatchMode::Prefix => key.starts_with(pattern),
+            MatchMode::Suffix => key.ends_with(pattern),
+            MatchMode::Regex => {
+                if let Some(compiled) = REGEX_CACHE.get(pattern) {
+                    return compiled.as_ref().is_some_and(|re| re.is_match(key));
+                }
+                let compiled = Regex::new(pattern).ok();
+                let matched = compiled.as_ref().is_some_and(|re| re.is_match(key));
+                REGEX_CACHE.insert(pattern.to_string(), compiled);
+                matched
+            }
+        }
+    }
 }
 
 impl From<usize> for MatchMode {
@@ -91,6 +124,14 @@ fn proto_to_json(pool: &DescriptorPool, message_name: &str, bytes: &[u8]) -> Res
     Ok(json_output)
 }
 
+/// Whether a viewer's schema is a path to a `.proto` file rather than the
+/// schema text itself.
+fn names_a_proto_file(content: &str) -> bool {
+    Path::new(content)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("proto"))
+}
+
 fn parse_protobuf(content: &str, includes: &str) -> Result<(DescriptorPool, Vec<String>)> {
     if content.is_empty() {
         return Err(Error::Invalid {
@@ -104,10 +145,7 @@ fn parse_protobuf(content: &str, includes: &str) -> Result<(DescriptorPool, Vec<
         .split(",")
         .map(|item| Path::new(&resolve_path(item)).to_path_buf())
         .collect::<Vec<_>>();
-    let is_proto_file = Path::new(content)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("proto"));
-    if is_proto_file {
+    if names_a_proto_file(content) {
         let file = resolve_path(content);
         let file_path = Path::new(&file);
         if !file_path.exists() {
@@ -208,27 +246,14 @@ impl ProtoManager {
         }
         write_txn.commit()?;
         PROTO_META_CACHE.remove(id);
+        PROTO_POOL_CACHE.remove(id);
         Ok(())
     }
     pub fn match_key_to_name(server_id: &str, key: &str) -> Option<String> {
         let cache = &PROTO_META_CACHE;
-        let item = cache.iter().find(|item| {
-            if item.server_id != server_id {
-                return false;
-            }
-            match item.mode {
-                MatchMode::Exact => key == item.match_pattern,
-                MatchMode::Prefix => key.starts_with(&item.match_pattern),
-                MatchMode::Suffix => key.ends_with(&item.match_pattern),
-                MatchMode::Regex => {
-                    if let Ok(re) = Regex::new(&item.match_pattern) {
-                        re.is_match(key)
-                    } else {
-                        false
-                    }
-                }
-            }
-        })?;
+        let item = cache
+            .iter()
+            .find(|item| item.server_id == server_id && item.mode.matches(&item.match_pattern, key))?;
         Some(item.key().to_string())
     }
     pub fn upsert_proto(id: &str, mut proto: ProtoConfig) -> Result<()> {
@@ -247,9 +272,14 @@ impl ProtoManager {
         write_txn.commit()?;
         proto.content = None;
         PROTO_META_CACHE.insert(id.to_string(), proto);
+        PROTO_POOL_CACHE.remove(id);
         Ok(())
     }
     pub fn decode_data(id: &str, data: &[u8]) -> Result<String> {
+        let compiled = PROTO_POOL_CACHE.get(id).map(|entry| entry.value().clone());
+        if let Some((pool, target_message)) = compiled {
+            return proto_to_json(&pool, &target_message, data);
+        }
         let proto = {
             let db = get_database()?;
             let read_txn = db.begin_read()?;
@@ -279,6 +309,9 @@ impl ProtoManager {
             return Err(Error::Invalid {
                 message: "target message is empty".to_string(),
             });
+        }
+        if !names_a_proto_file(&content) {
+            PROTO_POOL_CACHE.insert(id.to_string(), (pool.clone(), target_message.clone()));
         }
         proto_to_json(&pool, &target_message, data)
     }
@@ -382,6 +415,47 @@ mod tests {
         );
         assert!(ProtoManager::match_key_to_name("pr-m-srv", "nothing").is_none());
         assert!(ProtoManager::match_key_to_name("pr-other-srv", "order:1").is_none());
+    }
+
+    /// A decoded viewer's compiled schema is reused, and a save replaces it.
+    #[test]
+    fn a_saved_schema_replaces_the_compiled_one() {
+        setup();
+        let mut first = config("pr-dec-srv", "dec:", MatchMode::Prefix);
+        first.content = Some("syntax = \"proto3\"; message A { int32 x = 1; }".to_string());
+        first.target_message = Some("A".to_string());
+        ProtoManager::upsert_proto("pr-dec", first).expect("upsert");
+        // Field 1, varint 42.
+        let data = [0x08, 0x2a];
+        let decoded = ProtoManager::decode_data("pr-dec", &data).expect("decode");
+        assert!(decoded.contains("\"x\": 42"), "{decoded}");
+        assert!(
+            PROTO_POOL_CACHE.contains_key("pr-dec"),
+            "an inline schema is kept compiled"
+        );
+        assert_eq!(ProtoManager::decode_data("pr-dec", &data).expect("again"), decoded);
+
+        let mut second = config("pr-dec-srv", "dec:", MatchMode::Prefix);
+        second.content = Some("syntax = \"proto3\"; message B { int32 y = 1; }".to_string());
+        second.target_message = Some("B".to_string());
+        ProtoManager::upsert_proto("pr-dec", second).expect("upsert");
+        let decoded = ProtoManager::decode_data("pr-dec", &data).expect("decode");
+        assert!(
+            decoded.contains("\"y\": 42"),
+            "the new schema, not the cached one: {decoded}"
+        );
+
+        ProtoManager::delete_proto("pr-dec").expect("delete");
+        assert!(!PROTO_POOL_CACHE.contains_key("pr-dec"));
+        assert!(ProtoManager::decode_data("pr-dec", &data).is_err());
+    }
+
+    #[test]
+    fn a_regex_that_does_not_compile_matches_nothing() {
+        assert!(!MatchMode::Regex.matches("[", "["));
+        assert!(!MatchMode::Regex.matches("[", "anything"));
+        assert!(MatchMode::Regex.matches("^a+$", "aaa"));
+        assert!(!MatchMode::Regex.matches("^a+$", "aab"));
     }
 
     #[test]

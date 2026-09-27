@@ -163,6 +163,10 @@ pub fn i18n_metrics<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("metrics.{key}"), locale = locale).into()
 }
+pub fn i18n_terminal<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("terminal.{key}"), locale = locale).into()
+}
 pub fn i18n_timeseries<'a>(cx: &'a App, key: &'a str) -> SharedString {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
     t!(format!("timeseries.{key}"), locale = locale).into()

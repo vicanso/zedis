@@ -25,7 +25,7 @@ use crate::bridge::{BridgeQuery as _, bridge_transport};
 use tracing::warn;
 use uuid::Uuid;
 #[cfg(target_family = "wasm")]
-use zedis_core::string::split_host_port_or;
+use zedis_core::string::split_label;
 
 /// Detects the type of Redis server (Sentinel, Cluster, or Standalone).
 /// This function checks the role of the Redis server and returns the server type.
@@ -384,7 +384,7 @@ async fn bridge_master_nodes(connection: &RedisAsyncConn) -> Vec<RedisNode> {
         Ok((labels, _)) => labels
             .iter()
             .map(|label| {
-                let (host, port) = split_host_port_or(label, 0);
+                let (host, port) = split_label(label);
                 RedisNode {
                     server: RedisServer {
                         name: label.clone(),
@@ -562,6 +562,15 @@ impl ConnectionManager {
             return;
         };
         let key = config.get_hash(db);
+        // A cluster's per-node connections are pooled under each node's own
+        // address, so forgetting the entry's alone left them in use for
+        // their idle window — the very connections a failover had broken.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(client) = self.clients.get(&key) {
+            for addr in client.node_addrs() {
+                remove_node_connection_from_pool(server_id, &addr);
+            }
+        }
         self.clients.remove(&key);
         #[cfg(not(target_family = "wasm"))]
         remove_connection_from_pool(&config, db);

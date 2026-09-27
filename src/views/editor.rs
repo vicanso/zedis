@@ -205,6 +205,16 @@ fn format_ttl_string(ttl: &str) -> String {
     trimmed.to_string()
 }
 
+/// What the TTL field opens with: the time left in a form the field reads
+/// back (`1h 30m 5s`), or nothing for a key without one. `chrono`'s own
+/// `Display` is ISO 8601 (`PT5405S`), which the field cannot parse.
+fn ttl_field_text(ttl: Option<chrono::Duration>) -> SharedString {
+    match ttl.and_then(|ttl| u64::try_from(ttl.num_seconds()).ok()) {
+        Some(secs) if secs > 0 => humantime::format_duration(Duration::from_secs(secs)).to_string().into(),
+        _ => SharedString::default(),
+    }
+}
+
 /// File extension suggested when exporting a value, from its detected format.
 fn value_export_extension(format: DataFormat) -> &'static str {
     match format {
@@ -727,16 +737,10 @@ impl ZedisEditor {
         if is_busy {
             return;
         }
-        let ttl: SharedString = value.ttl().unwrap_or_default().to_string().into();
+        let value = ttl_field_text(value.ttl());
         let placeholder = i18n_editor(cx, "ttl_duration_placeholder");
         self.ttl_edit_mode = true;
         self.ttl_input_state.update(cx, move |state, cx| {
-            // Clear value if permanent, otherwise use current TTL
-            let value = if humantime::parse_duration(&ttl).is_err() {
-                SharedString::default()
-            } else {
-                ttl.clone()
-            };
             state.set_placeholder(placeholder, window, cx);
             state.set_value(value, window, cx);
             state.focus(window, cx);
@@ -768,6 +772,14 @@ impl ZedisEditor {
         if self.readonly {
             return;
         }
+        // The key the import was asked for. The picker is not modal on every
+        // platform (macOS's panel lets the tree be clicked), and reading the
+        // selection when the file came back wrote it to whichever key was
+        // open by then — with that key's own value as the CAS baseline, so
+        // the write went through.
+        let Some(target) = self.server_state.read(cx).key() else {
+            return;
+        };
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -790,13 +802,16 @@ impl ZedisEditor {
                         });
                         return;
                     }
-                    let Some(key) = this.server_state.read(cx).key() else {
+                    if this.server_state.read(cx).key().as_ref() != Some(&target) {
+                        this.server_state.update(cx, |state, cx| {
+                            state.emit_warning_notification(i18n_editor(cx, "import_value_key_changed"), cx);
+                        });
                         return;
-                    };
+                    }
                     // Import-from-file is still a save of this loaded value —
                     // the CAS guard applies the same way as a typed edit.
                     this.server_state
-                        .update(cx, |state, cx| state.update_value_bytes(key, bytes, false, cx));
+                        .update(cx, |state, cx| state.update_value_bytes(target, bytes, false, cx));
                 }
                 Err(e) => {
                     this.server_state.update(cx, |state, cx| {
@@ -879,8 +894,20 @@ impl ZedisEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{suggested_value_filename, value_export_extension};
+    use super::{format_ttl_string, suggested_value_filename, ttl_field_text, value_export_extension};
     use crate::states::DataFormat;
+    use zedis_core::validate::ttl_secs;
+
+    #[test]
+    fn the_ttl_field_opens_with_the_time_left_in_a_form_it_reads_back() {
+        let text = ttl_field_text(Some(chrono::Duration::seconds(5405)));
+        assert_eq!(text.as_ref(), "1h 30m 5s");
+        assert_eq!(ttl_secs(&format_ttl_string(&text)), Some(5405));
+        // No TTL (-1), a missing key (-2) and none at all open empty.
+        assert!(ttl_field_text(Some(chrono::Duration::seconds(-1))).is_empty());
+        assert!(ttl_field_text(Some(chrono::Duration::seconds(-2))).is_empty());
+        assert!(ttl_field_text(None).is_empty());
+    }
 
     #[test]
     fn export_filename_is_sanitized_with_extension() {

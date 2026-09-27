@@ -328,7 +328,12 @@ impl ZedisBitmapEditor {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(values) => {
-                        let joined = values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                        // `OVERFLOW FAIL` answers nil where it refused.
+                        let joined = values
+                            .iter()
+                            .map(|v| v.map_or_else(|| "(nil)".to_string(), |v| v.to_string()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         this.bitfield_result = Some(SharedString::from(joined));
                         this.bitfield_error = None;
                         // A BITFIELD SET/INCRBY may have mutated the value.

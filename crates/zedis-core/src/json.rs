@@ -301,6 +301,61 @@ pub enum JsonOpOutcome {
     Done,
 }
 
+/// Whether every number in the JSON `text` survives a parse into
+/// `serde_json::Value` and back: an integer that fits 64 bits, or a decimal
+/// of at most 15 significant digits (what a double holds exactly). A local
+/// edit re-serializes the whole document, so a document with a number past
+/// that — a 20-digit id, a price to 18 places — had that number rewritten
+/// by an edit somewhere else in it.
+pub fn numbers_survive_round_trip(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            match b {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' => {
+                in_string = true;
+                i += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < bytes.len() && matches!(bytes[i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+                    i += 1;
+                }
+                if !number_is_exact(&text[start..i]) {
+                    return false;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+/// See [`numbers_survive_round_trip`].
+fn number_is_exact(literal: &str) -> bool {
+    if !literal.contains(['.', 'e', 'E']) {
+        return literal.parse::<i64>().is_ok() || literal.parse::<u64>().is_ok();
+    }
+    let mantissa = literal.split(['e', 'E']).next().unwrap_or_default();
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let significant = digits.trim_start_matches('0').trim_end_matches('0');
+    let Ok(value) = literal.parse::<f64>() else {
+        return false;
+    };
+    significant.len() <= 15 && value.is_finite() && (value != 0.0 || significant.is_empty())
+}
+
 /// Apply `op` at `path` in `doc`, as the corresponding `JSON.*` command
 /// would on the server.
 pub fn apply_json_op(doc: &mut Value, path: &str, op: JsonPathOp) -> Result<JsonOpOutcome, JsonOpError> {
@@ -529,6 +584,22 @@ pub fn empty_object() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_a_double_cannot_hold_is_found() {
+        for (text, exact) in [
+            (r#"{"a": 1, "b": -2.5, "c": [1e3, 0.1, 9223372036854775807]}"#, true),
+            (r#"{"u": 18446744073709551615}"#, true),
+            (r#"{"id": 123456789012345678901234}"#, false),
+            (r#"{"price": 0.12345678901234567890}"#, false),
+            (r#"{"tiny": 1e-400}"#, false),
+            (r#"{"text": "123456789012345678901234 inside a string"}"#, true),
+            (r#"{"esc": "a \" 99999999999999999999999"}"#, true),
+            (r#"[1.50, 2.000000000000000000]"#, true),
+        ] {
+            assert_eq!(numbers_survive_round_trip(text), exact, "{text}");
+        }
+    }
     use serde_json::json;
 
     #[test]

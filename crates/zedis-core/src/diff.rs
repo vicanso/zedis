@@ -52,8 +52,12 @@ pub enum DiffOp {
 pub fn line_diff(left: &str, right: &str) -> Vec<DiffOp> {
     const MAX_LINES: usize = 2000;
 
-    let left_lines: Vec<&str> = left.lines().collect();
-    let right_lines: Vec<&str> = right.lines().collect();
+    // Lines with their endings: `lines()` reads `\r\n` and `\n` alike, so two
+    // values that differed only there compared line-equal while the texts
+    // were not — neither "identical" nor any line marked. Same line count as
+    // `lines()`, so the indices still name the lines a view draws.
+    let left_lines: Vec<&str> = left.split_inclusive('\n').collect();
+    let right_lines: Vec<&str> = right.split_inclusive('\n').collect();
     let n = left_lines.len();
     let m = right_lines.len();
 
@@ -191,6 +195,21 @@ pub fn kv_diff(old: &[(String, String)], new: &[(String, String)]) -> Vec<KvDiff
 #[cfg(test)]
 mod tests {
     use super::{DiffOp, KvDelta, kv_diff, line_diff};
+
+    #[test]
+    fn a_line_that_differs_only_in_its_ending_is_marked() {
+        let ops = line_diff("a\r\nb\n", "a\nb\n");
+        assert!(
+            ops.iter().any(|op| !matches!(op, DiffOp::Equal(..))),
+            "CRLF against LF is a change: {ops:?}"
+        );
+        // And the same text is still all equal, last line with or without
+        // its newline counted the way `lines()` counts it.
+        assert_eq!(
+            line_diff("a\nb", "a\nb"),
+            vec![DiffOp::Equal(0, 0), DiffOp::Equal(1, 1)]
+        );
+    }
 
     #[test]
     fn identical_inputs_yield_only_equal_ops() {

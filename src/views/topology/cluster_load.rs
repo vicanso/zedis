@@ -34,7 +34,9 @@ impl ZedisTopology {
         self.load_poll_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 let masters = match this.update(cx, |this, cx| {
-                    if this.mode != TopologyMode::Cluster {
+                    // A background tab or an unattended app skips the round,
+                    // like every other poll (ADR 5).
+                    if this.mode != TopologyMode::Cluster || this.server_state.read(cx).is_background() {
                         return None;
                     }
                     let desc = this.server_state.read(cx).nodes_description();
@@ -52,7 +54,7 @@ impl ZedisTopology {
                 }) {
                     Ok(Some(v)) => v,
                     Ok(None) => {
-                        cx.background_executor().timer(Duration::from_secs(5)).await;
+                        cx.background_executor().timer(pacing::CLUSTER_LOAD_POLL_INTERVAL).await;
                         continue;
                     }
                     Err(_) => break,
@@ -81,7 +83,7 @@ impl ZedisTopology {
                 {
                     break;
                 }
-                cx.background_executor().timer(Duration::from_secs(5)).await;
+                cx.background_executor().timer(pacing::CLUSTER_LOAD_POLL_INTERVAL).await;
             }
         }));
     }

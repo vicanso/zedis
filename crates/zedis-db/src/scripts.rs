@@ -84,7 +84,6 @@ use super::{SCRIPT_VIEWER_TABLE, get_database};
 use crate::error::Error;
 use dashmap::DashMap;
 use redb::{ReadableDatabase, ReadableTable};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{Read, Write};
@@ -249,17 +248,9 @@ impl ScriptManager {
 
     /// Returns the script ID whose pattern matches `key` for `server_id`.
     pub fn match_key_to_id(server_id: &str, key: &str) -> Option<String> {
-        let item = SCRIPT_CACHE.iter().find(|item| {
-            if item.server_id != server_id {
-                return false;
-            }
-            match item.mode {
-                MatchMode::Exact => key == item.match_pattern,
-                MatchMode::Prefix => key.starts_with(&item.match_pattern),
-                MatchMode::Suffix => key.ends_with(&item.match_pattern),
-                MatchMode::Regex => Regex::new(&item.match_pattern).is_ok_and(|re| re.is_match(key)),
-            }
-        })?;
+        let item = SCRIPT_CACHE
+            .iter()
+            .find(|item| item.server_id == server_id && item.mode.matches(&item.match_pattern, key))?;
         Some(item.key().clone())
     }
 

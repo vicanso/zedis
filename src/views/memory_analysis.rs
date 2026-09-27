@@ -360,6 +360,10 @@ pub struct ZedisMemoryAnalysis {
     dbsize: Option<u64>,
     /// User-editable sample ratio (0.0–1.0).
     ratio: f32,
+    /// The ratio the shown online run sampled at. The numbers on screen are
+    /// scaled by it, not by whatever the ratio box says after the run —
+    /// editing it re-scaled a finished analysis.
+    run_ratio: Option<f32>,
     ratio_input_state: Entity<InputState>,
     /// True when ratio changed programmatically and InputState needs sync.
     ratio_dirty: bool,
@@ -418,7 +422,23 @@ pub struct ZedisMemoryAnalysis {
     /// one-time intro banner. Local so closing it repaints without waiting
     /// for the async state save.
     show_first_visit_hint: bool,
+    /// The fragmentation chart's series, rebuilt when a new sample lands
+    /// rather than on every paint.
+    frag_series: Option<FragSeries>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The fragmentation chart's data, built from the heartbeat's history: up
+/// to 1800 samples, each with a formatted time, which a scan's every round
+/// of repaints used to rebuild.
+struct FragSeries {
+    /// The server and newest sample time it was built from — the history
+    /// only grows at its end, so an unchanged newest sample is an unchanged
+    /// history.
+    source: (String, i64),
+    dates: Arc<Vec<SharedString>>,
+    values: Arc<Vec<f64>>,
+    latest_frag_bytes: i64,
 }
 
 impl ZedisMemoryAnalysis {
@@ -584,6 +604,7 @@ impl ZedisMemoryAnalysis {
             analyzed: None,
             dbsize,
             ratio: default_ratio,
+            run_ratio: None,
             ratio_input_state,
             ratio_dirty: false,
             scan_count: DEFAULT_SCAN_COUNT,
@@ -602,6 +623,7 @@ impl ZedisMemoryAnalysis {
                 .global::<ZedisGlobalStore>()
                 .read(cx)
                 .hint_dismissed(HINT_MEMORY_ANALYSIS),
+            frag_series: None,
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
@@ -701,7 +723,7 @@ impl ZedisMemoryAnalysis {
             let (report_dbsize, report_ratio) = if self.rdb_file.is_some() {
                 (None, 1.0)
             } else {
-                (self.dbsize, self.ratio)
+                (self.dbsize, self.row_ratio())
             };
             let report = build_markdown_report(
                 report_dbsize,
@@ -783,8 +805,12 @@ impl ZedisMemoryAnalysis {
 
     /// What the displayed numbers must be scaled by: the run's sample ratio
     /// online, 1.0 for an RDB file (every key in it was read).
-    fn row_ratio(&self) -> f32 {
-        if self.rdb_file.is_some() { 1.0 } else { self.ratio }
+    pub(super) fn row_ratio(&self) -> f32 {
+        if self.rdb_file.is_some() {
+            1.0
+        } else {
+            self.run_ratio.unwrap_or(self.ratio)
+        }
     }
 
     /// Show the children of `root` in the prefix table (empty = top level).
@@ -876,6 +902,7 @@ impl ZedisMemoryAnalysis {
         let single_table = self.single_table.clone();
         let key_separator = self.server_state.read(cx).key_separator().to_string();
         let ratio = self.ratio;
+        self.run_ratio = Some(ratio);
         let dbsize = self.dbsize.unwrap_or(0);
         let scan_count = self.scan_count;
 
@@ -961,21 +988,41 @@ impl ZedisMemoryAnalysis {
                     break;
                 }
 
-                // Classify and accumulate from the already-fetched data
-                for item in &keys_memory_usage {
-                    acc.add(
-                        KeySample {
-                            key: &item.key,
-                            memory_bytes: item.memory_usage,
-                            ttl: item.ttl,
-                            key_type: &item.key_type,
-                            encoding: &item.encoding,
-                            heat: item.heat,
-                        },
-                        heat,
-                        &key_separator,
-                    );
-                }
+                // Classify, accumulate and snapshot on the background pool:
+                // the prefix rows are rebuilt from the whole map each round
+                // (up to 100k prefixes), which on the UI thread stalled every
+                // round's repaint.
+                let (next_acc, prefix_rows, groups_snapshot, ttl_snapshot, type_snapshot) = cx
+                    .background_spawn({
+                        let key_separator = key_separator.clone();
+                        let mut acc = acc;
+                        async move {
+                            for item in &keys_memory_usage {
+                                acc.add(
+                                    KeySample {
+                                        key: &item.key,
+                                        memory_bytes: item.memory_usage,
+                                        ttl: item.ttl,
+                                        key_type: &item.key_type,
+                                        encoding: &item.encoding,
+                                        heat: item.heat,
+                                    },
+                                    heat,
+                                    &key_separator,
+                                );
+                            }
+                            // A run always shows the top level: the drill-down
+                            // needs the finished map, which only the final
+                            // update hands over.
+                            let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator, "");
+                            let groups = acc.single_groups.clone();
+                            let ttl = acc.ttl_histogram.clone();
+                            let types = acc.type_map.clone();
+                            (acc, prefix_rows, groups, ttl, types)
+                        }
+                    })
+                    .await;
+                acc = next_acc;
 
                 // Update progress
                 let pct = if analysis_count > 0 && dbsize > 0 {
@@ -984,13 +1031,7 @@ impl ZedisMemoryAnalysis {
                     99
                 };
                 let progress_text: SharedString = format!("{}%", pct).into();
-                // A run always shows the top level: the drill-down needs the
-                // finished map, which only the final update hands over.
-                let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator, "");
                 let pc = prefix_rows.len();
-                let groups_snapshot = acc.single_groups.clone();
-                let ttl_snapshot = acc.ttl_histogram.clone();
-                let type_snapshot = acc.type_map.clone();
                 let _ = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.progress_value = pct;
@@ -1024,6 +1065,7 @@ impl ZedisMemoryAnalysis {
 
             // Final update
             let prefix_rows = build_prefix_rows(&acc.prefix_map, ratio, &key_separator, "");
+            let prefix_memory = top_level_prefix_memory(&acc.prefix_map, ratio, &key_separator);
             let pc = prefix_rows.len();
             let final_groups = acc.single_groups;
             let final_histogram = acc.ttl_histogram;
@@ -1052,6 +1094,7 @@ impl ZedisMemoryAnalysis {
                         &final_groups.by_size.items,
                         &final_histogram,
                         frag,
+                        Some(prefix_memory),
                     );
                 }
                 this.prefix_count = pc;
@@ -1266,6 +1309,7 @@ impl ZedisMemoryAnalysis {
             }
 
             let prefix_rows = build_prefix_rows(&acc.prefix_map, 1.0, &key_separator, "");
+            let prefix_memory = top_level_prefix_memory(&acc.prefix_map, 1.0, &key_separator);
             let pc = prefix_rows.len();
             let final_groups = acc.single_groups;
             let final_histogram = acc.ttl_histogram;
@@ -1282,8 +1326,14 @@ impl ZedisMemoryAnalysis {
                     this.progress = "100%".into();
                     this.progress_value = 100;
                     // Offline rules only: no policy, no fragmentation data.
-                    this.recommendations =
-                        build_recommendations("", &prefix_rows, &final_groups.by_size.items, &final_histogram, None);
+                    this.recommendations = build_recommendations(
+                        "",
+                        &prefix_rows,
+                        &final_groups.by_size.items,
+                        &final_histogram,
+                        None,
+                        Some(prefix_memory),
+                    );
                 }
                 this.prefix_count = pc;
                 this.single_groups = final_groups;
@@ -1620,7 +1670,7 @@ mod tests {
             single_key("c", "set", 5 * MIB + 1), // ≥ warn
             single_key("d", "string", 1024),     // under the bar
         ];
-        let recs = build_recommendations("allkeys-lru", &[], &biggest, &TtlHistogram::default(), None);
+        let recs = build_recommendations("allkeys-lru", &[], &biggest, &TtlHistogram::default(), None, None);
         let big: Vec<_> = recs
             .iter()
             .filter(|r| matches!(r.kind, RecoKind::BigKey { .. }))
@@ -1641,18 +1691,18 @@ mod tests {
         for _ in 0..40 {
             ttl.add(30); // 40 with a TTL → 60% unevictable
         }
-        let recs = build_recommendations("volatile-lru", &[], &[], &ttl, None);
+        let recs = build_recommendations("volatile-lru", &[], &[], &ttl, None, None);
         assert!(recs.iter().any(|r| {
             matches!(r.kind, RecoKind::UnevictableKeys { no_ttl_pct: 60, .. }) && r.severity == RecoSeverity::Critical
         }));
         // allkeys-* evicts regardless of TTL, so the same shape is fine there.
-        let ok = build_recommendations("allkeys-lru", &[], &[], &ttl, None);
+        let ok = build_recommendations("allkeys-lru", &[], &[], &ttl, None, None);
         assert!(!ok.iter().any(|r| matches!(r.kind, RecoKind::UnevictableKeys { .. })));
     }
 
     #[test]
     fn noeviction_policy_is_flagged() {
-        let recs = build_recommendations("noeviction", &[], &[], &TtlHistogram::default(), None);
+        let recs = build_recommendations("noeviction", &[], &[], &TtlHistogram::default(), None, None);
         assert!(
             recs.iter()
                 .any(|r| r.kind == RecoKind::NoEvictionPolicy && r.severity == RecoSeverity::Info)
@@ -1662,7 +1712,14 @@ mod tests {
     #[test]
     fn fragmentation_needs_both_ratio_and_absolute_waste() {
         // High ratio but tiny waste → noise, not flagged.
-        let small = build_recommendations("allkeys-lru", &[], &[], &TtlHistogram::default(), Some((3.0, 10 * MIB)));
+        let small = build_recommendations(
+            "allkeys-lru",
+            &[],
+            &[],
+            &TtlHistogram::default(),
+            Some((3.0, 10 * MIB)),
+            None,
+        );
         assert!(
             !small
                 .iter()
@@ -1675,6 +1732,7 @@ mod tests {
             &[],
             &TtlHistogram::default(),
             Some((1.8, 400 * MIB)),
+            None,
         );
         assert!(
             real.iter().any(|r| {
@@ -1686,7 +1744,7 @@ mod tests {
     #[test]
     fn many_small_strings_suggest_a_hash() {
         let p = prefix_row("cache:*", 5_000, 5_000 * 50, "string"); // avg 50B
-        let recs = build_recommendations("allkeys-lru", &[p], &[], &TtlHistogram::default(), None);
+        let recs = build_recommendations("allkeys-lru", &[p], &[], &TtlHistogram::default(), None, None);
         assert!(recs.iter().any(|r| matches!(
             &r.kind,
             RecoKind::ManySmallStrings {
@@ -1697,7 +1755,7 @@ mod tests {
         )));
         // A mixed-type prefix of the same shape is not a fold candidate.
         let mixed = prefix_row("cache:*", 5_000, 5_000 * 50, "hash, string");
-        let none = build_recommendations("allkeys-lru", &[mixed], &[], &TtlHistogram::default(), None);
+        let none = build_recommendations("allkeys-lru", &[mixed], &[], &TtlHistogram::default(), None, None);
         assert!(!none.iter().any(|r| matches!(r.kind, RecoKind::ManySmallStrings { .. })));
     }
 
@@ -1711,13 +1769,25 @@ mod tests {
             &[],
             &TtlHistogram::default(),
             None,
+            None,
         );
         assert!(
             recs.iter()
                 .any(|r| matches!(&r.kind, RecoKind::DominantPrefix { pct: 90, .. }))
         );
+        // A share of everything under a prefix, not of the table's top few:
+        // the same two rows out of 100k in all dominate nothing.
+        let of_all = build_recommendations(
+            "allkeys-lru",
+            &[big.clone(), prefix_row("b:*", 100, 1_000, "hash")],
+            &[],
+            &TtlHistogram::default(),
+            None,
+            Some(100_000),
+        );
+        assert!(!of_all.iter().any(|r| matches!(r.kind, RecoKind::DominantPrefix { .. })));
         // A lone prefix can't "dominate" — nothing to compare against.
-        let solo = build_recommendations("allkeys-lru", &[big], &[], &TtlHistogram::default(), None);
+        let solo = build_recommendations("allkeys-lru", &[big], &[], &TtlHistogram::default(), None, None);
         assert!(!solo.iter().any(|r| matches!(r.kind, RecoKind::DominantPrefix { .. })));
     }
 
@@ -1728,6 +1798,7 @@ mod tests {
             &[prefix_row("u:*", 10, 2_000, "hash")],
             &[single_key("u:1", "hash", 1024)],
             &TtlHistogram::default(),
+            None,
             None,
         );
         assert!(recs.is_empty(), "unexpected findings: {recs:?}");

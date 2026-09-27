@@ -97,6 +97,11 @@ impl ZedisTopology {
             loop {
                 let target = this.update(cx, |this, cx| {
                     let state = this.server_state.read(cx);
+                    // A background tab or an unattended app skips the round,
+                    // like every other poll (ADR 5).
+                    if state.is_background() {
+                        return None;
+                    }
                     let server_id = state.server_id().to_string();
                     let addrs: Vec<String> = state
                         .nodes_description()
@@ -123,7 +128,9 @@ impl ZedisTopology {
                     Ok(None) => {}
                     Err(_) => break,
                 }
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+                cx.background_executor()
+                    .timer(pacing::SLOT_MIGRATION_POLL_INTERVAL)
+                    .await;
             }
         }));
     }

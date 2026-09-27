@@ -24,6 +24,7 @@ use crate::bridge::BridgeQuery as _;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::server_db::ServerDb;
+use futures::stream::{self, StreamExt};
 use redis::{FromRedisValue, RedisError, Value, cmd, pipe};
 use zedis_core::csv::build_csv_record;
 
@@ -279,7 +280,6 @@ pub async fn read_readable_chunk(at: &ServerDb, keys: &[String], limits: ReadLim
         return Ok(Vec::new());
     }
     let client = at.client().await?;
-    let conn = &mut client.connection();
     // TYPE + PTTL for the whole chunk: one round trip on a standalone.
     let meta: Vec<(String, i64)> = client
         .pipeline_per_key(keys, |key| {
@@ -292,49 +292,92 @@ pub async fn read_readable_chunk(at: &ServerDb, keys: &[String], limits: ReadLim
         .map(|replies| <(String, i64)>::from_redis_value(Value::Array(replies)).map_err(RedisError::from))
         .collect::<std::result::Result<_, _>>()?;
 
+    // Several keys at a time on the one multiplexed connection: every key
+    // used to wait for the one before it, a round trip (or a collection's
+    // pages) each. A key's own pages still go in order.
+    // Each read owns its key: a future borrowing the chunk is not one the
+    // caller can send to another thread.
+    let reads = stream::iter(keys.iter().cloned().zip(meta).map(|(key, (key_type, pttl_ms))| {
+        let mut conn = client.connection();
+        async move {
+            let (value, truncated) = match key_type.as_str() {
+                "none" => return Ok(None),
+                "string" => (
+                    Some(ReadableValue::Text(lossy(
+                        cmd("GET").arg(&key).query_async::<Vec<u8>>(&mut conn).await?,
+                    ))),
+                    false,
+                ),
+                "list" => {
+                    let (items, truncated) = read_list(&mut conn, &key, limits).await?;
+                    (Some(ReadableValue::List(items)), truncated)
+                }
+                "set" => {
+                    let (items, truncated) = read_set(&mut conn, &key, limits).await?;
+                    (Some(ReadableValue::Set(items)), truncated)
+                }
+                "hash" => {
+                    let (items, truncated) = read_hash(&mut conn, &key, limits).await?;
+                    (Some(ReadableValue::Hash(items)), truncated)
+                }
+                "zset" => {
+                    let (items, truncated) = read_zset(&mut conn, &key, limits).await?;
+                    (Some(ReadableValue::Zset(items)), truncated)
+                }
+                "stream" => {
+                    let (items, truncated) = read_stream(&mut conn, &key, limits).await?;
+                    (Some(ReadableValue::Stream(items)), truncated)
+                }
+                // Module types (ReJSON, Bloom, TimeSeries, ...) have no
+                // generic readable form — keep the key visible, value null.
+                _ => (None, false),
+            };
+            Ok::<_, Error>(Some(ReadableEntry {
+                key,
+                key_type,
+                pttl_ms,
+                value,
+                truncated,
+            }))
+        }
+    }))
+    .buffered(READ_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
     let mut entries = Vec::with_capacity(keys.len());
-    for (key, (key_type, pttl_ms)) in keys.iter().zip(meta) {
-        let (value, truncated) = match key_type.as_str() {
-            "none" => continue,
-            "string" => (
-                Some(ReadableValue::Text(lossy(
-                    cmd("GET").arg(key).query_async::<Vec<u8>>(conn).await?,
-                ))),
-                false,
-            ),
-            "list" => {
-                let (items, truncated) = read_list(conn, key, limits).await?;
-                (Some(ReadableValue::List(items)), truncated)
-            }
-            "set" => {
-                let (items, truncated) = read_set(conn, key, limits).await?;
-                (Some(ReadableValue::Set(items)), truncated)
-            }
-            "hash" => {
-                let (items, truncated) = read_hash(conn, key, limits).await?;
-                (Some(ReadableValue::Hash(items)), truncated)
-            }
-            "zset" => {
-                let (items, truncated) = read_zset(conn, key, limits).await?;
-                (Some(ReadableValue::Zset(items)), truncated)
-            }
-            "stream" => {
-                let (items, truncated) = read_stream(conn, key, limits).await?;
-                (Some(ReadableValue::Stream(items)), truncated)
-            }
-            // Module types (ReJSON, Bloom, TimeSeries, ...) have no
-            // generic readable form — keep the key visible, value null.
-            _ => (None, false),
-        };
-        entries.push(ReadableEntry {
-            key: key.clone(),
-            key_type,
-            pttl_ms,
-            value,
-            truncated,
-        });
+    for read in reads {
+        entries.extend(read?);
     }
     Ok(entries)
+}
+
+/// Keys of a chunk read at once by [`read_readable_chunk`].
+const READ_CONCURRENCY: usize = 16;
+
+/// A score as JSON: a number, or Redis's own spelling for an infinity —
+/// JSON has no number for one, and `json!` writes it as `null`, which no
+/// import could read back.
+fn score_to_json(score: f64) -> serde_json::Value {
+    if score.is_finite() {
+        serde_json::json!(score)
+    } else if score > 0.0 {
+        serde_json::json!("+inf")
+    } else {
+        serde_json::json!("-inf")
+    }
+}
+
+/// An entry's fields as an object, in order — or, when a name repeats (a
+/// stream entry may carry one twice), as `[field, value]` pairs: an object
+/// kept only the last of them.
+fn stream_fields_to_json(fields: &[(String, String)]) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+    if fields.iter().all(|(field, _)| seen.insert(field.as_str())) {
+        Value::Object(fields.iter().map(|(f, v)| (f.clone(), json!(v))).collect())
+    } else {
+        json!(fields.iter().map(|(f, v)| json!([f, v])).collect::<Vec<_>>())
+    }
 }
 
 fn value_to_json(value: &ReadableValue) -> serde_json::Value {
@@ -346,18 +389,13 @@ fn value_to_json(value: &ReadableValue) -> serde_json::Value {
         ReadableValue::Zset(pairs) => json!(
             pairs
                 .iter()
-                .map(|(member, score)| json!({ "member": member, "score": score }))
+                .map(|(member, score)| json!({ "member": member, "score": score_to_json(*score) }))
                 .collect::<Vec<_>>()
         ),
         ReadableValue::Stream(entries) => json!(
             entries
                 .iter()
-                .map(|(id, fields)| {
-                    json!({
-                        "id": id,
-                        "fields": Value::Object(fields.iter().map(|(f, v)| (f.clone(), json!(v))).collect()),
-                    })
-                })
+                .map(|(id, fields)| json!({ "id": id, "fields": stream_fields_to_json(fields) }))
                 .collect::<Vec<_>>()
         ),
     }

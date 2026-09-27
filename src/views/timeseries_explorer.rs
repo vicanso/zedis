@@ -29,7 +29,7 @@ use crate::connection::{ServerDb, TS_AGGREGATORS, TsMRange, TsSeries, has_positi
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, unix_ts_millis};
 use crate::states::{ZedisServerState, content_area_width, i18n_common, i18n_timeseries};
-use crate::views::{ChartParams, format_timestamp_ms, make_line_canvas};
+use crate::views::{ChartParams, format_timestamp_ms, make_line_canvas, value_range};
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable,
@@ -222,7 +222,11 @@ impl ZedisTimeSeriesExplorer {
             to_ms: Some(now),
             filters,
             aggregation: Some((aggregator, bucket_ms)),
-            count: Some(MAX_BUCKETS),
+            // Buckets sit on the epoch's boundaries, not the window's, so
+            // the window touches one more than it spans — a partial one at
+            // each end. `COUNT` keeps the *first* n, and n = MAX_BUCKETS cut
+            // off the newest, which is the one a reader looks at.
+            count: Some(MAX_BUCKETS + 1),
         };
         self.loading = true;
         self.error = None;
@@ -316,8 +320,8 @@ impl ZedisTimeSeriesExplorer {
             return div().into_any_element();
         }
         let dates: Arc<Vec<SharedString>> = Arc::new(axis.iter().map(|ts| format_timestamp_ms(*ts)).collect());
-        let max = rows.iter().flat_map(|row| row.iter().copied()).fold(0.0_f64, f64::max);
-        let y_max = if max <= 0.0 { 1.0 } else { max * 1.1 };
+        let every: Vec<f64> = rows.iter().flat_map(|row| row.iter().copied()).collect();
+        let (y_min, y_max) = value_range(&every);
         let tick_margin = (dates.len() / 6).max(1);
         let palette = [
             cx.theme().chart_1,
@@ -329,6 +333,7 @@ impl ZedisTimeSeriesExplorer {
         let mut stack = div().relative().w_full().h(px(CHART_HEIGHT));
         for (index, row) in rows.into_iter().enumerate() {
             let params = ChartParams {
+                y_min,
                 dates: dates.clone(),
                 y_max,
                 y_format: Box::new(|v: f64| format!("{v:.2}")),

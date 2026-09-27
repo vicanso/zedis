@@ -164,8 +164,13 @@ impl MetricsCache {
     pub fn list_metrics(&self, server_id: &str) -> Vec<RedisMetrics> {
         let data = self.data.read();
         data.get(server_id)
-            .map(|queue| queue.clone().into_iter().collect())
+            .map(|queue| queue.iter().copied().collect())
             .unwrap_or_default()
+    }
+    /// The newest sample alone — for a reader that shows one number, where
+    /// [`Self::list_metrics`] copies the whole history.
+    pub fn latest_metrics(&self, server_id: &str) -> Option<RedisMetrics> {
+        self.data.read().get(server_id).and_then(|queue| queue.back().copied())
     }
 }
 
@@ -349,6 +354,10 @@ pub fn aggregate_redis_info(infos: Vec<RedisInfo>) -> RedisInfo {
         total.metrics.keyspace_hits += info.metrics.keyspace_hits;
         total.metrics.keyspace_misses += info.metrics.keyspace_misses;
         total.metrics.evicted_keys += info.metrics.evicted_keys;
+        // Left out, these two were the first master's alone in the Metrics
+        // CSV and history while every counter beside them was the cluster's.
+        total.metrics.expired_keys += info.metrics.expired_keys;
+        total.metrics.rejected_connections += info.metrics.rejected_connections;
 
         // --- CPU (Sum) ---
         // Accumulate total CPU time consumed by the entire cluster
@@ -962,6 +971,14 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 this.heartbeat_in_flight = false;
+                // Disconnected by hand while this beat was in flight: its
+                // answer is from before the disconnect. Let through, a success
+                // put the health back to Connected and the next beats never
+                // ran (they are paused while offline), so the dot showed a
+                // live link that could be neither dropped nor re-dialled.
+                if this.manually_offline {
+                    return;
+                }
                 match result {
                     Ok((info, slow_logs, dbsize)) => {
                         // Sentinel: the node we resolved as master now reports
@@ -999,6 +1016,7 @@ impl ZedisServerState {
                                 .filter(|item| item.timestamp >= last_slow_logs_checked_at)
                                 .count();
                             this.slow_logs = slow_logs;
+                            this.slow_logs_generation += 1;
                             this.last_slow_logs_checked_at = unix_ts();
                         }
                         cx.emit(ServerEvent::ServerRedisInfoUpdated);
@@ -1087,6 +1105,8 @@ mod tests {
             let mut info = RedisInfo::default();
             info.metrics.connected_clients = clients;
             info.metrics.used_memory = keys * 100;
+            info.metrics.expired_keys = keys;
+            info.metrics.rejected_connections = clients;
             info.keyspace
                 .insert("db0".to_string(), RedisKeySpaceStats { keys, expires, avg_ttl });
             info
@@ -1098,6 +1118,8 @@ mod tests {
         assert_eq!(db0.avg_ttl, 2000, "weighted over both nodes with volatile keys");
         assert_eq!(total.metrics.connected_clients, 6);
         assert_eq!(total.metrics.used_memory, 600);
+        assert_eq!(total.metrics.expired_keys, 6, "every master's, not the first one's");
+        assert_eq!(total.metrics.rejected_connections, 6);
 
         let single = aggregate_redis_info(vec![node(4, 1, 0, 0)]);
         assert_eq!(single.keyspace.get("db0").expect("db0").keys, 4);

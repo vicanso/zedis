@@ -141,7 +141,7 @@ impl ZedisFunctionEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| match event {
-            ServerEvent::ServerSelected(_) | ServerEvent::ServerInfoUpdated => {
+            ServerEvent::ServerSelected(_) => {
                 this.libraries.clear();
                 this.stats = None;
                 this.expanded.clear();
@@ -151,6 +151,16 @@ impl ZedisFunctionEditor {
                 this.error = None;
                 this.unsupported = false;
                 this.fetch(cx);
+            }
+            // Also sent on a write unlock, a lock running out or a read-only
+            // toggle, where clearing lost the FCALL arguments and the last
+            // result. Loads only what was never loaded; otherwise redraws.
+            ServerEvent::ServerInfoUpdated => {
+                if this.libraries.is_empty() && this.stats.is_none() {
+                    this.fetch(cx);
+                } else {
+                    cx.notify();
+                }
             }
             _ => {}
         }));

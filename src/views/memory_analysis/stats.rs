@@ -96,6 +96,23 @@ impl<T> TopN<T> {
 /// empty, otherwise the children of that path. Every level lives flat in
 /// `prefix_map` keyed by its full path, so drilling in is a filter, not a
 /// re-scan.
+/// The memory under every top-level prefix, scaled by the sample `ratio`
+/// the way the rows are — what a share of one of them is a share of
+/// ([`build_prefix_rows`] keeps only the biggest few).
+pub(super) fn top_level_prefix_memory(
+    prefix_map: &HashMap<String, PrefixStats>,
+    ratio: f32,
+    key_separator: &str,
+) -> u64 {
+    let scale = if ratio > 0.0 { 1.0 / ratio } else { 1.0 };
+    let raw: u64 = prefix_map
+        .iter()
+        .filter(|(path, _)| !key_separator.is_empty() && !path.contains(key_separator))
+        .map(|(_, stats)| stats.memory_bytes)
+        .sum();
+    (raw as f32 * scale) as u64
+}
+
 pub(super) fn build_prefix_rows(
     prefix_map: &HashMap<String, PrefixStats>,
     ratio: f32,

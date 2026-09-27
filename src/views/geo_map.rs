@@ -227,6 +227,10 @@ impl ZedisGeoMap {
                     Ok(data) => {
                         this.data = Some(data);
                         this.error = None;
+                        // The ruler holds indices into the points it was
+                        // drawn on; a reload's sample orders (or holds)
+                        // other ones, and the line joined two strangers.
+                        this.ruler.clear();
                     }
                     Err(e) => this.error = Some(SharedString::from(e.to_string())),
                 }

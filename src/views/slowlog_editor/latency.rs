@@ -69,9 +69,26 @@ impl ZedisSlowlogEditor {
                         this.latency_events = listing.events;
                         this.latency_threshold_ms = threshold;
                         // Drop stale caches so a refresh always reflects
-                        // the freshly fetched events.
-                        this.event_histories.clear();
-                        this.expanded_event = None;
+                        // the freshly fetched events — but keep the open
+                        // detail open (the poll runs every few seconds, and
+                        // closed it under the reader each time), showing its
+                        // history until the new one lands, unless its event
+                        // is gone.
+                        let still_listed = this
+                            .expanded_event
+                            .as_ref()
+                            .filter(|expanded| {
+                                this.latency_events
+                                    .iter()
+                                    .any(|event| event.event.as_str() == expanded.as_ref())
+                            })
+                            .cloned();
+                        this.event_histories
+                            .retain(|event, _| still_listed.as_ref() == Some(event));
+                        match still_listed {
+                            Some(expanded) => this.load_event_detail(expanded, cx),
+                            None => this.expanded_event = None,
+                        }
                         // Rebuild slow-log rows so their correlation
                         // chips reflect the freshly fetched events.
                         // We rebuild from `server_state.slow_logs()`
@@ -131,7 +148,11 @@ impl ZedisSlowlogEditor {
                 let still_active = handle
                     .update(cx, |this, cx| {
                         if this.current_tab == PerformanceTab::Latency {
-                            this.fetch_latency(cx);
+                            // A background tab or an unattended app skips the
+                            // round, like every other poll (ADR 5).
+                            if !this.server_state.read(cx).is_background() {
+                                this.fetch_latency(cx);
+                            }
                             true
                         } else {
                             false
@@ -515,6 +536,7 @@ impl ZedisSlowlogEditor {
                 // a single-sample history still renders a tick.
                 let tick_margin = (h.len() / 4).max(1);
                 let params = ChartParams {
+                    y_min: 0.0,
                     dates: Arc::new(dates),
                     y_max,
                     y_format: Box::new(|v| format!("{:.0} ms", v)),

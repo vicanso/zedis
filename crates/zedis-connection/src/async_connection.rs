@@ -17,6 +17,7 @@ use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
 use super::ssh_tunnel::{open_single_sni_tls_connection, open_single_ssh_tunnel_connection, tls_server_name};
 use crate::error::{ConnectionErrorKind, Error};
 use crate::floors;
+use crate::reply;
 use semver::Version;
 use arc_swap::ArcSwap;
 use futures::future::try_join_all;
@@ -202,42 +203,44 @@ pub fn resolve_response_timeout(config: &RedisServer) -> Duration {
 /// The flags are silently skipped where unsupported (older servers,
 /// proxies, NOPERM-restricted users) — debug log only.
 pub(crate) async fn configure_client_connection(conn: &mut impl ConnectionLike) {
-    if let Err(err) = cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME).exec_async(conn).await {
-        error!(error = %err, "set client name failed");
-    }
-    // `CLIENT SETINFO` (7.2+) fills the `lib-name` / `lib-ver` columns of
-    // `CLIENT LIST`; older servers answer "unknown subcommand".
+    // One round trip for the lot, where it used to be one per command, on
+    // every dial. Each is best-effort and answered on its own, so a server
+    // that refuses one — `CLIENT SETINFO` before 7.2, `NO-EVICT` before 7.0,
+    // a user without the permission — still takes the others.
+    const STEPS: [&str; 4] = ["client setname", "client setinfo lib-name", "client setinfo lib-ver", "client no-evict"];
+    let mut pipe = redis::pipe();
+    pipe.cmd("CLIENT").arg("SETNAME").arg(CLIENT_NAME);
+    // `CLIENT SETINFO` fills the `lib-name` / `lib-ver` columns of
+    // `CLIENT LIST`.
     for (field, value) in [("LIB-NAME", "zedis"), ("LIB-VER", env!("CARGO_PKG_VERSION"))] {
-        if let Err(err) = cmd("CLIENT")
-            .arg("SETINFO")
-            .arg(field)
-            .arg(value)
-            .exec_async(conn)
-            .await
-        {
-            debug!(error = %err, field, "client setinfo not applied");
+        pipe.cmd("CLIENT").arg("SETINFO").arg(field).arg(value);
+    }
+    pipe.cmd("CLIENT").arg("NO-EVICT").arg("ON");
+    // Read for the one question `floors::no_touch_is_safe` asks.
+    pipe.cmd("INFO").arg("server");
+    let replies = match conn.req_packed_commands(&pipe, 0, STEPS.len() + 1).await {
+        Ok(replies) => replies,
+        Err(err) => {
+            error!(error = %err, "configuring the connection failed");
+            return;
+        }
+    };
+    for (step, reply) in STEPS.iter().zip(&replies) {
+        if let Value::ServerError(err) = reply {
+            debug!(error = ?err, step, "not applied");
         }
     }
-    if let Err(err) = cmd("CLIENT").arg("NO-EVICT").arg("ON").exec_async(conn).await {
-        debug!(error = %err, "client no-evict not applied");
-    }
-    if no_touch_is_safe_here(conn).await
-        && let Err(err) = cmd("CLIENT").arg("NO-TOUCH").arg("ON").exec_async(conn).await
-    {
+    // A server that will not say its version (a proxy, a NOPERM user, a
+    // reply this cannot parse) is treated as unsafe: not setting the flag
+    // costs a little accuracy in one panel, and setting it on the wrong
+    // server costs the server.
+    let no_touch_is_safe = replies
+        .get(STEPS.len())
+        .and_then(reply::text)
+        .is_some_and(|info| no_touch_is_safe_per(&info));
+    if no_touch_is_safe && let Err(err) = cmd("CLIENT").arg("NO-TOUCH").arg("ON").exec_async(conn).await {
         debug!(error = %err, "client no-touch not applied");
     }
-}
-
-/// `INFO server`, read for the one question [`floors::no_touch_is_safe`]
-/// asks. A server that will not say (a proxy, a NOPERM user, a reply this
-/// cannot parse) is treated as unsafe: not setting the flag costs a little
-/// accuracy in one panel, and setting it on the wrong server costs the
-/// server.
-async fn no_touch_is_safe_here(conn: &mut impl ConnectionLike) -> bool {
-    let Ok(info) = cmd("INFO").arg("server").query_async::<String>(conn).await else {
-        return false;
-    };
-    no_touch_is_safe_per(&info)
 }
 
 /// The verdict for an `INFO server` reply. Valkey prints `redis_version`
@@ -423,15 +426,48 @@ pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<Multiplex
                 anonymous.password = None;
                 anonymous
             };
-            open_multiplexed_connection(&retry, 0, false).await
+            let mut conn = open_multiplexed_connection(&retry, 0, false).await?;
+            // The password-less retry is for a sentinel that needs none. A
+            // data node that lets it in has a password-less `default` user,
+            // and taking that as success made "Test connection" pass a wrong
+            // password — the saved entry then failed with WRONGPASS.
+            if config.has_sentinel_credentials() || is_sentinel(&mut conn).await {
+                Ok(conn)
+            } else {
+                Err(e)
+            }
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Whether the connection reached a sentinel: `ROLE` answers `sentinel`.
+async fn is_sentinel(conn: &mut MultiplexedConnection) -> bool {
+    let role: redis::RedisResult<redis::Value> = cmd("ROLE").query_async(conn).await;
+    match role {
+        Ok(redis::Value::Array(items)) => items
+            .first()
+            .and_then(reply::text)
+            .is_some_and(|role| role.eq_ignore_ascii_case("sentinel")),
+        _ => false,
     }
 }
 
 pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
     let key = config.get_hash(db);
     CONNECTION_POOL.remove(&key);
+}
+
+/// Drop the pooled per-node connection [`open_node_connection_cached`]
+/// keeps for `host_port` of `server_name` — the same key it was stored
+/// under: the entry with the node's address, database 0.
+pub fn remove_node_connection_from_pool(server_name: &str, host_port: &str) {
+    let (Some((host, port)), Ok(mut config)) = (split_host_port(host_port), get_server(server_name)) else {
+        return;
+    };
+    config.host = host.to_string();
+    config.port = port;
+    remove_connection_from_pool(&config, 0);
 }
 /// Creates a Redis client from the server configuration.
 ///

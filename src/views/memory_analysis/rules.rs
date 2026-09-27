@@ -226,12 +226,17 @@ pub(super) const FRAG_FLOOR_BYTES: u64 = 200 * 1024 * 1024;
 /// `biggest_keys` are the already-computed aggregates; `frag` is
 /// `Some((ratio, waste_bytes))` when the status-bar heartbeat has a recent
 /// fragmentation sample, else `None`.
+/// `prefix_memory` is the memory under *every* prefix (scaled like the
+/// rows): `prefix_rows` are the table's top few, and a share of their sum
+/// called a prefix dominant that held a fraction of the whole. `None` sums
+/// the rows.
 pub(super) fn build_recommendations(
     policy: &str,
     prefix_rows: &[PrefixRow],
     biggest_keys: &[SingleKeyRow],
     ttl: &TtlHistogram,
     frag: Option<(f64, u64)>,
+    prefix_memory: Option<u64>,
 ) -> Vec<Recommendation> {
     let mut out = Vec::new();
 
@@ -309,7 +314,7 @@ pub(super) fn build_recommendations(
         }
     }
     // Dominant prefix — only meaningful when several prefixes compete.
-    let total_prefix_mem: u64 = prefix_rows.iter().map(|r| r.memory_bytes).sum();
+    let total_prefix_mem: u64 = prefix_memory.unwrap_or_else(|| prefix_rows.iter().map(|r| r.memory_bytes).sum());
     if prefix_rows.len() >= 2
         && total_prefix_mem > 0
         && let Some(top) = prefix_rows.iter().max_by_key(|r| r.memory_bytes)

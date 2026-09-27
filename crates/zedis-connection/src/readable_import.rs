@@ -28,7 +28,7 @@ use crate::server_db::ServerDb;
 use crate::manager::get_connection_manager;
 use crate::readable_export::{ReadableEntry, ReadableValue};
 use futures::future::try_join_all;
-use redis::cmd;
+use redis::{cmd, pipe};
 use serde_json::Value;
 use std::fs;
 use std::io::Read;
@@ -147,9 +147,14 @@ fn value_from_json(key: &str, key_type: &str, value: &Value) -> Result<Option<Re
                     .get("member")
                     .and_then(Value::as_str)
                     .ok_or_else(|| invalid("array items of {\"member\", \"score\"}"))?;
+                // A number, or a spelled one (`+inf` / `-inf`, as the export
+                // writes an infinity).
                 let score = item
                     .get("score")
-                    .and_then(Value::as_f64)
+                    .and_then(|score| match score {
+                        Value::String(spelled) => spelled.trim().parse::<f64>().ok(),
+                        other => other.as_f64(),
+                    })
                     .ok_or_else(|| invalid("array items of {\"member\", \"score\"}"))?;
                 pairs.push((member.to_string(), score));
             }
@@ -163,16 +168,22 @@ fn value_from_json(key: &str, key_type: &str, value: &Value) -> Result<Option<Re
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| invalid("array items of {\"id\", \"fields\"}"))?;
-                let fields = item
-                    .get("fields")
-                    .and_then(Value::as_object)
-                    .ok_or_else(|| invalid("array items of {\"id\", \"fields\"}"))?;
+                // An object, or `[field, value]` pairs where a name repeats.
+                let fields: Vec<(String, &Value)> = match item.get("fields") {
+                    Some(Value::Object(fields)) => fields.iter().map(|(f, v)| (f.clone(), v)).collect(),
+                    Some(Value::Array(pairs)) => pairs
+                        .iter()
+                        .map(|pair| match pair.as_array().map(Vec::as_slice) {
+                            Some([Value::String(field), value]) => Ok((field.clone(), value)),
+                            _ => Err(invalid("fields as an object or [field, value] pairs")),
+                        })
+                        .collect::<Result<_>>()?,
+                    _ => return Err(invalid("array items of {\"id\", \"fields\"}")),
+                };
                 let mut pairs = Vec::with_capacity(fields.len());
                 for (field, v) in fields {
-                    pairs.push((
-                        field.clone(),
-                        scalar(v, &format!("key `{key}`: stream field `{field}`"))?,
-                    ));
+                    let v = scalar(v, &format!("key `{key}`: stream field `{field}`"))?;
+                    pairs.push((field, v));
                 }
                 entries.push((id.to_string(), pairs));
             }
@@ -433,14 +444,18 @@ async fn write_value(conn: &mut RedisAsyncConn, key: &str, value: &ReadableValue
         }
         ReadableValue::Stream(entries) => {
             // Original ids preserved; XRANGE order is ascending, which
-            // XADD requires.
-            for (id, fields) in entries {
-                let mut add = cmd("XADD");
-                add.arg(key).arg(id);
-                for (field, v) in fields {
-                    add.arg(field).arg(v);
+            // XADD requires. A page of entries per round trip — one key, so
+            // one slot, and the pipeline keeps the order — where each entry
+            // used to wait for the one before it.
+            for page in entries.chunks(WRITE_PAGE) {
+                let mut adds = pipe();
+                for (id, fields) in page {
+                    let add = adds.cmd("XADD").arg(key).arg(id);
+                    for (field, v) in fields {
+                        add.arg(field).arg(v);
+                    }
                 }
-                add.exec_async(conn).await?;
+                adds.exec_async(conn).await?;
             }
         }
     }
@@ -529,17 +544,25 @@ mod tests {
                 key: "z".into(),
                 key_type: "zset".into(),
                 pttl_ms: -1,
-                value: Some(ReadableValue::Zset(vec![("m".into(), 1.5)])),
+                value: Some(ReadableValue::Zset(vec![
+                    ("low".into(), f64::NEG_INFINITY),
+                    ("m".into(), 1.5),
+                    ("high".into(), f64::INFINITY),
+                ])),
                 truncated: true,
             },
             ReadableEntry {
                 key: "x".into(),
                 key_type: "stream".into(),
                 pttl_ms: -1,
-                value: Some(ReadableValue::Stream(vec![(
-                    "1-1".into(),
-                    vec![("n".into(), "0".into())],
-                )])),
+                value: Some(ReadableValue::Stream(vec![
+                    ("1-1".into(), vec![("n".into(), "0".into())]),
+                    // A name twice in one entry, which XADD allows.
+                    (
+                        "1-2".into(),
+                        vec![("tag".into(), "a".into()), ("tag".into(), "b".into())],
+                    ),
+                ])),
                 truncated: false,
             },
             ReadableEntry {

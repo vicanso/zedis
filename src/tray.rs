@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::connection::{RedisServer, get_servers};
-use crate::helpers::channel;
+use crate::helpers::{channel, pacing};
 use crate::states::Route;
 use crate::states::{GlobalEvent, RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
 use gpui::{App, BorrowAppContext, Context, Subscription};
@@ -21,7 +21,6 @@ use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
 use tracing::error;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
@@ -181,10 +180,9 @@ impl TrayMenuState {
 fn collect_refresh_data(cx: &App) -> (Vec<RedisServer>, Option<(String, usize)>, Option<RedisMetrics>) {
     let store = cx.global::<ZedisGlobalStore>().clone();
     let active = store.read(cx).selected_server().map(|(id, db)| (id.clone(), *db));
-    let active_metrics = active.as_ref().and_then(|(id, _)| {
-        let metrics = get_metrics_cache().list_metrics(id);
-        metrics.last().copied()
-    });
+    let active_metrics = active
+        .as_ref()
+        .and_then(|(id, _)| get_metrics_cache().latest_metrics(id));
     let servers = get_servers().unwrap_or_else(|e| {
         error!(error = %e, "tray: server list unavailable");
         Vec::new()
@@ -370,7 +368,7 @@ pub fn init_tray(cx: &mut App) {
             // above, so this only keeps live stats current.
             cx.spawn(async move |cx| {
                 loop {
-                    cx.background_executor().timer(Duration::from_secs(5)).await;
+                    cx.background_executor().timer(pacing::TRAY_REFRESH_INTERVAL).await;
                     cx.update(|cx| {
                         refresh_tray_menu(&state, &tray, cx);
                     });

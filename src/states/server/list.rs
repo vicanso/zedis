@@ -78,6 +78,10 @@ impl ZedisServerState {
         F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
     {
+        // Offline: no optimistic change a dropped task could not take back.
+        if self.refuse_while_offline(cx) {
+            return;
+        }
         // The value generation this write belongs to — see `value_epoch`.
         let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {

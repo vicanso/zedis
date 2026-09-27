@@ -159,6 +159,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_node_label_keeps_an_ipv6_hosts_colons() {
+        assert_eq!(split_label("10.0.0.1:7000"), ("10.0.0.1", 7000));
+        assert_eq!(split_label("::1:7000"), ("::1", 7000));
+        assert_eq!(split_label("[fe80::1]:7001"), ("fe80::1", 7001));
+        assert_eq!(split_label("redis.internal"), ("redis.internal", 0));
+    }
+
+    #[test]
     fn group_thousands_inserts_separators() {
         assert_eq!(group_thousands(0), "0");
         assert_eq!(group_thousands(999), "999");
@@ -237,6 +245,15 @@ pub fn split_host_port_or(addr: &str, default_port: u16) -> (&str, u16) {
         Some((host, port)) => (host, port.parse().unwrap_or(default_port)),
         None => (addr, default_port),
     }
+}
+
+/// A `host:port` node label as the bridge writes one: the port after the
+/// *last* colon, so a bare IPv6 host (`::1:7000`) keeps its own — read as a
+/// user-typed endpoint ([`split_host_port_or`]) it was all host and port 0,
+/// matched no node, and the browser's key tree stayed empty on an IPv6
+/// cluster. Brackets are unwrapped; a label without a port is all host.
+pub fn split_label(label: &str) -> (&str, u16) {
+    split_host_port(label).unwrap_or((label.trim(), 0))
 }
 
 /// `host:port` for URLs and labels, with an IPv6 literal bracketed.

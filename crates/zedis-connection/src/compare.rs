@@ -24,6 +24,7 @@
 
 use super::readable_export::{ReadLimits, ReadableEntry, ReadableValue, read_readable_chunk};
 use crate::error::Error;
+use crate::keyspace::key_types;
 use crate::server_db::ServerDb;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,6 +119,25 @@ pub fn prefix_pattern(prefix: &str) -> String {
     pattern
 }
 
+/// The keys one side listed and the other did not, with the other side's
+/// type for each where it has the key after all — asked only when that
+/// side's scan was `capped`; a complete scan already said it has none.
+async fn present_on(
+    other: &ServerDb,
+    capped: bool,
+    unlisted: Vec<(String, String)>,
+) -> Result<Vec<(String, String, Option<String>)>> {
+    if !capped || unlisted.is_empty() {
+        return Ok(unlisted.into_iter().map(|(key, ty)| (key, ty, None)).collect());
+    }
+    let types = key_types(other, unlisted.iter().map(|(key, _)| key.clone()).collect()).await?;
+    Ok(unlisted
+        .into_iter()
+        .zip(types)
+        .map(|((key, ty), other_type)| (key, ty, (other_type != "none").then_some(other_type)))
+        .collect())
+}
+
 /// Every key under `prefix` on one side with its type, up to `limit`.
 /// The second value says whether the limit cut the scan short.
 async fn scan_side(
@@ -183,15 +203,33 @@ pub async fn compare_prefix(
         ..Default::default()
     };
     let mut both: Vec<(String, String, String)> = Vec::new();
+    let mut unlisted_on_target: Vec<(String, String)> = Vec::new();
     for (key, key_type) in &source_keys {
         match target_keys.get(key) {
             Some(target_type) => both.push((key.clone(), key_type.clone(), target_type.clone())),
-            None => report.only_source.push((key.clone(), key_type.clone())),
+            None => unlisted_on_target.push((key.clone(), key_type.clone())),
         }
     }
-    for (key, key_type) in &target_keys {
-        if !source_keys.contains_key(key) {
-            report.only_target.push((key.clone(), key_type.clone()));
+    let unlisted_on_source: Vec<(String, String)> = target_keys
+        .iter()
+        .filter(|(key, _)| !source_keys.contains_key(*key))
+        .map(|(key, key_type)| (key.clone(), key_type.clone()))
+        .collect();
+    // A side the limit cut short listed only part of its keys: one the other
+    // side has and it did not list may still be there, and calling it
+    // missing was a false difference. Ask that side for those keys by name.
+    let source_at = ServerDb::new(source.server_id.as_str(), source.db);
+    let target_at = ServerDb::new(target.server_id.as_str(), target.db);
+    for (key, source_type, target_type) in present_on(&target_at, target_capped, unlisted_on_target).await? {
+        match target_type {
+            Some(target_type) => both.push((key, source_type, target_type)),
+            None => report.only_source.push((key, source_type)),
+        }
+    }
+    for (key, target_type, source_type) in present_on(&source_at, source_capped, unlisted_on_source).await? {
+        match source_type {
+            Some(source_type) => both.push((key, source_type, target_type)),
+            None => report.only_target.push((key, target_type)),
         }
     }
     if cancel.load(Ordering::Acquire) {
@@ -274,8 +312,33 @@ fn compare_entries(a: &ReadableEntry, b: &ReadableEntry) -> Option<bool> {
         return None;
     }
     match (&a.value, &b.value) {
+        // The values come as text with every byte that is not UTF-8 replaced
+        // by U+FFFD, so two binary values differing only in those bytes read
+        // the same — `\x80\x01` and `\x81\x01` were counted as equal. Where
+        // a replacement shows, the text cannot say: unchecked, not "same".
+        (Some(x), Some(y)) if has_replacement(x) || has_replacement(y) => None,
         (Some(x), Some(y)) => Some(values_equal(x, y)),
         _ => None,
+    }
+}
+
+/// Whether any text in the value carries U+FFFD, the mark a lossy decoding
+/// leaves (a value that really holds one is left unchecked too — the safe
+/// side of the doubt).
+fn has_replacement(value: &ReadableValue) -> bool {
+    fn marked<'a>(mut texts: impl Iterator<Item = &'a String>) -> bool {
+        texts.any(|text| text.contains(char::REPLACEMENT_CHARACTER))
+    }
+    match value {
+        ReadableValue::Text(text) => marked(std::iter::once(text)),
+        ReadableValue::List(items) | ReadableValue::Set(items) => marked(items.iter()),
+        ReadableValue::Hash(pairs) => marked(pairs.iter().flat_map(|(f, v)| [f, v])),
+        ReadableValue::Zset(members) => marked(members.iter().map(|(m, _)| m)),
+        ReadableValue::Stream(entries) => marked(
+            entries
+                .iter()
+                .flat_map(|(_, fields)| fields.iter().flat_map(|(f, v)| [f, v])),
+        ),
     }
 }
 
@@ -303,6 +366,22 @@ pub fn values_equal(a: &ReadableValue, b: &ReadableValue) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn binary_values_that_decode_alike_are_not_called_the_same() {
+        let entry = |bytes: &[u8]| ReadableEntry {
+            key: "k".to_string(),
+            key_type: "string".to_string(),
+            pttl_ms: -1,
+            value: Some(ReadableValue::Text(String::from_utf8_lossy(bytes).into_owned())),
+            truncated: false,
+        };
+        // Both read as "\u{FFFD}\u{1}".
+        assert_eq!(compare_entries(&entry(b"\x80\x01"), &entry(b"\x81\x01")), None);
+        assert_eq!(compare_entries(&entry(b"plain"), &entry(b"plain")), Some(true));
+        assert_eq!(compare_entries(&entry(b"plain"), &entry(b"other")), Some(false));
+    }
+
     use super::*;
 
     fn text(s: &str) -> String {

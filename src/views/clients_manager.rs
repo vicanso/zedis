@@ -754,11 +754,11 @@ impl ZedisClientsManager {
 
         self._kill_task = Some(cx.spawn(async move |handle, cx| {
             while let Ok((client_id, _client_addr, node)) = rx.recv().await {
-                let db = server_state.update(cx, |state, _| state.db());
+                let at = server_state.update(cx, |state, _| ServerDb::new(state.server_id(), state.db()));
 
                 let id_clone = client_id.clone();
                 let task = cx.background_spawn(async move {
-                    client_kill_id(&node, db, id_clone.as_ref()).await?;
+                    client_kill_id(&at, &node, id_clone.as_ref()).await?;
                     Ok::<(), Error>(())
                 });
 
@@ -870,7 +870,10 @@ impl ZedisClientsManager {
     /// Kill the given clients one by one (`CLIENT KILL ID`, each on its own
     /// node), then surface a single aggregated notification and refresh once.
     fn batch_kill(&mut self, targets: Vec<(SharedString, RedisServer)>, cx: &mut gpui::Context<Self>) {
-        let db = self.server_state.read(cx).db();
+        let at = {
+            let state = self.server_state.read(cx);
+            ServerDb::new(state.server_id(), state.db())
+        };
         let table_state = self.table_state.clone();
 
         self._batch_kill_task = Some(cx.spawn(async move |handle, cx| {
@@ -879,7 +882,7 @@ impl ZedisClientsManager {
                 let mut failed = 0usize;
                 for (id, node) in targets {
                     let result = async {
-                        client_kill_id(&node, db, id.as_ref()).await?;
+                        client_kill_id(&at, &node, id.as_ref()).await?;
                         Ok::<(), Error>(())
                     }
                     .await;

@@ -21,7 +21,7 @@ use crate::connection::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
     ReadableWriteStatus, RestoreStatus, ServerDb, csv_header, detect_import_format, dump_keys_chunk, entry_to_csv,
     entry_to_json, get_server, is_foreign_payload, parse_readable_entries, read_readable_chunk, restore_keys_chunk,
-    restore_or_recreate_chunk, server_summary, write_readable_chunk,
+    restore_or_recreate_chunk, server_summary, ttl_left, write_readable_chunk,
 };
 use crate::error::Error;
 use chrono::Utc;
@@ -503,7 +503,10 @@ async fn readable_export_worker(
             });
         }
 
-        let done = entries.len();
+        // Done is what carried a value: a module key is in the file with a
+        // null, which its log line already calls skipped, and the counts
+        // should say the same.
+        let done = entries.iter().filter(|entry| entry.value.is_some()).count();
         let skipped = chunk.len() - done;
         let bytes_in_chunk = payload.len() as u64;
         writer = smol::unblock(move || -> Result<BufWriter<File>> {
@@ -621,6 +624,7 @@ async fn import_binary_worker(
     })
     .await?;
     let header_total = reader.header().key_count;
+    let dumped_at_ms = reader.header().created_at_ms;
     let _ = handle.update(cx, |s, cx| {
         s.progress.keys_total = header_total;
         cx.notify();
@@ -650,6 +654,36 @@ async fn import_binary_worker(
         reader = returned_reader;
         if batch.is_empty() {
             break;
+        }
+        // The TTLs are as `PTTL` said at the export: count them down to now,
+        // and leave out a key that would have expired since — restoring it
+        // with its old TTL brought it back to life.
+        let now_ms = Utc::now().timestamp_millis();
+        let mut expired = Vec::new();
+        batch.retain_mut(|entry| match ttl_left(entry.pttl_ms, dumped_at_ms, now_ms) {
+            Some(left) => {
+                entry.pttl_ms = left;
+                true
+            }
+            None => {
+                expired.push(LogLine {
+                    key: String::from_utf8_lossy(&entry.key).into_owned().into(),
+                    bytes: 0,
+                    status: LogStatus::Skipped,
+                    message: Some("expired".into()),
+                });
+                false
+            }
+        });
+        if !expired.is_empty() {
+            let count = expired.len() as u64;
+            handle
+                .update(cx, |s, cx| {
+                    s.progress.keys_skipped += count;
+                    cx.emit(MigrationEvent::Progress);
+                    s.extend_log(expired, cx);
+                })
+                .map_err(|e| Error::Invalid { message: e.to_string() })?;
         }
         flush_restore_batch(&handle, cx, None, &at, &mut batch, conflict).await?;
         if eof {

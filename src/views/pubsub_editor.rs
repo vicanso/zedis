@@ -239,6 +239,7 @@ impl ZedisPubsubEditor {
         let at = ServerDb::new(server_state.server_id(), server_state.db());
         let sharded = self.sharded;
         self.subscribing = true;
+        self.subscribe_error = None;
         cx.notify();
 
         let entity = cx.entity().downgrade();
@@ -307,9 +308,7 @@ impl ZedisPubsubEditor {
                             let count = this.table_state.update(cx, |state, _| {
                                 let delegate = state.delegate_mut();
                                 // Newest first: prepend, the cap trims the tail.
-                                for entry in batch {
-                                    delegate.push_front(entry.cells());
-                                }
+                                delegate.push_front_batch(batch.into_iter().map(|entry| entry.cells()));
                                 delegate.total_len()
                             });
                             this.message_count = count;
@@ -325,6 +324,17 @@ impl ZedisPubsubEditor {
                     // Stream ended or entity dropped: cancel the reader (and
                     // with it the dedicated Pub/Sub connection).
                     drop(reader);
+                    // A stream that ends on its own is a connection that
+                    // closed under the subscription: say so instead of
+                    // leaving the panel claiming it still listens. (An
+                    // Unsubscribe drops this task and never gets here.)
+                    let _ = entity.update(cx, |this, cx| {
+                        this.subscribe_task = None;
+                        this.subscribed_at = None;
+                        this._tick_task = None;
+                        this.subscribe_error = Some(i18n_common(cx, "subscription_closed"));
+                        cx.notify();
+                    });
                 }
                 Err(e) => {
                     error!("Pubsub subscribe error: {:?}", e);

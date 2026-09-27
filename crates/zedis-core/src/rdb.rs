@@ -438,9 +438,18 @@ impl<R: Read> RdbParser<R> {
             Length::Encoded(3) => {
                 let compressed = self.read_length_value()?;
                 let uncompressed = self.read_length_value()?;
-                let mut buf = vec![0u8; compressed as usize];
-                self.read_exact(&mut buf)?;
-                lzf_decompress(&buf, uncompressed as usize).map_err(|m| self.err(m))
+                // Both lengths come from the file: read what is really there
+                // rather than allocating what the header claims up front —
+                // a corrupt length was one allocation of that size.
+                let mut buf = Vec::new();
+                let copied = std::io::copy(&mut (&mut self.reader).take(compressed), &mut buf)
+                    .map_err(|e| self.err(format!("read failed: {e}")))?;
+                self.offset += copied;
+                if copied != compressed {
+                    return Err(self.err("unexpected end of file"));
+                }
+                let uncompressed = usize::try_from(uncompressed).map_err(|_| self.err("lzf: length too large"))?;
+                lzf_decompress(&buf, uncompressed).map_err(|m| self.err(m))
             }
             Length::Encoded(enc) => Err(self.err(format!("unknown string encoding {enc}"))),
         }
@@ -825,7 +834,16 @@ fn listpack_len(blob: &[u8]) -> Option<u64> {
     (count != u16::MAX).then_some(u64::from(count))
 }
 
+/// The most output one input byte can stand for: a back-reference of three
+/// bytes copies at most 264.
+const LZF_MAX_RATIO: usize = 88;
+
 fn lzf_decompress(input: &[u8], expected_len: usize) -> std::result::Result<Vec<u8>, String> {
+    // The expected length is the file's word; one that this input could
+    // never inflate to is a corrupt header, not an allocation to make.
+    if expected_len > input.len().saturating_mul(LZF_MAX_RATIO) {
+        return Err(format!("lzf: {} bytes cannot inflate to {expected_len}", input.len()));
+    }
     let mut out: Vec<u8> = Vec::with_capacity(expected_len);
     let mut i = 0usize;
     while i < input.len() {
@@ -1151,6 +1169,12 @@ mod tests {
         );
         assert!(entries.iter().all(|e| e.expire_at_ms.is_none()));
         assert!(entries.iter().all(|e| e.db == 0));
+    }
+
+    #[test]
+    fn an_impossible_lzf_length_is_refused_before_it_is_allocated() {
+        assert!(lzf_decompress(&[0x00, b'a'], usize::MAX).is_err());
+        assert!(lzf_decompress(&[0x00, b'a'], 1_000_000).is_err());
     }
 
     #[test]

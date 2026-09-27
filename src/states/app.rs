@@ -282,13 +282,6 @@ pub enum GlobalEvent {
     UpdateDownloadProgress,
 }
 
-/// Direction passed to [`ZedisGlobalStore::reorder_server`].
-#[derive(Debug, Clone, Copy)]
-pub enum ReorderDirection {
-    Up,
-    Down,
-}
-
 /// Cap on remembered per-display window placements (MRU order). Bounds the
 /// config size for users who connect to many different monitors over time.
 const MAX_WINDOW_PLACEMENTS: usize = 8;

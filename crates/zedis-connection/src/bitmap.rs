@@ -92,7 +92,11 @@ pub async fn set_bit(at: &ServerDb, key: &str, offset: u64, value: bool) -> Resu
 
 /// `BITFIELD key <args>` — the user's own sub-commands, as typed; the reply is
 /// one integer per `GET` / `SET` / `INCRBY`.
-pub async fn bit_field(at: &ServerDb, key: &str, args: &[String]) -> Result<Vec<i64>> {
+///
+/// One reply per sub-command; `None` where `OVERFLOW FAIL` stopped one — the
+/// server answers that with a nil, which a list of integers could not hold,
+/// so the whole command read as failed after it had written.
+pub async fn bit_field(at: &ServerDb, key: &str, args: &[String]) -> Result<Vec<Option<i64>>> {
     let mut command = cmd("BITFIELD");
     command.arg(key);
     for arg in args {

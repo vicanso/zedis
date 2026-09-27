@@ -39,16 +39,17 @@
 //!   * `ADDSLOTS` — the repair for a cluster that lost slot coverage.
 
 use crate::connection::{
-    AtomicSlotMigration, Capability, ClusterNode, ServerDb, SlotMove, cluster_forget, cluster_meet, group_slot_ranges,
-    master_addrs, migrate_slot, node_add_slots, node_cancel_slot_migrations, node_failover, node_load,
-    node_migrate_slots, node_replicate, node_slot_migrations, node_stabilize_slot,
-    plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots,
+    AtomicSlotMigration, Capability, ClusterNode, ServerDb, SlotMove, cluster_forget, cluster_meet, forget_client,
+    group_slot_ranges, master_addrs, migrate_slot, node_add_slots, node_cancel_slot_migrations, node_failover,
+    node_load, node_migrate_slots, node_replicate, node_slot_migrations, node_stabilize_slot,
+    plan_cluster_rebalance as plan_rebalance_slots, plan_reshard_slots, server_summary,
 };
 use crate::error::Error;
 use crate::helpers::channel;
-use crate::states::{ServerTask, ZedisServerState, i18n_common};
+use crate::states::{ServerEvent, ServerTask, ZedisServerState, i18n_common};
 use futures::future::try_join_all;
 use gpui::{SharedString, prelude::*};
+use std::sync::Arc;
 use tracing::warn;
 
 /// Per-master load sample for the Topology heatmap (memory + OPS).
@@ -72,6 +73,39 @@ pub struct ClusterReshardResult {
 }
 
 impl ZedisServerState {
+    /// Discover the cluster's nodes and slots again. The pooled client learnt
+    /// them when it connected and the heartbeat only refreshes `INFO`, so
+    /// after a `MEET`, a failover or a reshard the node list, the roles and
+    /// the slot map stayed as they were: a new node got no slots from the
+    /// rebalance planner, and a second plan re-planned slots already moved.
+    /// Forgetting the client makes the next call rediscover, as a
+    /// reconnect does.
+    pub(crate) fn reload_topology(&mut self, cx: &mut Context<Self>) {
+        let at = self.at();
+        let server_id = self.server_id.clone();
+        self.spawn(
+            ServerTask::ReloadTopology,
+            move || async move {
+                forget_client(&at);
+                Ok(server_summary(&at).await?)
+            },
+            move |this, result, cx| {
+                if this.server_id != server_id {
+                    return;
+                }
+                if let Ok(summary) = result {
+                    this.dbsize = Some(summary.dbsize);
+                    this.nodes = summary.nodes;
+                    this.nodes_description = Arc::new(summary.description);
+                    cx.emit(ServerEvent::ServerInfoUpdated);
+                }
+                this.refresh_redis_info(cx);
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     /// `CLUSTER FAILOVER [FORCE]` on a specific replica.
     ///
     /// `target_addr` is the replica's `host:port` (must match the
@@ -101,7 +135,7 @@ impl ZedisServerState {
                     // Eager refresh so the new master/replica roles
                     // appear in `nodes_description` without waiting
                     // for the next 2s heartbeat.
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
                 // Error path: `spawn` already records via add_error_message.
             },
@@ -131,7 +165,7 @@ impl ZedisServerState {
                         "MEET".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -159,7 +193,7 @@ impl ZedisServerState {
                         "FORGET".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -198,7 +232,7 @@ impl ZedisServerState {
                         "REPLICATE".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -241,7 +275,7 @@ impl ZedisServerState {
                         "SETSLOT".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -281,7 +315,7 @@ impl ZedisServerState {
                         "ADDSLOTS".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -338,7 +372,7 @@ impl ZedisServerState {
                         "SLOT MIGRATION".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -374,7 +408,7 @@ impl ZedisServerState {
                         "SLOT MIGRATION".into(),
                         cx,
                     );
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -498,7 +532,7 @@ impl ZedisServerState {
                             cx,
                         );
                     }
-                    this.refresh_redis_info(cx);
+                    this.reload_topology(cx);
                 }
             },
             cx,
@@ -597,7 +631,7 @@ impl ZedisServerState {
                                 cx,
                             );
                         }
-                        this.refresh_redis_info(cx);
+                        this.reload_topology(cx);
                     }
                     Err(_) => {
                         // spawn already records the error message.

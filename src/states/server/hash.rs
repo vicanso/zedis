@@ -157,6 +157,10 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // Offline: no optimistic change a dropped task could not take back.
+        if self.refuse_while_offline(cx) {
+            return;
+        }
         // The value generation this write belongs to — see `value_epoch`.
         let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
@@ -264,20 +268,34 @@ impl ZedisServerState {
                 if let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let hash = Arc::make_mut(hash_data);
                     hash.size += count;
-                    // Optimistically append if we are at the end of the scan
-                    if hash.done
-                        && !hash
-                            .values
-                            .iter()
-                            .any(|(f, _)| f.raw().as_ref() == field_clone.as_bytes())
-                    {
-                        if let Some(secs) = ttl
-                            && secs > 0
-                        {
+                    let loaded = hash
+                        .values
+                        .iter()
+                        .position(|(f, _)| f.raw().as_ref() == field_clone.as_bytes());
+                    // The TTL the write left: the one asked for, or none (an
+                    // overwrite drops a field's TTL).
+                    let set_ttl = |hash: &mut RedisHashValue| match ttl {
+                        Some(secs) if secs > 0 => {
                             hash.field_ttls.insert(field_clone.clone(), secs);
                         }
-                        hash.values
-                            .push((KvElement::from_text(&field_clone), KvElement::from_text(&value_clone)));
+                        _ => {
+                            hash.field_ttls.remove(&field_clone);
+                        }
+                    };
+                    match loaded {
+                        // An overwrite of a loaded field: its row shows the
+                        // new value and TTL, where it kept the old ones.
+                        Some(index) => {
+                            hash.values[index].1 = KvElement::from_text(&value_clone);
+                            set_ttl(hash);
+                        }
+                        // Optimistically append if we are at the end of the scan
+                        None if hash.done => {
+                            set_ttl(hash);
+                            hash.values
+                                .push((KvElement::from_text(&field_clone), KvElement::from_text(&value_clone)));
+                        }
+                        None => {}
                     }
                     if hash.size > SUCCESS_NOTIFY_THRESHOLD {
                         this.emit_success_notification(

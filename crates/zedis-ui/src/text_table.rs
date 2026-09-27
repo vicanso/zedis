@@ -147,6 +147,14 @@ pub struct ZedisTextTable {
     rows: VecDeque<Vec<SharedString>>,
     /// The rows matching `keyword`, only maintained while one is set.
     filtered: Vec<Vec<SharedString>>,
+    /// `filtered` lists its rows in the order `rows` does — false while a
+    /// sort orders the view.
+    filtered_in_row_order: bool,
+    /// The column the view is sorted by and whether ascending. A sort is a
+    /// view like a filter: `rows` keep their insertion order, so the header's
+    /// third click (unsorted) can give it back — it used to sort the rows
+    /// themselves and leave them descending.
+    sort: Option<(usize, bool)>,
     keyword: String,
     /// Column indices the keyword is matched against; empty = all.
     filter_columns: Vec<usize>,
@@ -186,6 +194,8 @@ impl ZedisTextTable {
             gpui_columns,
             rows: VecDeque::new(),
             filtered: Vec::new(),
+            filtered_in_row_order: true,
+            sort: None,
             keyword: String::new(),
             filter_columns: Vec::new(),
             max_rows: 0,
@@ -254,6 +264,46 @@ impl ZedisTextTable {
         }
     }
 
+    /// [`push_front`](Self::push_front) for a batch, keeping the visible
+    /// rows in step as it goes: the batch's matches join the front of the
+    /// filtered view and a trimmed row that matched leaves its end. A live
+    /// feed with a filter set used to re-scan (and re-clone) every kept row
+    /// per batch.
+    pub fn push_front_batch(&mut self, rows: impl IntoIterator<Item = Vec<SharedString>>) {
+        let filtered = self.shows_view();
+        if filtered && !self.filtered_in_row_order {
+            // A sorted view has no place for "newest first": redo it whole.
+            for row in rows {
+                self.push_front(row);
+            }
+            self.refilter();
+            return;
+        }
+        let mut matched = Vec::new();
+        for row in rows {
+            if filtered && self.passes(&row) {
+                matched.push(row.clone());
+            }
+            self.rows.push_front(row);
+        }
+        if filtered {
+            matched.reverse();
+            self.filtered.splice(0..0, matched);
+        }
+        // `filtered` is `rows` filtered, in order, so the oldest row — if it
+        // matched — is the filtered view's last.
+        if self.max_rows > 0 {
+            while self.rows.len() > self.max_rows {
+                if let Some(oldest) = self.rows.pop_back()
+                    && filtered
+                    && self.passes(&oldest)
+                {
+                    self.filtered.pop();
+                }
+            }
+        }
+    }
+
     /// Append a row; trims the oldest (front) past the cap.
     pub fn push_back(&mut self, row: Vec<SharedString>) {
         self.rows.push_back(row);
@@ -275,6 +325,17 @@ impl ZedisTextTable {
         self.filtered.clear();
     }
 
+    /// Sort the view by a column, or (`ColumnSort::Default`) give back the
+    /// rows' own order.
+    pub fn set_sort(&mut self, col_ix: usize, sort: ColumnSort) {
+        self.sort = match sort {
+            ColumnSort::Ascending => Some((col_ix, true)),
+            ColumnSort::Descending => Some((col_ix, false)),
+            ColumnSort::Default => None,
+        };
+        self.refilter();
+    }
+
     /// Set (or clear, with `""`) the keyword and recompute the visible rows.
     pub fn set_filter(&mut self, keyword: &str) {
         self.keyword = keyword.trim().to_lowercase();
@@ -294,33 +355,56 @@ impl ZedisTextTable {
         self.rows.iter().cloned().collect()
     }
 
-    /// Recompute the visible rows against the keyword and the row filter.
+    /// Recompute the visible rows against the keyword and the row filter,
+    /// in the sort's order if one is set.
     pub fn refilter(&mut self) {
-        if !self.is_filtered() {
+        self.filtered_in_row_order = self.sort.is_none();
+        if !self.shows_view() {
             self.filtered.clear();
             return;
         }
-        let keyword = self.keyword.clone();
-        let matches_keyword = |row: &Vec<SharedString>| {
-            if keyword.is_empty() {
-                return true;
-            }
-            if self.filter_columns.is_empty() {
-                row.iter().any(|cell| fast_contains_ignore_case(cell, &keyword))
+        self.filtered = self.rows.iter().filter(|row| self.passes(row)).cloned().collect();
+        if let Some((col_ix, ascending)) = self.sort {
+            self.sort_view(col_ix, ascending);
+        }
+    }
+
+    /// Whether the table shows `filtered` rather than `rows`: a filter or
+    /// a sort is set.
+    fn shows_view(&self) -> bool {
+        self.is_filtered() || self.sort.is_some()
+    }
+
+    fn sort_view(&mut self, col_ix: usize, ascending: bool) {
+        let Some(column) = self.columns.get(col_ix) else {
+            return;
+        };
+        let numeric = column.numeric;
+        let cell_ix = column.sort_cell.unwrap_or(col_ix);
+        let empty = SharedString::default();
+        let cmp = |a: &Vec<SharedString>, b: &Vec<SharedString>| {
+            Self::compare(
+                numeric,
+                a.get(cell_ix).unwrap_or(&empty),
+                b.get(cell_ix).unwrap_or(&empty),
+            )
+        };
+        self.filtered
+            .sort_by(|a, b| if ascending { cmp(a, b) } else { cmp(b, a) });
+    }
+
+    /// Whether `row` passes the keyword and the row filter.
+    fn passes(&self, row: &[SharedString]) -> bool {
+        let matches_keyword = self.keyword.is_empty()
+            || if self.filter_columns.is_empty() {
+                row.iter().any(|cell| fast_contains_ignore_case(cell, &self.keyword))
             } else {
                 self.filter_columns
                     .iter()
                     .filter_map(|&ix| row.get(ix))
-                    .any(|cell| fast_contains_ignore_case(cell, &keyword))
-            }
-        };
-        let predicate = self.row_filter.clone();
-        self.filtered = self
-            .rows
-            .iter()
-            .filter(|row| matches_keyword(row) && predicate.as_ref().is_none_or(|p| p(row)))
-            .cloned()
-            .collect();
+                    .any(|cell| fast_contains_ignore_case(cell, &self.keyword))
+            };
+        matches_keyword && self.row_filter.as_ref().is_none_or(|p| p(row))
     }
 
     pub fn is_filtered(&self) -> bool {
@@ -329,7 +413,7 @@ impl ZedisTextTable {
 
     /// Rows the table shows: the filtered set while a keyword is active.
     pub fn visible_len(&self) -> usize {
-        if self.is_filtered() {
+        if self.shows_view() {
             self.filtered.len()
         } else {
             self.rows.len()
@@ -342,7 +426,7 @@ impl ZedisTextTable {
 
     /// A copy of the visible rows, for exports.
     pub fn visible_rows(&self) -> Vec<Vec<SharedString>> {
-        if self.is_filtered() {
+        if self.shows_view() {
             self.filtered.clone()
         } else {
             self.rows.iter().cloned().collect()
@@ -350,7 +434,7 @@ impl ZedisTextTable {
     }
 
     fn visible_row(&self, ix: usize) -> Option<&Vec<SharedString>> {
-        if self.is_filtered() {
+        if self.shows_view() {
             self.filtered.get(ix)
         } else {
             self.rows.get(ix)
@@ -386,28 +470,7 @@ impl TableDelegate for ZedisTextTable {
     }
 
     fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {
-        let Some(column) = self.columns.get(col_ix) else {
-            return;
-        };
-        let numeric = column.numeric;
-        let cell_ix = column.sort_cell.unwrap_or(col_ix);
-        let empty = SharedString::default();
-        let cmp = |a: &Vec<SharedString>, b: &Vec<SharedString>| {
-            Self::compare(
-                numeric,
-                a.get(cell_ix).unwrap_or(&empty),
-                b.get(cell_ix).unwrap_or(&empty),
-            )
-        };
-        let ascending = matches!(sort, ColumnSort::Ascending);
-        if self.is_filtered() {
-            self.filtered
-                .sort_by(|a, b| if ascending { cmp(a, b) } else { cmp(b, a) });
-        } else {
-            let mut rows: Vec<Vec<SharedString>> = self.rows.drain(..).collect();
-            rows.sort_by(|a, b| if ascending { cmp(a, b) } else { cmp(b, a) });
-            self.rows = rows.into();
-        }
+        self.set_sort(col_ix, sort);
     }
 
     fn render_th(
@@ -526,7 +589,7 @@ impl TableDelegate for ZedisTextTable {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextColumn, ZedisTextTable};
+    use super::{ColumnSort, TextColumn, ZedisTextTable};
     use gpui::SharedString;
 
     fn row(cells: &[&str]) -> Vec<SharedString> {
@@ -584,6 +647,70 @@ mod tests {
         assert_eq!(t.visible_len(), 0);
         t.refilter();
         assert_eq!(t.visible_len(), 1);
+    }
+
+    /// Asc, desc, then unsorted: the third click gives the rows back in
+    /// the order they came, and a sort holds across new rows and a filter.
+    #[test]
+    fn the_third_header_click_gives_back_the_rows_own_order() {
+        let firsts =
+            |t: &ZedisTextTable| -> Vec<String> { t.visible_rows().iter().map(|row| row[0].to_string()).collect() };
+        let mut t = table();
+        t.set_rows(vec![
+            row(&["1", "b", "20"]),
+            row(&["2", "a", "3"]),
+            row(&["3", "c", "100"]),
+        ]);
+        t.set_sort(2, ColumnSort::Ascending);
+        assert_eq!(firsts(&t), ["2", "1", "3"], "numeric, ascending");
+        t.set_sort(2, ColumnSort::Descending);
+        assert_eq!(firsts(&t), ["3", "1", "2"]);
+        t.push_front_batch(vec![row(&["4", "d", "50"])]);
+        assert_eq!(firsts(&t), ["3", "4", "1", "2"], "a new row takes its sorted place");
+        t.set_filter("a");
+        assert_eq!(firsts(&t), ["2"]);
+        t.set_filter("");
+        t.set_sort(2, ColumnSort::Default);
+        assert_eq!(firsts(&t), ["4", "1", "2", "3"], "insertion order, newest pushed first");
+        assert!(!t.is_filtered());
+    }
+
+    /// A batch keeps the filtered view in step without a full refilter —
+    /// the matches join its front, a trimmed match leaves its end — and
+    /// ends where a push-then-refilter would.
+    #[test]
+    fn a_pushed_batch_keeps_the_filtered_view_in_step() {
+        let mut t = table().max_rows(4);
+        t.set_filter("get");
+        t.push_front_batch(vec![
+            row(&["1", "GET", "1"]),
+            row(&["2", "SET", "2"]),
+            row(&["3", "get-x", "3"]),
+        ]);
+        assert_eq!(t.visible_len(), 2);
+        assert_eq!(t.visible_rows()[0][0].as_ref(), "3", "newest first");
+        // Past the cap: row 1 (a match) and row 2 are trimmed.
+        t.push_front_batch(vec![
+            row(&["4", "DEL", "4"]),
+            row(&["5", "GET", "5"]),
+            row(&["6", "SET", "6"]),
+        ]);
+        let incremental = t.visible_rows();
+        t.refilter();
+        assert_eq!(incremental, t.visible_rows(), "the same as a full refilter");
+        let firsts: Vec<&str> = incremental.iter().map(|row| row[0].as_ref()).collect();
+        assert_eq!(firsts, ["5", "3"]);
+        // More than the cap in one batch.
+        t.push_front_batch((10..20).map(|n| row(&[&n.to_string(), "GET", "0"])));
+        let incremental = t.visible_rows();
+        t.refilter();
+        assert_eq!(incremental, t.visible_rows());
+        assert_eq!(t.visible_len(), 4);
+        // Unfiltered, it is plain pushes.
+        t.set_filter("");
+        t.push_front_batch(vec![row(&["30", "SET", "0"])]);
+        assert_eq!(t.visible_rows()[0][0].as_ref(), "30");
+        assert_eq!(t.total_len(), 4);
     }
 
     #[test]

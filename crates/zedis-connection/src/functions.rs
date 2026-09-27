@@ -281,15 +281,11 @@ fn extract_shebang_name(shebang: &str) -> Option<String> {
     None
 }
 
-/// Redis library / function identifiers: letter or `_` first, then
-/// alphanumerics / `_`. Mirrors the server's practical acceptance set.
+/// Redis library / function identifiers: letters, digits and `_`.
 pub fn is_valid_function_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    // Redis's own rule (`functionsVerifyName`): letters, digits and `_`, in
+    // any order — a name may start with a digit.
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 // -------- parsers --------
@@ -356,8 +352,38 @@ fn parse_list(v: &Value) -> Option<Vec<FunctionLibrary>> {
     Some(items.iter().filter_map(parse_library).collect())
 }
 
+/// `FUNCTION STATS`, one node's or a cluster's. A cluster connection asks
+/// every node and answers a map of node address to reply; functions are
+/// loaded on every node, so the counts are one node's — the largest, for a
+/// node still catching up — not their sum, and a script running anywhere is
+/// the one shown.
 fn parse_stats(v: &Value) -> Option<FunctionStats> {
     let entries = reply::pairs(v)?;
+    let per_node = !entries.is_empty()
+        && entries
+            .iter()
+            .all(|(key, _)| !matches!(key.to_ascii_lowercase().as_str(), "running_script" | "engines"));
+    if !per_node {
+        return parse_node_stats(entries);
+    }
+    let mut stats = FunctionStats::default();
+    for node in entries
+        .iter()
+        .filter_map(|(_, reply)| reply::pairs(reply))
+        .map(parse_node_stats)
+    {
+        let Some(node) = node else { continue };
+        stats.libraries_count = stats.libraries_count.max(node.libraries_count);
+        stats.functions_count = stats.functions_count.max(node.functions_count);
+        if stats.running_name.is_none() {
+            stats.running_name = node.running_name;
+            stats.running_duration_ms = node.running_duration_ms;
+        }
+    }
+    Some(stats)
+}
+
+fn parse_node_stats(entries: Vec<(String, Value)>) -> Option<FunctionStats> {
     let mut stats = FunctionStats::default();
     for (k, val) in entries {
         match k.to_ascii_lowercase().as_str() {
@@ -410,6 +436,43 @@ mod tests {
 
     fn bs(s: &str) -> Value {
         Value::BulkString(s.as_bytes().to_vec())
+    }
+
+    /// One node's `FUNCTION STATS`, and a cluster's map of them: the
+    /// counts are a node's (functions live on every node), not the sum.
+    #[test]
+    fn a_clusters_stats_count_one_nodes_functions() {
+        let node = |libraries: i64, running: Option<&str>| {
+            Value::Array(vec![
+                bs("running_script"),
+                match running {
+                    Some(name) => Value::Array(vec![bs("name"), bs(name), bs("duration_ms"), Value::Int(12)]),
+                    None => Value::Nil,
+                },
+                bs("engines"),
+                Value::Array(vec![
+                    bs("LUA"),
+                    Value::Array(vec![
+                        bs("libraries_count"),
+                        Value::Int(libraries),
+                        bs("functions_count"),
+                        Value::Int(libraries * 2),
+                    ]),
+                ]),
+            ])
+        };
+        let single = parse_stats(&node(2, None)).expect("stats");
+        assert_eq!((single.libraries_count, single.functions_count), (2, 4));
+
+        let cluster = Value::Map(vec![
+            (bs("127.0.0.1:7000"), node(2, None)),
+            (bs("127.0.0.1:7001"), node(2, Some("spin"))),
+            (bs("127.0.0.1:7002"), node(1, None)),
+        ]);
+        let stats = parse_stats(&cluster).expect("stats");
+        assert_eq!((stats.libraries_count, stats.functions_count), (2, 4), "not 5 and 10");
+        assert_eq!(stats.running_name.as_deref(), Some("spin"));
+        assert_eq!(stats.running_duration_ms, Some(12));
     }
 
     #[test]
@@ -545,7 +608,7 @@ mod tests {
         assert!(is_valid_function_identifier("mylib"));
         assert!(is_valid_function_identifier("_x"));
         assert!(is_valid_function_identifier("a1_b"));
-        assert!(!is_valid_function_identifier("1bad"));
+        assert!(is_valid_function_identifier("1st_lib"), "Redis takes a leading digit");
         assert!(!is_valid_function_identifier("bad-name"));
         assert!(!is_valid_function_identifier(""));
     }

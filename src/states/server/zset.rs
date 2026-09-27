@@ -137,6 +137,57 @@ pub(crate) async fn first_load_zset_value(at: &ServerDb, key: &str, sort_order: 
     })
 }
 
+/// The loaded rows after `ZADD member score` (replacing `old`, for an edit):
+/// what the server will hold, as far as the rows on screen show it.
+///
+/// The member leaves the rows first — its old row, and any row already
+/// holding the same bytes, since `ZADD` of a member that exists moves it and
+/// never adds a second one (a plain insert showed it twice). It comes back
+/// in score order only where that position is inside what is loaded: the
+/// next page starts at `values.len()`, so a row appended past the loaded
+/// ranks pushed the server's own member at that rank out of reach. A score
+/// window keeps members inside the window alone, and a keyword view — an
+/// unordered `ZSCAN` — is not guessed at.
+fn place_zset_member(zset: &mut RedisZsetValue, member: KvElement, score: f64, old: Option<&KvElement>) {
+    zset.values
+        .retain(|(m, _)| m.raw() != member.raw() && old.is_none_or(|old| m.raw() != old.raw()));
+    if zset.keyword.is_some() || !score_in_window(score, zset.score_range.as_ref()) {
+        return;
+    }
+    let idx = zset.values.partition_point(|(_, s)| {
+        if zset.sort_order == SortOrder::Asc {
+            *s < score
+        } else {
+            *s > score
+        }
+    });
+    if idx < zset.values.len() || zset.done {
+        zset.values.insert(idx, (member, score));
+    }
+}
+
+/// Whether `score` falls inside a `ZRANGEBYSCORE` window as it is spelled
+/// (`-inf`, `+inf`, `(5` exclusive, `5` inclusive); no window holds all.
+fn score_in_window(score: f64, window: Option<&(SharedString, SharedString)>) -> bool {
+    let Some((min, max)) = window else {
+        return true;
+    };
+    let bound = |text: &str, open_end: f64| -> (bool, f64) {
+        let (exclusive, number) = text.strip_prefix('(').map_or((false, text), |rest| (true, rest));
+        let value = match number {
+            "-inf" => f64::NEG_INFINITY,
+            "+inf" | "inf" => f64::INFINITY,
+            other => other.parse().unwrap_or(open_end),
+        };
+        (exclusive, value)
+    };
+    let (min_excl, min) = bound(min, f64::NEG_INFINITY);
+    let (max_excl, max) = bound(max, f64::INFINITY);
+    let above = if min_excl { score > min } else { score >= min };
+    let below = if max_excl { score < max } else { score <= max };
+    above && below
+}
+
 impl ZedisServerState {
     /// A generic helper for ZSET operations (Add, Update, Remove).
     /// Handles status updates, UI synchronization, and background task execution.
@@ -152,6 +203,10 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // Offline: no optimistic change a dropped task could not take back.
+        if self.refuse_while_offline(cx) {
+            return;
+        }
         // The value generation this write belongs to — see `value_epoch`.
         let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
@@ -253,35 +308,7 @@ impl ZedisServerState {
         self.exec_zset_op(
             ServerTask::AddZsetValue,
             cx,
-            move |zset| {
-                let mut exists = false;
-                // Update if exists or handle "rename" logic
-                if let Some(ref old) = old_value_clone
-                    && let Some(item) = zset.values.iter_mut().find(|v| v.0.raw() == old.raw())
-                {
-                    *item = (new_value_clone.clone(), score);
-                    exists = true;
-                }
-
-                if !exists {
-                    // Remove old if this is a rename that wasn't found in current visible page
-                    if let Some(ref old) = old_value_clone {
-                        zset.values.retain(|v| v.0.raw() != old.raw());
-                    }
-
-                    // Insert into correct position using binary search if no filter is active
-                    if zset.keyword.is_none() {
-                        let idx = zset.values.partition_point(|(_, s)| {
-                            if zset.sort_order == SortOrder::Asc {
-                                *s < score
-                            } else {
-                                *s > score
-                            }
-                        });
-                        zset.values.insert(idx, (new_value_clone, score));
-                    }
-                }
-            },
+            move |zset| place_zset_member(zset, new_value_clone, score, old_value_clone.as_ref()),
             move |key, at| async move {
                 // A rename drops the old member; the same member just
                 // changed its score.
@@ -710,5 +737,59 @@ impl ZedisServerState {
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    fn loaded(members: &[(&str, f64)], done: bool) -> RedisZsetValue {
+        RedisZsetValue {
+            values: members.iter().map(|(m, s)| (KvElement::from_text(m), *s)).collect(),
+            done,
+            ..Default::default()
+        }
+    }
+
+    fn names(zset: &RedisZsetValue) -> Vec<String> {
+        zset.values.iter().map(|(m, _)| m.text().to_string()).collect()
+    }
+
+    #[test]
+    fn a_member_is_placed_once_and_only_inside_what_is_loaded() {
+        // Adding a member that is already loaded moves it; it never doubles.
+        let mut zset = loaded(&[("a", 1.0), ("b", 2.0), ("c", 3.0)], false);
+        place_zset_member(&mut zset, KvElement::from_text("a"), 2.5, None);
+        assert_eq!(names(&zset), ["b", "a", "c"]);
+
+        // A score past the last loaded one, with more on the server: left
+        // for the pages to bring, so the next page does not skip a member.
+        place_zset_member(&mut zset, KvElement::from_text("z"), 99.0, None);
+        assert_eq!(names(&zset), ["b", "a", "c"]);
+        // Once everything is loaded, the end is a real position.
+        zset.done = true;
+        place_zset_member(&mut zset, KvElement::from_text("z"), 99.0, None);
+        assert_eq!(names(&zset), ["b", "a", "c", "z"]);
+
+        // A rename takes the old row away.
+        place_zset_member(
+            &mut zset,
+            KvElement::from_text("b2"),
+            2.0,
+            Some(&KvElement::from_text("b")),
+        );
+        assert_eq!(names(&zset), ["b2", "a", "c", "z"]);
+    }
+
+    #[test]
+    fn a_score_window_keeps_only_members_inside_it() {
+        let mut zset = loaded(&[("a", 10.0), ("b", 20.0)], true);
+        zset.score_range = Some(("(5".into(), "20".into()));
+        place_zset_member(&mut zset, KvElement::from_text("low"), 5.0, None);
+        place_zset_member(&mut zset, KvElement::from_text("high"), 21.0, None);
+        place_zset_member(&mut zset, KvElement::from_text("mid"), 15.0, None);
+        assert_eq!(names(&zset), ["a", "mid", "b"]);
+        assert!(score_in_window(1.0, Some(&("-inf".into(), "+inf".into()))));
     }
 }

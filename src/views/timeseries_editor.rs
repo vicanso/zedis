@@ -29,7 +29,7 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{Capability, ServerCommand};
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{format_unix_millis_with, get_mono_font_family};
 use crate::{
     connection::{
         ServerDb, TS_AGGREGATORS, TsAlter, TsInfo, TsWindow, ts_add, ts_alter, ts_create_rule, ts_delete_rule,
@@ -37,7 +37,7 @@ use crate::{
     },
     error::Error,
     states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_timeseries},
-    views::{ChartParams, format_timestamp_ms, make_line_canvas},
+    views::{ChartParams, make_line_canvas, value_range},
 };
 use gpui::{Context, Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -550,13 +550,28 @@ impl ZedisTimeSeriesEditor {
     }
 
     fn render_chart(&self, data: &TsWindow, cx: &mut Context<Self>) -> impl IntoElement {
-        let dates: Vec<SharedString> = data.samples.iter().map(|(ts, _)| format_timestamp_ms(*ts)).collect();
+        // Labels as precise as the window needs: a day or a week of
+        // `HH:MM:SS` repeats itself, and says nothing about which day.
+        let span_ms = match (data.samples.first(), data.samples.last()) {
+            (Some((first, _)), Some((last, _))) => last - first,
+            _ => 0,
+        };
+        let label_format = ts_label_format(span_ms);
+        let dates: Vec<SharedString> = data
+            .samples
+            .iter()
+            .map(|(ts, _)| {
+                format_unix_millis_with(*ts, label_format)
+                    .map(SharedString::from)
+                    .unwrap_or_else(|| "--".into())
+            })
+            .collect();
         let values: Vec<f64> = data.samples.iter().map(|(_, v)| *v).collect();
-        let max = values.iter().copied().fold(0.0_f64, f64::max);
-        let y_max = if max <= 0.0 { 1.0 } else { max * 1.1 };
+        let (y_min, y_max) = value_range(&values);
         let tick_margin = (dates.len() / 6).max(1);
 
         let params = ChartParams {
+            y_min,
             dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v: f64| format!("{v:.2}")),
@@ -566,6 +581,18 @@ impl ZedisTimeSeriesEditor {
         };
         let chart = make_line_canvas(params, Arc::new(values), cx.theme().chart_1, false);
         v_flex().w_full().h(px(CHART_HEIGHT)).child(chart)
+    }
+}
+
+/// The x-axis label format for a window `span_ms` long.
+fn ts_label_format(span_ms: i64) -> &'static str {
+    const HOUR_MS: i64 = 60 * 60 * 1000;
+    if span_ms > 24 * HOUR_MS {
+        "%m-%d %H:%M"
+    } else if span_ms > HOUR_MS {
+        "%H:%M"
+    } else {
+        "%H:%M:%S"
     }
 }
 

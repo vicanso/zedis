@@ -164,20 +164,18 @@ struct GithubAsset {
 }
 
 /// The API's asset list in the manifest's shape, read off the file names
-/// publish.yml uses (`zedis-<os>-<arch>.<kind>`): what a release without
-/// a `latest.json` (the nightly) can still offer to install. No checksum
+/// publish.yml gives them ([`asset_identity`]): what a release without a
+/// `latest.json` (the nightly) can still offer to install. No checksum
 /// travels with it, so the download is not verified — the page link stays
 /// beside it.
 fn assets_from_api(assets: &[GithubAsset]) -> Vec<ManifestAsset> {
     assets
         .iter()
         .filter_map(|asset| {
-            let stem = asset.name.strip_prefix("zedis-")?;
-            let (os, rest) = stem.split_once('-')?;
-            let (arch, kind) = rest.rsplit_once('.')?;
+            let (os, arch, kind) = asset_identity(&asset.name)?;
             Some(ManifestAsset {
                 os: os.to_string(),
-                arch: arch.to_string(),
+                arch,
                 kind: kind.to_string(),
                 name: asset.name.clone(),
                 url: asset.browser_download_url.clone(),
@@ -186,6 +184,42 @@ fn assets_from_api(assets: &[GithubAsset]) -> Vec<ManifestAsset> {
             })
         })
         .collect()
+}
+
+/// `(os, arch, kind)` of a file publish.yml uploads, with the kinds its
+/// `latest.json` rows use. The names are not one pattern — the macOS image
+/// is `Zedis-<arch>.dmg`, the AppImage `zedis-<arch>.AppImage.tar.gz`, the
+/// rest `zedis-<os>-<arch>.<ext>` with two-part extensions among them — and
+/// reading them all as `zedis-<os>-<arch>.<kind>` found no macOS or AppImage
+/// build at all, so the nightly never offered an in-app install there.
+fn asset_identity(name: &str) -> Option<(&'static str, String, &'static str)> {
+    if let Some(arch) = name.strip_prefix("Zedis-").and_then(|rest| rest.strip_suffix(".dmg")) {
+        return Some(("macos", arch.to_string(), "dmg"));
+    }
+    let rest = name.strip_prefix("zedis-")?;
+    if let Some(arch) = rest.strip_suffix(".AppImage.tar.gz") {
+        return Some(("linux", arch.to_string(), "appimage"));
+    }
+    let (os, file) = rest.split_once('-')?;
+    let os = match os {
+        "macos" => "macos",
+        "windows" => "windows",
+        "linux" => "linux",
+        _ => return None,
+    };
+    // Longest first: `.msi.zip` is not a `.zip`, nor its arch `x86_64.msi`.
+    const KINDS: [(&str, &str); 7] = [
+        (".tar.gz", "tarball"),
+        (".msi.zip", "msizip"),
+        (".msi", "msi"),
+        (".zip", "zip"),
+        (".deb", "deb"),
+        (".rpm", "rpm"),
+        (".dmg", "dmg"),
+    ];
+    KINDS
+        .iter()
+        .find_map(|(suffix, kind)| file.strip_suffix(suffix).map(|arch| (os, arch.to_string(), *kind)))
 }
 
 /// Decide whether the latest release is newer than the running build.
@@ -1175,6 +1209,27 @@ mod tests {
         );
         assert!(!nightly_is_newer("2026-09-03T08:00:00Z", built), "older than us");
         assert!(!nightly_is_newer("yesterday", built), "unparsable never prompts");
+    }
+
+    #[test]
+    fn every_file_the_nightly_ships_is_read_as_its_manifest_row() {
+        for (name, expected) in [
+            ("Zedis-aarch64.dmg", Some(("macos", "aarch64", "dmg"))),
+            ("Zedis-x86_64.dmg", Some(("macos", "x86_64", "dmg"))),
+            ("zedis-windows-x86_64.msi", Some(("windows", "x86_64", "msi"))),
+            ("zedis-windows-x86_64.msi.zip", Some(("windows", "x86_64", "msizip"))),
+            ("zedis-windows-aarch64.zip", Some(("windows", "aarch64", "zip"))),
+            ("zedis-linux-x86_64.tar.gz", Some(("linux", "x86_64", "tarball"))),
+            ("zedis-aarch64.AppImage.tar.gz", Some(("linux", "aarch64", "appimage"))),
+            ("zedis-linux-x86_64.deb", Some(("linux", "x86_64", "deb"))),
+            ("zedis-linux-aarch64.rpm", Some(("linux", "aarch64", "rpm"))),
+            ("SHA256SUMS", None),
+            ("latest.json", None),
+        ] {
+            let got = asset_identity(name);
+            let got = got.as_ref().map(|(os, arch, kind)| (*os, arch.as_str(), *kind));
+            assert_eq!(got, expected, "{name}");
+        }
     }
 
     #[test]

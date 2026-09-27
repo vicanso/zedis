@@ -298,6 +298,11 @@ impl ZedisEditor {
         cx.spawn(async move |this, cx| {
             let fetched = async { key_bytes(&ServerDb::new(&*target_id, target_db), &key).await }.await;
             let _ = this.update(cx, move |this, cx| match fetched {
+                // Another key is open now: this diff is of a key that is no
+                // longer on screen, against a snapshot of it that is not the
+                // editor's any more. Drop it rather than open it over the new
+                // key.
+                Ok(_) if this.server_state.read(cx).key().as_ref() != Some(&key) => {}
                 Ok(other_bytes) => {
                     let session = DiffSession {
                         history_idx: 0,

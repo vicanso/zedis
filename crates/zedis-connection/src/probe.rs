@@ -293,17 +293,26 @@ async fn probe_permissions(conn: &mut RedisAsyncConn, commands: &[ServerCommand]
             return;
         }
     };
-    for command in commands {
-        // A command the server doesn't know can't be dry-run.
-        if features.status(*command) == CommandStatus::Missing {
-            continue;
-        }
+    // A command the server doesn't know can't be dry-run.
+    let targets: Vec<ServerCommand> = commands
+        .iter()
+        .copied()
+        .filter(|command| features.status(*command) != CommandStatus::Missing)
+        .collect();
+    // All in flight at once on the multiplexed connection, like the safe
+    // probes: some thirty dry runs one after another were as many round
+    // trips on every connect.
+    let replies = join_all(targets.iter().map(|command| {
+        let mut conn = conn.clone();
         let mut request = cmd("ACL");
         request.arg("DRYRUN").arg(&user);
         for arg in dryrun_args(*command) {
             request.arg(*arg);
         }
-        let reply: std::result::Result<Value, RedisError> = request.query_async(conn).await;
+        async move { request.query_async::<Value>(&mut conn).await }
+    }))
+    .await;
+    for (command, reply) in targets.iter().zip(replies) {
         let status = match reply {
             Ok(Value::Okay) => CommandStatus::Available,
             Ok(Value::SimpleString(s)) | Ok(Value::VerbatimString { text: s, .. }) if s == "OK" => {

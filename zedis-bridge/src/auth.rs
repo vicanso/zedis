@@ -717,6 +717,19 @@ impl Logins {
         Some(id)
     }
 
+    /// How long a live login `id` may now sit idle — what its cookie's
+    /// `Max-Age` is renewed to — or `None` for no live login.
+    pub fn idle_timeout_of(&self, id: &str) -> Option<Duration> {
+        let key = hex(&Sha256::digest(id));
+        let state = self.0.lock().expect("logins");
+        state
+            .file
+            .logins
+            .get(&key)
+            .filter(|login| login.live_at(now_secs()))
+            .map(|login| idle_timeout(login.remember))
+    }
+
     /// Whose live login `id` is, refreshing its idle clock.
     pub fn account(&self, id: &str) -> Option<String> {
         let key = hex(&Sha256::digest(id));
@@ -765,20 +778,35 @@ impl Logins {
     }
 
     /// Write the file if anything changed since the last write.
+    ///
+    /// The lock is held to take a copy, not for the write: every request
+    /// that carries a cookie takes it too, and the write ends in an fsync.
+    /// One caller (the startup load, then the sweeper) writes at a time, so
+    /// copies reach the disk in the order they were taken.
     pub fn flush(&self) {
-        let mut state = self.0.lock().expect("logins");
-        let (true, Some(path)) = (state.dirty, state.path.clone()) else {
-            return;
-        };
-        match serde_json::to_vec(&state.file) {
-            Ok(bytes) => match write_file_atomic(&path, &bytes) {
-                Ok(()) => {
-                    restrict(&path);
+        let (bytes, path) = {
+            let mut state = self.0.lock().expect("logins");
+            let (true, Some(path)) = (state.dirty, state.path.clone()) else {
+                return;
+            };
+            match serde_json::to_vec(&state.file) {
+                Ok(bytes) => {
                     state.dirty = false;
+                    (bytes, path)
                 }
-                Err(e) => tracing::warn!(error = %e, path = %path.display(), "could not save the logins"),
-            },
-            Err(e) => tracing::warn!(error = %e, "could not serialise the logins"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not serialise the logins");
+                    return;
+                }
+            }
+        };
+        match write_file_atomic(&path, &bytes) {
+            Ok(()) => restrict(&path),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "could not save the logins");
+                // Try again on the next flush.
+                self.0.lock().expect("logins").dirty = true;
+            }
         }
     }
 }
@@ -1100,6 +1128,21 @@ servers = []
         assert_eq!(logins.close(&id).as_deref(), Some("alice"), "a logout says who left");
         assert_eq!(logins.account(&id), None, "a closed login must not work again");
         assert_eq!(logins.close(&id), None, "closing twice is not an error");
+    }
+
+    /// What a request's cookie is renewed to: the login's own idle window,
+    /// and nothing for a login that is gone.
+    #[test]
+    fn a_live_login_names_the_idle_window_its_cookie_is_renewed_to() {
+        let logins = Logins::new();
+        let accounts = accounts("alice@secret");
+        let day = logins.open("alice", &accounts, false).expect("login");
+        let remembered = logins.open("alice", &accounts, true).expect("login");
+        assert_eq!(logins.idle_timeout_of(&day), Some(idle_timeout(false)));
+        assert_eq!(logins.idle_timeout_of(&remembered), Some(idle_timeout(true)));
+        logins.close(&day);
+        assert_eq!(logins.idle_timeout_of(&day), None, "a closed login is not renewed");
+        assert_eq!(logins.idle_timeout_of("not-an-id"), None);
     }
 
     #[test]

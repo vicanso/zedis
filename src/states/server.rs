@@ -148,6 +148,10 @@ pub struct ZedisServerState {
     last_slow_logs_checked_at: i64,
     last_slow_log_count: usize,
     slow_logs: Vec<SlowLogEntry>,
+    /// Bumped whenever `slow_logs` is replaced or cleared, so the panel can
+    /// tell a new log from a heartbeat that brought none without building
+    /// every row to compare the newest one.
+    slow_logs_generation: u64,
 
     /// `(processed, total)` slots of an in-flight cluster reshard;
     /// `None` when no reshard is running. Drives the Topology progress
@@ -365,6 +369,12 @@ pub struct ZedisServerState {
     /// entries are removed as each prefix scan finishes and the whole set
     /// is cleared on reset / server switch.
     scanning_prefixes: AHashSet<SharedString>,
+    /// Folders re-scanned by `refresh_prefix` while the whole keyspace was
+    /// loaded (`scan_completed`). The refresh has to clear that flag — its
+    /// keys are gone until the re-scan lands — and it comes back once every
+    /// such re-scan has run to its end, where it used to stay off for good
+    /// and every later folder open went back to the server.
+    complete_before_refresh: AHashSet<SharedString>,
 
     /// Prefixes whose lazy scan stopped at the per-load page cap before
     /// completing, mapped to the SCAN cursors to resume from. Drives the
@@ -488,6 +498,7 @@ impl ZedisServerState {
         self.scan_epoch = self.scan_epoch.wrapping_add(1);
         self.loaded_prefixes.clear();
         self.scanning_prefixes.clear();
+        self.complete_before_refresh.clear();
         self.incomplete_prefixes.clear();
         if !keep_rows {
             // Both events describe rows that just went away: the tree
@@ -563,6 +574,7 @@ impl ZedisServerState {
         self.last_slow_logs_checked_at = 0;
         self.last_slow_log_count = 0;
         self.slow_logs.clear();
+        self.slow_logs_generation += 1;
         // A reshard task from the previous server can no longer report back
         // (its completion callback is stale-guarded) — drop its progress.
         self.reshard_progress = None;
@@ -672,6 +684,23 @@ impl ZedisServerState {
         self.spawn_with_arg(name, SharedString::default(), task, callback, cx);
     }
 
+    /// Whether the user took this server offline, in which case nothing may
+    /// reach it: says why (throttled, so a background refresh loop can't
+    /// spam a notice every tick) and answers `true`. A write checks this
+    /// *before* its optimistic change — [`Self::spawn`] drops the task, and
+    /// the change it had already made was never taken back.
+    pub(crate) fn refuse_while_offline(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.manually_offline {
+            return false;
+        }
+        let now = unix_ts();
+        if now.saturating_sub(self.last_offline_notice) >= 3 {
+            self.last_offline_notice = now;
+            self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
+        }
+        true
+    }
+
     /// Like [`Self::spawn`] but records `arg` — the command's main argument
     /// (key name, scan pattern, channel, …) — on the task's
     /// completion/failure log lines so background tasks running against the
@@ -691,14 +720,7 @@ impl ZedisServerState {
         // get_client, which silently re-establishes the link the user just
         // dropped (hence "offline but data still loads"). reconnect clears the
         // flag first (via reset), so the reload after reconnect still runs.
-        if self.manually_offline {
-            // Tell the user why nothing loaded — but throttle it so a
-            // background refresh loop can't spam a notice every tick.
-            let now = unix_ts();
-            if now.saturating_sub(self.last_offline_notice) >= 3 {
-                self.last_offline_notice = now;
-                self.emit_warning_notification(i18n_common(cx, "reconnect_first"), cx);
-            }
+        if self.refuse_while_offline(cx) {
             // If `select` already flipped us to Loading before calling spawn,
             // leave Failed so the UI is not stuck on the busy skeleton with
             // no in-flight task to clear it.
@@ -952,12 +974,16 @@ impl ZedisServerState {
             }
             K::Network => {
                 forget_client(&self.at());
-                // The status bar already shows "reconnecting" — no toast per
-                // failed click on top of it.
-                if self.connection_health != ConnectionHealth::Connected {
-                    return true;
+                match self.connection_health {
+                    // The status bar already shows "reconnecting" — no toast
+                    // per failed click on top of it.
+                    ConnectionHealth::Reconnecting | ConnectionHealth::Offline => return true,
+                    ConnectionHealth::Connected => i18n_status_bar(cx, "conn_lost"),
+                    // The first connect: nothing on screen says why it did
+                    // not happen (a refused connection used to end in
+                    // silence), so the reason and the error both.
+                    ConnectionHealth::Unknown => format!("{}: {error}", i18n_status_bar(cx, kind.reason_key())).into(),
                 }
-                i18n_status_bar(cx, "conn_lost")
             }
             K::Timeout | K::Loading | K::Busy | K::ClusterDown => i18n_status_bar(cx, kind.reason_key()),
             _ => return false,
@@ -1238,11 +1264,17 @@ impl ZedisServerState {
     pub fn slow_logs(&self) -> &Vec<SlowLogEntry> {
         &self.slow_logs
     }
+    /// Which version of [`Self::slow_logs`] this is — it changes exactly
+    /// when the log does.
+    pub fn slow_logs_generation(&self) -> u64 {
+        self.slow_logs_generation
+    }
     /// Drop the cached slow-log entries and notify listeners — called
     /// after a `SLOWLOG RESET` so the panel empties immediately instead
     /// of waiting for the next heartbeat refresh.
     pub fn clear_slow_logs(&mut self, cx: &mut Context<Self>) {
         self.slow_logs.clear();
+        self.slow_logs_generation += 1;
         self.last_slow_log_count = 0;
         cx.emit(ServerEvent::ServerRedisInfoUpdated);
     }
@@ -1506,8 +1538,22 @@ impl ZedisServerState {
         let same_target = self.server_id == server_id && self.db == db;
         let retry_failed = same_target && matches!(self.server_status, RedisServerStatus::Failed);
         if !same_target || retry_failed {
-            get_metrics_cache().remove_server(self.server_id.as_str());
+            // The metrics history is the server's, whichever database is
+            // open: a database switch or a retry keeps it (it used to empty
+            // the charts), another server drops the last one's.
+            if self.server_id != server_id {
+                get_metrics_cache().remove_server(self.server_id.as_str());
+            }
+            // A retry of the same target is a reconnect: an open write
+            // window is still the user's. `reset` closes windows because one
+            // belongs to the server it was opened on, which this still is —
+            // closing it made every reconnect re-lock the entry.
+            let open_window = retry_failed.then(|| (self.write_unlocked_until, self.unlock_task.clone()));
             self.reset(cx);
+            if let Some((until, task)) = open_window {
+                self.write_unlocked_until = until;
+                self.unlock_task = task;
+            }
             self.server_id = server_id.clone();
             self.db = db;
             // Cached matrix from an earlier connect to this server (or the

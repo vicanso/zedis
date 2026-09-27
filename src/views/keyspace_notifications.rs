@@ -334,6 +334,8 @@ impl ZedisKeyspaceNotifications {
                 this.selected_events = None;
                 this.selected_dbs = None;
                 this.source_filter = SourceFilter::Both;
+                // The table holds the filter a batch is pushed through.
+                this.apply_filter_now(cx);
                 this.paused = false;
                 this.rate_ticks.clear();
                 let name = get_server(this.server_state.read(cx).server_id())
@@ -465,6 +467,15 @@ impl ZedisKeyspaceNotifications {
             }
 
             drop(reader);
+            // The stream ended on its own — the connection closed under the
+            // subscription. Stop claiming to listen and say why. (Stop drops
+            // this task and never gets here.)
+            let _ = entity.update(cx, |this, cx| {
+                this.subscribe_task = None;
+                this.paused = false;
+                this.subscribe_error = Some(i18n_common(cx, "subscription_closed"));
+                cx.notify();
+            });
         }));
     }
 
@@ -488,17 +499,14 @@ impl ZedisKeyspaceNotifications {
         if self.paused {
             return;
         }
-        let selected = self.selected_events.clone();
-        let key_filter = self.key_filter.clone();
-        let selected_dbs = self.selected_dbs.clone();
-        let source_filter = self.source_filter;
         let n = batch.len();
+        // Through the filter the table already holds — every change to it
+        // goes through `apply_filter_now` — rather than a new one per batch,
+        // which re-filtered the whole buffer each time.
         self.table_state.update(cx, |state, _| {
-            let delegate = state.delegate_mut();
-            for row in batch {
-                delegate.push_front(row.cells());
-            }
-            delegate.set_row_filter(row_predicate(&selected, &key_filter, &selected_dbs, source_filter));
+            state
+                .delegate_mut()
+                .push_front_batch(batch.into_iter().map(|row| row.cells()));
         });
         let now = Instant::now();
         for _ in 0..n {

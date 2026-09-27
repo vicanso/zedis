@@ -316,22 +316,15 @@ impl Render for ZedisKeyTree {
                 KeyTreeAction::ToggleFavoriteKey(key) => {
                     let server_id = this.server_state.read(cx).server_id().to_string();
                     let key = key.clone();
-                    cx.spawn(async move |_, cx| {
+                    cx.spawn(async move |this, cx| {
                         let _ = cx
-                            .background_spawn(async move {
-                                let manager = get_favorites_manager();
-                                let is_favorited = manager
-                                    .records(&server_id)
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .any(|k| k.as_str() == key.as_ref());
-                                if is_favorited {
-                                    let _ = manager.remove_record(&server_id, key.as_ref());
-                                } else {
-                                    let _ = manager.add_record(&server_id, key.as_ref());
-                                }
-                            })
+                            .background_spawn(
+                                async move { get_favorites_manager().toggle_record(&server_id, key.as_ref()) },
+                            )
                             .await;
+                        // The editor's star reads the stored list while it
+                        // renders the server state: repaint what reads it.
+                        let _ = this.update(cx, |this, cx| this.server_state.update(cx, |_, cx| cx.notify()));
                     })
                     .detach();
                 }

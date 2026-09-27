@@ -33,7 +33,8 @@ use crate::error::Error;
 use futures::future::join_all;
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use zedis_core::string::format_host_port;
 
@@ -182,23 +183,22 @@ async fn first_sentinel(server: &RedisServer) -> Result<MultiplexedConnection> {
 /// is named, the peers the first reachable seed knows for it. De-duplicated
 /// by address; a seed that cannot be reached still gets its own reply.
 async fn sentinel_endpoints(server: &RedisServer, master_name: Option<&str>) -> Result<Vec<RedisServer>> {
-    let mut addresses: Vec<(String, u16)> = server.seed_endpoints();
+    let mut peers: Vec<(String, u16)> = Vec::new();
     if let Some(name) = master_name
         && let Ok(mut conn) = first_sentinel(server).await
-        && let Ok(peers) = cmd("SENTINEL")
+        && let Ok(replies) = cmd("SENTINEL")
             .arg("SENTINELS")
             .arg(name)
             .query_async::<Vec<HashMap<String, String>>>(&mut conn)
             .await
     {
-        for peer in peers {
+        for peer in replies {
             if let (Some(ip), Some(port)) = (peer.get("ip"), peer.get("port").and_then(|p| p.parse::<u16>().ok())) {
-                addresses.push((ip.clone(), port));
+                peers.push((ip.clone(), port));
             }
         }
     }
-    let mut seen = std::collections::HashSet::new();
-    addresses.retain(|addr| seen.insert(addr.clone()));
+    let addresses = merge_peers(server.seed_endpoints(), peers).await;
     if addresses.is_empty() {
         return Err(Error::Invalid {
             message: "no sentinel address to dial".to_string(),
@@ -213,6 +213,30 @@ async fn sentinel_endpoints(server: &RedisServer, master_name: Option<&str>) -> 
             one
         })
         .collect())
+}
+
+/// The seeds, then each peer that is not one of them. Seeds are often host
+/// names and peers always addresses, so a sentinel named both ways — the
+/// seed that listed the others, or a second seed it listed — was sent the
+/// command twice: the seeds are resolved for the comparison.
+async fn merge_peers(seeds: Vec<(String, u16)>, peers: Vec<(String, u16)>) -> Vec<(String, u16)> {
+    let mut resolved: HashSet<SocketAddr> = HashSet::new();
+    for (host, port) in &seeds {
+        if let Ok(addrs) = smol::net::resolve((host.as_str(), *port)).await {
+            resolved.extend(addrs);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut addresses: Vec<(String, u16)> = seeds.into_iter().filter(|addr| seen.insert(addr.clone())).collect();
+    for (ip, port) in peers {
+        let is_a_seed = ip
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| resolved.contains(&SocketAddr::new(ip, port)));
+        if !is_a_seed && seen.insert((ip.clone(), port)) {
+            addresses.push((ip, port));
+        }
+    }
+    addresses
 }
 
 async fn broadcast(server: &RedisServer, master_name: Option<&str>, args: &[&str]) -> Result<Vec<SentinelReply>> {
@@ -257,6 +281,19 @@ fn parse_master(map: &HashMap<String, String>) -> SentinelMaster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sentinel_named_by_host_and_by_address_is_dialed_once() {
+        let merged = smol::block_on(merge_peers(
+            vec![("localhost".to_string(), 26379), ("localhost".to_string(), 26379)],
+            vec![("127.0.0.1".to_string(), 26379), ("10.0.0.9".to_string(), 26379)],
+        ));
+        assert_eq!(
+            merged,
+            [("localhost".to_string(), 26379), ("10.0.0.9".to_string(), 26379)],
+            "the seed by its name, the other peer by its address"
+        );
+    }
 
     #[test]
     fn parses_a_masters_reply_and_reads_the_down_flags() {

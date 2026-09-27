@@ -46,7 +46,15 @@ fn is_word_boundary(prev: Option<char>, cur: char) -> bool {
 /// per call, which is wasteful when one keystroke scores thousands of
 /// keys.
 pub fn prepare_fuzzy_query(query: &str) -> Vec<char> {
-    query.chars().flat_map(|c| c.to_lowercase()).collect()
+    // One char for one char, the way a candidate's are folded: a char whose
+    // lowercase is two (`İ` → `i` + U+0307) made the query longer than any
+    // candidate could match, so even the same word scored nothing.
+    query.chars().map(fold_case).collect()
+}
+
+/// The case fold both sides use: a char's first lowercase char.
+fn fold_case(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
 }
 
 /// [`fuzzy_score`] with the query pre-lowercased via
@@ -69,7 +77,7 @@ pub fn fuzzy_score_prepared(query: &[char], candidate: &str) -> Option<i32> {
             break;
         }
         // Compare case-insensitively without allocating per char.
-        let cc_lower = cc.to_lowercase().next().unwrap_or(cc);
+        let cc_lower = fold_case(cc);
         if cc_lower == query[qi] {
             score += MATCH_BASE;
             if consecutive {
@@ -104,6 +112,13 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_char_with_a_two_char_lowercase_still_matches_itself() {
+        assert!(fuzzy_score("İstanbul", "İstanbul").is_some());
+        assert!(fuzzy_score("istanbul", "İstanbul").is_some());
+        assert!(fuzzy_score("İst", "city:İstanbul").is_some());
+    }
 
     #[test]
     fn empty_query_matches_all_with_zero() {

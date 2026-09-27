@@ -25,7 +25,7 @@ use crate::{
         TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
         starts_with_ignore_ascii_case, write_file_atomic,
     },
-    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, update_app_state_and_save_quiet},
+    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_terminal, update_app_state_and_save_quiet},
     views::confirm_dangerous_command,
 };
 use chrono::Local;
@@ -43,6 +43,7 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
+use rust_i18n::t;
 use std::io;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -164,43 +165,69 @@ enum TranscriptEntry {
 /// [`MAX_OUTPUT_CHARS`], so a few huge replies can't keep 1000 blocks alive.
 const MAX_TRANSCRIPT_ENTRIES: usize = 1_000;
 
-/// The output pane's text for `entries` in `format`.
-fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String {
+/// One transcript entry and its text as last drawn, with the format it was
+/// drawn in.
+struct Block {
+    entry: TranscriptEntry,
+    drawn: Option<(ReplyFormat, String)>,
+}
+
+impl From<TranscriptEntry> for Block {
+    fn from(entry: TranscriptEntry) -> Self {
+        Self { entry, drawn: None }
+    }
+}
+
+/// The output pane's text for `blocks` in `format`. A block is drawn once
+/// per format and kept: each line of output used to redraw every reply in
+/// the transcript — up to a thousand, tables and JSON included.
+fn render_transcript(blocks: &mut [Block], format: ReplyFormat) -> String {
+    for block in blocks.iter_mut() {
+        if block.drawn.as_ref().is_none_or(|(drawn_in, _)| *drawn_in != format) {
+            block.drawn = Some((format, render_entry(&block.entry, format)));
+        }
+    }
+    blocks
+        .iter()
+        .filter_map(|block| block.drawn.as_ref().map(|(_, text)| text.as_str()))
+        .collect()
+}
+
+/// One entry's text in `format`.
+fn render_entry(entry: &TranscriptEntry, format: ReplyFormat) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    for entry in entries {
-        match entry {
-            TranscriptEntry::Text(text) => {
-                out.push_str(text);
-                if !text.ends_with('\n') {
-                    out.push('\n');
+    match entry {
+        TranscriptEntry::Text(text) => {
+            out.push_str(text);
+            if !text.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        TranscriptEntry::Command { line, reply } => {
+            let _ = writeln!(out, "{CMD_LABEL} {line}");
+            match reply {
+                LineReply::Value(reply) => {
+                    let _ = writeln!(out, "{}", reply.render(format));
+                }
+                LineReply::Message(message) => {
+                    let _ = writeln!(out, "{message}");
                 }
             }
-            TranscriptEntry::Command { line, reply } => {
-                let _ = writeln!(out, "{CMD_LABEL} {line}");
-                match reply {
-                    LineReply::Value(reply) => {
-                        let _ = writeln!(out, "{}", reply.render(format));
-                    }
-                    LineReply::Message(message) => {
-                        let _ = writeln!(out, "{message}");
-                    }
-                }
-            }
-            TranscriptEntry::Exec { commands, replies } => {
-                let _ = writeln!(out, "{CMD_LABEL} EXEC");
-                let _ = writeln!(out, "{}", replies.render(commands, format));
-            }
-            TranscriptEntry::BatchSummary {
-                commands,
-                errors,
-                elapsed_ms,
-            } => {
-                let _ = writeln!(out, "── batch: {commands} commands · {errors} errors · {elapsed_ms} ms");
-            }
-            TranscriptEntry::AiPending => {
-                let _ = writeln!(out, "{AI_WAITING_MSG}");
-            }
+        }
+        TranscriptEntry::Exec { commands, replies } => {
+            let _ = writeln!(out, "{CMD_LABEL} EXEC");
+            let _ = writeln!(out, "{}", replies.render(commands, format));
+        }
+        TranscriptEntry::BatchSummary {
+            commands,
+            errors,
+            elapsed_ms,
+        } => {
+            let _ = writeln!(out, "── batch: {commands} commands · {errors} errors · {elapsed_ms} ms");
+        }
+        TranscriptEntry::AiPending => {
+            let _ = writeln!(out, "{AI_WAITING_MSG}");
         }
     }
     out
@@ -214,6 +241,17 @@ fn render_transcript(entries: &[TranscriptEntry], format: ReplyFormat) -> String
 /// `WATCH` conflict answers nil — said in words, since a bare `(nil)` reads
 /// as a missing key.
 fn transcript_entries_for(queue: &mut Option<Vec<String>>, line: String, reply: LineReply) -> Vec<TranscriptEntry> {
+    // An `EXEC` or `DISCARD` the server refused as a whole (`EXECABORT`
+    // after a queued syntax error, "EXEC without MULTI") still ends the
+    // transaction; the terminal must not go on queueing into it.
+    if matches!(reply, LineReply::Message(_))
+        && line
+            .split_whitespace()
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("EXEC") || word.eq_ignore_ascii_case("DISCARD"))
+    {
+        *queue = None;
+    }
     if let LineReply::Value(answer) = &reply {
         match answer.command().to_ascii_uppercase().as_str() {
             "MULTI" if answer.is_ok() => *queue = Some(Vec::new()),
@@ -302,7 +340,7 @@ pub struct ZedisTerminal {
     server_state: Entity<ZedisServerState>,
     cmd_output_state: Entity<EditorState>,
     /// What the output pane shows, as blocks (see [`TranscriptEntry`]).
-    transcript: Vec<TranscriptEntry>,
+    transcript: Vec<Block>,
     /// `transcript` rendered in `reply_format`; rebuilt in `render` while
     /// `cmd_output_dirty`, and what Copy / Save hand out.
     cmd_output_text: String,
@@ -406,7 +444,9 @@ impl ZedisTerminal {
                         && !value.contains(' ')
                         && let Some(last) = value.chars().last()
                         && let Some(index) = last.to_digit(10)
-                        && index <= this.cmd_suggestions.len() as u32
+                        // 1-based: a `0` picks nothing (it underflowed to
+                        // index -1, a panic in a debug build).
+                        && (1..=this.cmd_suggestions.len() as u32).contains(&index)
                     {
                         this.cmd_suggestion_index = Some((index - 1) as usize);
                         this.apply_suggestion(window, cx);
@@ -519,7 +559,7 @@ impl ZedisTerminal {
     /// Append to the transcript, dropping the oldest blocks past the cap,
     /// and schedule a re-render of the output text.
     fn push_entry(&mut self, entry: TranscriptEntry) {
-        self.transcript.push(entry);
+        self.transcript.push(entry.into());
         if self.transcript.len() > MAX_TRANSCRIPT_ENTRIES {
             let excess = self.transcript.len() - MAX_TRANSCRIPT_ENTRIES;
             self.transcript.drain(..excess);
@@ -543,19 +583,26 @@ impl ZedisTerminal {
 
     fn copy_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(self.cmd_output_text.clone()));
-        window.push_notification(Notification::success("Output copied"), cx);
+        window.push_notification(Notification::success(i18n_terminal(cx, "output_copied")), cx);
     }
 
     fn save_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
         match write_output_file(&self.cmd_output_text) {
             Ok(path) => {
                 info!(path = %path.display(), "terminal output saved");
-                window.push_notification(Notification::success(format!("Output saved to {}", path.display())), cx);
+                let message = t!(
+                    "terminal.output_saved",
+                    path = path.display().to_string(),
+                    locale = locale
+                );
+                window.push_notification(Notification::success(message.to_string()), cx);
                 cx.reveal_path(&path);
             }
             Err(e) => {
                 error!(error = %e, "terminal output save failed");
-                window.push_notification(Notification::error(format!("Saving the output failed: {e}")), cx);
+                let message = t!("terminal.save_output_failed", error = e.to_string(), locale = locale);
+                window.push_notification(Notification::error(message.to_string()), cx);
             }
         }
     }
@@ -871,7 +918,7 @@ impl ZedisTerminal {
             // completion never runs) — clear the previous placeholder so it
             // can't linger in the scrollback forever.
             self.transcript
-                .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
+                .retain(|block| !matches!(block.entry, TranscriptEntry::AiPending));
             self.push_entry(TranscriptEntry::Text(format!("? {question}")));
             self.push_entry(TranscriptEntry::AiPending);
             cx.notify();
@@ -884,7 +931,7 @@ impl ZedisTerminal {
                 let _ = handle.update(cx, |this, cx| {
                     // The reply (or error) replaces the waiting placeholder.
                     this.transcript
-                        .retain(|entry| !matches!(entry, TranscriptEntry::AiPending));
+                        .retain(|block| !matches!(block.entry, TranscriptEntry::AiPending));
                     match result {
                         Ok(reply) => {
                             for command in &reply.commands {
@@ -1051,7 +1098,7 @@ impl ZedisTerminal {
 impl Render for ZedisTerminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.cmd_output_dirty) {
-            let mut rendered = render_transcript(&self.transcript, self.reply_format);
+            let mut rendered = render_transcript(&mut self.transcript, self.reply_format);
             trim_output_scrollback(&mut rendered);
             self.cmd_output_text = rendered;
             let text = SharedString::from(self.cmd_output_text.clone());
@@ -1174,18 +1221,18 @@ impl Render for ZedisTerminal {
                     .gap_1()
                     .child(
                         Button::new("term-copy-output")
-                            .label("Copy")
+                            .label(i18n_terminal(cx, "copy_output"))
                             .ghost()
                             .small()
-                            .tooltip("Copy the whole output")
+                            .tooltip(i18n_terminal(cx, "copy_output_tooltip"))
                             .on_click(cx.listener(|this, _, window, cx| this.copy_output(window, cx))),
                     )
                     .child(
                         Button::new("term-save-output")
-                            .label("Save")
+                            .label(i18n_terminal(cx, "save_output"))
                             .ghost()
                             .small()
-                            .tooltip("Save the output as a text file in Downloads")
+                            .tooltip(i18n_terminal(cx, "save_output_tooltip"))
                             .on_click(cx.listener(|this, _, window, cx| this.save_output(window, cx))),
                     )
                     .child(
@@ -1276,7 +1323,7 @@ impl Render for ZedisTerminal {
                         .child(match_label.font_family(font_family.clone()))
                         .child(div().flex_1())
                         .child(
-                            Label::new("↑/↓ or Ctrl+R · Enter accept · Esc cancel")
+                            Label::new(i18n_terminal(cx, "history_search_hint"))
                                 .text_xs()
                                 .text_color(muted),
                         )
@@ -1433,9 +1480,14 @@ impl Render for ZedisTerminal {
 #[cfg(test)]
 mod tests {
     use super::{
-        LineReply, ReplyFormat, TerminalReply, TranscriptEntry, render_transcript, strip_redis_cli_prefix,
-        transcript_entries_for,
+        Block, LineReply, ReplyFormat, TerminalReply, TranscriptEntry, strip_redis_cli_prefix, transcript_entries_for,
     };
+
+    /// The transcript's text in `format`, drawn the way the view draws it.
+    fn render_transcript(entries: Vec<TranscriptEntry>, format: ReplyFormat) -> String {
+        let mut blocks: Vec<Block> = entries.into_iter().map(Block::from).collect();
+        super::render_transcript(&mut blocks, format)
+    }
 
     /// A reply from its RESP encoding — the view holds replies it cannot
     /// look inside, and a test has no more access than the view does.
@@ -1457,18 +1509,20 @@ mod tests {
                 reply: LineReply::Message("(error) boom".to_string()),
             },
         ];
+        // One set of blocks through every format and back: each switch
+        // redraws what was drawn in another.
+        let mut blocks: Vec<Block> = entries.into_iter().map(Block::from).collect();
+        let text = "banner\n$ HGETALL h\n[a, 1]\n$ GET missing\n(error) boom\n";
+        assert_eq!(super::render_transcript(&mut blocks, ReplyFormat::Text), text);
         assert_eq!(
-            render_transcript(&entries, ReplyFormat::Text),
-            "banner\n$ HGETALL h\n[a, 1]\n$ GET missing\n(error) boom\n"
-        );
-        assert_eq!(
-            render_transcript(&entries, ReplyFormat::Table),
+            super::render_transcript(&mut blocks, ReplyFormat::Table),
             "banner\n$ HGETALL h\nfield │ value\n──────┼──────\na     │ 1\n$ GET missing\n(error) boom\n"
         );
         assert_eq!(
-            render_transcript(&entries, ReplyFormat::Json),
+            super::render_transcript(&mut blocks, ReplyFormat::Json),
             "banner\n$ HGETALL h\n{\n  \"a\": \"1\"\n}\n$ GET missing\n(error) boom\n"
         );
+        assert_eq!(super::render_transcript(&mut blocks, ReplyFormat::Text), text);
     }
 
     #[test]
@@ -1487,7 +1541,7 @@ mod tests {
         let exec = reply("EXEC", &[], b"*2\r\n+OK\r\n:2\r\n");
         let entries = transcript_entries_for(&mut queue, "EXEC".into(), exec);
         assert!(queue.is_none(), "EXEC closes the transaction");
-        let rendered = render_transcript(&entries, ReplyFormat::Text);
+        let rendered = render_transcript(entries, ReplyFormat::Text);
         assert_eq!(
             rendered,
             "$ EXEC\n# │ command │ reply\n──┼─────────┼──────\n1 │ SET a 1 │ OK\n2 │ INCR a  │ 2\n"
@@ -1497,7 +1551,7 @@ mod tests {
         let mut queue = Some(vec!["SET a 1".to_string()]);
         let entries = transcript_entries_for(&mut queue, "EXEC".into(), reply("EXEC", &[], b"*-1\r\n"));
         assert!(queue.is_none());
-        assert!(render_transcript(&entries, ReplyFormat::Text).contains("key under WATCH changed"));
+        assert!(render_transcript(entries, ReplyFormat::Text).contains("key under WATCH changed"));
 
         // DISCARD drops the queue; EXEC outside a MULTI is a plain command.
         let mut queue = Some(vec!["SET a 1".to_string()]);

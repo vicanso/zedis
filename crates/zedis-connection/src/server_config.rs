@@ -18,8 +18,9 @@
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::reply;
 use crate::server_db::ServerDb;
-use redis::cmd;
+use redis::{Value, cmd};
 use std::collections::HashMap;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -51,11 +52,15 @@ pub async fn config_load(at: &ServerDb) -> Result<ServerConfig> {
     let map: HashMap<String, String> = cmd("CONFIG").arg("GET").arg("*").query_async(&mut conn).await?;
     let mut params: Vec<(String, String)> = map.into_iter().collect();
     params.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    let info: String = cmd("INFO")
-        .arg("server")
-        .query_async(&mut conn)
-        .await
-        .unwrap_or_default();
+    // A cluster connection asks every node and answers a map of node to
+    // reply, which read as one string was an error, and the path came back
+    // empty: the first node that answers speaks for the file.
+    let info = match cmd("INFO").arg("server").query_async::<Value>(&mut conn).await {
+        Ok(Value::Map(nodes)) => nodes.iter().find_map(|(_, reply)| reply::text(reply)),
+        Ok(reply) => reply::text(&reply),
+        Err(_) => None,
+    }
+    .unwrap_or_default();
     Ok(ServerConfig {
         params,
         config_file: config_file_of(&info),

@@ -87,9 +87,14 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
         return None;
     }
 
-    // Split at '[' to get timestamp and the rest
+    // Split at '[' to get timestamp and the rest. The client block ends at
+    // the `]` before the first quoted word, not the first `]`: an IPv6
+    // client is written `[::1]:60866`, which cut the address in two.
     let (ts_part, rest) = line.split_once('[')?;
-    let (meta, cmd_part) = rest.split_once(']')?;
+    let (meta, cmd_part) = match rest.find("] \"") {
+        Some(end) => (&rest[..end], &rest[end + 1..]),
+        None => rest.split_once(']')?,
+    };
 
     // Parse timestamp
     let ts_str = ts_part.trim();
@@ -112,16 +117,24 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
     let mut in_quote = false;
     let mut start = 0;
     let bytes = cmd_part.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'"' {
-            if in_quote {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // Inside a word the server escapes a quote (and a backslash)
+            // with a backslash: `\"` is part of the word, not its end —
+            // taking it as one shifted every later argument a column.
+            b'\\' if in_quote => i += 1,
+            b'"' if in_quote => {
                 parts.push(&cmd_part[start..i]);
                 in_quote = false;
-            } else {
+            }
+            b'"' => {
                 in_quote = true;
                 start = i + 1;
             }
+            _ => {}
         }
+        i += 1;
     }
 
     let (command, args) = if parts.is_empty() {
@@ -380,7 +393,6 @@ impl ZedisMonitor {
         cx.notify();
 
         let table_state = self.table_state.clone();
-        let keyword_state = self.keyword_state.clone();
         let entity = cx.entity().downgrade();
         let (tx, rx) = channel::unbounded::<MonitorEntry>();
 
@@ -481,13 +493,13 @@ impl ZedisMonitor {
                         return false;
                     }
                     let n = batch.len();
-                    let keyword = keyword_state.read(cx).value().to_string();
+                    // Through the keyword the table already holds (the input
+                    // sets it on every change), rather than setting it again
+                    // per batch, which re-filtered the whole buffer each time.
                     table_state.update(cx, |state, _| {
-                        let delegate = state.delegate_mut();
-                        for entry in batch {
-                            delegate.push_front(entry.cells());
-                        }
-                        delegate.set_filter(&keyword);
+                        state
+                            .delegate_mut()
+                            .push_front_batch(batch.into_iter().map(|entry| entry.cells()));
                     });
                     this.row_count = table_state.read(cx).delegate().visible_len();
                     let auto_stop = this.record_rate(n);
@@ -831,5 +843,27 @@ impl Render for ZedisMonitor {
                 MonitorAction::ExportJson => this.export_json(cx),
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_monitor_line;
+
+    #[test]
+    fn a_line_splits_into_its_columns() {
+        let entry = parse_monitor_line(r#"1339518083.107412 [0 127.0.0.1:60866] "keys" "*""#, "n").expect("a line");
+        assert_eq!((entry.db.as_ref(), entry.client.as_ref()), ("0", "127.0.0.1:60866"));
+        assert_eq!((entry.command.as_ref(), entry.args.as_ref()), ("KEYS", "*"));
+    }
+
+    /// An IPv6 client brings brackets of its own, and a quote inside a word
+    /// is escaped: neither may move a column.
+    #[test]
+    fn an_ipv6_client_and_an_escaped_quote_stay_in_their_columns() {
+        let entry = parse_monitor_line(r#"1339518083.1 [3 [::1]:60866] "set" "k" "a\"b" "c""#, "n").expect("a line");
+        assert_eq!((entry.db.as_ref(), entry.client.as_ref()), ("3", "[::1]:60866"));
+        assert_eq!(entry.command.as_ref(), "SET");
+        assert_eq!(entry.args.as_ref(), r#"k a\"b c"#);
     }
 }

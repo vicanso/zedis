@@ -53,6 +53,49 @@ const SC_EXTERNALIZABLE: u8 = 0x04;
 const SC_BLOCK_DATA: u8 = 0x08;
 
 const MAX_DEPTH: usize = 64;
+/// JSON nodes back-references may copy in all. A reference repeats what it
+/// names, so an object that refers to one twice, which does too, and so on,
+/// doubles with each level: a stream of a few kilobytes could ask for
+/// gigabytes. Past this, a reference is shown as the handle it names.
+const MAX_EXPANDED: usize = 1_000_000;
+
+/// Java's modified UTF-8: NUL is two bytes (`C0 80`), and a character
+/// outside the BMP is its UTF-16 surrogate pair, each half encoded in three
+/// bytes — which standard UTF-8 rejects, so every emoji came out as two
+/// replacement characters. Decoded to UTF-16 units, then to a string;
+/// anything malformed is U+FFFD.
+fn modified_utf8(bytes: &[u8]) -> String {
+    let mut units: Vec<u16> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let continuation = |b: Option<&u8>| b.filter(|b| *b & 0xC0 == 0x80).map(|b| u16::from(b & 0x3F));
+    while let Some(&b) = bytes.get(i) {
+        let (unit, len) = match b {
+            0x00..=0x7F => (Some(u16::from(b)), 1),
+            0xC0..=0xDF => (
+                continuation(bytes.get(i + 1)).map(|c1| (u16::from(b & 0x1F) << 6) | c1),
+                2,
+            ),
+            0xE0..=0xEF => (
+                continuation(bytes.get(i + 1))
+                    .zip(continuation(bytes.get(i + 2)))
+                    .map(|(c1, c2)| (u16::from(b & 0x0F) << 12) | (c1 << 6) | c2),
+                3,
+            ),
+            _ => (None, 1),
+        };
+        match unit {
+            Some(unit) => {
+                units.push(unit);
+                i += len;
+            }
+            None => {
+                units.push(0xFFFD);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf16_lossy(&units)
+}
 
 /// The stream magic and version.
 pub fn looks_like(bytes: &[u8]) -> bool {
@@ -72,6 +115,7 @@ pub fn decode(bytes: &[u8]) -> Option<Value> {
         pos: 4,
         handles: Vec::new(),
         depth: 0,
+        expanded: 0,
     };
     let mut contents = Vec::new();
     let mut error = None;
@@ -112,7 +156,17 @@ struct ClassDesc {
 
 enum Handle {
     Class(Rc<ClassDesc>),
-    Value(Value),
+    /// A value and its size in JSON nodes, what a reference to it copies.
+    Value(Value, usize),
+}
+
+/// A value's size in JSON nodes.
+fn weight(value: &Value) -> usize {
+    1 + match value {
+        Value::Array(items) => items.iter().map(weight).sum(),
+        Value::Object(fields) => fields.values().map(weight).sum(),
+        _ => 0,
+    }
 }
 
 /// Something a `writeObject` appended after the fields.
@@ -126,6 +180,8 @@ struct Reader<'a> {
     pos: usize,
     handles: Vec<Handle>,
     depth: usize,
+    /// JSON nodes copied by back-references so far (see [`MAX_EXPANDED`]).
+    expanded: usize,
 }
 
 type Parsed<T> = Result<T, &'static str>;
@@ -155,11 +211,11 @@ impl Reader<'_> {
     /// `(short)length` + modified UTF-8.
     fn utf(&mut self) -> Parsed<String> {
         let len = self.u16()? as usize;
-        Ok(String::from_utf8_lossy(self.take(len)?).into_owned())
+        Ok(modified_utf8(self.take(len)?))
     }
     fn long_utf(&mut self) -> Parsed<String> {
         let len = usize::try_from(self.i64()?).map_err(|_| "negative length")?;
-        Ok(String::from_utf8_lossy(self.take(len)?).into_owned())
+        Ok(modified_utf8(self.take(len)?))
     }
 
     fn new_handle(&mut self, handle: Handle) -> usize {
@@ -167,10 +223,17 @@ impl Reader<'_> {
         self.handles.len() - 1
     }
 
-    fn reference(&mut self) -> Parsed<&Handle> {
+    /// Put `value` under handle `index`, and hand it back.
+    fn assign(&mut self, index: usize, value: Value) -> Value {
+        let size = weight(&value);
+        self.handles[index] = Handle::Value(value.clone(), size);
+        value
+    }
+
+    fn reference(&mut self) -> Parsed<(usize, &Handle)> {
         let raw = self.i32()? as u32;
         let index = raw.checked_sub(BASE_WIRE_HANDLE).ok_or("handle below base")? as usize;
-        self.handles.get(index).ok_or("dangling handle")
+        Ok((index, self.handles.get(index).ok_or("dangling handle")?))
     }
 
     /// One top-level item: an object, or a block of raw data.
@@ -197,50 +260,54 @@ impl Reader<'_> {
         }
         let value = match self.u8()? {
             TC_NULL => Value::Null,
-            TC_REFERENCE => match self.reference()? {
-                Handle::Value(value) => value.clone(),
-                Handle::Class(desc) => tagged("@classref", Value::String(desc.name.clone())),
-            },
+            TC_REFERENCE => {
+                let expanded = self.expanded;
+                let (index, handle) = self.reference()?;
+                match handle {
+                    Handle::Value(value, size) if expanded + size <= MAX_EXPANDED => {
+                        let (value, size) = (value.clone(), *size);
+                        self.expanded += size;
+                        value
+                    }
+                    Handle::Value(..) => json!({ "@ref": index }),
+                    Handle::Class(desc) => tagged("@classref", Value::String(desc.name.clone())),
+                }
+            }
             TC_STRING => {
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let text = Value::String(self.utf()?);
-                self.handles[index] = Handle::Value(text.clone());
-                text
+                self.assign(index, text)
             }
             TC_LONGSTRING => {
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let text = Value::String(self.long_utf()?);
-                self.handles[index] = Handle::Value(text.clone());
-                text
+                self.assign(index, text)
             }
             TC_CLASS => {
                 let desc = self.class_desc()?.ok_or("class without descriptor")?;
                 let value = tagged("@class_object", Value::String(desc.name.clone()));
-                self.new_handle(Handle::Value(value.clone()));
-                value
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
+                self.assign(index, value)
             }
             TC_ENUM => {
                 let desc = self.class_desc()?.ok_or("enum without descriptor")?;
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let name = self.object()?;
                 let value = json!({ "@enum": desc.name, "name": name });
-                self.handles[index] = Handle::Value(value.clone());
-                value
+                self.assign(index, value)
             }
             TC_ARRAY => {
                 let desc = self.class_desc()?.ok_or("array without descriptor")?;
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let len = usize::try_from(self.i32()?).map_err(|_| "negative array length")?;
                 let value = self.array(&desc.name, len)?;
-                self.handles[index] = Handle::Value(value.clone());
-                value
+                self.assign(index, value)
             }
             TC_OBJECT => {
                 let desc = self.class_desc()?.ok_or("object without descriptor")?;
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let value = self.class_data(&desc)?;
-                self.handles[index] = Handle::Value(value.clone());
-                value
+                self.assign(index, value)
             }
             TC_CLASSDESC | TC_PROXYCLASSDESC => {
                 self.pos -= 1;
@@ -265,14 +332,21 @@ impl Reader<'_> {
     fn class_desc(&mut self) -> Parsed<Option<Rc<ClassDesc>>> {
         match self.u8()? {
             TC_NULL => Ok(None),
-            TC_REFERENCE => match self.reference()? {
+            TC_REFERENCE => match self.reference()?.1 {
                 Handle::Class(desc) => Ok(Some(desc.clone())),
-                Handle::Value(_) => Err("handle is not a class"),
+                Handle::Value(..) => Err("handle is not a class"),
             },
             TC_CLASSDESC => {
+                // A descriptor names its superclass's, which names its own:
+                // the chain recurses like nested objects do, and is capped
+                // the same way.
+                self.depth += 1;
+                if self.depth > MAX_DEPTH {
+                    return Err("nesting too deep");
+                }
                 let name = self.utf()?;
                 let _serial_version_uid = self.i64()?;
-                let index = self.new_handle(Handle::Value(Value::Null));
+                let index = self.new_handle(Handle::Value(Value::Null, 1));
                 let flags = self.u8()?;
                 let count = self.u16()? as usize;
                 let mut fields = Vec::with_capacity(count.min(256));
@@ -295,6 +369,7 @@ impl Reader<'_> {
                     super_desc,
                 });
                 self.handles[index] = Handle::Class(desc.clone());
+                self.depth -= 1;
                 Ok(Some(desc))
             }
             TC_PROXYCLASSDESC => Err("dynamic proxy class"),
@@ -528,6 +603,48 @@ mod tests {
             }
             self.bytes(&[TC_ENDBLOCKDATA, TC_NULL])
         }
+    }
+
+    #[test]
+    fn modified_utf8_decodes_nul_and_surrogate_pairs() {
+        // `a`, NUL as C0 80, then 😀 (U+1F600) as its surrogates D83D DE00,
+        // three bytes each, then a byte no encoding starts with.
+        let bytes = [b'a', 0xC0, 0x80, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, 0xFF];
+        assert_eq!(modified_utf8(&bytes), "a\0😀\u{FFFD}");
+        assert_eq!(modified_utf8("plain ascii".as_bytes()), "plain ascii");
+    }
+
+    /// Arrays that each refer to the one before twice double with every
+    /// level: forty of them are a few hundred bytes on the wire and 2^40
+    /// nodes copied out. The copies stop at the budget, the rest are shown
+    /// as the handle they name.
+    #[test]
+    fn back_references_cannot_expand_without_bound() {
+        let handle = |index: u32| (BASE_WIRE_HANDLE + index).to_be_bytes();
+        let mut s = Stream::new();
+        // A0 = ["a", "b"]: class desc is handle 0, the array 1, the strings 2 and 3.
+        s.bytes(&[TC_ARRAY])
+            .class("[Ljava.lang.Object;", SC_SERIALIZABLE, &[])
+            .bytes(&[0, 0, 0, 2, TC_STRING])
+            .utf("a")
+            .bytes(&[TC_STRING])
+            .utf("b");
+        // A_k = [A_{k-1}, A_{k-1}], handle 3 + k.
+        for level in 1..=40u32 {
+            let previous = if level == 1 { 1 } else { 2 + level };
+            s.bytes(&[TC_ARRAY, TC_REFERENCE])
+                .bytes(&handle(0))
+                .bytes(&[0, 0, 0, 2, TC_REFERENCE])
+                .bytes(&handle(previous))
+                .bytes(&[TC_REFERENCE])
+                .bytes(&handle(previous));
+        }
+        let decoded = decode(&s.0).expect("decoded");
+        assert!(
+            weight(&decoded) < 4 * MAX_EXPANDED,
+            "the copies stopped near the budget"
+        );
+        assert!(decoded.to_string().contains("\"@ref\""), "the rest name their handle");
     }
 
     #[test]

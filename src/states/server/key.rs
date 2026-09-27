@@ -40,7 +40,7 @@ use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar}
 use crate::{
     connection::{Capability, ServerDb},
     error::Error,
-    helpers::{escape_glob, parse_duration, unix_ts, unix_ts_millis},
+    helpers::{escape_glob, format_ttl_chip, parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
@@ -52,6 +52,14 @@ use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
 use zedis_core::change_log::ChangeEntry;
+
+/// What one auto-refresh round changes: keys to add, keys to take out, and
+/// new TTLs for keys already loaded.
+struct AutoRefreshPlan {
+    add: Vec<(SharedString, SharedString, i64)>,
+    remove: Vec<SharedString>,
+    ttls: Vec<(SharedString, i64)>,
+}
 
 /// Per-page cursor/position state threaded through the recursive
 /// [`ZedisServerState::scan_prefix_page`] loop (grouped so the function
@@ -328,23 +336,58 @@ impl ZedisServerState {
     /// is a sample. Diffing against a sample deleted live keys from the tree,
     /// and it did so precisely on the large databases where auto-refresh is
     /// most used.
+    ///
+    /// `ttls` is the loaded TTL map when the tree shows TTLs (`None` when
+    /// the round asked for none): a key already loaded gets its new TTL when
+    /// its chip would read differently, since the chip does not count down
+    /// by itself and otherwise kept the first scan's number for good.
     fn plan_auto_refresh(
         complete: bool,
         scanned: Vec<(String, String, i64)>,
         loaded: &AHashMap<SharedString, KeyType>,
-    ) -> (Vec<(SharedString, SharedString, i64)>, Vec<SharedString>) {
+        ttls: Option<&AHashMap<SharedString, i64>>,
+    ) -> AutoRefreshPlan {
         let seen: AHashSet<&str> = scanned.iter().map(|(k, _, _)| k.as_str()).collect();
-        let to_remove = if complete {
+        let remove = if complete {
             loaded.keys().filter(|k| !seen.contains(k.as_ref())).cloned().collect()
         } else {
             Vec::new()
         };
-        let to_add = scanned
-            .into_iter()
-            .filter(|(k, _, _)| !loaded.contains_key(k.as_str()))
-            .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
-            .collect();
-        (to_add, to_remove)
+        let mut add = Vec::new();
+        let mut new_ttls = Vec::new();
+        for (key, key_type, ttl) in scanned {
+            if !loaded.contains_key(key.as_str()) {
+                add.push((SharedString::from(key), SharedString::from(key_type), ttl));
+            } else if let Some(ttls) = ttls
+                && ttls
+                    .get(key.as_str())
+                    .is_none_or(|old| format_ttl_chip(*old) != format_ttl_chip(ttl))
+            {
+                new_ttls.push((SharedString::from(key), ttl));
+            }
+        }
+        AutoRefreshPlan {
+            add,
+            remove,
+            ttls: new_ttls,
+        }
+    }
+
+    /// Take one key out of the loaded set, with its TTL — a deleted key
+    /// must not stay behind in the TTL map the tree's filters read.
+    fn forget_loaded_key(&mut self, key: &SharedString) {
+        self.keys.remove(key);
+        if self.key_ttls.contains_key(key) {
+            Arc::make_mut(&mut self.key_ttls).remove(key);
+        }
+    }
+
+    /// [`Self::forget_loaded_key`] for every loaded key `gone` accepts.
+    fn forget_loaded_keys_where(&mut self, gone: impl Fn(&SharedString) -> bool) {
+        self.keys.retain(|key, _| !gone(key));
+        if self.key_ttls.keys().any(&gone) {
+            Arc::make_mut(&mut self.key_ttls).retain(|key, _| !gone(key));
+        }
     }
 
     pub fn handle_auto_refresh(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
@@ -412,20 +455,28 @@ impl ZedisServerState {
                     // uses. Only then is "absent from the result" the same
                     // thing as "gone from the server".
                     let complete = cursors.iter().sum::<u64>() == 0;
-                    let (keys_to_add, keys_to_remove) = Self::plan_auto_refresh(complete, keys, &this.keys);
+                    let AutoRefreshPlan {
+                        add: keys_to_add,
+                        remove: keys_to_remove,
+                        ttls: new_ttls,
+                    } = Self::plan_auto_refresh(complete, keys, &this.keys, with_ttl.then_some(&*this.key_ttls));
 
-                    let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty();
+                    let has_changes = !keys_to_remove.is_empty() || !keys_to_add.is_empty() || !new_ttls.is_empty();
                     debug!(
                         keys_to_remove = keys_to_remove.len(),
                         keys_to_add = keys_to_add.len(),
+                        new_ttls = new_ttls.len(),
                         has_changes,
                         "auto refresh",
                     );
 
                     if has_changes {
                         // Remove old keys
-                        for key in keys_to_remove {
-                            this.keys.remove(&key);
+                        for key in &keys_to_remove {
+                            this.forget_loaded_key(key);
+                        }
+                        if !new_ttls.is_empty() {
+                            Arc::make_mut(&mut this.key_ttls).extend(new_ttls);
                         }
 
                         // Add new keys
@@ -665,6 +716,12 @@ impl ZedisServerState {
                     if done {
                         this.loaded_prefixes.insert(prefix.clone());
                         this.incomplete_prefixes.remove(&prefix);
+                        // A refreshed folder of a fully loaded keyspace is
+                        // whole again: so is the keyspace, once no other
+                        // refresh is still on its way.
+                        if this.complete_before_refresh.remove(&prefix) && this.complete_before_refresh.is_empty() {
+                            this.scan_completed = true;
+                        }
                     } else if batch_loaded < threshold && iteration + 1 < SCAN_PREFIX_MAX_PAGES {
                         // Haven't matched ~80% of key_scan_count yet and still
                         // under the page budget — keep scanning so results keep
@@ -736,18 +793,25 @@ impl ZedisServerState {
     /// prefix was previously loaded or the global scan is complete.  Existing keys under
     /// the prefix are removed first so the result is a clean, up-to-date snapshot.
     pub fn refresh_prefix(&mut self, prefix: SharedString, cx: &mut Context<Self>) {
-        // Drop any cached state for this prefix (and sub-prefixes)
+        // Drop any cached state for this prefix, its sub-prefixes — and the
+        // folders it sits in: a loaded parent answered `scan_prefix` from
+        // the keys at hand, which the removal below just took this folder's
+        // out of, so the refresh came back empty.
         self.loaded_prefixes
-            .retain(|p| !p.as_str().starts_with(prefix.as_str()));
+            .retain(|p| !p.as_str().starts_with(prefix.as_str()) && !prefix.as_str().starts_with(p.as_str()));
         // Drop any saved "load more" resume state for this prefix subtree.
         self.incomplete_prefixes
             .retain(|p, _| !p.as_str().starts_with(prefix.as_str()));
         // Remove stale keys so the tree shows only what Redis returns
-        self.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
-        // Clear scan_completed so scan_prefix performs a full Redis re-scan rather than
-        // short-circuiting to fill_key_types.  scan_prefix will restore it via the
-        // KeyScanFinished path if the prefix scan itself completes fully.
-        self.scan_completed = false;
+        self.forget_loaded_keys_where(|key| key.starts_with(prefix.as_str()));
+        // Clear scan_completed so scan_prefix performs a full Redis re-scan
+        // rather than short-circuiting to fill_key_types; the re-scan puts it
+        // back when it runs to its end (see `complete_before_refresh`).
+        // (A refresh started while another is on its way joins it: the flag
+        // was already taken, but the keyspace was whole before either.)
+        if std::mem::take(&mut self.scan_completed) || !self.complete_before_refresh.is_empty() {
+            self.complete_before_refresh.insert(prefix.clone());
+        }
         self.scan_prefix(prefix, cx);
     }
 
@@ -1133,7 +1197,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if let Ok(()) = result {
-                    this.keys.remove(&remove_key);
+                    this.forget_loaded_key(&remove_key);
                     this.histories.forget(&remove_key);
                     // Drop from MRU so the dropdown doesn't offer a gone key.
                     let scope = recent_keys_scope(this.server_id.as_str(), this.db);
@@ -1182,11 +1246,21 @@ impl ZedisServerState {
             prefix.clone(),
             move || async move { Ok(delete_keys_matching(&at, &pattern).await?) },
             move |this, result, cx| {
-                if let Ok(()) = result {
-                    this.keys.retain(|key, _| !key.starts_with(prefix.as_str()));
-                    this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
-                    // Force refresh of the key tree view
-                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                match result {
+                    Ok(true) => {
+                        this.forget_loaded_keys_where(|key| key.starts_with(prefix.as_str()));
+                        this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
+                        // Force refresh of the key tree view
+                        this.key_tree_id = Uuid::now_v7().to_string().into();
+                    }
+                    // The walk stopped at its round limit: some keys may
+                    // still be there. Scan the folder again rather than take
+                    // every loaded key under it out of the tree as deleted.
+                    Ok(false) => {
+                        this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
+                        this.refresh_prefix(prefix.clone().into(), cx);
+                    }
+                    Err(_) => {}
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
@@ -1222,10 +1296,17 @@ impl ZedisServerState {
             move |this, result, cx| {
                 if result.is_ok() {
                     this.keys.clear();
+                    this.key_ttls = Arc::new(AHashMap::new());
                     this.histories.clear();
                     this.key = None;
                     this.value = None;
                     this.next_value_epoch();
+                    // The open database is empty now; and the next beat
+                    // re-reads DBSIZE rather than wait out its minute, so the
+                    // status bar and the database list stop showing the old
+                    // counts.
+                    this.dbsize = Some(0);
+                    this.last_dbsize_refreshed_at = 0;
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     let message = if all {
@@ -1248,14 +1329,15 @@ impl ZedisServerState {
 
     pub fn unlink_keys(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
         let at = self.at_confirmed();
-        let remove_keys = keys.clone();
+        // A set, not the Vec: the removal below asks it once per loaded key.
+        let remove_keys: AHashSet<SharedString> = keys.iter().cloned().collect();
         self.spawn_with_arg(
             ServerTask::DeleteKeys,
             format!("{} keys", remove_keys.len()),
             move || async move { Ok(delete_keys(&at, keys.into_iter().map(|k| k.to_string()).collect()).await?) },
             move |this, result, cx| {
                 if let Ok(()) = result {
-                    this.keys.retain(|key, _| !remove_keys.contains(key));
+                    this.forget_loaded_keys_where(|key| remove_keys.contains(key));
                     this.histories.retain_keys(|key| !remove_keys.contains(key));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
@@ -1693,9 +1775,9 @@ mod auto_refresh_tests {
     /// is gone, and a new one arrives.
     #[test]
     fn a_complete_round_removes_what_the_server_no_longer_lists() {
-        let (add, remove) = ZedisServerState::plan_auto_refresh(true, scanned(&["a", "c"]), &loaded(&["a", "b"]));
-        assert_eq!(names(&add), ["c"]);
-        assert_eq!(remove, vec![SharedString::from("b")]);
+        let plan = ZedisServerState::plan_auto_refresh(true, scanned(&["a", "c"]), &loaded(&["a", "b"]), None);
+        assert_eq!(names(&plan.add), ["c"]);
+        assert_eq!(plan.remove, vec![SharedString::from("b")]);
     }
 
     /// The round did *not* finish: its result is a sample, and a key missing
@@ -1703,14 +1785,37 @@ mod auto_refresh_tests {
     /// is the case that used to delete live keys from the tree.
     #[test]
     fn an_incomplete_round_adds_but_never_removes() {
-        let (add, remove) = ZedisServerState::plan_auto_refresh(false, scanned(&["a", "c"]), &loaded(&["a", "b"]));
-        assert_eq!(names(&add), ["c"], "what the round did see is still added");
-        assert!(remove.is_empty(), "b was simply not in this round's sample");
+        let plan = ZedisServerState::plan_auto_refresh(false, scanned(&["a", "c"]), &loaded(&["a", "b"]), None);
+        assert_eq!(names(&plan.add), ["c"], "what the round did see is still added");
+        assert!(plan.remove.is_empty(), "b was simply not in this round's sample");
     }
 
     #[test]
     fn a_key_in_both_is_neither_added_nor_removed() {
-        let (add, remove) = ZedisServerState::plan_auto_refresh(true, scanned(&["a"]), &loaded(&["a"]));
-        assert!(add.is_empty() && remove.is_empty());
+        let plan = ZedisServerState::plan_auto_refresh(true, scanned(&["a"]), &loaded(&["a"]), None);
+        assert!(plan.add.is_empty() && plan.remove.is_empty() && plan.ttls.is_empty());
+    }
+
+    /// A loaded key's TTL is refreshed when its chip would change, and left
+    /// alone when it would not (or when the tree shows no TTLs).
+    #[test]
+    fn a_loaded_key_gets_its_new_ttl_when_the_chip_would_change() {
+        let ttls: AHashMap<SharedString, i64> = [("a", 600_i64), ("b", 600), ("c", -1)]
+            .into_iter()
+            .map(|(k, ttl)| (SharedString::from(k), ttl))
+            .collect();
+        let round = vec![
+            ("a".to_string(), "string".to_string(), 540),
+            ("b".to_string(), "string".to_string(), 630),
+            ("c".to_string(), "string".to_string(), 30),
+        ];
+        let plan = ZedisServerState::plan_auto_refresh(true, round.clone(), &loaded(&["a", "b", "c"]), Some(&ttls));
+        let mut changed: Vec<(&str, i64)> = plan.ttls.iter().map(|(k, ttl)| (k.as_ref(), *ttl)).collect();
+        changed.sort_unstable();
+        // 10m → 9m and ∞ → 30s change the chip; 600 s → 630 s reads 10m both
+        // times, so `b` is left as it was.
+        assert_eq!(changed, vec![("a", 540), ("c", 30)]);
+        let hidden = ZedisServerState::plan_auto_refresh(true, round, &loaded(&["a", "b", "c"]), None);
+        assert!(hidden.ttls.is_empty());
     }
 }

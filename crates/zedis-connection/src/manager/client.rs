@@ -26,7 +26,7 @@ use crate::keyspace::expire_seconds;
 use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
 use redis::Pipeline;
 use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
-use zedis_core::string::split_host_port_or;
+use zedis_core::string::split_label;
 
 /// A display-only stand-in for a master the bridge answered for.
 ///
@@ -35,7 +35,7 @@ use zedis_core::string::split_host_port_or;
 /// that — and must carry no less *and no more*: the real entry holds
 /// credentials, which stay on the bridge.
 fn node_label_server(label: &str) -> RedisServer {
-    let (host, port) = split_host_port_or(label, 0);
+    let (host, port) = split_label(label);
     RedisServer {
         name: label.to_string(),
         host: host.to_string(),
@@ -73,6 +73,17 @@ impl RedisClient {
     /// Returns the list of master node server configurations.
     pub fn master_servers(&self) -> Vec<RedisServer> {
         self.master_nodes.iter().map(|node| node.server.clone()).collect()
+    }
+
+    /// Every node's `host:port`, masters and replicas — the keys of the
+    /// per-node connection pool, which the browser build does not have.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn node_addrs(&self) -> Vec<String> {
+        self.master_nodes
+            .iter()
+            .chain(&self.nodes)
+            .map(|node| node.host_port())
+            .collect()
     }
 
     pub fn nodes_description(&self) -> RedisClientDescription {
@@ -1689,42 +1700,54 @@ impl RedisClient {
         };
         let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count, server_type).await?;
 
-        // Pipeline TYPE (+ optional TTL) per key in one RTT per master.
-        // TTL is skipped entirely when the caller doesn't need it — saves
-        // one command per key on large dbs where the chip is disabled.
-        let cmds_per_key = if with_ttl { 2 } else { 1 };
-        let master_addrs: Vec<_> = self.master_nodes.iter().map(|item| item.server.clone()).collect();
-        let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; master_addrs.len()];
-        for (idx, keys) in keys_per_node.iter().enumerate() {
-            if !keys.is_empty() {
-                let mut pipe = redis::pipe();
-                for key in keys {
-                    pipe.cmd("TYPE").arg(key.as_str());
-                    if with_ttl {
-                        pipe.cmd("TTL").arg(key.as_str());
+        // Pipeline TYPE (+ optional TTL) per key in one RTT per master. A
+        // server-side TYPE filter has already named every key's type, so
+        // there only the TTL is left to ask — a type-filtered page used to
+        // spend one TYPE per key on an answer it had. TTL is skipped when
+        // the caller doesn't need it: one command per key on large dbs where
+        // the chip is off.
+        let ask_type = server_type.is_none();
+        let cmds_per_key = usize::from(ask_type) + usize::from(with_ttl);
+        let pipe_results = if cmds_per_key == 0 {
+            Vec::new()
+        } else {
+            let mut pipes: Vec<Option<redis::Pipeline>> = vec![None; self.master_nodes.len()];
+            for (idx, keys) in keys_per_node.iter().enumerate() {
+                if !keys.is_empty() {
+                    let mut pipe = redis::pipe();
+                    for key in keys {
+                        if ask_type {
+                            pipe.cmd("TYPE").arg(key.as_str());
+                        }
+                        if with_ttl {
+                            pipe.cmd("TTL").arg(key.as_str());
+                        }
                     }
+                    pipes[idx] = Some(pipe);
                 }
-                pipes[idx] = Some(pipe);
             }
-        }
-
-        let pipe_results = self.query_async_masters_pipelines(pipes).await?;
+            self.query_async_masters_pipelines(pipes).await?
+        };
 
         let capacity: usize = keys_per_node.iter().map(|ks| ks.len()).sum();
         let mut all_keys = Vec::with_capacity(capacity);
         for (idx, keys) in keys_per_node.into_iter().enumerate() {
             let results = pipe_results.get(idx).and_then(|r| r.as_ref());
             for (i, key) in keys.into_iter().enumerate() {
-                let type_val = results.and_then(|vals| vals.get(i * cmds_per_key));
-                let key_type = type_val
-                    .map(|val| match val {
-                        Value::SimpleString(s) => s.clone(),
-                        Value::BulkString(d) => String::from_utf8_lossy(d).into_owned(),
-                        _ => String::new(),
-                    })
-                    .unwrap_or_default();
+                let base = i * cmds_per_key;
+                let key_type = match server_type {
+                    Some(known) => known.to_string(),
+                    None => results
+                        .and_then(|vals| vals.get(base))
+                        .map(|val| match val {
+                            Value::SimpleString(s) => s.clone(),
+                            Value::BulkString(d) => String::from_utf8_lossy(d).into_owned(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default(),
+                };
                 let ttl_secs: i64 = if with_ttl {
-                    match results.and_then(|vals| vals.get(i * cmds_per_key + 1)) {
+                    match results.and_then(|vals| vals.get(base + usize::from(ask_type))) {
                         Some(Value::Int(t)) => *t,
                         _ => -2,
                     }

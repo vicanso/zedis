@@ -30,6 +30,17 @@ use super::{float, hex};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
+/// How deep containers may nest. Decoding (and dropping) a value recurses
+/// once per level, so a few megabytes of `EMPTY_LIST … APPEND` could nest a
+/// million deep and overflow the stack; past this the value is not shown
+/// decoded.
+const MAX_DEPTH: usize = 256;
+
+/// Nodes memo lookups may copy in all. A lookup repeats the memoized value,
+/// so a list holding one twice, held twice by the next, doubles with each
+/// level; past this a lookup is shown as the slot it names.
+const MAX_EXPANDED: usize = 1_000_000;
+
 /// A `PROTO` opcode announcing protocol 2–5.
 pub fn looks_like(bytes: &[u8]) -> bool {
     bytes.len() >= 3 && bytes[0] == 0x80 && (2..=5).contains(&bytes[1])
@@ -46,6 +57,8 @@ pub fn decode(bytes: &[u8]) -> Option<Value> {
         pos: 0,
         stack: Vec::new(),
         memo: HashMap::new(),
+        expanded: 0,
+        too_deep: false,
     };
     let value = vm.run().ok()?;
     Some(to_json(value))
@@ -76,13 +89,54 @@ struct PObject {
     args: Vec<PVal>,
     kwargs: Option<PVal>,
     state: Option<PVal>,
+    /// What `APPEND(S)` added: a list subclass rebuilt by `REDUCE`.
+    list_items: Vec<PVal>,
+    /// What `SETITEM(S)` added: `OrderedDict`, `defaultdict`, a dict
+    /// subclass — each is a `REDUCE` whose entries come after, which used to
+    /// stop the decode.
+    dict_items: Vec<(PVal, PVal)>,
+}
+
+impl PVal {
+    /// The values this one holds directly.
+    fn children(&self) -> Vec<&PVal> {
+        match self {
+            PVal::List(items) | PVal::Tuple(items) | PVal::Set(items) => items.iter().collect(),
+            PVal::Dict(entries) => entries.iter().flat_map(|(k, v)| [k, v]).collect(),
+            PVal::Object(obj) => std::iter::once(&obj.class)
+                .chain(&obj.args)
+                .chain(&obj.kwargs)
+                .chain(&obj.state)
+                .chain(&obj.list_items)
+                .chain(obj.dict_items.iter().flat_map(|(k, v)| [k, v]))
+                .collect(),
+            PVal::Persistent(id) => vec![id],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Whether `value` nests no deeper than `levels`.
+fn within_depth(value: &PVal, levels: usize) -> bool {
+    let children = value.children();
+    children.is_empty() || (levels > 0 && children.into_iter().all(|child| within_depth(child, levels - 1)))
+}
+
+/// A value's size in nodes, what a memo lookup of it copies.
+fn weight(value: &PVal) -> usize {
+    1 + value.children().into_iter().map(weight).sum::<usize>()
 }
 
 struct Vm<'a> {
     bytes: &'a [u8],
     pos: usize,
     stack: Vec<PVal>,
-    memo: HashMap<u32, PVal>,
+    /// Memoized values with their [`weight`].
+    memo: HashMap<u32, (PVal, usize)>,
+    /// Nodes copied by memo lookups so far (see [`MAX_EXPANDED`]).
+    expanded: usize,
+    /// A value nested past [`MAX_DEPTH`]; the run stops at the next opcode.
+    too_deep: bool,
 }
 
 type Step<T> = Result<T, ()>;
@@ -128,7 +182,14 @@ impl Vm<'_> {
     }
 
     fn push(&mut self, value: PVal) {
+        self.check_depth(&value, MAX_DEPTH);
         self.stack.push(value);
+    }
+    /// Mark the run too deep if `value` nests past `levels`.
+    fn check_depth(&mut self, value: &PVal, levels: usize) {
+        if !within_depth(value, levels) {
+            self.too_deep = true;
+        }
     }
     fn pop(&mut self) -> Step<PVal> {
         self.stack.pop().ok_or(())
@@ -143,17 +204,26 @@ impl Vm<'_> {
         self.stack.pop();
         Ok(items)
     }
-    fn get(&self, key: u32) -> Step<PVal> {
-        self.memo.get(&key).cloned().ok_or(())
+    fn get(&mut self, key: u32) -> Step<PVal> {
+        let (value, size) = self.memo.get(&key).ok_or(())?;
+        if self.expanded + size > MAX_EXPANDED {
+            return Ok(PVal::Str(format!("<memo {key}>")));
+        }
+        self.expanded += size;
+        Ok(value.clone())
     }
     fn put(&mut self, key: u32) -> Step<()> {
         let value = self.stack.last().ok_or(())?.clone();
-        self.memo.insert(key, value);
+        let size = weight(&value);
+        self.memo.insert(key, (value, size));
         Ok(())
     }
 
     fn run(&mut self) -> Step<PVal> {
         loop {
+            if self.too_deep {
+                return Err(());
+            }
             let op = self.u8()?;
             match op {
                 0x80 => {
@@ -306,15 +376,21 @@ impl Vm<'_> {
                 }
                 b'a' => {
                     let item = self.pop()?;
+                    self.check_depth(&item, MAX_DEPTH - 1);
                     match self.top()? {
                         PVal::List(items) => items.push(item),
+                        PVal::Object(obj) => obj.list_items.push(item),
                         _ => return Err(()),
                     }
                 }
                 b'e' => {
                     let new = self.pop_mark()?;
+                    for item in &new {
+                        self.check_depth(item, MAX_DEPTH - 1);
+                    }
                     match self.top()? {
                         PVal::List(items) => items.extend(new),
+                        PVal::Object(obj) => obj.list_items.extend(new),
                         _ => return Err(()),
                     }
                 }
@@ -326,21 +402,32 @@ impl Vm<'_> {
                 b's' => {
                     let value = self.pop()?;
                     let key = self.pop()?;
+                    self.check_depth(&key, MAX_DEPTH - 1);
+                    self.check_depth(&value, MAX_DEPTH - 1);
                     match self.top()? {
                         PVal::Dict(entries) => entries.push((key, value)),
+                        PVal::Object(obj) => obj.dict_items.push((key, value)),
                         _ => return Err(()),
                     }
                 }
                 b'u' => {
                     let new = pairs(self.pop_mark()?)?;
+                    for (key, value) in &new {
+                        self.check_depth(key, MAX_DEPTH - 1);
+                        self.check_depth(value, MAX_DEPTH - 1);
+                    }
                     match self.top()? {
                         PVal::Dict(entries) => entries.extend(new),
+                        PVal::Object(obj) => obj.dict_items.extend(new),
                         _ => return Err(()),
                     }
                 }
                 0x8f => self.push(PVal::Set(Vec::new())),
                 0x90 => {
                     let new = self.pop_mark()?;
+                    for item in &new {
+                        self.check_depth(item, MAX_DEPTH - 1);
+                    }
                     match self.top()? {
                         PVal::Set(items) => items.extend(new),
                         _ => return Err(()),
@@ -441,6 +528,8 @@ impl Vm<'_> {
                             args: vec![other],
                             kwargs: None,
                             state: Some(state),
+                            list_items: Vec::new(),
+                            dict_items: Vec::new(),
                         })),
                     };
                     self.push(built);
@@ -472,6 +561,8 @@ fn object(class: PVal, args: PVal, kwargs: Option<PVal>) -> PVal {
         args,
         kwargs,
         state: None,
+        list_items: Vec::new(),
+        dict_items: Vec::new(),
     }))
 }
 
@@ -487,20 +578,60 @@ fn pairs(items: Vec<PVal>) -> Step<Vec<(PVal, PVal)>> {
     Ok(out)
 }
 
-/// Two's-complement little-endian integer of any width.
+/// Widest integer spelled in decimal; the conversion is quadratic in the
+/// width, so a longer one is spelled in hex (still signed).
+const MAX_DECIMAL_BYTES: usize = 1024;
+
+/// Two's-complement little-endian integer of any width. Past 64 bits it is
+/// text: decimal, with its sign — the hex of its bytes it used to be showed
+/// a negative number as its two's complement.
 fn long_from_le(raw: &[u8]) -> PVal {
     if raw.is_empty() {
         return PVal::Int(0);
     }
+    let negative = raw[raw.len() - 1] & 0x80 != 0;
     if raw.len() <= 8 {
-        let negative = raw[raw.len() - 1] & 0x80 != 0;
         let mut buf = [if negative { 0xff } else { 0x00 }; 8];
         buf[..raw.len()].copy_from_slice(raw);
         return PVal::Int(i64::from_le_bytes(buf));
     }
-    let mut be: Vec<u8> = raw.to_vec();
-    be.reverse();
-    PVal::BigInt(format!("0x{}", hex(&be)))
+    // The magnitude, big-endian: negated (inverted, plus one) when negative.
+    let mut magnitude: Vec<u8> = raw.iter().rev().copied().collect();
+    if negative {
+        for byte in magnitude.iter_mut() {
+            *byte = !*byte;
+        }
+        for byte in magnitude.iter_mut().rev() {
+            let (sum, carry) = byte.overflowing_add(1);
+            *byte = sum;
+            if !carry {
+                break;
+            }
+        }
+    }
+    let sign = if negative { "-" } else { "" };
+    if raw.len() > MAX_DECIMAL_BYTES {
+        return PVal::BigInt(format!("{sign}0x{}", hex(&magnitude)));
+    }
+    PVal::BigInt(format!("{sign}{}", decimal(magnitude)))
+}
+
+/// A big-endian unsigned integer in decimal.
+fn decimal(mut big_endian: Vec<u8>) -> String {
+    let mut digits = Vec::new();
+    while big_endian.iter().any(|byte| *byte != 0) {
+        let mut remainder = 0u32;
+        for byte in big_endian.iter_mut() {
+            let current = (remainder << 8) | u32::from(*byte);
+            *byte = (current / 10) as u8;
+            remainder = current % 10;
+        }
+        digits.push(char::from(b'0' + remainder as u8));
+    }
+    if digits.is_empty() {
+        return "0".to_string();
+    }
+    digits.iter().rev().collect()
 }
 
 fn long_from_text(text: &str) -> PVal {
@@ -542,6 +673,15 @@ fn to_json(value: PVal) -> Value {
             if let Some(state) = obj.state {
                 map.insert("state".into(), to_json(state));
             }
+            if !obj.list_items.is_empty() {
+                map.insert(
+                    "items".into(),
+                    Value::Array(obj.list_items.into_iter().map(to_json).collect()),
+                );
+            }
+            if !obj.dict_items.is_empty() {
+                map.insert("dict".into(), to_json(PVal::Dict(obj.dict_items)));
+            }
             Value::Object(map)
         }
         PVal::Persistent(id) => super::tagged("__persistent_id", to_json(*id)),
@@ -564,6 +704,56 @@ fn key_text(key: PVal) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `OrderedDict` and `defaultdict` are a `REDUCE` whose entries follow
+    /// as `SETITEM(S)`; a list subclass's follow as `APPEND(S)`.
+    #[test]
+    fn reduced_dicts_and_lists_keep_their_items() {
+        // protocol 2: collections.OrderedDict() then SETITEM "a" = 1.
+        let mut bytes = b"\x80\x02ccollections\nOrderedDict\n)R".to_vec();
+        bytes.extend_from_slice(b"X\x01\x00\x00\x00aK\x01s.");
+        assert_eq!(
+            decode(&bytes),
+            Some(json!({ "__class": "collections.OrderedDict", "dict": { "a": 1 } }))
+        );
+        // A list subclass: REDUCE, then APPENDS 1, 2.
+        let mut bytes = b"\x80\x02cshop\nCart\n)R".to_vec();
+        bytes.extend_from_slice(b"(K\x01K\x02e.");
+        assert_eq!(decode(&bytes), Some(json!({ "__class": "shop.Cart", "items": [1, 2] })));
+    }
+
+    /// Lists nested past the cap are not decoded — decoding and dropping
+    /// them recursed once per level.
+    #[test]
+    fn nesting_past_the_cap_is_not_decoded() {
+        let nested = |levels: usize| {
+            let mut bytes = b"\x80\x02".to_vec();
+            bytes.extend(std::iter::repeat_n(b']', levels));
+            bytes.extend(std::iter::repeat_n(b'a', levels - 1));
+            bytes.push(b'.');
+            bytes
+        };
+        assert!(decode(&nested(10)).is_some());
+        assert!(decode(&nested(MAX_DEPTH + 10)).is_none());
+        assert!(decode(&nested(200_000)).is_none(), "and without overflowing the stack");
+    }
+
+    /// Lists that each hold the one before twice, by memo, double with
+    /// every level; the copies stop at the budget.
+    #[test]
+    fn memo_lookups_cannot_expand_without_bound() {
+        let mut bytes = b"\x80\x02(K\x01K\x02lq\x000".to_vec();
+        for level in 1..=40u8 {
+            bytes.extend_from_slice(&[b'(', b'h', level - 1, b'h', level - 1, b'l', b'q', level]);
+            bytes.push(b'0');
+        }
+        // Leave the last level on the stack for STOP.
+        bytes.extend_from_slice(&[b'h', 40, b'.']);
+        // Popped levels keep only their memo copy; the one on the stack is
+        // the value.
+        let decoded = decode(&bytes).expect("decoded");
+        assert!(decoded.to_string().contains("<memo "), "the rest name their slot");
+    }
 
     #[test]
     fn protocol_4_dict_with_nested_containers() {
@@ -619,11 +809,21 @@ mod tests {
         bytes.extend_from_slice(&[b'M', 0x00, 0x01]); // 256
         bytes.extend_from_slice(&[0x8a, 0x01, 0xfe]); // LONG1 -2
         bytes.extend_from_slice(&[0x8a, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // 2^64
+        bytes.extend_from_slice(&[0x8a, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0xff]); // -2^64
+        bytes.extend_from_slice(&[0x8a, 0x09, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xff]); // -(2^63)-1
         bytes.extend_from_slice(b"L12345678901234567890L\n");
         bytes.extend_from_slice(b"l.");
         assert_eq!(
             decode(&bytes),
-            Some(json!([-1, 256, -2, "0x010000000000000000", "12345678901234567890"]))
+            Some(json!([
+                -1,
+                256,
+                -2,
+                "18446744073709551616",
+                "-18446744073709551616",
+                "-9223372036854775809",
+                "12345678901234567890"
+            ]))
         );
     }
 

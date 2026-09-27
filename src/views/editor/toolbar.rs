@@ -593,24 +593,23 @@ impl ZedisEditor {
                             .ghost()
                             .tooltip(favorite_tooltip)
                             .icon(favorite_icon)
-                            .on_click(cx.listener(move |_this, _event, _window, cx| {
-                                let server_id = _this.server_state.read(cx).server_id().to_string();
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                let server_id = this.server_state.read(cx).server_id().to_string();
                                 let key = favorite_key.clone();
-                                let is_favorited = is_favorited;
-                                cx.spawn(async move |_, cx| {
+                                // Decided against the stored list, not this
+                                // render's `is_favorited`: a second click
+                                // before the repaint would repeat the first.
+                                cx.spawn(async move |this, cx| {
                                     let _ = cx
                                         .background_spawn(async move {
-                                            let manager = get_favorites_manager();
-                                            if is_favorited {
-                                                let _ = manager.remove_record(&server_id, key.as_ref());
-                                            } else {
-                                                let _ = manager.add_record(&server_id, key.as_ref());
-                                            }
+                                            get_favorites_manager().toggle_record(&server_id, key.as_ref())
                                         })
                                         .await;
+                                    // The star is drawn from that list, so
+                                    // repaint once it has changed.
+                                    let _ = this.update(cx, |_, cx| cx.notify());
                                 })
                                 .detach();
-                                cx.notify();
                             })),
                     ),
             )
