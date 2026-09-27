@@ -37,6 +37,7 @@ use ahash::AHashSet;
 use bytes::Bytes;
 use gpui::prelude::*;
 use gpui::{SharedString, Task};
+use imbl::OrdMap;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::str::FromStr;
@@ -130,6 +131,21 @@ pub enum ConnectionHealth {
     /// PING has failed past the threshold â treat the link as down.
     Offline,
 }
+
+/// The loaded key set: every key the scans brought in, with its type, in
+/// key order.
+///
+/// A persistent B-tree rather than a hash map, for the key tree. It rebuilds
+/// about every 100ms while a scan runs, and each rebuild used to copy every
+/// loaded key out of this map on the UI thread — 11ms at a million keys —
+/// because the build runs on another thread and the map belongs to an
+/// entity; the build then sorted the copy, another 76ms of a worker. A clone
+/// of this map is a pointer copy, a write while a build still holds one
+/// copies only the path it touches (a 1,000-key page: 0.16ms), and it
+/// iterates in order, so the build sorts nothing. `Arc<AHashMap>` would not
+/// do: a scan page landing while a build holds the snapshot would copy the
+/// whole map right there, on the UI thread.
+pub type LoadedKeys = OrdMap<SharedString, KeyType>;
 
 /// Main state management for Redis server operations
 ///
@@ -383,13 +399,12 @@ pub struct ZedisServerState {
     /// on reset / server switch.
     incomplete_prefixes: AHashMap<SharedString, Vec<u64>>,
 
-    /// Map of all loaded keys and their types
-    keys: AHashMap<SharedString, KeyType>,
+    /// Every loaded key and its type ([`LoadedKeys`]).
+    keys: LoadedKeys,
 
     /// Parallel map of per-key TTL in seconds, populated alongside `keys`
     /// during SCAN. `-1` = no expiry, `-2` = missing (key vanished between
-    /// SCAN and the TTL pipeline). Kept separate from `keys` so older code
-    /// paths that read `&AHashMap<SharedString, KeyType>` keep compiling.
+    /// SCAN and the TTL pipeline).
     ///
     /// Behind an `Arc` so the key tree's background build snapshots it with
     /// an Arc clone instead of a structural copy (with 500k keys that copy
@@ -596,24 +611,23 @@ impl ZedisServerState {
             self.keys.clear();
             self.key_ttls = Arc::new(AHashMap::new());
         }
-        self.keys.reserve(keys.len());
         let key_ttls = Arc::make_mut(&mut self.key_ttls);
         key_ttls.reserve(keys.len());
         let mut insert_count = 0;
 
         for (key, key_type, ttl_secs) in keys {
             let kt = KeyType::from(key_type.as_ref());
-            self.keys
-                .entry(key.clone())
-                .and_modify(|existing| {
-                    if *existing == KeyType::Unknown && kt != KeyType::Unknown {
-                        *existing = kt;
-                    }
-                })
-                .or_insert_with(|| {
-                    insert_count += 1;
-                    kt
-                });
+            // One walk down the tree, not the two an `entry` takes (it looks
+            // the key up, then inserts): half the cost of a scan page. A
+            // known type stays as it was — only an `Unknown` is replaced —
+            // so the rare page that knows the key less well puts it back.
+            match self.keys.insert(key.clone(), kt) {
+                None => insert_count += 1,
+                Some(existing) if existing != KeyType::Unknown && existing != kt => {
+                    self.keys.insert(key.clone(), existing);
+                }
+                Some(_) => {}
+            }
             // Always update the freshest TTL (it counts down) — replace
             // existing rather than insert_with.
             key_ttls.insert(key, ttl_secs);
@@ -1460,7 +1474,9 @@ impl ZedisServerState {
     pub fn key_ttls_arc(&self) -> Arc<AHashMap<SharedString, i64>> {
         Arc::clone(&self.key_ttls)
     }
-    pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
+    /// The loaded keys. A clone is a pointer copy (see [`LoadedKeys`]),
+    /// which is how a background build should take them.
+    pub fn keys(&self) -> &LoadedKeys {
         &self.keys
     }
 
@@ -1748,6 +1764,41 @@ mod tests {
         let mut names: Vec<String> = state.keys.keys().map(|k| k.to_string()).collect();
         names.sort();
         names
+    }
+
+    /// What the key tree relies on: the loaded keys come out in key order,
+    /// and a snapshot a build took is untouched by the pages that land
+    /// while it runs.
+    #[gpui::test]
+    fn a_snapshot_of_the_loaded_keys_is_sorted_and_stays_as_taken(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, _cx| {
+            let names = |keys: &LoadedKeys| keys.keys().map(|k| k.to_string()).collect::<Vec<_>>();
+            state.extend_keys(batch(&[("b", "string"), ("a", "hash")]));
+            let snapshot = state.keys().clone();
+            state.extend_keys(batch(&[("c", "set"), ("a0", "list"), ("b", "string")]));
+            assert_eq!(names(&snapshot), ["a", "b"]);
+            assert_eq!(names(state.keys()), ["a", "a0", "b", "c"]);
+            assert_eq!(state.keys().get("a0"), Some(&KeyType::List));
+        });
+    }
+
+    /// A later page may know a key only as `Unknown` (a type lookup that
+    /// failed) or name another type for it: the known type stays. An
+    /// `Unknown` is replaced as soon as a page knows better.
+    #[gpui::test]
+    fn a_known_type_is_kept_and_an_unknown_one_is_filled_in(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, _cx| {
+            state.extend_keys(batch(&[("known", "hash"), ("unknown", "")]));
+            let id = state.key_tree_id().to_string();
+            state.extend_keys(batch(&[("known", ""), ("unknown", "set")]));
+            state.extend_keys(batch(&[("known", "string")]));
+            assert_eq!(state.keys().get("known"), Some(&KeyType::Hash));
+            assert_eq!(state.keys().get("unknown"), Some(&KeyType::Set));
+            assert_eq!(state.keys().len(), 2);
+            assert_eq!(state.key_tree_id(), id, "no key was added, so the tree is the same");
+        });
     }
 
     /// ⌘R must not blank the tree: the rows stay up for the whole round trip

@@ -26,8 +26,7 @@ use regex::Regex;
 /// scan would silently hide tagged keys that haven't been scanned yet.
 ///
 /// For each tagged key we try to recover its `KeyType` from the SCAN
-/// snapshot (constant-time lookup via a `name → type` index built
-/// here). Keys outside the snapshot fall back to `KeyType::Unknown` —
+/// snapshot (a lookup in the loaded map). Keys outside the snapshot fall back to `KeyType::Unknown` —
 /// the subsequent local AND with a type filter drops those (so tag
 /// rows cannot bypass `SCAN TYPE`). Keys that have been deleted on the
 /// server but still carry local metadata also show up this way when no
@@ -35,19 +34,16 @@ use regex::Regex;
 /// gone" feedback helps the user spot dangling annotations.
 pub(super) fn build_tagged_keys_list(
     color: TagColor,
-    snapshot_keys: &[(SharedString, KeyType)],
+    snapshot_keys: &LoadedKeys,
     metadata: &std::collections::HashMap<String, KeyMetadata>,
 ) -> Vec<(SharedString, KeyType)> {
-    // O(1) type lookup — `metadata` may contain hundreds of entries on
-    // a heavily-annotated server, so a linear scan per entry would be
-    // wasteful even if the snapshot is small.
-    let type_by_key: std::collections::HashMap<&str, KeyType> =
-        snapshot_keys.iter().map(|(k, t)| (k.as_ref(), *t)).collect();
+    // A lookup in the snapshot per tagged key, O(log N) each — the loaded
+    // set is a map already, so there is no index of all N keys to build.
     let mut tagged: Vec<(SharedString, KeyType)> = metadata
         .iter()
         .filter(|(_, m)| m.tag == Some(color))
         .map(|(key, _)| {
-            let key_type = type_by_key.get(key.as_str()).copied().unwrap_or(KeyType::Unknown);
+            let key_type = snapshot_keys.get(key.as_str()).copied().unwrap_or(KeyType::Unknown);
             (SharedString::from(key.clone()), key_type)
         })
         .collect();
@@ -892,6 +888,28 @@ mod local_filter_tests {
 
     fn keys(items: &[(&str, KeyType)]) -> Vec<(SharedString, KeyType)> {
         items.iter().map(|(k, t)| ((*k).into(), *t)).collect()
+    }
+
+    /// The tag filter's rows come from the local tags, typed from the loaded
+    /// keys where they are loaded, and sorted as the build requires.
+    #[test]
+    fn tagged_rows_take_their_type_from_the_loaded_keys() {
+        let loaded: LoadedKeys = keys(&[("user:1", KeyType::Hash), ("user:9", KeyType::Set)])
+            .into_iter()
+            .collect();
+        let tag = |color| KeyMetadata {
+            tag: Some(color),
+            note: String::new(),
+        };
+        let meta = std::collections::HashMap::from([
+            ("user:2".to_string(), tag(TagColor::Red)),
+            ("user:1".to_string(), tag(TagColor::Red)),
+            ("user:9".to_string(), tag(TagColor::Blue)),
+        ]);
+        assert_eq!(
+            build_tagged_keys_list(TagColor::Red, &loaded, &meta),
+            keys(&[("user:1", KeyType::Hash), ("user:2", KeyType::Unknown)])
+        );
     }
 
     #[test]

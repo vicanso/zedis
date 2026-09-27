@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{
-    ServerEvent, ServerTask, ZedisServerState,
+    LoadedKeys, ServerEvent, ServerTask, ZedisServerState,
     hash::first_load_hash_value,
     json::get_redis_json_value,
     list::first_load_list_value,
@@ -344,7 +344,7 @@ impl ZedisServerState {
     fn plan_auto_refresh(
         complete: bool,
         scanned: Vec<(String, String, i64)>,
-        loaded: &AHashMap<SharedString, KeyType>,
+        loaded: &LoadedKeys,
         ttls: Option<&AHashMap<SharedString, i64>>,
     ) -> AutoRefreshPlan {
         let seen: AHashSet<&str> = scanned.iter().map(|(k, _, _)| k.as_str()).collect();
@@ -384,7 +384,10 @@ impl ZedisServerState {
 
     /// [`Self::forget_loaded_key`] for every loaded key `gone` accepts.
     fn forget_loaded_keys_where(&mut self, gone: impl Fn(&SharedString) -> bool) {
-        self.keys.retain(|key, _| !gone(key));
+        let doomed: Vec<SharedString> = self.keys.keys().filter(|key| gone(key)).cloned().collect();
+        for key in &doomed {
+            self.keys.remove(key);
+        }
         if self.key_ttls.keys().any(&gone) {
             Arc::make_mut(&mut self.key_ttls).retain(|key, _| !gone(key));
         }
@@ -1757,7 +1760,7 @@ mod auto_refresh_tests {
 
     use super::*;
 
-    fn loaded(keys: &[&str]) -> AHashMap<SharedString, KeyType> {
+    fn loaded(keys: &[&str]) -> LoadedKeys {
         keys.iter()
             .map(|k| (SharedString::from(k.to_string()), KeyType::String))
             .collect()
