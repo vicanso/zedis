@@ -49,6 +49,9 @@ pub enum DangerKind {
     /// with no unlock window open: what the unlock dialog asks, and what the
     /// bridge answers a script with.
     WriteLocked,
+    /// `EVAL` / `EVALSHA` / `FCALL` to a guarded entry, asked by the bridge
+    /// alone ([`classify_guarded_script`]).
+    Script,
 }
 
 /// How long one unlock of a locked entry's writes lasts. Long enough to fix
@@ -76,6 +79,7 @@ impl DangerKind {
             DangerKind::BatchDelete { .. } => "danger.batch_delete",
             DangerKind::GenericWrite => "danger.generic_write",
             DangerKind::WriteLocked => "danger.write_locked",
+            DangerKind::Script => "danger.script",
         }
     }
     /// Severity affects whether a tagged "PROD" server requires typing the
@@ -92,6 +96,7 @@ impl DangerKind {
                 | DangerKind::ScriptFlush
                 | DangerKind::FunctionDelete
                 | DangerKind::SwapDb
+                | DangerKind::Script
         )
     }
 }
@@ -204,6 +209,25 @@ pub fn classify_dangerous_line(line: &str) -> Option<DangerKind> {
     classify_dangerous(&cmd, &rest)
 }
 
+/// The bridge's question for a script: `EVAL`, `EVALSHA` and `FCALL` (not
+/// the `_RO` forms, which cannot write) sent to an entry whose writes are
+/// guarded — write-locked ([`RedisServer::write_locked`]) or tagged
+/// production — are confirmed every time, inside an unlock window too, and
+/// on production by the name.
+///
+/// A script runs whatever it holds: `EVAL "return redis.call('FLUSHALL')" 0`
+/// is a FLUSHALL that [`classify_dangerous`] cannot see, and the window,
+/// which lets plain writes through, used to let it through unasked. The
+/// desktop keeps its own rule (its terminal does not ask about scripts);
+/// the browser asks before sending, since a refusal from the bridge carries
+/// no dialog of its own.
+pub fn classify_guarded_script(server: &RedisServer, cmd_name: &str) -> Option<DangerKind> {
+    let script = ["EVAL", "EVALSHA", "FCALL"]
+        .iter()
+        .any(|name| cmd_name.eq_ignore_ascii_case(name));
+    (script && (server.write_locked() || server.is_high_risk_tag())).then_some(DangerKind::Script)
+}
+
 /// Whether a command writes — what *Confirm Writes* (`require_confirm_writes`)
 /// asks about and `--audit-writes` logs.
 ///
@@ -287,6 +311,49 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_script_to_a_guarded_entry_is_asked_about_and_nowhere_else() {
+        let plain = RedisServer {
+            name: "staging".to_string(),
+            ..Default::default()
+        };
+        let locked = RedisServer {
+            write_lock: Some(true),
+            ..plain.clone()
+        };
+        let production = RedisServer {
+            tag_color: Some("red".to_string()),
+            ..plain.clone()
+        };
+        // Production with its lock switched off is still production.
+        let opted_out = RedisServer {
+            write_lock: Some(false),
+            ..production.clone()
+        };
+        for server in [&locked, &production, &opted_out] {
+            for name in ["EVAL", "evalsha", "FCALL"] {
+                assert_eq!(
+                    classify_guarded_script(server, name),
+                    Some(DangerKind::Script),
+                    "{name}"
+                );
+            }
+            for name in ["EVAL_RO", "EVALSHA_RO", "FCALL_RO", "SET", "SCRIPT"] {
+                assert_eq!(classify_guarded_script(server, name), None, "{name}");
+            }
+        }
+        assert_eq!(classify_guarded_script(&plain, "EVAL"), None);
+        assert!(DangerKind::Script.is_destructive());
+        assert_eq!(
+            confirm_strictness(&production, &DangerKind::Script),
+            ConfirmStrictness::TypeName
+        );
+        assert_eq!(
+            confirm_strictness(&locked, &DangerKind::Script),
+            ConfirmStrictness::Click
+        );
     }
 
     #[test]

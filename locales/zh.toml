@@ -1370,6 +1370,8 @@ generic_write_title = "确认写入"
 generic_write_body = "该服务器要求每次写入都进行确认，是否在 %{target} 上执行此命令？"
 write_locked_title = "解锁写入"
 write_locked_body = "%{target} 的写入已锁定。解锁 %{minutes} 分钟？到时会自动重新锁定。"
+script_title = "执行脚本"
+script_body = "脚本可以在 %{target} 上执行任意命令（包括 FLUSHALL），外部无法得知它会执行什么。该服务器的写入受保护，每次执行脚本都需要确认。继续执行？"
 
 [acl]
 title = "ACL 用户"

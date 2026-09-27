@@ -1372,6 +1372,8 @@ generic_write_title = "Confirmer l'écriture"
 generic_write_body = "Ce serveur est configuré pour confirmer chaque écriture. Continuer avec cette commande sur %{target} ?"
 write_locked_title = "Déverrouiller les écritures"
 write_locked_body = "Les écritures sur %{target} sont verrouillées. Les déverrouiller pendant %{minutes} minutes ? Elles se reverrouillent d'elles-mêmes."
+script_title = "Exécuter un script"
+script_body = "Un script peut exécuter n'importe quelle commande sur %{target}, FLUSHALL compris, et rien de l'extérieur ne permet de savoir laquelle. Les écritures sur ce serveur sont protégées : chaque script est donc confirmé. L'exécuter ?"
 
 [acl]
 title = "Utilisateurs ACL"

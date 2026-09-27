@@ -1371,6 +1371,8 @@ generic_write_title = "書き込みの確認"
 generic_write_body = "このサーバーはすべての書き込みを確認するよう設定されています。%{target} でこのコマンドを実行しますか?"
 write_locked_title = "書き込みのロック解除"
 write_locked_body = "%{target} への書き込みはロックされています。%{minutes} 分間ロックを解除しますか？時間が来ると自動的に再ロックされます。"
+script_title = "スクリプトの実行"
+script_body = "スクリプトは %{target} 上で FLUSHALL を含む任意のコマンドを実行でき、外部からは何を実行するか分かりません。このサーバーへの書き込みは保護されているため、スクリプトは毎回確認されます。実行しますか？"
 
 [acl]
 title = "ACL ユーザー"

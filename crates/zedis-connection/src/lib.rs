@@ -146,8 +146,8 @@ pub use config::{
 pub use config::{get_server, get_servers, save_servers};
 pub use conn::RedisAsyncConn;
 pub use danger::{
-    ConfirmStrictness, DangerKind, WRITE_UNLOCK_SECS, classify_dangerous, classify_dangerous_line, confirm_strictness,
-    is_write_command, requires_write_confirm,
+    ConfirmStrictness, DangerKind, WRITE_UNLOCK_SECS, classify_dangerous, classify_dangerous_line,
+    classify_guarded_script, confirm_strictness, is_write_command, requires_write_confirm,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use diagnostics::{

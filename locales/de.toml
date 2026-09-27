@@ -1371,6 +1371,8 @@ generic_write_title = "Schreibvorgang bestätigen"
 generic_write_body = "Dieser Server ist so konfiguriert, dass jeder Schreibvorgang bestätigt werden muss. Diesen Befehl auf %{target} ausführen?"
 write_locked_title = "Schreiben freigeben"
 write_locked_body = "Schreibzugriffe auf %{target} sind gesperrt. Für %{minutes} Minuten freigeben? Danach sperren sie sich von selbst wieder."
+script_title = "Skript ausführen"
+script_body = "Ein Skript kann auf %{target} jeden Befehl ausführen, FLUSHALL eingeschlossen, und von außen ist nicht zu erkennen, welchen. Schreibzugriffe auf diesen Server sind geschützt, daher wird jedes Skript bestätigt. Ausführen?"
 
 [acl]
 title = "ACL-Benutzer"

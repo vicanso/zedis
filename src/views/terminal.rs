@@ -26,7 +26,7 @@ use crate::{
         starts_with_ignore_ascii_case, write_file_atomic,
     },
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_terminal, update_app_state_and_save_quiet},
-    views::confirm_dangerous_command,
+    views::{bridge_danger, confirm_dangerous_command},
 };
 use chrono::Local;
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -850,6 +850,12 @@ impl ZedisTerminal {
                     continue;
                 }
                 if let Some(kind) = classify_dangerous_line(line) {
+                    blocking = Some((line.to_string(), kind));
+                    break;
+                }
+                if let Some(kind) = shlex::split(line)
+                    .and_then(|parts| parts.first().and_then(|cmd_name| bridge_danger(&server, cmd_name)))
+                {
                     blocking = Some((line.to_string(), kind));
                     break;
                 }

@@ -18,7 +18,10 @@
 //! same classifier the desktop confirm dialog uses, so a command that makes
 //! the desktop ask makes the bridge ask, and a server tagged production
 //! escalates in both places. The web client renders the returned
-//! [`DangerKind`]'s i18n key exactly as the desktop dialog does.
+//! [`DangerKind`]'s i18n key exactly as the desktop dialog does. The bridge
+//! asks one question the desktop does not — a script to a guarded entry
+//! (`classify_guarded_script`) — and that rule lives in the same module, so
+//! the page can ask it first.
 //!
 //! This costs the bridge its perfect ignorance of Redis: to classify, it has
 //! to read the command name and arguments out of the frame. It still learns
@@ -29,8 +32,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zedis_connection::{
-    ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, classify_dangerous, confirm_strictness,
-    is_read_only_command, is_write_command, requires_write_confirm, reveals_secrets,
+    ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, classify_dangerous, classify_guarded_script,
+    confirm_strictness, is_read_only_command, is_write_command, requires_write_confirm, reveals_secrets,
 };
 
 /// Commands that change or hold the connection they run on.
@@ -203,9 +206,6 @@ pub fn check(
     }
 }
 
-/// Whether this command only reads. An empty frame is not a read: the
-/// decoder refuses it anyway, and a gate must not be the place that lets an
-/// unnameable command through.
 /// Whether `args` read a credential back (`zedis_connection::reveals_secrets`).
 fn reveals(args: &[Vec<u8>]) -> bool {
     let Some((name, rest)) = words(args) else {
@@ -215,6 +215,9 @@ fn reveals(args: &[Vec<u8>]) -> bool {
     reveals_secrets(&name, &rest)
 }
 
+/// Whether this command only reads. An empty frame is not a read: the
+/// decoder refuses it anyway, and a gate must not be the place that lets an
+/// unnameable command through.
 fn reads_only(args: &[Vec<u8>]) -> bool {
     let Some((name, rest)) = words(args) else {
         return false;
@@ -225,10 +228,16 @@ fn reads_only(args: &[Vec<u8>]) -> bool {
 
 /// The desktop's rule, in the desktop's order: the specific classifier first,
 /// then the per-server "confirm every write" setting as a catch-all — for a
-/// typed command, which is where the desktop applies it.
+/// typed command, which is where the desktop applies it. Between the two,
+/// the one question the bridge adds: a script to a guarded entry
+/// (`classify_guarded_script`), asked of every caller, typed or not, and
+/// inside an unlock window as well.
 fn classify(server: &RedisServer, args: &[Vec<u8>], typed: bool) -> Option<DangerKind> {
     let (name, rest) = words(args)?;
     if let Some(kind) = classify_dangerous(&name, &rest) {
+        return Some(kind);
+    }
+    if let Some(kind) = classify_guarded_script(server, &name) {
         return Some(kind);
     }
     if typed && requires_write_confirm(server) && is_write_command(&name, &rest) {
@@ -658,6 +667,81 @@ mod tests {
             Verdict::Allow
         );
         assert!(!plain().write_locked());
+    }
+
+    /// A script hides what it runs, so on a guarded entry it is asked about
+    /// every time — the unlock window that lets a plain write through does
+    /// not let `EVAL "return redis.call('FLUSHALL')" 0` through — and on
+    /// production only the name answers. The `_RO` forms cannot write.
+    #[test]
+    fn a_script_to_a_guarded_entry_is_asked_about_inside_the_window_too() {
+        let flush = ["EVAL", "return redis.call('FLUSHALL')", "0"];
+        let mut locked = plain();
+        locked.write_lock = Some(true);
+        for unlocked in [false, true] {
+            for typed in [false, true] {
+                assert!(
+                    matches!(
+                        check(&locked, &args(&flush), None, false, unlocked, typed),
+                        Verdict::Confirm {
+                            kind: DangerKind::Script,
+                            strictness: ConfirmStrictness::Click
+                        }
+                    ),
+                    "unlocked: {unlocked}, typed: {typed}"
+                );
+            }
+        }
+        assert!(matches!(
+            check(&locked, &args(&flush), Some("yes"), false, true, false),
+            Verdict::Confirmed {
+                kind: DangerKind::Script,
+                ..
+            }
+        ));
+        assert_eq!(
+            check(&locked, &args(&["EVAL_RO", "return 1", "0"]), None, false, true, false),
+            Verdict::Allow
+        );
+        assert!(matches!(
+            check(&locked, &args(&["FCALL", "f", "0"]), None, false, true, false),
+            Verdict::Confirm {
+                kind: DangerKind::Script,
+                ..
+            }
+        ));
+
+        let production = prod();
+        assert!(matches!(
+            check(
+                &production,
+                &args(&["EVALSHA", "abc", "0"]),
+                Some("yes"),
+                false,
+                true,
+                false
+            ),
+            Verdict::Confirm {
+                kind: DangerKind::Script,
+                strictness: ConfirmStrictness::TypeName
+            }
+        ));
+        assert!(matches!(
+            check(
+                &production,
+                &args(&["EVALSHA", "abc", "0"]),
+                Some("production"),
+                false,
+                true,
+                false
+            ),
+            Verdict::Confirmed { .. }
+        ));
+        // A read-only account is refused before any question.
+        assert_eq!(
+            check(&production, &args(&flush), Some("production"), true, true, false),
+            Verdict::Deny
+        );
     }
 
     #[test]

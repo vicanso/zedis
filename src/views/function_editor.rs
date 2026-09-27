@@ -19,13 +19,13 @@
 //! `FCALL_RO`. New library and Edit share the same Lua editor; the
 //! only difference is pre-fill and whether `REPLACE` defaults on.
 
-use crate::views::unavailable_chip;
+use crate::views::{bridge_danger, confirm_dangerous_command, unavailable_chip};
 use crate::{
     assets::CustomIconName,
     connection::{
         Capability, FunctionLibrary, FunctionMeta, FunctionRestorePolicy, FunctionStats, KillTarget, ServerDb,
         function_delete, function_dump, function_fcall, function_flush, function_list, function_load, function_restore,
-        function_stats, validate_library_source,
+        function_stats, get_server, validate_library_source,
     },
     error::Error,
     helpers::{djb2_hash, get_mono_font_family, parse_lines},
@@ -381,7 +381,30 @@ impl ZedisFunctionEditor {
         }));
     }
 
-    fn run_fcall(&mut self, fn_name: SharedString, cx: &mut gpui::Context<Self>) {
+    /// Run the form's `FCALL`. In the browser a script to a guarded entry is
+    /// asked about first (`bridge_danger`) and then sent with the answer —
+    /// the bridge refuses it otherwise; on the desktop it just runs.
+    fn run_fcall(&mut self, fn_name: SharedString, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(form) = self.run_forms.get(fn_name.as_ref()) else {
+            return;
+        };
+        let command = if form.readonly { "FCALL_RO" } else { "FCALL" };
+        let asked = get_server(self.server_state.read(cx).server_id())
+            .ok()
+            .and_then(|server| bridge_danger(&server, command).map(|kind| (server, kind)));
+        let Some((server, kind)) = asked else {
+            self.start_fcall(fn_name, false, cx);
+            return;
+        };
+        let line = format!("{command} {fn_name}");
+        let entity = cx.entity().downgrade();
+        confirm_dangerous_command(&server, &kind, Some(&line), window, cx, move |_, cx| {
+            let Some(this) = entity.upgrade() else { return };
+            this.update(cx, |this, cx| this.start_fcall(fn_name.clone(), true, cx));
+        });
+    }
+
+    fn start_fcall(&mut self, fn_name: SharedString, confirmed: bool, cx: &mut gpui::Context<Self>) {
         if !self.server_state.read(cx).can(Capability::EvalScript) {
             return;
         }
@@ -394,8 +417,13 @@ impl ZedisFunctionEditor {
         let keys = parse_lines(&form.keys.read(cx).value());
         let args = parse_lines(&form.args.read(cx).value());
         let readonly = form.readonly;
-        let server_id = self.server_state.read(cx).server_id().to_string();
-        let db = self.server_state.read(cx).db();
+        let server_state = self.server_state.read(cx);
+        let server_id = server_state.server_id().to_string();
+        let at = if confirmed {
+            server_state.at_confirmed()
+        } else {
+            server_state.at()
+        };
         if server_id.is_empty() {
             self.error = Some(i18n_functions(cx, "no_server"));
             cx.notify();
@@ -405,10 +433,8 @@ impl ZedisFunctionEditor {
         self.running = Some(fn_name.clone());
         self.error = None;
         self._run_task = Some(cx.spawn(async move |handle, cx| {
-            let task = cx.background_spawn(async move {
-                let at = ServerDb::new(&*server_id, db);
-                function_fcall(&at, &name_for_task, &keys, &args, readonly).await
-            });
+            let task =
+                cx.background_spawn(async move { function_fcall(&at, &name_for_task, &keys, &args, readonly).await });
             let result: Result<String> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
                 this.running = None;
@@ -1174,8 +1200,8 @@ impl ZedisFunctionEditor {
                                             .icon(IconName::Search)
                                             .label(i18n_functions(cx, "run"))
                                             .disabled(is_running)
-                                            .on_click(cx.listener(move |this, _, _w, cx| {
-                                                this.run_fcall(fn_for_run.clone(), cx)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.run_fcall(fn_for_run.clone(), window, cx)
                                             })),
                                     ),
                             ),

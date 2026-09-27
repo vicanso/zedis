@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_family = "wasm")]
+use crate::connection::classify_guarded_script;
 use crate::{
     connection::{ConfirmStrictness, DangerKind, RedisServer, WRITE_UNLOCK_SECS, confirm_strictness},
     states::{ZedisGlobalStore, dialog_button_props, i18n_common},
@@ -22,6 +24,20 @@ use std::rc::Rc;
 use zedis_ui::ZedisDialog;
 
 type ConfirmCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// What the bridge will ask about `cmd_name` beyond the desktop's rule, so
+/// the page can ask first: a refusal from the bridge is an error, not a
+/// dialog, and a caller that sent nothing to confirm with could only show
+/// it. The desktop has no bridge and asks nothing more.
+#[cfg(not(target_family = "wasm"))]
+pub fn bridge_danger(_server: &RedisServer, _cmd_name: &str) -> Option<DangerKind> {
+    None
+}
+/// In the browser: a script to a guarded entry (`classify_guarded_script`).
+#[cfg(target_family = "wasm")]
+pub fn bridge_danger(server: &RedisServer, cmd_name: &str) -> Option<DangerKind> {
+    classify_guarded_script(server, cmd_name)
+}
 
 /// Open a confirm dialog before running a dangerous Redis command.
 ///
@@ -152,6 +168,40 @@ mod tests {
             );
             assert!(!body.contains("%{"), "{locale}: {body}");
             assert!(body.contains("60"), "{locale}: {body}");
+        }
+    }
+
+    /// The bridge's script question is the browser's alone: the desktop
+    /// terminal and function editor run a script on production unasked, as
+    /// they always have.
+    #[test]
+    fn the_desktop_asks_nothing_the_bridge_adds() {
+        let production = RedisServer {
+            name: "production".to_string(),
+            tag_color: Some("red".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(bridge_danger(&production, "EVAL"), None);
+        assert_eq!(bridge_danger(&production, "FCALL"), None);
+    }
+
+    #[test]
+    fn a_script_question_has_its_own_words() {
+        for locale in ["en", "zh", "de", "es", "fr", "ja", "pt", "ru"] {
+            let body = compose_message(&DangerKind::Script, None, "prod", "", ConfirmStrictness::Click, locale);
+            assert!(!body.contains("%{") && body.contains("prod"), "{locale}: {body}");
+            assert_ne!(
+                body,
+                compose_message(
+                    &DangerKind::GenericWrite,
+                    None,
+                    "prod",
+                    "",
+                    ConfirmStrictness::Click,
+                    locale
+                ),
+                "{locale}"
+            );
         }
     }
 }

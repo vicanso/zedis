@@ -1371,6 +1371,8 @@ generic_write_title = "Confirm write"
 generic_write_body = "This server is configured to confirm every write. Continue with this command on %{target}?"
 write_locked_title = "Unlock writes"
 write_locked_body = "Writes on %{target} are locked. Unlock them for %{minutes} minutes? They lock again by themselves."
+script_title = "Run a script"
+script_body = "A script can run any command on %{target}, FLUSHALL included, and nothing outside it can tell which. Writes on this server are guarded, so every script is confirmed. Run it?"
 
 [acl]
 title = "ACL Users"
