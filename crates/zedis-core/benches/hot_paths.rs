@@ -27,9 +27,14 @@
 //! rows are gpui view models, but the per-key work it repeats — and the
 //! only part whose cost grows with the keyspace — is `key_segments`,
 //! which lives here and is benched directly.
+//!
+//! The value diff view opens on values of a few MiB: `line_diff` and the
+//! side-by-side layout it is drawn from are benched on a 1 MiB JSON value
+//! pretty-printed (~120,000 lines) with scattered edits.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+use zedis_core::diff::{fold_runs, layout_rows, line_diff, side_by_side};
 use zedis_core::fuzzy::{fuzzy_score_prepared, prepare_fuzzy_query};
 use zedis_core::jsonpath::run_jsonpath;
 use zedis_core::key_segments::{folder_prefixes, single_child_expanded_set, split_key_segments};
@@ -209,12 +214,71 @@ fn bench_single_child_expansion(c: &mut Criterion) {
     });
 }
 
+/// A JSON document the size of the value diff's worst case: ~1 MiB compact,
+/// ~120,000 lines pretty-printed, the shape `serde_json::to_string_pretty`
+/// gives it. `edits` records get a changed field.
+fn pretty_json(edits: &[usize]) -> String {
+    let users: Vec<serde_json::Value> = (0..6_000)
+        .map(|i| {
+            serde_json::json!({
+                "id": i,
+                "name": format!("user-{i:06}"),
+                "email": format!("user{i}@example.com"),
+                "active": !edits.contains(&i),
+                "score": (i * 37 % 10_000) as f64 / 100.0,
+                "tags": ["ops", "vip"],
+                "address": { "city": "Shanghai", "zip": format!("{:05}", i * 7 % 100_000) },
+                "logins": [i % 50, i % 7, i % 13],
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "users": users })).unwrap_or_default()
+}
+
+/// Opening the diff: the line diff, the side-by-side pairing and the fold
+/// search — what runs once per diff, off the UI thread — and the layout,
+/// which the view redoes whenever its width or a fold changes.
+fn bench_value_diff(c: &mut Criterion) {
+    let edits: Vec<usize> = (0..40).map(|k| k * 149 + 3).collect();
+    let left = pretty_json(&[]);
+    let right = pretty_json(&edits);
+    c.bench_function("value_diff_line_diff_120k_lines", |b| {
+        b.iter(|| black_box(line_diff(black_box(&left), black_box(&right)).len()))
+    });
+
+    let rows = side_by_side(&line_diff(&left, &right));
+    let folds = fold_runs(&rows, 3, 4);
+    let left_lines: Vec<&str> = left.lines().collect();
+    let right_lines: Vec<&str> = right.lines().collect();
+    let folded = vec![false; folds.len()];
+    c.bench_function("value_diff_layout_120k_lines_folded", |b| {
+        b.iter(|| {
+            black_box(
+                layout_rows(&rows, &left_lines, &right_lines, &folds, &folded, 80)
+                    .rows
+                    .len(),
+            )
+        })
+    });
+    let expanded = vec![true; folds.len()];
+    c.bench_function("value_diff_layout_120k_lines_expanded", |b| {
+        b.iter(|| {
+            black_box(
+                layout_rows(&rows, &left_lines, &right_lines, &folds, &expanded, 80)
+                    .rows
+                    .len(),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_fuzzy,
     bench_rdb,
     bench_jsonpath,
     bench_key_segments,
-    bench_single_child_expansion
+    bench_single_child_expansion,
+    bench_value_diff
 );
 criterion_main!(benches);

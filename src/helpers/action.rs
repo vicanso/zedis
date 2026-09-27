@@ -248,6 +248,10 @@ pub enum KeyOpAction {
 pub enum ValueDiffAction {
     /// Close the diff and return to the editor (mirrors the Close button).
     Close,
+    /// Scroll to the next change (F7, as in a code editor's diff view).
+    NextChange,
+    /// Scroll to the previous change (Shift+F7).
+    PreviousChange,
 }
 
 /// Actions scoped to the config editor while a parameter is being edited.
@@ -723,6 +727,10 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         // `ValueDiff` context, which is deeper than `Workspace`, so it wins
         // over the page-back binding above while the diff is focused.
         KeyBinding::new("escape", ValueDiffAction::Close, Some("ValueDiff")),
+        // F7 / Shift+F7 walk the changes of an open diff — the keys a code
+        // editor's diff view uses — and mean nothing anywhere else.
+        KeyBinding::new("f7", ValueDiffAction::NextChange, Some("ValueDiff")),
+        KeyBinding::new("shift-f7", ValueDiffAction::PreviousChange, Some("ValueDiff")),
         // Esc while editing a config parameter cancels the edit. Scoped to the
         // `ConfigEdit` context (only present on the config editor's root while
         // an edit is active), so it wins over the page-back binding then and
