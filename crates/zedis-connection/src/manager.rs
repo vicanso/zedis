@@ -723,6 +723,8 @@ pub use replication::FAILOVER_TIMEOUT_MS;
 #[cfg(not(target_family = "wasm"))]
 pub use sharded_pubsub::ShardedPubSub;
 #[cfg(not(target_family = "wasm"))]
+pub(crate) use sharded_pubsub::open_push_connection;
+#[cfg(not(target_family = "wasm"))]
 pub use slot_migration::{
     AtomicSlotMigration, SlotMigrationDialect, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
     cluster_migrate_slots,

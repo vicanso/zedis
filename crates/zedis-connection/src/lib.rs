@@ -102,8 +102,9 @@ pub use acl::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use async_connection::{
-    client_name, open_monitor_connection, open_node_connection, open_node_connection_cached, open_seed_connection,
-    open_single_connection, set_redis_connection_timeout, set_redis_response_timeout,
+    DEFAULT_CONNECTION_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, client_name, open_monitor_connection, open_node_connection,
+    open_node_connection_cached, open_seed_connection, open_single_connection, set_redis_connection_timeout,
+    set_redis_response_timeout,
 };
 pub use audit::{is_administration_command, redact_secrets};
 pub use bitmap::{BitOpKind, BitmapInfo, bit_field, bit_op, bitmap_info, set_bit};

@@ -24,13 +24,14 @@
 //! Native only, like the panels themselves: a held socket has no equivalent
 //! over the HTTP bridge (ADR 9).
 
-use crate::async_connection::open_monitor_connection;
+use crate::async_connection::{open_monitor_connection, open_single_client};
+use crate::config::RedisServer;
 use crate::error::Error;
-use crate::manager::{ShardedPubSub, get_connection_manager};
+use crate::manager::{ShardedPubSub, get_connection_manager, open_push_connection};
 use crate::server_db::ServerDb;
 use futures::{Stream, StreamExt};
-use redis::Msg;
-use redis::aio::PubSub;
+use redis::aio::{MultiplexedConnection, PubSub};
+use redis::{Msg, PushInfo, PushKind, cmd};
 use std::pin::Pin;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -62,6 +63,12 @@ pub enum SubscribeKind {
     /// Sharded (Redis 7+): `SSUBSCRIBE` with exact channel names, routed to
     /// the node that owns each channel's slot.
     Sharded,
+    /// Keyspace notifications: patterns, on every master. A node publishes
+    /// the events of the keys it holds and no other, so on a cluster one
+    /// subscription heard about one master's keys; a `PUBLISH`ed message,
+    /// by contrast, reaches every node, which is why [`Self::Patterns`]
+    /// keeps to one and does not hear each message once per master.
+    KeyspaceEvents,
 }
 
 /// The two transports behind [`SubscribeKind`]: the dedicated RESP2 Pub/Sub
@@ -70,6 +77,13 @@ pub enum SubscribeKind {
 enum Transport {
     Patterns(Box<PubSub>),
     Sharded(Box<ShardedPubSub>),
+    /// RESP3 push connections, their pushes merged on one channel: where
+    /// the classic connection cannot go — an SSH tunnel — or where one is
+    /// not enough — keyspace events on each master of a cluster.
+    Pushes {
+        _connections: Vec<MultiplexedConnection>,
+        pushes: smol::channel::Receiver<PushInfo>,
+    },
 }
 
 /// A live subscription. Drop it to unsubscribe.
@@ -83,10 +97,24 @@ impl ChannelSubscription {
     pub async fn open(at: &ServerDb, kind: SubscribeKind, channels: &[&str]) -> Result<Self> {
         let manager = get_connection_manager();
         let transport = match kind {
-            SubscribeKind::Patterns => {
-                let mut pubsub = manager.get_pubsub_connection(at.server_id()).await?;
-                pubsub.psubscribe(channels).await?;
-                Transport::Patterns(Box::new(pubsub))
+            SubscribeKind::Patterns | SubscribeKind::KeyspaceEvents => {
+                // The nodes the server resolves to, not the entry's own
+                // address: a Sentinel entry names the sentinels, where a
+                // subscription heard nothing an application published.
+                let masters = at.client().await?.master_servers();
+                let nodes: Vec<RedisServer> = if kind == SubscribeKind::KeyspaceEvents {
+                    masters
+                } else {
+                    masters.into_iter().take(1).collect()
+                };
+                match nodes.as_slice() {
+                    [node] if !node.is_ssh_tunnel() => {
+                        let mut pubsub = open_single_client(node)?.get_async_pubsub().await?;
+                        pubsub.psubscribe(channels).await?;
+                        Transport::Patterns(Box::new(pubsub))
+                    }
+                    _ => pushed_patterns(&nodes, channels).await?,
+                }
             }
             SubscribeKind::Sharded => {
                 let mut pubsub = manager.get_sharded_pubsub(at.server_id()).await?;
@@ -104,9 +132,44 @@ impl ChannelSubscription {
             // again for every message loses none.
             Transport::Patterns(pubsub) => pubsub.on_message().next().await,
             Transport::Sharded(pubsub) => pubsub.recv().await,
+            Transport::Pushes { pushes, .. } => loop {
+                // Subscribe acknowledgements and the like are pushes too.
+                let info = pushes.recv().await.ok()?;
+                if matches!(info.kind, PushKind::PMessage | PushKind::Message)
+                    && let Some(msg) = Msg::from_push_info(info)
+                {
+                    break Some(msg);
+                }
+            },
         };
         msg.map(ChannelMessage::from)
     }
+}
+
+/// `PSUBSCRIBE channels` on a push connection to each of `nodes`, one
+/// channel carrying what any of them publishes. An empty `nodes` (a server
+/// whose masters are not known) is an error rather than a silent nothing.
+async fn pushed_patterns(nodes: &[RedisServer], channels: &[&str]) -> Result<Transport> {
+    if nodes.is_empty() {
+        return Err(Error::Invalid {
+            message: "no node to subscribe on".to_string(),
+        });
+    }
+    let (tx, pushes) = smol::channel::unbounded::<PushInfo>();
+    let mut connections = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let mut connection = open_push_connection(node, tx.clone()).await?;
+        let mut psubscribe = cmd("PSUBSCRIBE");
+        for channel in channels {
+            psubscribe.arg(*channel);
+        }
+        psubscribe.exec_async(&mut connection).await?;
+        connections.push(connection);
+    }
+    Ok(Transport::Pushes {
+        _connections: connections,
+        pushes,
+    })
 }
 
 /// The `MONITOR` feed of one node.

@@ -146,6 +146,10 @@ pub enum Capability {
     FunctionWrite,
     /// Run a Lua script / EVAL (may have side effects — treated as write).
     EvalScript,
+    /// Create, alter or drop a search index (`FT.CREATE` / `FT.ALTER` /
+    /// `FT.DROPINDEX`). The search panel is already gated on the module,
+    /// so no command of its own is probed.
+    SearchIndexWrite,
 }
 
 impl Capability {
@@ -200,6 +204,7 @@ impl Capability {
         Capability::PublishMessage,
         Capability::FunctionWrite,
         Capability::EvalScript,
+        Capability::SearchIndexWrite,
     ];
 
     /// Whether this capability mutates Redis or server-side state.
@@ -238,6 +243,7 @@ impl Capability {
                 | Capability::PublishMessage
                 | Capability::FunctionWrite
                 | Capability::EvalScript
+                | Capability::SearchIndexWrite
         )
     }
 
@@ -359,6 +365,7 @@ mod tests {
         (Capability::PublishMessage, false),
         (Capability::FunctionWrite, false),
         (Capability::EvalScript, false),
+        (Capability::SearchIndexWrite, false),
     ];
 
     #[test]

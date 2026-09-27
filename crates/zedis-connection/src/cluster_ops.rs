@@ -36,6 +36,7 @@ use crate::server_db::ServerDb;
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
 use std::collections::BTreeSet;
+use zedis_core::string::strip_ipv6_brackets;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -308,8 +309,13 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
         master_addrs,
     } = mv;
     let (target_host, target_port) = split_addr(target.addr())?;
-    // `MIGRATE … AUTH` speaks to the target as a client would.
-    let password = get_server(&source.server_id).ok().and_then(|server| server.password);
+    // `MIGRATE` speaks to the target as a client would, so it signs in as
+    // this entry does: `AUTH2 user pass` for an ACL user (Redis 6.0+, every
+    // Valkey), where `AUTH pass` would try the password on `default` and
+    // leave the slot marked on both sides with nothing moved.
+    let credentials = get_server(&source.server_id)
+        .ok()
+        .and_then(|server| migrate_auth(server.username.as_deref(), server.password.as_deref()));
     let source_conn = &mut source.connection().await?;
     let target_conn = &mut target.connection().await?;
 
@@ -329,7 +335,9 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
         .await?;
 
     loop {
-        let keys: Vec<String> = cmd("CLUSTER")
+        // Bytes, not text: one key that is not UTF-8 would otherwise stop
+        // the migration after the slot was already marked on both sides.
+        let keys: Vec<Vec<u8>> = cmd("CLUSTER")
             .arg("GETKEYSINSLOT")
             .arg(slot)
             .arg(MIGRATE_BATCH)
@@ -345,12 +353,12 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
             .arg("")
             .arg(0)
             .arg(MIGRATE_TIMEOUT_MS);
-        if let Some(password) = password.as_deref() {
-            migrate.arg("AUTH").arg(password);
+        for word in credentials.iter().flatten() {
+            migrate.arg(word.as_str());
         }
         migrate.arg("KEYS");
         for key in &keys {
-            migrate.arg(key);
+            migrate.arg(key.as_slice());
         }
         if let Err(e) = migrate.query_async::<String>(source_conn).await {
             let message = e.to_string();
@@ -377,8 +385,20 @@ pub async fn migrate_slot(mv: SlotMove<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The words `MIGRATE` signs in with on the target: `AUTH2 user pass` for a
+/// named user, `AUTH pass` for the default one, nothing without a password.
+fn migrate_auth(username: Option<&str>, password: Option<&str>) -> Option<Vec<String>> {
+    let password = password.filter(|p| !p.is_empty())?;
+    Some(match username.filter(|u| !u.is_empty()) {
+        Some(user) => vec!["AUTH2".to_string(), user.to_string(), password.to_string()],
+        None => vec!["AUTH".to_string(), password.to_string()],
+    })
+}
+
 /// `host:port` apart. The last colon is the separator, so an IPv6 literal
-/// parses whether it arrives bracketed or bare.
+/// parses whether it arrives bracketed or bare; the host comes back bare,
+/// which is what `MIGRATE` hands the server to resolve — a bracketed
+/// `[::1]` is not an address it can connect to.
 fn split_addr(addr: &str) -> Result<(&str, u16)> {
     let (host, port) = addr.rsplit_once(':').ok_or_else(|| Error::Invalid {
         message: format!("invalid node addr {addr}"),
@@ -386,17 +406,34 @@ fn split_addr(addr: &str) -> Result<(&str, u16)> {
     let port = port.parse().map_err(|e| Error::Invalid {
         message: format!("invalid node port in {addr}: {e}"),
     })?;
-    Ok((host, port))
+    Ok((strip_ipv6_brackets(host), port))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_addr;
+    use super::{migrate_auth, split_addr};
+
+    #[test]
+    fn migrate_signs_in_as_the_entry_does() {
+        assert_eq!(
+            migrate_auth(Some("app"), Some("pw")),
+            Some(vec!["AUTH2".to_string(), "app".to_string(), "pw".to_string()])
+        );
+        assert_eq!(
+            migrate_auth(None, Some("pw")),
+            Some(vec!["AUTH".to_string(), "pw".to_string()])
+        );
+        assert_eq!(
+            migrate_auth(Some(""), Some("pw")),
+            Some(vec!["AUTH".to_string(), "pw".to_string()])
+        );
+        assert_eq!(migrate_auth(Some("app"), None), None);
+    }
 
     #[test]
     fn a_node_addr_splits_at_its_last_colon() {
         assert_eq!(split_addr("127.0.0.1:7000").expect("ipv4"), ("127.0.0.1", 7000));
-        assert_eq!(split_addr("[::1]:7000").expect("bracketed"), ("[::1]", 7000));
+        assert_eq!(split_addr("[::1]:7000").expect("bracketed"), ("::1", 7000));
         assert_eq!(split_addr("::1:7000").expect("bare"), ("::1", 7000));
         assert!(split_addr("127.0.0.1").is_err(), "no port");
         assert!(split_addr("127.0.0.1:http").is_err(), "not a port");

@@ -345,8 +345,9 @@ pub struct StreamGroupDetail {
     pub consumers_count: usize,
     pub pending_count: usize,
     pub last_delivered_id: SharedString,
-    /// Number of entries not yet delivered to any consumer (0 = no lag).
-    pub lag: i64,
+    /// Number of entries not yet delivered to any consumer (0 = no lag);
+    /// `None` when the server does not report one (see `StreamGroup::lag`).
+    pub lag: Option<i64>,
     pub consumers: Vec<StreamConsumerDetail>,
     pub pending_entries: Vec<StreamPendingEntry>,
     /// Whether `pending_entries` already holds the whole PEL — false when

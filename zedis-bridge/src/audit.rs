@@ -363,7 +363,7 @@ pub fn command_lines<'a>(
             Verdict::Confirm { kind, strictness } => (Outcome::ConfirmRequired, Some(kind), Some(strictness)),
             Verdict::Confirmed { kind, strictness } => (Outcome::Confirmed, Some(kind), Some(strictness)),
             Verdict::Allow => {
-                if is_administration_command(&name, &rest) || (logs_writes && is_write_command(&name)) {
+                if is_administration_command(&name, &rest) || (logs_writes && is_write_command(&name, &rest)) {
                     (Outcome::Allowed, None, None)
                 } else {
                     continue;

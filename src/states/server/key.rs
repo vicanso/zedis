@@ -224,11 +224,7 @@ impl ZedisServerState {
             ServerTask::ScanKeys,
             scan_arg,
             move || async move {
-                let pattern = if keyword.is_empty() {
-                    "*".to_string()
-                } else {
-                    format!("*{}*", keyword)
-                };
+                let pattern = Self::keyword_scan_pattern(&keyword, false, false);
                 // COUNT hint = the user's "Per Scan" setting for both browse
                 // and keyword search; the accumulation target (`max`) stops the
                 // auto-paging loop after roughly one batch per master.
@@ -301,6 +297,26 @@ impl ZedisServerState {
             cx,
         );
     }
+    /// The `MATCH` a keyword scans with.
+    ///
+    /// The keyword is text a key contains (or starts with, in prefix mode):
+    /// the tree filters what comes back by plain substring, so the glob is
+    /// escaped to mean the same. Unescaped, `cache[v2]` asked the server for
+    /// a character class, and `user:*:profile` for a wildcard whose matches
+    /// the substring filter then threw away — an empty tree either way. A
+    /// regex keyword has no glob: it scans everything and the tree filters.
+    fn keyword_scan_pattern(keyword: &str, prefix: bool, regex: bool) -> String {
+        if keyword.is_empty() || regex {
+            return "*".to_string();
+        }
+        let escaped = escape_glob(keyword);
+        if prefix {
+            format!("{escaped}*")
+        } else {
+            format!("*{escaped}*")
+        }
+    }
+
     /// What an auto-refresh round changes in the loaded key set.
     ///
     /// Additions are always safe: a key the server just listed exists.
@@ -343,10 +359,12 @@ impl ZedisServerState {
             self.select_key(keyword, cx);
             return;
         }
-        let pattern = match self.query_mode {
-            QueryMode::Prefix => format!("{keyword}*"),
-            _ => format!("*{keyword}*"),
-        };
+        // The same MATCH the scan that filled the tree sent. Anything else
+        // diffs the tree against another question: a regex keyword spelled
+        // as a glob matched nothing, so a round that walked the keyspace
+        // emptied the tree; an unescaped prefix put `user1:…` in for
+        // `user[1]:` and took the real `user[1]:…` keys out.
+        let pattern = Self::keyword_scan_pattern(&keyword, self.query_mode == QueryMode::Prefix, self.regex_keyword());
         let at = self.at();
         // Refresh roughly the keys currently shown, spread across cluster
         // masters (first_scan sends COUNT=count to *each* master), so
@@ -1638,6 +1656,23 @@ async fn load_module_value(
 
 #[cfg(test)]
 mod auto_refresh_tests {
+
+    #[test]
+    fn a_keyword_scans_as_the_text_it_is() {
+        use crate::states::ZedisServerState as State;
+        assert_eq!(State::keyword_scan_pattern("", false, false), "*");
+        assert_eq!(State::keyword_scan_pattern("user", false, false), "*user*");
+        // Glob characters in a keyword are the key's own characters.
+        assert_eq!(State::keyword_scan_pattern("cache[v2]", false, false), r"*cache\[v2\]*");
+        assert_eq!(
+            State::keyword_scan_pattern("user:*:profile", false, false),
+            r"*user:\*:profile*"
+        );
+        // Prefix mode anchors at the start; a regex keyword scans everything.
+        assert_eq!(State::keyword_scan_pattern("user[1]:", true, false), r"user\[1\]:*");
+        assert_eq!(State::keyword_scan_pattern("^order:\\d+$", false, true), "*");
+    }
+
     use super::*;
 
     fn loaded(keys: &[&str]) -> AHashMap<SharedString, KeyType> {

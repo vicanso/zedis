@@ -343,7 +343,8 @@ mod tests {
 
     /// The four that make a denylist the wrong shape, and the reason this
     /// module is an allowlist: each one writes under a name that does not
-    /// say so, and `danger::is_write_command` names none of them.
+    /// say so. `danger::is_write_command` asks this allowlist, so it counts
+    /// them as the writes they are.
     #[test]
     fn a_write_that_does_not_look_like_one_is_still_refused() {
         for line in [
@@ -355,10 +356,10 @@ mod tests {
             "GETEX k",
         ] {
             assert!(!allowed(line), "should be refused: {line}");
-            assert!(
-                !crate::is_write_command(line.split_whitespace().next().expect("name")),
-                "if danger.rs learns this one, say so here: {line}"
-            );
+            let mut words = line.split_whitespace();
+            let name = words.next().expect("name");
+            let args: Vec<&str> = words.collect();
+            assert!(crate::is_write_command(name, &args), "a write: {line}");
         }
         // Their read-only twins exist and are allowed, so the panels that
         // only evaluate still work.

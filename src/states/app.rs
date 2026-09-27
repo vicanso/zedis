@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use crate::connection::ServerCommand;
-use crate::connection::{RedisServer, ReplyFormat, get_server, get_servers, save_servers};
 #[cfg(not(target_family = "wasm"))]
-use crate::connection::{set_redis_connection_timeout, set_redis_response_timeout};
+use crate::connection::{
+    DEFAULT_CONNECTION_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, set_redis_connection_timeout, set_redis_response_timeout,
+};
+use crate::connection::{RedisServer, ReplyFormat, get_server, get_servers, save_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
 #[cfg(target_family = "wasm")]
@@ -624,10 +626,12 @@ impl ZedisAppState {
         // The timeouts govern the dial, which the bridge does on the web.
         #[cfg(not(target_family = "wasm"))]
         {
-            if let Some(redis_connection_timeout) = state.redis_connection_timeout {
+            // A zero saved by an older build is "not set", not "time out at
+            // once" — see `set_redis_connection_timeout`.
+            if let Some(redis_connection_timeout) = state.redis_connection_timeout.filter(|t| !t.is_zero()) {
                 set_redis_connection_timeout(redis_connection_timeout);
             }
-            if let Some(redis_response_timeout) = state.redis_response_timeout {
+            if let Some(redis_response_timeout) = state.redis_response_timeout.filter(|t| !t.is_zero()) {
                 set_redis_response_timeout(redis_response_timeout);
             }
         }
@@ -799,18 +803,21 @@ impl ZedisAppState {
         }
         self.max_key_tree_depth = Some(max_key_tree_depth);
     }
+    /// `None` — an empty field, or a zero — means the default. A zero used to
+    /// be kept as a timeout of zero, which made every dial fail at once; and
+    /// clearing the field stored "not set" while the running process kept
+    /// the old value until a restart, so the default is applied here too.
     pub fn set_redis_connection_timeout(&mut self, redis_connection_timeout: Option<Duration>) {
+        let redis_connection_timeout = redis_connection_timeout.filter(|t| !t.is_zero());
         #[cfg(not(target_family = "wasm"))]
-        if let Some(redis_connection_timeout) = redis_connection_timeout {
-            set_redis_connection_timeout(redis_connection_timeout);
-        }
+        set_redis_connection_timeout(redis_connection_timeout.unwrap_or(DEFAULT_CONNECTION_TIMEOUT));
         self.redis_connection_timeout = redis_connection_timeout;
     }
+    /// The same for the per-command timeout.
     pub fn set_redis_response_timeout(&mut self, redis_response_timeout: Option<Duration>) {
+        let redis_response_timeout = redis_response_timeout.filter(|t| !t.is_zero());
         #[cfg(not(target_family = "wasm"))]
-        if let Some(redis_response_timeout) = redis_response_timeout {
-            set_redis_response_timeout(redis_response_timeout);
-        }
+        set_redis_response_timeout(redis_response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT));
         self.redis_response_timeout = redis_response_timeout;
     }
     pub fn theme(&self) -> Option<ThemeMode> {
@@ -894,14 +901,10 @@ impl ZedisAppState {
         self.max_truncate_length = Some(max_truncate_length);
     }
     pub fn redis_connection_timeout(&self) -> String {
-        self.redis_connection_timeout
-            .map(|timeout| timeout.as_secs().to_string())
-            .unwrap_or_default()
+        self.redis_connection_timeout.map(timeout_text).unwrap_or_default()
     }
     pub fn redis_response_timeout(&self) -> String {
-        self.redis_response_timeout
-            .map(|timeout| timeout.as_secs().to_string())
-            .unwrap_or_default()
+        self.redis_response_timeout.map(timeout_text).unwrap_or_default()
     }
     pub fn key_scan_count(&self) -> usize {
         self.key_scan_count.unwrap_or(10_000)
@@ -1470,6 +1473,18 @@ pub fn dialog_button_props(cx: &App) -> DialogButtonProps {
         .ok_text(i18n_common(cx, "delete"))
 }
 
+/// A timeout as the Settings field shows it: whole seconds as a number, as
+/// they always were, and anything finer as a duration (`500ms`, `1s 500ms`).
+/// Shown as whole seconds, `500ms` read back as `0`, and the next time the
+/// field lost focus that `0` was saved.
+fn timeout_text(timeout: Duration) -> String {
+    if timeout.subsec_nanos() == 0 {
+        timeout.as_secs().to_string()
+    } else {
+        humantime::format_duration(timeout).to_string()
+    }
+}
+
 /// Escalate a destructive-action confirm-dialog body for production servers.
 ///
 /// The app's safety convention is that destructive Redis ops escalate their
@@ -1502,6 +1517,15 @@ pub fn escalate_dangerous_body(cx: &App, server_id: &str, body: impl Into<Shared
 /// release changes the persisted shape.
 #[cfg(test)]
 mod upgrade_fixtures {
+
+    #[test]
+    fn a_timeout_reads_back_as_what_was_typed() {
+        use std::time::Duration;
+        assert_eq!(super::timeout_text(Duration::from_secs(10)), "10");
+        assert_eq!(super::timeout_text(Duration::from_millis(500)), "500ms");
+        assert_eq!(super::timeout_text(Duration::from_millis(1500)), "1s 500ms");
+    }
+
     use super::*;
     use gpui::px;
 

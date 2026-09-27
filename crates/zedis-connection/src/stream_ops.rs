@@ -68,8 +68,11 @@ pub struct StreamGroup {
     pub consumers_count: usize,
     pub pending_count: usize,
     pub last_delivered_id: String,
-    /// Entries not yet delivered to any consumer (0 = no lag).
-    pub lag: i64,
+    /// Entries not yet delivered to any consumer (0 = no lag); `None` when
+    /// the server does not say — Redis 6.2 has no `lag` field (7.0 added
+    /// it, `floors::STREAM_GROUP_LAG`), and 7.0+ answers nil when it cannot
+    /// compute one. Read as 0, both showed every group as caught up.
+    pub lag: Option<i64>,
     pub consumers: Vec<StreamConsumer>,
     pub pending_entries: Vec<StreamPending>,
     /// Whether `pending_entries` is the whole PEL — false when the page came
@@ -258,7 +261,7 @@ pub async fn stream_info(at: &ServerDb, key: &str) -> Result<StreamInfo> {
             consumers_count: field_usize(&map, "consumers"),
             pending_count: field_usize(&map, "pending"),
             last_delivered_id: field_text(&map, "last-delivered-id"),
-            lag: field_int(&map, "lag"),
+            lag: field(&map, "lag").and_then(int),
             pending_done: pending_entries.len() < PENDING_PAGE,
             name,
             consumers,

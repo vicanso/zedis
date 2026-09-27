@@ -1182,24 +1182,10 @@ pub fn get_servers() -> Result<Vec<RedisServer>> {
         let mut servers = configs.servers;
         let mut configs = HashMap::new();
         for server in servers.iter_mut() {
-            if let Some(password) = &server.password {
-                server.password = Some(decrypt(password).unwrap_or(password.clone()));
-            }
-            if let Some(password) = &server.sentinel_password {
-                server.sentinel_password = Some(decrypt(password).unwrap_or(password.clone()));
-            }
-            if let Some(ssh_password) = &server.ssh_password {
-                server.ssh_password = Some(decrypt(ssh_password).unwrap_or(ssh_password.clone()));
-            }
-            if let Some(ssh_key) = &server.ssh_key {
-                server.ssh_key = Some(decrypt(ssh_key).unwrap_or(ssh_key.clone()));
-            }
-            if let Some(passphrase) = &server.ssh_key_passphrase {
-                server.ssh_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
-            }
-            if let Some(passphrase) = &server.client_key_passphrase {
-                server.client_key_passphrase = Some(decrypt(passphrase).unwrap_or(passphrase.clone()));
-            }
+            // A value that does not decrypt was written in the clear (by an
+            // older build, or by hand) and is taken as it is; the next save
+            // encrypts it.
+            let _ = map_secrets(server, |value| Ok(decrypt(value).unwrap_or_else(|_| value.to_string())));
             configs.insert(server.id.clone(), server.clone());
         }
         SERVER_CONFIG_MAP.store(Arc::new(configs));
@@ -1264,30 +1250,32 @@ pub async fn save_servers(servers: Vec<RedisServer>) -> Result<()> {
     Ok(())
 }
 
+/// Pass every secret of `server` — each name in `RedisServer::SECRET_FIELDS`
+/// — through `transform`: `encrypt` on the way to disk, `decrypt` on the way
+/// back. Walking the list rather than naming fields is the point: the two
+/// hand-written passes this replaced both skipped `client_key`, so a pasted
+/// PEM private key was written to `redis-servers.toml` in the clear while
+/// every other secret was encrypted.
+#[cfg(not(target_family = "wasm"))]
+fn map_secrets(server: &mut RedisServer, mut transform: impl FnMut(&str) -> Result<String>) -> Result<()> {
+    for name in RedisServer::SECRET_FIELDS {
+        if let Some(slot) = server.secret_mut(name)
+            && let Some(value) = slot.as_deref()
+        {
+            let mapped = transform(value)?;
+            *slot = Some(mapped);
+        }
+    }
+    Ok(())
+}
+
 /// Saves the server configuration to the file.
 #[cfg(not(target_family = "wasm"))]
 pub async fn save_servers(mut servers: Vec<RedisServer>) -> Result<()> {
     let mut configs = HashMap::new();
     for server in servers.iter_mut() {
         configs.insert(server.id.clone(), server.clone());
-        if let Some(password) = &server.password {
-            server.password = Some(encrypt(password)?);
-        }
-        if let Some(password) = &server.sentinel_password {
-            server.sentinel_password = Some(encrypt(password)?);
-        }
-        if let Some(ssh_password) = &server.ssh_password {
-            server.ssh_password = Some(encrypt(ssh_password)?);
-        }
-        if let Some(ssh_key) = &server.ssh_key {
-            server.ssh_key = Some(encrypt(ssh_key)?);
-        }
-        if let Some(passphrase) = &server.ssh_key_passphrase {
-            server.ssh_key_passphrase = Some(encrypt(passphrase)?);
-        }
-        if let Some(passphrase) = &server.client_key_passphrase {
-            server.client_key_passphrase = Some(encrypt(passphrase)?);
-        }
+        map_secrets(server, encrypt)?;
     }
 
     // Compare with existing configs and log differences
@@ -1356,6 +1344,32 @@ pub fn get_server(id: &str) -> Result<RedisServer> {
 /// Real `redis-servers.toml` files from earlier releases: every entry must
 /// keep parsing (an upgrade that loses connections is the worst regression
 /// this file can have) and every field that still exists must survive.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod secret_tests {
+    use super::*;
+
+    #[test]
+    fn every_secret_field_is_encrypted_at_rest() {
+        let mut server = RedisServer::default();
+        for name in RedisServer::SECRET_FIELDS {
+            *server.secret_mut(name).expect("a secret field") = Some(format!("plain-{name}"));
+        }
+        map_secrets(&mut server, |value| Ok(format!("enc({value})"))).expect("map");
+        for name in RedisServer::SECRET_FIELDS {
+            let stored = server.secret_mut(name).expect("a secret field").clone();
+            assert_eq!(
+                stored,
+                Some(format!("enc(plain-{name})")),
+                "{name} must not be written in the clear"
+            );
+        }
+        // An unset secret stays unset.
+        let mut bare = RedisServer::default();
+        map_secrets(&mut bare, |value| Ok(format!("enc({value})"))).expect("map");
+        assert!(bare.client_key.is_none());
+    }
+}
+
 #[cfg(test)]
 mod upgrade_fixtures {
     use super::*;

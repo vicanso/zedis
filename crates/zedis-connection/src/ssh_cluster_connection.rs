@@ -22,6 +22,8 @@ use redis::{Cmd, ErrorKind, RedisError, RedisFuture, Value};
 #[derive(Clone)]
 pub struct SshMultiplexedConnection {
     inner: MultiplexedConnection,
+    /// The database this connection was opened on and `SELECT`ed.
+    db: i64,
 }
 
 impl ConnectionLike for SshMultiplexedConnection {
@@ -37,7 +39,7 @@ impl ConnectionLike for SshMultiplexedConnection {
         self.inner.req_packed_commands(pipeline, offset, count)
     }
     fn get_db(&self) -> i64 {
-        0
+        self.db
     }
 }
 
@@ -49,6 +51,12 @@ impl Connect for SshMultiplexedConnection {
         Box::pin(async move {
             let connection_info = info.into_connection_info()?;
             let id = connection_info.redis_settings().username().unwrap_or_default();
+            // The database the cluster client asks for (Valkey 9 clusters
+            // have more than one). A plain connection selects it during its
+            // handshake; the tunnel's did not, so on db 3 the key tree —
+            // which dials each node itself and selects — listed db 3 while
+            // opening, editing and creating keys went to db 0.
+            let db = connection_info.redis_settings().db();
             let mut config =
                 get_server(id).map_err(|e| (ErrorKind::InvalidClientConfig, "get_server", e.to_string()))?;
             let (target_host, target_port, tls) = match connection_info.addr() {
@@ -66,15 +74,18 @@ impl Connect for SshMultiplexedConnection {
             if tls {
                 config.tls = Some(true);
             }
-            let connection = open_single_ssh_tunnel_connection(&config).await.map_err(|e| {
+            let mut connection = open_single_ssh_tunnel_connection(&config).await.map_err(|e| {
                 (
                     ErrorKind::InvalidClientConfig,
                     "open_single_ssh_tunnel_connection",
                     e.to_string(),
                 )
             })?;
+            if db != 0 {
+                let _: () = redis::cmd("SELECT").arg(db).query_async(&mut connection).await?;
+            }
 
-            Ok(SshMultiplexedConnection { inner: connection })
+            Ok(SshMultiplexedConnection { inner: connection, db })
         })
     }
 }

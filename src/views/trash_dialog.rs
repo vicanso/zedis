@@ -21,11 +21,11 @@
 //! on the server fails with a BUSYKEY-specific message.
 
 use crate::assets::CustomIconName;
-use crate::connection::{ServerDb, restore_key};
+use crate::connection::{Capability, ServerDb, restore_key};
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
 use crate::helpers::{format_unix_millis_with, get_mono_font_family, unix_ts_millis};
-use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, i18n_common, i18n_trash};
+use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_trash};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
@@ -42,6 +42,10 @@ use zedis_ui::ZedisDialog;
 
 pub struct ZedisTrashDialog {
     server_id: String,
+    /// The active tab's connection, asked whether a restore — a `RESTORE`,
+    /// so a write — may run on it now: not on a read-only session or a
+    /// locked production entry, where the bin used to write regardless.
+    server_state: Entity<ZedisServerState>,
     entries: Vec<TrashMeta>,
     loading: bool,
     /// True while a batch restore runs (disables the restore-all button).
@@ -66,7 +70,12 @@ fn emit_notification(notification: NotificationAction, cx: &mut App) {
 }
 
 impl ZedisTrashDialog {
-    pub fn new(server_id: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        server_id: String,
+        server_state: Entity<ZedisServerState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .clean_on_escape()
@@ -80,6 +89,7 @@ impl ZedisTrashDialog {
         });
         let mut this = Self {
             server_id,
+            server_state,
             entries: vec![],
             loading: true,
             restoring: false,
@@ -104,8 +114,13 @@ impl ZedisTrashDialog {
     /// task: RESTORE with the stored TTL, drop the trash row on success,
     /// then a single aggregated notification + one reload. A key that
     /// meanwhile exists again (BUSYKEY) is counted as skipped, not failed.
+    /// Whether this connection may restore: `RESTORE` is a write.
+    fn can_restore(&self, cx: &App) -> bool {
+        self.server_state.read(cx).can(Capability::ImportKeys)
+    }
+
     fn restore_all(&mut self, cx: &mut Context<Self>) {
-        if self.restoring {
+        if self.restoring || !self.can_restore(cx) {
             return;
         }
         let ids: Vec<String> = self.filtered_entries(cx).iter().map(|e| e.id.clone()).collect();
@@ -193,6 +208,9 @@ impl ZedisTrashDialog {
     }
 
     fn restore(&mut self, id: String, cx: &mut Context<Self>) {
+        if !self.can_restore(cx) {
+            return;
+        }
         let server_id = self.server_id.clone();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         cx.spawn(async move |this, cx| {
@@ -258,6 +276,7 @@ impl ZedisTrashDialog {
 
 impl Render for ZedisTrashDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_restore = self.can_restore(cx);
         let muted = cx.theme().muted_foreground;
 
         let entries = self.filtered_entries(cx);
@@ -299,6 +318,7 @@ impl Render for ZedisTrashDialog {
                             .xsmall()
                             .outline()
                             .label(i18n_trash(cx, "restore"))
+                            .disabled(!can_restore)
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.restore(restore_id.clone(), cx);
                             })),
@@ -334,7 +354,7 @@ impl Render for ZedisTrashDialog {
                             // shows no feedback at all (see CLAUDE.md).
                             .icon(Icon::new(CustomIconName::RotateCw))
                             .loading(self.restoring)
-                            .disabled(self.restoring || entries.is_empty())
+                            .disabled(self.restoring || entries.is_empty() || !can_restore)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.restore_all(cx);
                             })),
@@ -360,11 +380,11 @@ impl Render for ZedisTrashDialog {
 
 /// Open the recycle bin for the active server; no-op when nothing is
 /// connected (the Tools menu is only reachable with a live connection).
-pub fn open_trash_dialog(window: &mut Window, cx: &mut App) {
+pub fn open_trash_dialog(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut App) {
     let Some((server_id, _db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned() else {
         return;
     };
-    let view = cx.new(|cx| ZedisTrashDialog::new(server_id, window, cx));
+    let view = cx.new(|cx| ZedisTrashDialog::new(server_id, server_state, window, cx));
     let view_child = view.clone();
     ZedisDialog::new(i18n_trash(cx, "title"))
         .w(px(560.))

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::config::RedisServer;
+use crate::read_only::is_read_only_command;
 
 /// Categorical risk classification for a Redis command. Each variant decides
 /// the wording of the confirm dialog and how strict the confirmation is.
@@ -26,6 +27,11 @@ pub enum DangerKind {
     Debug,
     Shutdown,
     ScriptFlush,
+    /// `FUNCTION FLUSH` / `FUNCTION DELETE`: Redis Functions libraries gone,
+    /// and every `FCALL` that used them failing until they are loaded again.
+    FunctionDelete,
+    /// `SWAPDB`: two whole databases exchanged under every client of either.
+    SwapDb,
     ClusterReset,
     /// `REPLICAOF` / `SLAVEOF` / `FAILOVER`: `REPLICAOF host port` throws this
     /// node's dataset away for a full sync, `FAILOVER` pauses writes.
@@ -62,6 +68,8 @@ impl DangerKind {
             DangerKind::Debug => "danger.debug",
             DangerKind::Shutdown => "danger.shutdown",
             DangerKind::ScriptFlush => "danger.script_flush",
+            DangerKind::FunctionDelete => "danger.function_delete",
+            DangerKind::SwapDb => "danger.swapdb",
             DangerKind::ClusterReset => "danger.cluster_reset",
             DangerKind::Replication => "danger.replication",
             DangerKind::KeysGlob => "danger.keys_glob",
@@ -82,6 +90,8 @@ impl DangerKind {
                 | DangerKind::Replication
                 | DangerKind::Debug
                 | DangerKind::ScriptFlush
+                | DangerKind::FunctionDelete
+                | DangerKind::SwapDb
         )
     }
 }
@@ -105,6 +115,12 @@ fn is_destructive_debug(sub: &str) -> bool {
         "SLEEP"
             | "SEGFAULT"
             | "PANIC"
+            | "ASSERT"
+            | "OOM"
+            | "RESTART"
+            | "CRASH-AND-RECOVER"
+            | "POPULATE"
+            | "SET-ACTIVE-EXPIRE"
             | "RELOAD"
             | "LOADAOF"
             | "JMAP"
@@ -143,6 +159,11 @@ pub fn classify_dangerous(cmd_name: &str, args: &[String]) -> Option<DangerKind>
             Some("FLUSH") => Some(DangerKind::ScriptFlush),
             _ => None,
         },
+        "FUNCTION" => match args.first().map(|s| s.to_ascii_uppercase()).as_deref() {
+            Some("FLUSH" | "DELETE") => Some(DangerKind::FunctionDelete),
+            _ => None,
+        },
+        "SWAPDB" => Some(DangerKind::SwapDb),
         "CLUSTER" => match args.first().map(|s| s.as_str()) {
             Some(sub) if is_destructive_cluster(sub) => Some(DangerKind::ClusterReset),
             _ => None,
@@ -183,108 +204,20 @@ pub fn classify_dangerous_line(line: &str) -> Option<DangerKind> {
     classify_dangerous(&cmd, &rest)
 }
 
-/// True when a command should be treated as a write side-effect by the
-/// `require_confirm_writes` toggle. Read-only commands (GET / HGET / etc.)
-/// return false.
-pub fn is_write_command(cmd_name: &str) -> bool {
-    let upper = cmd_name.to_ascii_uppercase();
-    // spellchecker:off
-    matches!(
-        upper.as_str(),
-        "SET"
-            | "SETEX"
-            | "SETNX"
-            | "MSET"
-            | "MSETNX"
-            | "APPEND"
-            | "GETSET"
-            | "INCR"
-            | "DECR"
-            | "INCRBY"
-            | "INCRBYFLOAT"
-            | "DECRBY"
-            | "BITOP"
-            | "SETBIT"
-            | "SETRANGE"
-            | "DEL"
-            | "UNLINK"
-            | "RENAME"
-            | "RENAMENX"
-            | "EXPIRE"
-            | "EXPIREAT"
-            | "PEXPIRE"
-            | "PEXPIREAT"
-            | "PERSIST"
-            | "MOVE"
-            | "RESTORE"
-            | "COPY"
-            | "HSET"
-            | "HMSET"
-            | "HDEL"
-            | "HSETNX"
-            | "HINCRBY"
-            | "HINCRBYFLOAT"
-            | "HEXPIRE"
-            | "HPEXPIRE"
-            | "HPERSIST"
-            | "LPUSH"
-            | "RPUSH"
-            | "LPUSHX"
-            | "RPUSHX"
-            | "LPOP"
-            | "RPOP"
-            | "LSET"
-            | "LREM"
-            | "LTRIM"
-            | "LINSERT"
-            | "LMOVE"
-            | "RPOPLPUSH"
-            | "SADD"
-            | "SREM"
-            | "SPOP"
-            | "SMOVE"
-            | "SDIFFSTORE"
-            | "SINTERSTORE"
-            | "SUNIONSTORE"
-            | "ZADD"
-            | "ZINCRBY"
-            | "ZREM"
-            | "ZPOPMIN"
-            | "ZPOPMAX"
-            | "ZREMRANGEBYRANK"
-            | "ZREMRANGEBYSCORE"
-            | "ZREMRANGEBYLEX"
-            | "ZRANGESTORE"
-            | "ZUNIONSTORE"
-            | "ZINTERSTORE"
-            | "ZDIFFSTORE"
-            | "XADD"
-            | "XDEL"
-            | "XTRIM"
-            | "XSETID"
-            | "XGROUP"
-            | "XACK"
-            | "XCLAIM"
-            | "XAUTOCLAIM"
-            | "PFADD"
-            | "PFMERGE"
-            | "PUBLISH"
-            | "GEOADD"
-            | "JSON.SET"
-            | "JSON.MERGE"
-            | "JSON.DEL"
-            | "JSON.NUMINCRBY"
-            | "JSON.NUMMULTBY"
-            | "JSON.STRAPPEND"
-            | "JSON.ARRAPPEND"
-            | "JSON.ARRINSERT"
-            | "JSON.ARRPOP"
-            | "JSON.ARRTRIM"
-            | "JSON.OBJDEL"
-            | "JSON.TOGGLE"
-            | "JSON.CLEAR"
-    )
-    // spellchecker:on
+/// Whether a command writes — what *Confirm Writes* (`require_confirm_writes`)
+/// asks about and `--audit-writes` logs.
+///
+/// Anything the read-only allowlist ([`is_read_only_command`], generated
+/// from Redis's own `READONLY` flag) does not name. This used to be a list
+/// of writes of its own, and a denylist cannot keep up: it missed `EVAL`
+/// (any script), `BITFIELD`, `GETDEL` / `GETEX`, the blocking pops,
+/// `HSETEX`, `SWAPDB`, `MIGRATE` and every module's writes, none of which
+/// were confirmed or logged. An unknown command counts as a write, which
+/// costs one extra question at worst. The arguments matter for containers
+/// (`CONFIG GET` reads, `CONFIG SET` does not).
+pub fn is_write_command(cmd_name: &str, args: &[impl AsRef<str>]) -> bool {
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    !is_read_only_command(cmd_name, &args)
 }
 
 /// Compose the final policy for a server: which commands need a confirm,
@@ -306,6 +239,50 @@ pub fn requires_write_confirm(server: &RedisServer) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_write_is_whatever_the_read_only_allowlist_does_not_name() {
+        // Writes under names that do not say so, which the old list missed.
+        for (name, args) in [
+            ("EVAL", vec!["return 1", "0"]),
+            ("GETDEL", vec!["k"]),
+            ("BITFIELD", vec!["k", "SET", "u8", "0", "1"]),
+            ("BLPOP", vec!["q", "0"]),
+            ("HSETEX", vec!["h", "FIELDS", "1", "f", "v"]),
+            ("SWAPDB", vec!["0", "1"]),
+            ("TS.ADD", vec!["s", "*", "1"]),
+            ("CONFIG", vec!["SET", "maxmemory", "1gb"]),
+        ] {
+            assert!(is_write_command(name, &args), "{name} {args:?}");
+        }
+        for (name, args) in [
+            ("GET", vec!["k"]),
+            ("EVAL_RO", vec!["return 1", "0"]),
+            ("CONFIG", vec!["GET", "maxmemory"]),
+            ("SCAN", vec!["0"]),
+        ] {
+            assert!(!is_write_command(name, &args), "{name} {args:?}");
+        }
+    }
+
+    #[test]
+    fn deleting_functions_swapping_databases_and_crashing_debug_ask_first() {
+        let words = |line: &str| line.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        let kind = |line: &str| {
+            let parts = words(line);
+            classify_dangerous(&parts[0], &parts[1..])
+        };
+        assert_eq!(kind("FUNCTION FLUSH"), Some(DangerKind::FunctionDelete));
+        assert_eq!(kind("function delete mylib"), Some(DangerKind::FunctionDelete));
+        assert_eq!(kind("FUNCTION LIST"), None);
+        assert_eq!(kind("SWAPDB 0 1"), Some(DangerKind::SwapDb));
+        for sub in ["ASSERT", "OOM", "RESTART", "CRASH-AND-RECOVER", "POPULATE 1000"] {
+            assert_eq!(kind(&format!("DEBUG {sub}")), Some(DangerKind::Debug), "{sub}");
+        }
+        assert!(DangerKind::FunctionDelete.is_destructive());
+        assert!(DangerKind::SwapDb.is_destructive());
+    }
+
     use super::*;
 
     fn args(parts: &[&str]) -> Vec<String> {

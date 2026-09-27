@@ -27,14 +27,16 @@
 //!
 //! What it cannot carry, and says so: a module type other than JSON (a
 //! Bloom filter, a time series, a vector set have no portable read), a
-//! stream's consumer groups, a hash's per-field TTLs, and a stream that is
-//! empty (there is no entry to add).
+//! stream's consumer groups and a hash's per-field TTLs. A stream keeps its
+//! entries, its next id (`XSETID`) and its existence when it has no entry —
+//! an empty stream is a key of its own, unlike an empty hash or list.
 
 use super::conn::RedisAsyncConn;
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::dump_restore::{ConflictMode, DumpEntry, RestoreStatus, restore_keys_chunk};
 use crate::error::Error;
+use crate::reply;
 use crate::server_db::ServerDb;
 use futures::future::try_join_all;
 use redis::{Value, cmd};
@@ -98,6 +100,12 @@ pub async fn copy_key_logically(
     copy_one(&mut source, &mut target, key, pttl_ms, conflict).await
 }
 
+/// The `TYPE` answers `copy_one` can re-create by commands.
+const RECREATABLE: [&str; 7] = ["string", "hash", "list", "set", "zset", "stream", "ReJSON-RL"];
+
+/// The group `copy_stream` creates an empty stream with and drops again.
+const EMPTY_STREAM_GROUP: &str = "zedis-copy-empty-stream";
+
 async fn copy_one(
     src: &mut RedisAsyncConn,
     dst: &mut RedisAsyncConn,
@@ -108,6 +116,14 @@ async fn copy_one(
     let kind: String = cmd("TYPE").arg(key).query_async(src).await?;
     if kind == "none" {
         return Ok(RestoreStatus::Failed("gone from the source".to_string()));
+    }
+    // Decided before the target is touched: an overwrite that deleted the
+    // target's key first and only then found the type cannot be re-created
+    // lost that key and wrote nothing in its place.
+    if !RECREATABLE.contains(&kind.as_str()) {
+        return Ok(RestoreStatus::Failed(format!(
+            "the target does not read this server's DUMP payloads, and a {kind} key cannot be re-created by commands"
+        )));
     }
     let exists: bool = cmd("EXISTS").arg(key).query_async(dst).await?;
     if exists {
@@ -130,12 +146,7 @@ async fn copy_one(
         "set" => copy_set(src, dst, key).await,
         "zset" => copy_zset(src, dst, key).await,
         "stream" => copy_stream(src, dst, key).await,
-        "ReJSON-RL" => copy_json(src, dst, key).await,
-        other => {
-            return Ok(RestoreStatus::Failed(format!(
-                "the target does not read this server's DUMP payloads, and a {other} key cannot be re-created by commands"
-            )));
-        }
+        _ => copy_json(src, dst, key).await,
     };
     // A key that could not be read or written is that key's failure, not
     // the batch's: the rest of the chunk still lands.
@@ -263,6 +274,7 @@ async fn copy_zset(src: &mut RedisAsyncConn, dst: &mut RedisAsyncConn, key: &[u8
 /// the entries, and a new group on the target starts where its creator says.
 async fn copy_stream(src: &mut RedisAsyncConn, dst: &mut RedisAsyncConn, key: &[u8]) -> Result<()> {
     let mut from: Vec<u8> = b"-".to_vec();
+    let mut copied_any = false;
     loop {
         let page: Value = cmd("XRANGE")
             .arg(key)
@@ -274,8 +286,9 @@ async fn copy_stream(src: &mut RedisAsyncConn, dst: &mut RedisAsyncConn, key: &[
             .await?;
         let entries = items(page);
         if entries.is_empty() {
-            return Ok(());
+            break;
         }
+        copied_any = true;
         let count = entries.len();
         let mut pipe = redis::pipe();
         let mut last_id = Vec::new();
@@ -301,11 +314,43 @@ async fn copy_stream(src: &mut RedisAsyncConn, dst: &mut RedisAsyncConn, key: &[
         }
         let _: Vec<Value> = pipe.query_async(dst).await?;
         if count < BATCH || last_id.is_empty() {
-            return Ok(());
+            break;
         }
         // Exclusive start (Redis 6.2): the next page begins after this one.
         from = [b"(".as_slice(), last_id.as_slice()].concat();
     }
+    if !copied_any {
+        // An empty stream — made by `XGROUP CREATE … MKSTREAM`, or emptied by
+        // `XDEL` / `XTRIM` — is still a key, which a copy used to report as
+        // re-created without making. With no entry to add, it is made the way
+        // Redis makes one: a throwaway group with MKSTREAM, then the group
+        // dropped.
+        cmd("XGROUP")
+            .arg("CREATE")
+            .arg(key)
+            .arg(EMPTY_STREAM_GROUP)
+            .arg("$")
+            .arg("MKSTREAM")
+            .exec_async(dst)
+            .await?;
+        cmd("XGROUP")
+            .arg("DESTROY")
+            .arg(key)
+            .arg(EMPTY_STREAM_GROUP)
+            .exec_async(dst)
+            .await?;
+    }
+    // The id the source would hand out next, so an `XADD *` on the copy does
+    // not reuse ids the source's readers have already seen — and an emptied
+    // stream keeps its place instead of starting again at 0-0.
+    let info: Value = cmd("XINFO").arg("STREAM").arg(key).query_async(src).await?;
+    if let Some(last) = reply::pairs(&info)
+        .and_then(|pairs| pairs.into_iter().find(|(name, _)| name == "last-generated-id"))
+        .and_then(|(_, id)| reply::text(&id))
+    {
+        cmd("XSETID").arg(key).arg(last).exec_async(dst).await?;
+    }
+    Ok(())
 }
 
 /// The document as text, which RedisJSON and valkey-json both read and

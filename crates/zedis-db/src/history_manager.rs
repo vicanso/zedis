@@ -30,6 +30,11 @@ pub struct HistoryManager {
     max_history_size: usize,
     history_cache: DashMap<String, Vec<String>>,
     definition: TableDefinition<'static, &'static str, &'static str>,
+    /// The entries are key names, kept exactly as given. A search or a
+    /// command typed with a stray space is the same entry without it; a key
+    /// named `"session:1 "` is not the key `"session:1"` — trimmed, the
+    /// favorite pointed at another key and could never be removed again.
+    key_names: bool,
 }
 
 impl HistoryManager {
@@ -38,14 +43,24 @@ impl HistoryManager {
             max_history_size: 20,
             history_cache: DashMap::new(),
             definition,
+            key_names: false,
         }
+    }
+    /// Keep entries as given — see `key_names`.
+    pub fn of_key_names(mut self) -> Self {
+        self.key_names = true;
+        self
+    }
+    /// A typed entry loses its surrounding whitespace; a key name keeps it.
+    fn entry<'a>(&self, text: &'a str) -> &'a str {
+        if self.key_names { text } else { text.trim() }
     }
     pub fn set_max_history_size(mut self, max_history_size: usize) -> Self {
         self.max_history_size = max_history_size;
         self
     }
     pub fn add_record(&self, server_id: &str, keyword: &str) -> Result<Vec<String>> {
-        let keyword = keyword.trim();
+        let keyword = self.entry(keyword);
         let db = get_database()?;
         let write_txn = db.begin_write()?;
 
@@ -110,7 +125,7 @@ impl HistoryManager {
     }
 
     pub fn remove_record(&self, server_id: &str, keyword: &str) -> Result<Vec<String>> {
-        let keyword = keyword.trim();
+        let keyword = self.entry(keyword);
         if keyword.is_empty() {
             return self.records(server_id);
         }
@@ -164,12 +179,22 @@ use std::sync::LazyLock;
 /// Max keys kept per connection. Matches the product "5–10 chips" budget.
 const RECENT_KEYS_CAP: usize = 10;
 
-static FAVORITES_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| HistoryManager::new(FAVORITES_TABLE));
+// Favorites are a list the user keeps, not a history: no cap, where the
+// shared default of 20 dropped the oldest favorite without a word when the
+// 21st was added (and a backup import "merged" by pushing them out).
+static FAVORITES_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| {
+    HistoryManager::new(FAVORITES_TABLE)
+        .set_max_history_size(usize::MAX)
+        .of_key_names()
+});
 static SEARCH_HISTORY_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| HistoryManager::new(SEARCH_HISTORY_TABLE));
 static CMD_HISTORY_MANAGER: LazyLock<HistoryManager> =
     LazyLock::new(|| HistoryManager::new(CMD_HISTORY_TABLE).set_max_history_size(100));
-static RECENT_KEYS_MANAGER: LazyLock<HistoryManager> =
-    LazyLock::new(|| HistoryManager::new(RECENT_KEYS_TABLE).set_max_history_size(RECENT_KEYS_CAP));
+static RECENT_KEYS_MANAGER: LazyLock<HistoryManager> = LazyLock::new(|| {
+    HistoryManager::new(RECENT_KEYS_TABLE)
+        .set_max_history_size(RECENT_KEYS_CAP)
+        .of_key_names()
+});
 
 /// Favorite keys, per server.
 pub fn get_favorites_manager() -> &'static HistoryManager {
@@ -324,6 +349,24 @@ mod tests {
         let recent = get_recent_keys_manager().records(&scope).expect("records");
         assert_eq!(recent.len(), 10);
         assert_eq!(recent[0], "key:14");
+
+        // Favorites keep key names as they are and are not capped.
+        let fav_scope = recent_keys_scope("hm-shipped-fav", 0);
+        for i in 0..25 {
+            get_favorites_manager()
+                .add_record(&fav_scope, &format!("fav:{i}"))
+                .expect("add");
+        }
+        get_favorites_manager()
+            .add_record(&fav_scope, "session:1 ")
+            .expect("add");
+        let favorites = get_favorites_manager().records(&fav_scope).expect("records");
+        assert_eq!(favorites.len(), 26, "no favorite is dropped");
+        assert_eq!(favorites[0], "session:1 ", "a key name keeps its space");
+        get_favorites_manager()
+            .remove_record(&fav_scope, "session:1 ")
+            .expect("remove");
+        assert_eq!(get_favorites_manager().records(&fav_scope).expect("records").len(), 25);
 
         // Separate tables: the same id in another manager is a separate list.
         get_favorites_manager().add_record(&scope, "fav:1").expect("add");

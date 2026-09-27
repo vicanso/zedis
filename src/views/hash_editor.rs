@@ -26,7 +26,7 @@
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
-    helpers::format_duration,
+    helpers::{format_duration, ttl_secs},
     states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
@@ -47,6 +47,20 @@ struct ZedisHashValues {
     value: RedisValue,
     /// Reference to server state for executing Redis operations
     server_state: Entity<ZedisServerState>,
+}
+
+/// What a field's TTL cell asks for: `Ok(None)` when empty, `Ok(Some(secs))`
+/// for a TTL of at least a second (`ttl_secs`: `90`, `1h30m`), `Err` for
+/// anything else — `1,5h`, `30mm`, or a `500ms` that would truncate to 0.
+fn field_ttl_input(text: &str) -> Result<Option<i64>, ()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    ttl_secs(text)
+        .and_then(|secs| i64::try_from(secs).ok())
+        .map(Some)
+        .ok_or(())
 }
 
 impl ZedisKvFetcher for ZedisHashValues {
@@ -194,29 +208,26 @@ impl ZedisKvFetcher for ZedisHashValues {
             return;
         };
 
-        // Parse optional TTL from values[2]; None means "leave TTL unchanged"
-        let ttl: Option<i64> = values.get(2).and_then(|ttl_str| {
-            let s = ttl_str.trim();
-            if s.is_empty() {
-                // Empty input: only request persist if there was a TTL before
-                let had_ttl = self
-                    .value
-                    .hash_value()
-                    .map(|h| h.field_ttls.contains_key(old_field.text()))
-                    .unwrap_or(false);
-                if had_ttl { Some(-1) } else { None }
-            } else {
-                use crate::helpers::parse_duration;
-                let new_secs = parse_duration(s).map(|d| d.as_secs() as i64).unwrap_or(-1);
-                let old_secs = self
-                    .value
-                    .hash_value()
-                    .and_then(|h| h.field_ttls.get(old_field.text()).copied())
-                    .unwrap_or(-1);
-                // Only include TTL if it actually changed
-                if new_secs != old_secs { Some(new_secs) } else { None }
+        // The TTL cell: None leaves the field's TTL as it is, Some(-1)
+        // removes it, Some(secs) sets it. Text that is not a TTL is refused
+        // with the reason — it used to become "no expiry" without a word.
+        let old_secs = self
+            .value
+            .hash_value()
+            .and_then(|h| h.field_ttls.get(old_field.text()).copied());
+        let ttl: Option<i64> = match values.get(2).map(|text| field_ttl_input(text)) {
+            None => None,
+            Some(Err(())) => {
+                self.server_state.update(cx, |this, cx| {
+                    this.emit_error_notification(i18n_kv_table(cx, "field_ttl_invalid"), cx);
+                });
+                return;
             }
-        });
+            // Emptied: remove a TTL that was there, otherwise nothing to do.
+            Some(Ok(None)) => old_secs.map(|_| -1),
+            // Only sent when it changed.
+            Some(Ok(Some(secs))) => (Some(secs) != old_secs).then_some(secs),
+        };
 
         // The form edits a binary element as hex; the bytes are what go
         // back to the server.
@@ -242,16 +253,18 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(value) = values.get(1).cloned() else {
             return;
         };
-        // Optional per-field TTL; empty / absent means "no expiry".
-        let ttl: Option<i64> = values.get(2).and_then(|s| {
-            let s = s.trim();
-            if s.is_empty() {
-                None
-            } else {
-                use crate::helpers::parse_duration;
-                parse_duration(s).ok().map(|d| d.as_secs() as i64)
+        // Optional per-field TTL; empty / absent means "no expiry", and text
+        // that is not a TTL is refused rather than dropped.
+        let ttl: Option<i64> = match values.get(2).map(|text| field_ttl_input(text)) {
+            None | Some(Ok(None)) => None,
+            Some(Ok(Some(secs))) => Some(secs),
+            Some(Err(())) => {
+                self.server_state.update(cx, |this, cx| {
+                    this.emit_error_notification(i18n_kv_table(cx, "field_ttl_invalid"), cx);
+                });
+                return;
             }
-        });
+        };
 
         let server_state = self.server_state.clone();
         server_state.update(cx, |this, cx| {
@@ -289,5 +302,20 @@ impl ZedisHashEditor {
         let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));
 
         Self { table_state }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::field_ttl_input;
+
+    #[test]
+    fn a_field_ttl_is_empty_a_real_ttl_or_refused() {
+        assert_eq!(field_ttl_input("  "), Ok(None));
+        assert_eq!(field_ttl_input("90"), Ok(Some(90)));
+        assert_eq!(field_ttl_input("1h30m"), Ok(Some(5400)));
+        for text in ["1,5h", "30mm", "500ms", "0"] {
+            assert_eq!(field_ttl_input(text), Err(()), "{text}");
+        }
     }
 }

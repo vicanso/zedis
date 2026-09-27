@@ -809,7 +809,7 @@ impl ZedisTerminal {
                 if confirm_writes
                     && let Some(parts) = shlex::split(line)
                     && let Some(cmd_name) = parts.first()
-                    && is_write_command(cmd_name)
+                    && is_write_command(cmd_name, &parts[1..])
                 {
                     blocking = Some((line.to_string(), DangerKind::GenericWrite));
                     break;

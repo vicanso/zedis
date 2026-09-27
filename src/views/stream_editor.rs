@@ -59,6 +59,12 @@ struct ZedisStreamValues {
     server_state: Entity<ZedisServerState>,
 }
 
+/// A group's lag as the table shows it: "—" where the server gives none,
+/// never a 0 that would read as "caught up".
+fn lag_cell(lag: Option<i64>) -> SharedString {
+    lag.map_or_else(|| "—".into(), |lag| lag.to_string().into())
+}
+
 impl ZedisStreamValues {
     /// Recalculates visible entries based on the current keyword filter.
     ///
@@ -652,7 +658,7 @@ impl ZedisStreamEditor {
                     vec![vec![
                         g.name.clone(),
                         g.last_delivered_id.clone(),
-                        g.lag.to_string().into(),
+                        lag_cell(g.lag),
                         "—".into(),
                         "—".into(),
                         "—".into(),
@@ -664,7 +670,7 @@ impl ZedisStreamEditor {
                             vec![
                                 g.name.clone(),
                                 g.last_delivered_id.clone(),
-                                g.lag.to_string().into(),
+                                lag_cell(g.lag),
                                 c.name.clone(),
                                 c.pending.to_string().into(),
                                 format_duration(Duration::from_millis(c.idle_ms as u64)).into(),

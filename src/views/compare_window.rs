@@ -167,7 +167,16 @@ impl ZedisCompareWindow {
             new_table(differing_columns, &copied, &copy_tooltip, window, cx),
         ];
         let mut subs = Vec::new();
-        for input in [&target_db_input, &prefix_input, &limit_input] {
+        // A report answers for the target it was run against; another
+        // database is another question.
+        subs.push(
+            cx.subscribe_in(&target_db_input, window, |view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    view.forget_report(cx);
+                }
+            }),
+        );
+        for input in [&prefix_input, &limit_input] {
             subs.push(cx.subscribe_in(input, window, |_view, _state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     cx.notify();
@@ -262,6 +271,8 @@ impl ZedisCompareWindow {
             server_id: target_id.to_string(),
             db: self.target_db(cx),
         };
+        // The target this run answers for, checked again when it lands.
+        let run_target = (target.server_id.clone(), target.db);
         let options = CompareOptions { prefix, limit };
         // Progress crosses from the background task on a channel; a
         // foreground task folds it into the view.
@@ -285,7 +296,21 @@ impl ZedisCompareWindow {
         }));
         self._run_task = Some(cx.spawn(async move |this, cx| {
             let result: Result<CompareReport, Error> = task.await.map_err(Into::into);
-            let _ = this.update(cx, |view, cx| view.finish(result, cx));
+            let _ = this.update(cx, |view, cx| {
+                // The form moved on while it ran: this report is for a
+                // target the form no longer names, and "Copy to target"
+                // would send its keys to the new one.
+                let current = view
+                    .target_server_id
+                    .as_ref()
+                    .map(|id| (id.to_string(), view.target_db(cx)));
+                if current.as_ref() != Some(&run_target) {
+                    view.state = RunState::Idle;
+                    cx.notify();
+                    return;
+                }
+                view.finish(result, cx)
+            });
         }));
     }
 
@@ -299,6 +324,22 @@ impl ZedisCompareWindow {
             Err(e) => {
                 self.state = RunState::Failed(e.to_string().into());
             }
+        }
+        cx.notify();
+    }
+
+    /// Drop the report when what it was run against changes. "Copy to
+    /// target" copies the report's keys to the target *in the form*, with
+    /// Overwrite: after a compare against A, choosing B left the button up
+    /// and copied onto B — a target nobody compared — overwriting its keys.
+    /// A compare still running is checked when it lands (`run_target`).
+    fn forget_report(&mut self, cx: &mut Context<Self>) {
+        if self.report.is_none() {
+            return;
+        }
+        self.report = None;
+        for table in &self.tables {
+            table.update(cx, |state, _| state.delegate_mut().clear());
         }
         cx.notify();
     }
@@ -523,6 +564,9 @@ impl Render for ZedisCompareWindow {
                 button.outline()
             };
             server_row = server_row.child(button.on_click(cx.listener(move |this, _, _window, cx| {
+                if this.target_server_id.as_ref() != Some(&id_click) {
+                    this.forget_report(cx);
+                }
                 this.target_server_id = Some(id_click.clone());
                 cx.notify();
             })));

@@ -28,7 +28,7 @@ use crate::{
     },
     views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
-use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
@@ -344,6 +344,11 @@ pub struct ZedisConfigEditor {
     /// than inline per render.
     enum_select: Option<(Entity<ZedisSelect>, Subscription)>,
     loading: bool,
+    /// The `CONFIG GET *` in flight. Replaced — and so cancelled — when the
+    /// server changes: a load for the previous server that landed after the
+    /// switch showed its parameters as the new one's, and while it ran the
+    /// `loading` guard turned the new server's load away, so it never came.
+    _load_task: Option<Task<()>>,
     /// True while a cross-server compare fetches the target's `CONFIG GET *`,
     /// so the header shows the same spinner as the initial load (the fetch can
     /// be slow against a remote / cluster target).
@@ -407,7 +412,16 @@ impl ZedisConfigEditor {
             if matches!(event, ServerEvent::ServerSelected(_)) {
                 this.editing_key = None;
                 this.enum_select = None;
+                // The previous server's parameters go now — the version bump
+                // drops the grouping `render` caches, which otherwise kept
+                // drawing them, editable, until the new list arrived — and
+                // its load in flight is cancelled rather than waited for.
                 this.configs.clear();
+                this.configs_version += 1;
+                this.config_file = SharedString::default();
+                this.diff = None;
+                this._load_task = None;
+                this.loading = false;
                 this.load_configs(cx);
             }
         }));
@@ -428,6 +442,7 @@ impl ZedisConfigEditor {
             editing_enum: SharedString::default(),
             enum_select: None,
             loading: false,
+            _load_task: None,
             comparing: false,
             error: None,
             config_file: SharedString::default(),
@@ -503,7 +518,7 @@ impl ZedisConfigEditor {
             return;
         }
         self.loading = true;
-        cx.spawn(async move |handle, cx| {
+        self._load_task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 // `config_file` says whether the edits below can be made to
                 // survive a restart.
@@ -529,8 +544,7 @@ impl ZedisConfigEditor {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     /// `CONFIG REWRITE` on every master — it is not gossiped, and on a
@@ -631,6 +645,9 @@ impl ZedisConfigEditor {
                     Ok(()) => {
                         if let Some(entry) = this.configs.iter_mut().find(|(k, _)| k == &key_clone) {
                             entry.1 = value_clone;
+                            // The card draws the cached grouping; without a
+                            // new version it kept showing the old value.
+                            this.configs_version += 1;
                         }
                         this.pending_notification = Some(Notification::success(i18n_config_editor(cx, "save_success")));
                     }

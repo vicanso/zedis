@@ -142,6 +142,13 @@ impl ZedisHllEditor {
             cx.notify();
             return;
         }
+        // A write, so it asks the connection like the table editors do — the
+        // Enter key reaches here even where the button is not shown.
+        if !self.server_state.read(cx).can(Capability::MutateContainer) {
+            self.add_error = Some(i18n_common(cx, "disable_in_readonly"));
+            cx.notify();
+            return;
+        }
         self.add_error = None;
         let state = self.server_state.read(cx);
         let server_id = state.server_id().to_string();
@@ -300,12 +307,14 @@ impl Render for ZedisHllEditor {
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(div().flex_1().child(Input::new(&self.add_input).appearance(true)))
-                    .child(
-                        Button::new("hll-pfadd")
-                            .label(i18n_hll(cx, "add"))
-                            .on_click(cx.listener(|this, _, _window, cx| this.run_add(cx))),
-                    )
+                    .when(self.server_state.read(cx).can(Capability::MutateContainer), |this| {
+                        this.child(div().flex_1().child(Input::new(&self.add_input).appearance(true)))
+                            .child(
+                                Button::new("hll-pfadd")
+                                    .label(i18n_hll(cx, "add"))
+                                    .on_click(cx.listener(|this, _, _window, cx| this.run_add(cx))),
+                            )
+                    })
                     .when(self.server_state.read(cx).can(Capability::HllMerge), |this| {
                         this.child(
                             Button::new("hll-pfmerge")

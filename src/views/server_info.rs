@@ -214,6 +214,13 @@ impl ZedisServerInfo {
                 // (`ZedisServerState::reset` clears it on switch) — only
                 // the view-local compare toggle needs resetting here.
                 this.diff_mode = false;
+                // The previous server's INFO in flight is cancelled, not
+                // waited for: it landed as the new server's, marked as just
+                // refreshed, and its `loading` turned the new fetch away.
+                this.refresh_task = None;
+                this.loading = false;
+                this.rows.clear();
+                this.refreshed_at = None;
                 this.refresh(cx);
             }
         }));

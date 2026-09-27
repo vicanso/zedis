@@ -87,9 +87,23 @@ fn compose_message(
     };
 
     let body_key = format!("{}_body", kind.i18n_key());
-    // `minutes` is what the write lock's body says; the rest ignore it.
+    // Every placeholder any body uses goes in, each body taking its own:
+    // `minutes` is the write lock's, `count` the batch delete's. The key
+    // exists in every locale, so the fallback below never ran for a batch
+    // delete, and without `count` here its dialog read "%{count} keys".
     let minutes = (WRITE_UNLOCK_SECS / 60).to_string();
-    let body_raw = t!(&body_key, target = &target, minutes = &minutes, locale = locale).to_string();
+    let count = match kind {
+        DangerKind::BatchDelete { count } => count.to_string(),
+        _ => String::new(),
+    };
+    let body_raw = t!(
+        &body_key,
+        target = &target,
+        minutes = &minutes,
+        count = &count,
+        locale = locale
+    )
+    .to_string();
     let body = if body_raw == body_key {
         match kind {
             DangerKind::BatchDelete { count } => t!(
@@ -119,4 +133,25 @@ fn compose_message(
         parts.push(t!("danger.high_risk_warning", locale = locale).to_string());
     }
     parts.join("\n\n").into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_placeholder_of_a_body_is_filled() {
+        for locale in ["en", "zh", "de", "es", "fr", "ja", "pt", "ru"] {
+            let body = compose_message(
+                &DangerKind::BatchDelete { count: 60 },
+                None,
+                "prod",
+                "",
+                ConfirmStrictness::Click,
+                locale,
+            );
+            assert!(!body.contains("%{"), "{locale}: {body}");
+            assert!(body.contains("60"), "{locale}: {body}");
+        }
+    }
 }

@@ -27,6 +27,7 @@ use super::{ConnectionManager, NodeDiscovery, ServerType};
 use crate::async_connection::{
     keepalive_tcp_settings, resolve_connection_timeout, resolve_response_timeout, with_keepalive,
 };
+use crate::config::RedisServer;
 use crate::error::Error;
 use crate::ssh_cluster_connection::SshMultiplexedConnection;
 use crate::ssh_tunnel::open_single_ssh_tunnel_push_connection;
@@ -126,31 +127,39 @@ impl ConnectionManager {
                 }
             }
             // Standalone, or the master a Sentinel resolved for us.
-            _ => {
-                let config = &first_node.server;
-                let conn = if config.is_ssh_tunnel() {
-                    open_single_ssh_tunnel_push_connection(config, tx).await?
-                } else {
-                    let info = config.get_connection_url().as_str().into_connection_info()?;
-                    let redis_settings = info.redis_settings().clone().set_protocol(ProtocolVersion::RESP3);
-                    // Sharded subscriptions read and never write, so they need
-                    // the same keepalive the classic ones do.
-                    let info = with_keepalive(info.set_redis_settings(redis_settings));
-                    let client = if let Some(certificates) = config.tls_certificates()? {
-                        Client::build_with_tls(info, certificates)?
-                    } else {
-                        Client::open(info)?
-                    };
-                    let cfg = AsyncConnectionConfig::new()
-                        .set_connection_timeout(Some(resolve_connection_timeout(config)))
-                        .set_response_timeout(Some(resolve_response_timeout(config)))
-                        .set_push_sender(move |info: PushInfo| tx.try_send(info));
-                    client.get_multiplexed_async_connection_with_config(&cfg).await?
-                };
-                ShardedPubSubConn::Single(conn)
-            }
+            _ => ShardedPubSubConn::Single(open_push_connection(&first_node.server, tx).await?),
         };
 
         Ok(ShardedPubSub { conn, rx })
     }
+}
+
+/// A RESP3 connection of its own to the node `config` names, its pushes sent
+/// to `tx` — through the entry's SSH tunnel where it has one.
+///
+/// What a subscription needs where the classic RESP2 Pub/Sub connection
+/// cannot go: over an SSH tunnel (the entry's `127.0.0.1` is the far end of
+/// the tunnel, not a server on this machine), and to each master of a
+/// cluster at once, their pushes merged on one channel. Subscriptions read
+/// and never write, so they get the keepalive the classic ones have.
+pub(crate) async fn open_push_connection(
+    config: &RedisServer,
+    tx: smol::channel::Sender<PushInfo>,
+) -> Result<MultiplexedConnection> {
+    if config.is_ssh_tunnel() {
+        return open_single_ssh_tunnel_push_connection(config, tx).await;
+    }
+    let info = config.get_connection_url().as_str().into_connection_info()?;
+    let redis_settings = info.redis_settings().clone().set_protocol(ProtocolVersion::RESP3);
+    let info = with_keepalive(info.set_redis_settings(redis_settings));
+    let client = if let Some(certificates) = config.tls_certificates()? {
+        Client::build_with_tls(info, certificates)?
+    } else {
+        Client::open(info)?
+    };
+    let cfg = AsyncConnectionConfig::new()
+        .set_connection_timeout(Some(resolve_connection_timeout(config)))
+        .set_response_timeout(Some(resolve_response_timeout(config)))
+        .set_push_sender(move |info: PushInfo| tx.try_send(info));
+    Ok(client.get_multiplexed_async_connection_with_config(&cfg).await?)
 }

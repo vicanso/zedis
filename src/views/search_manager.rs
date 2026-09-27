@@ -29,8 +29,8 @@
 use crate::{
     assets::CustomIconName,
     connection::{
-        AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
-        ReducerFn, ReducerSpec, SearchOptions, SearchResult, ServerDb, SpellingSuggestion, escape_tag_value,
+        AggregateOptions, AggregateResult, Capability, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema,
+        IndexInfo, ReducerFn, ReducerSpec, SearchOptions, SearchResult, ServerDb, SpellingSuggestion, escape_tag_value,
         ft_aggregate, ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search,
         ft_spellcheck, ft_tagvals,
     },
@@ -38,7 +38,7 @@ use crate::{
     helpers::get_mono_font_family,
     states::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
-        i18n_common, i18n_search,
+        escalate_dangerous_body, i18n_common, i18n_search,
     },
     views::open_key_in_editor,
 };
@@ -437,7 +437,19 @@ impl ZedisSearchManager {
     /// step. Rendered as an inline takeover of the panel body (not a
     /// modal dialog) so all event handlers can use the standard
     /// `cx.listener` reactivity path.
+    /// Whether `FT.CREATE` / `FT.ALTER` / `FT.DROPINDEX` may run: a write
+    /// the read-only and write-locked connections do not get.
+    pub(super) fn can_write_index(&self, cx: &gpui::App) -> bool {
+        self.server_state.read(cx).can(Capability::SearchIndexWrite)
+    }
+
     fn open_create_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // A write: asked of the connection as it is now, so a read-only
+        // session or a locked production entry cannot reach it by a key
+        // press or a stale button either.
+        if !self.can_write_index(cx) {
+            return;
+        }
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "create_name_placeholder")));
         let prefixes =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_search(cx, "create_prefixes_placeholder")));
@@ -470,6 +482,12 @@ impl ZedisSearchManager {
     /// terminal. This is a deliberate guardrail; one click in the
     /// schema header shouldn't be able to nuke an entire dataset.
     fn confirm_drop_index(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // A write: asked of the connection as it is now, so a read-only
+        // session or a locked production entry cannot reach it by a key
+        // press or a stale button either.
+        if !self.can_write_index(cx) {
+            return;
+        }
         let Some(index) = self.selected_index.clone() else {
             return;
         };
@@ -492,6 +510,9 @@ impl ZedisSearchManager {
             i18n_search(cx, "drop_dd_hint"),
         )
         .into();
+        // A production entry says so in the body, as dropping a function or
+        // an ACL user does.
+        let body_message = escalate_dangerous_body(cx, &server_id, body_message);
         ZedisDialog::new_alert(title, body_message)
             .button_props(
                 dialog_button_props(cx)
@@ -539,6 +560,12 @@ impl ZedisSearchManager {
     }
 
     fn open_add_field_form(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // A write: asked of the connection as it is now, so a read-only
+        // session or a locked production entry cannot reach it by a key
+        // press or a stale button either.
+        if !self.can_write_index(cx) {
+            return;
+        }
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("field"));
         self.add_field_form = Some(AddFieldForm {
             name,
@@ -579,6 +606,12 @@ impl ZedisSearchManager {
     }
 
     fn submit_add_field(&mut self, cx: &mut gpui::Context<Self>) {
+        // A write: asked of the connection as it is now, so a read-only
+        // session or a locked production entry cannot reach it by a key
+        // press or a stale button either.
+        if !self.can_write_index(cx) {
+            return;
+        }
         let Some(form) = self.add_field_form.as_ref() else {
             return;
         };
@@ -705,6 +738,12 @@ impl ZedisSearchManager {
     /// inline and the form stays open; on success the form closes once
     /// the request completes and the new index is auto-selected.
     fn submit_create_index(&mut self, cx: &mut gpui::Context<Self>) {
+        // A write: asked of the connection as it is now, so a read-only
+        // session or a locked production entry cannot reach it by a key
+        // press or a stale button either.
+        if !self.can_write_index(cx) {
+            return;
+        }
         let Some(form) = self.create_form.as_ref() else { return };
         let name = form.name.read(cx).value().to_string().trim().to_string();
         if name.is_empty() {

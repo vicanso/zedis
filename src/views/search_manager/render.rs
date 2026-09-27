@@ -91,18 +91,20 @@ impl ZedisSearchManager {
                                 menu
                             }),
                     )
-                    .child(
+                    .when(self.can_write_index(cx), |this| {
                         // + New Index — opens the structured create form.
-                        // Always available (also when there are zero
+                        // Available wherever writes are (also with zero
                         // indexes) so the empty-state isn't a dead end.
-                        Button::new("search-new-index")
-                            .outline()
-                            .small()
-                            .icon(IconName::Plus)
-                            .tooltip(i18n_search(cx, "create_tooltip"))
-                            .disabled(self.creating_index)
-                            .on_click(cx.listener(|this, _, w, cx| this.open_create_dialog(w, cx))),
-                    )
+                        this.child(
+                            Button::new("search-new-index")
+                                .outline()
+                                .small()
+                                .icon(IconName::Plus)
+                                .tooltip(i18n_search(cx, "create_tooltip"))
+                                .disabled(self.creating_index)
+                                .on_click(cx.listener(|this, _, w, cx| this.open_create_dialog(w, cx))),
+                        )
+                    })
                     .child(
                         Button::new("search-refresh")
                             .outline()
@@ -285,24 +287,26 @@ impl ZedisSearchManager {
                                 })
                                 .on_click(cx.listener(|this, _, _w, cx| this.toggle_schema_collapsed(cx))),
                         )
-                        .child(
-                            Button::new("search-alter-add-field")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Plus)
-                                .tooltip(i18n_search(cx, "alter_add_tooltip"))
-                                .disabled(altering)
-                                .on_click(cx.listener(|this, _, w, cx| this.open_add_field_form(w, cx))),
-                        )
-                        .child(
-                            Button::new("search-drop-index")
-                                .ghost()
-                                .small()
-                                .icon(IconName::CircleX)
-                                .tooltip(i18n_search(cx, "drop_tooltip"))
-                                .disabled(dropping)
-                                .on_click(cx.listener(|this, _, w, cx| this.confirm_drop_index(w, cx))),
-                        ),
+                        .when(self.can_write_index(cx), |this| {
+                            this.child(
+                                Button::new("search-alter-add-field")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Plus)
+                                    .tooltip(i18n_search(cx, "alter_add_tooltip"))
+                                    .disabled(altering)
+                                    .on_click(cx.listener(|this, _, w, cx| this.open_add_field_form(w, cx))),
+                            )
+                            .child(
+                                Button::new("search-drop-index")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::CircleX)
+                                    .tooltip(i18n_search(cx, "drop_tooltip"))
+                                    .disabled(dropping)
+                                    .on_click(cx.listener(|this, _, w, cx| this.confirm_drop_index(w, cx))),
+                            )
+                        }),
                 )
                 .child(v_flex().gap_1().children(rows))
                 .when_some(self.tag_values.as_ref(), |this, open| {

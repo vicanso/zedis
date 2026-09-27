@@ -152,6 +152,13 @@ pub struct ZedisBitmapEditor {
     _subscriptions: Vec<Subscription>,
 }
 
+/// Whether a `BITFIELD` argument line writes: a `SET` or `INCRBY`
+/// sub-command. `GET` and `OVERFLOW` alone only read.
+fn bitfield_writes(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg.eq_ignore_ascii_case("SET") || arg.eq_ignore_ascii_case("INCRBY"))
+}
+
 impl EventEmitter<BitmapEvent> for ZedisBitmapEditor {}
 
 impl ZedisBitmapEditor {
@@ -297,6 +304,15 @@ impl ZedisBitmapEditor {
         let args: Vec<String> = raw.split_whitespace().map(|s| s.to_string()).collect();
         if args.is_empty() {
             self.bitfield_error = Some(i18n_bitmap(cx, "bitfield_empty"));
+            self.bitfield_result = None;
+            cx.notify();
+            return;
+        }
+        // `SET` / `INCRBY` write: asked of the connection as it is now, so a
+        // read-only session or a locked production entry refuses them here
+        // as it does a click on a bit. A `GET`-only line still reads.
+        if bitfield_writes(&args) && !self.server_state.read(cx).can(Capability::MutateContainer) {
+            self.bitfield_error = Some(i18n_common(cx, "disable_in_readonly"));
             self.bitfield_result = None;
             cx.notify();
             return;

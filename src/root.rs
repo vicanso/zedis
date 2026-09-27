@@ -1090,7 +1090,8 @@ impl Render for Zedis {
                     // A dialog, not a sub-route: keeps whatever view is
                     // active underneath.
                     ServerToolsAction::Trash => {
-                        open_trash_dialog(window, cx);
+                        let server_state = _this.active_content().read(cx).server_state();
+                        open_trash_dialog(server_state, window, cx);
                         return;
                     }
                     // The probed command matrix of the active tab's connection.

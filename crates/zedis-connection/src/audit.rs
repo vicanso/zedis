@@ -38,6 +38,10 @@ pub fn is_administration_command(name: &str, args: &[String]) -> bool {
     match name.to_ascii_uppercase().as_str() {
         "FLUSHALL" | "FLUSHDB" | "SWAPDB" | "SHUTDOWN" | "REPLICAOF" | "SLAVEOF" | "FAILOVER" | "SAVE" | "BGSAVE"
         | "BGREWRITEAOF" | "AUTH" | "PSYNC" | "SYNC" => true,
+        // A script runs whatever commands it holds, every one above included:
+        // `EVAL "return redis.call('FLUSHALL')" 0` went unlogged. The `_RO`
+        // variants cannot write and are not here.
+        "EVAL" | "EVALSHA" | "FCALL" => true,
         // `HELLO 3` negotiates a protocol; `HELLO 3 AUTH user pass` signs in.
         "HELLO" => args.iter().any(|a| a.eq_ignore_ascii_case("AUTH")),
         "CONFIG" => matches!(sub, Some("SET" | "REWRITE" | "RESETSTAT")),
@@ -132,6 +136,17 @@ pub fn redact_secrets(name: &str, args: &[String]) -> Vec<String> {
                 mask(&mut out, i + 1);
             }
         }
+        // `SENTINEL CONFIG SET name value [name value …]` (6.2+): the
+        // sentinels' own password among the settings.
+        ("SENTINEL", Some("CONFIG")) if args.get(1).is_some_and(|a| a.eq_ignore_ascii_case("SET")) => {
+            let mut i = 2;
+            while i + 1 < out.len() {
+                if args[i].eq_ignore_ascii_case("sentinel-pass") {
+                    out[i + 1] = MASK.to_string();
+                }
+                i += 2;
+            }
+        }
         _ => {}
     }
     out
@@ -141,7 +156,7 @@ pub fn redact_secrets(name: &str, args: &[String]) -> Vec<String> {
 fn is_secret_setting(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "requirepass" | "masterauth" | "tls-key-file-pass" | "tls-client-key-file-pass"
+        "requirepass" | "masterauth" | "primaryauth" | "tls-key-file-pass" | "tls-client-key-file-pass"
     )
 }
 
@@ -264,6 +279,26 @@ mod tests {
         for (name, given, want) in cases {
             assert_eq!(redact_secrets(name, &args(given)), args(want), "{name} {given:?}");
         }
+    }
+
+    #[test]
+    fn the_newer_spellings_of_a_credential_are_blanked_and_scripts_are_logged() {
+        let words = |line: &str| line.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        // Valkey 8's name for masterauth.
+        assert_eq!(
+            redact_secrets("CONFIG", &words("SET primaryauth s3cret")),
+            words(&format!("SET primaryauth {MASK}"))
+        );
+        assert_eq!(
+            redact_secrets(
+                "SENTINEL",
+                &words("CONFIG SET sentinel-user admin sentinel-pass s3cret")
+            ),
+            words(&format!("CONFIG SET sentinel-user admin sentinel-pass {MASK}"))
+        );
+        assert!(is_administration_command("eval", &words("return 1 0")));
+        assert!(is_administration_command("FCALL", &words("f 0")));
+        assert!(!is_administration_command("EVAL_RO", &words("return 1 0")));
     }
 
     #[test]

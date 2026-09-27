@@ -128,10 +128,15 @@ struct RedisConfig {
     response_timeout: Duration,
 }
 
+/// The dial timeout when Settings names none.
+pub const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+/// The per-command timeout when Settings names none.
+pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+
 static GLOBAL_REDIS_CONFIG: LazyLock<ArcSwap<RedisConfig>> = LazyLock::new(|| {
     ArcSwap::from_pointee(RedisConfig {
-        connection_timeout: Duration::from_secs(10),
-        response_timeout: Duration::from_secs(20),
+        connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
+        response_timeout: DEFAULT_RESPONSE_TIMEOUT,
     })
 });
 

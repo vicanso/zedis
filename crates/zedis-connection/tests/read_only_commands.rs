@@ -142,6 +142,11 @@ const WRITES: &[&str] = &[
     "SENTINEL FAILOVER",
     "SENTINEL SET",
     "SLOWLOG RESET",
+    // Both hold the connection they run on, which is why the read-only
+    // allowlist does not name them: they are only ever sent on a dedicated
+    // connection of the desktop's own (`subscription.rs`), never through the
+    // bridge's shared one.
+    "PSUBSCRIBE",
     "SSUBSCRIBE",
 ];
 

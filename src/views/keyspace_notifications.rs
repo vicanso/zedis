@@ -405,7 +405,7 @@ impl ZedisKeyspaceNotifications {
             let connect: Result<ChannelSubscription, Error> = cx
                 .background_spawn(async move {
                     let patterns = [KEYSPACE_PATTERN, KEYEVENT_PATTERN];
-                    Ok(ChannelSubscription::open(&at, SubscribeKind::Patterns, &patterns).await?)
+                    Ok(ChannelSubscription::open(&at, SubscribeKind::KeyspaceEvents, &patterns).await?)
                 })
                 .await;
 

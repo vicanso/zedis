@@ -1950,7 +1950,16 @@ fn standalone_stream_consumer_and_id_administration() {
             .query_async(&mut c)
             .await
             .expect("xadd after xsetid");
-        assert!(next > raised, "the next id follows the one just set: {next}");
+        // Compared as ids, not as text: in the same millisecond the next id is
+        // `…-10`, which sorts before `…-9` as a string.
+        let as_id = |id: &str| -> (u64, u64) {
+            let (ms, seq) = id.split_once('-').expect("an id");
+            (ms.parse().expect("ms"), seq.parse().expect("seq"))
+        };
+        assert!(
+            as_id(&next) > as_id(&raised),
+            "the next id follows the one just set: {next}"
+        );
 
         let _: () = cmd("DEL").arg(&key).query_async(&mut c).await.expect("cleanup");
     });
@@ -3460,7 +3469,12 @@ fn standalone_stream_operations_page_describe_and_administer() {
         let [described]: [StreamGroup; 1] = info.groups.try_into().expect("one group");
         assert_eq!((described.name.as_str(), described.pending_count), (group, 2));
         if supports(&id, floors::STREAM_GROUP_LAG).await {
-            assert_eq!(described.lag, 1, "one entry nobody has been delivered");
+            assert_eq!(described.lag, Some(1), "one entry nobody has been delivered");
+        } else {
+            assert_eq!(
+                described.lag, None,
+                "a server without the field has no lag to report, not a 0"
+            );
         }
         assert_eq!(described.consumers.len(), 1);
         assert_eq!(described.consumers[0].name, "c1");
@@ -4674,6 +4688,30 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
             .await
             .expect("cleanup");
 
+        // A subscription goes through the tunnel too, on a push connection:
+        // the classic Pub/Sub connection dialled the entry's address itself,
+        // which for a tunnel is the far side's `127.0.0.1`. Here, after the
+        // cases that must authenticate, because the session is cached.
+        let channel = unique("ssh-sub");
+        let pattern = format!("{channel}:*");
+        let mut subscription =
+            ChannelSubscription::open(&ServerDb::new(&*id, 0), SubscribeKind::Patterns, &[pattern.as_str()])
+                .await
+                .expect("psubscribe through the tunnel");
+        let receivers: i64 = cmd("PUBLISH")
+            .arg(format!("{channel}:a"))
+            .arg("hello")
+            .query_async(&mut direct_conn)
+            .await
+            .expect("publish");
+        assert_eq!(receivers, 1, "the tunnelled subscription is listening");
+        let message = subscription.next_message().await.expect("a message");
+        assert_eq!(
+            (message.channel.as_str(), message.payload.as_slice()),
+            (format!("{channel}:a").as_str(), b"hello".as_slice())
+        );
+        drop(subscription);
+
         // 4. A login the sshd cannot grant. Its own `user@addr`, so the
         //    successful session above is not reused for it.
         let mut refused = tunnelled("it-ssh-wrong-user");
@@ -5149,6 +5187,67 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
 }
 
 // ── cluster ──────────────────────────────────────────────────────────────
+
+/// Keyspace notifications are published by the node that holds the key, so
+/// a subscription on one node heard about a third of a three-master
+/// cluster's keys. `SubscribeKind::KeyspaceEvents` subscribes on every
+/// master and hears them all.
+#[test]
+#[ignore]
+fn cluster_keyspace_events_come_from_every_master() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-keyspace", addr)).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        // Routed to every node by the cluster client.
+        cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("K$")
+            .exec_async(&mut c)
+            .await
+            .expect("enable notifications");
+        let prefix = unique("ks-events");
+        let pattern = format!("__keyspace@0__:{prefix}:*");
+        let mut subscription = ChannelSubscription::open(&at, SubscribeKind::KeyspaceEvents, &[pattern.as_str()])
+            .await
+            .expect("subscribe on every master");
+        let keys: Vec<String> = (0..20).map(|i| format!("{prefix}:{i}")).collect();
+        for key in &keys {
+            cmd("SET").arg(key).arg("v").exec_async(&mut c).await.expect("set");
+        }
+        let mut heard = HashSet::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while heard.len() < keys.len() && std::time::Instant::now() < deadline {
+            let next = smol::future::or(async { subscription.next_message().await }, async {
+                smol::Timer::after(std::time::Duration::from_millis(200)).await;
+                None
+            })
+            .await;
+            if let Some(message) = next {
+                heard.insert(message.channel.trim_start_matches("__keyspace@0__:").to_string());
+            }
+        }
+        assert_eq!(
+            heard.len(),
+            keys.len(),
+            "an event for every key, whichever master holds it"
+        );
+
+        drop(subscription);
+        cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("")
+            .exec_async(&mut c)
+            .await
+            .expect("disable notifications");
+        for key in &keys {
+            cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");
+        }
+    });
+}
 
 /// A chunk of keys spans hash slots, and redis-rs refuses a cluster pipeline
 /// that does. The conflict preview (`EXISTS` per key) and the readable
@@ -6805,6 +6904,83 @@ fn standalone_script_show_reads_the_cache_back_on_valkey() {
                 .expect("an unknown digest is not an error"),
             None
         );
+    });
+}
+
+/// The two cases a logical copy used to get wrong. An empty stream is a key
+/// of its own: it was reported re-created and never made. And an overwrite
+/// deleted the target's key before finding that the source's type cannot be
+/// re-created by commands, so the target lost it and got nothing back.
+#[test]
+#[ignore]
+fn standalone_logical_copy_makes_empty_streams_and_never_deletes_what_it_cannot_replace() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let src = ServerDb::new(&id, 0);
+        let dst = ServerDb::new(&id, 1);
+        let mut c0 = conn(&id, 0).await;
+        let mut c1 = conn(&id, 1).await;
+        let prefix = unique("logical-edge");
+
+        // An emptied stream, whose next id has moved on.
+        let stream = format!("{prefix}:x");
+        cmd("XADD")
+            .arg(&stream)
+            .arg("5-1")
+            .arg("f")
+            .arg("v")
+            .exec_async(&mut c0)
+            .await
+            .expect("xadd");
+        cmd("XDEL")
+            .arg(&stream)
+            .arg("5-1")
+            .exec_async(&mut c0)
+            .await
+            .expect("xdel");
+        let status = copy_key_logically(&src, &dst, stream.as_bytes(), -1, ConflictMode::Skip)
+            .await
+            .expect("copy");
+        assert_eq!(status, RestoreStatus::Recreated);
+        let kind: String = cmd("TYPE").arg(&stream).query_async(&mut c1).await.expect("type");
+        assert_eq!(kind, "stream", "the empty stream exists on the target");
+        let len: usize = cmd("XLEN").arg(&stream).query_async(&mut c1).await.expect("xlen");
+        assert_eq!(len, 0);
+        let next: String = cmd("XADD")
+            .arg(&stream)
+            .arg("*")
+            .arg("f")
+            .arg("w")
+            .query_async(&mut c1)
+            .await
+            .expect("xadd");
+        let ms: u64 = next.split('-').next().and_then(|ms| ms.parse().ok()).expect("id");
+        assert!(ms >= 5, "the copy kept the source's next id: {next}");
+
+        // A module key (a Bloom filter where the server has one) over an
+        // existing target key: refused, and the target's key left alone.
+        let bloom = format!("{prefix}:bf");
+        if cmd("BF.ADD").arg(&bloom).arg("a").exec_async(&mut c0).await.is_ok() {
+            cmd("SET")
+                .arg(&bloom)
+                .arg("keep me")
+                .exec_async(&mut c1)
+                .await
+                .expect("set");
+            let status = copy_key_logically(&src, &dst, bloom.as_bytes(), -1, ConflictMode::Overwrite)
+                .await
+                .expect("copy");
+            assert!(matches!(status, RestoreStatus::Failed(_)), "{status:?}");
+            let kept: String = cmd("GET").arg(&bloom).query_async(&mut c1).await.expect("get");
+            assert_eq!(kept, "keep me");
+        } else {
+            eprintln!("skipped the module half: no BF.ADD on this server");
+        }
+
+        for key in [&stream, &bloom] {
+            cmd("DEL").arg(key).exec_async(&mut c0).await.expect("del");
+            cmd("DEL").arg(key).exec_async(&mut c1).await.expect("del");
+        }
     });
 }
 

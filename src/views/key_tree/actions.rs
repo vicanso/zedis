@@ -297,9 +297,11 @@ impl Render for ZedisKeyTree {
                     window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
                 }
                 KeyTreeAction::CopyFolderPrefix(id) => {
-                    // Trailing separator matches the folder's scan prefix
-                    // (same shape RefreshFolder uses).
-                    cx.write_to_clipboard(ClipboardItem::new_string(format!("{}:", id.as_str())));
+                    // The folder's scan prefix, from the same function
+                    // RefreshFolder uses — with the configured separator,
+                    // which a hard-coded `:` ignored.
+                    let prefix = this.server_state.read(cx).folder_prefix(id.as_str());
+                    cx.write_to_clipboard(ClipboardItem::new_string(prefix));
                     window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
                 }
                 KeyTreeAction::RenameKey(key) => {
@@ -511,8 +513,11 @@ impl Render for ZedisKeyTree {
                     #[cfg(not(target_family = "wasm"))]
                     {
                         let folder = folder.clone();
-                        let prefix = format!("{folder}:");
                         let server_state = this.server_state.read(cx);
+                        // The configured separator: with `/` or `.`, a `:`
+                        // prefix matched nothing and the export silently
+                        // never opened.
+                        let prefix = server_state.folder_prefix(folder.as_str());
                         let keys: Vec<SharedString> = server_state
                             .keys()
                             .keys()

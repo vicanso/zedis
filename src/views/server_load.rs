@@ -26,12 +26,14 @@ use crate::connection::{Capability, CommandStat, ServerDb, command_stats, config
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, pacing};
 use crate::states::{
-    ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
+    ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
     escalate_dangerous_body, i18n_common, i18n_server_load,
 };
 use crate::views::panel_poll::{PanelPoll, summary_chip};
 use crate::views::unavailable_chip;
-use gpui::{App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px,
+};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -103,6 +105,7 @@ pub struct ZedisServerLoad {
     filter: Entity<InputState>,
     pending_notification: Option<Notification>,
     scroll: ScrollHandle,
+    _subscription: Subscription,
 }
 
 impl ZedisServerLoad {
@@ -111,6 +114,22 @@ impl ZedisServerLoad {
             InputState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_server_load(cx, "filter_placeholder").to_string())
+        });
+        // The rates are differences between samples of one server's
+        // counters. After a switch the first sample was taken against the
+        // previous server's totals — rates of hundreds of millions a second
+        // — and a sample of the old server still in flight landed after it.
+        // So a switch starts over: counters, rows, and the poll itself.
+        let subscription = cx.subscribe(&server_state, |this, _state, event, cx| {
+            if matches!(event, ServerEvent::ServerSelected(_)) {
+                this.prev.clear();
+                this.has_delta = false;
+                this.last_sample_at = None;
+                this.cmd_rows.clear();
+                this.cmd_error = None;
+                this.start_polling(cx);
+                cx.notify();
+            }
         });
         let mut this = Self {
             server_state,
@@ -128,6 +147,7 @@ impl ZedisServerLoad {
             filter,
             pending_notification: None,
             scroll: ScrollHandle::new(),
+            _subscription: subscription,
         };
         this.start_polling(cx);
         this

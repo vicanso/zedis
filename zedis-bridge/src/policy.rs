@@ -222,7 +222,7 @@ fn classify(server: &RedisServer, args: &[Vec<u8>], typed: bool) -> Option<Dange
     if let Some(kind) = classify_dangerous(&name, &rest) {
         return Some(kind);
     }
-    if typed && requires_write_confirm(server) && is_write_command(&name) {
+    if typed && requires_write_confirm(server) && is_write_command(&name, &rest) {
         return Some(DangerKind::GenericWrite);
     }
     None

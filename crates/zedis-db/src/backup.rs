@@ -118,10 +118,16 @@ pub fn export_local_data(app_version: &str, exported_at: i64) -> Result<LocalDat
         .map(|(id, value)| Stored { id, value })
         .collect();
     lua_scripts.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut protos: Vec<Stored<ProtoConfig>> = ProtoManager::list_protos_with_id()
-        .into_iter()
-        .map(|(id, value)| Stored { id, value })
-        .collect();
+    // The listing is the in-memory index, which leaves `content` out to keep
+    // every definition out of memory; the definition itself — the one part
+    // of a binding that cannot be recreated — is read from the store. A
+    // backup built from the index alone carried `"content": null` for every
+    // proto.
+    let mut protos: Vec<Stored<ProtoConfig>> = Vec::new();
+    for (id, _) in ProtoManager::list_protos_with_id() {
+        let value = ProtoManager::get_proto(&id)?;
+        protos.push(Stored { id, value });
+    }
     protos.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(LocalDataBackup {
         format: BACKUP_FORMAT,
@@ -180,7 +186,16 @@ pub fn import_local_data(backup: &LocalDataBackup) -> Result<ImportSummary> {
         summary.lua_scripts += 1;
     }
     for item in &backup.protos {
-        match ProtoManager::upsert_proto(&item.id, item.value.clone()) {
+        let mut value = item.value.clone();
+        // A backup exported before definitions were read from the store has
+        // none. Writing it as it is would replace this machine's copy — the
+        // only one — with nothing, so a local definition is kept.
+        if value.content.as_deref().is_none_or(str::is_empty)
+            && let Ok(local) = ProtoManager::get_proto(&item.id)
+        {
+            value.content = local.content;
+        }
+        match ProtoManager::upsert_proto(&item.id, value) {
             Ok(()) => summary.protos += 1,
             Err(e) => {
                 warn!(id = %item.id, name = %item.value.name, error = %e, "proto binding skipped");
@@ -241,6 +256,18 @@ mod tests {
             },
         )
         .expect("lua");
+        let definition = "syntax = \"proto3\"; message User { string name = 1; }";
+        ProtoManager::upsert_proto(
+            "backup-proto",
+            ProtoConfig {
+                server_id: server.to_string(),
+                name: "user".to_string(),
+                match_pattern: "user:".to_string(),
+                content: Some(definition.to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("proto");
 
         let backup = export_local_data("0.0.0-test", 42).expect("export");
         assert_eq!(backup.format, BACKUP_FORMAT);
@@ -259,6 +286,13 @@ mod tests {
         assert_eq!(favs.keys, vec!["newer".to_string(), "older".to_string()]);
         assert!(backup.script_viewers.iter().any(|item| item.id == "backup-viewer"));
         assert!(backup.lua_scripts.iter().any(|item| item.id == "backup-lua"));
+        // The definition travels, not just the binding around it.
+        let proto = backup
+            .protos
+            .iter()
+            .find(|item| item.id == "backup-proto")
+            .expect("proto exported");
+        assert_eq!(proto.value.content.as_deref(), Some(definition));
 
         // The JSON round trip is what a file restore does.
         let json = serde_json::to_string(&backup).expect("json");
@@ -269,6 +303,27 @@ mod tests {
         assert!(summary.script_viewers >= 1);
         assert!(summary.lua_scripts >= 1);
         assert_eq!(summary.skipped, 0);
+        assert_eq!(
+            ProtoManager::get_proto("backup-proto")
+                .expect("proto")
+                .content
+                .as_deref(),
+            Some(definition)
+        );
+        // A backup from before the fix carries no definition; importing it
+        // keeps the local one instead of erasing it.
+        let mut stale = parsed.clone();
+        for item in &mut stale.protos {
+            item.value.content = None;
+        }
+        import_local_data(&stale).expect("import a stale backup");
+        assert_eq!(
+            ProtoManager::get_proto("backup-proto")
+                .expect("proto")
+                .content
+                .as_deref(),
+            Some(definition)
+        );
         // Merged, not duplicated, and the favorites order survived.
         let favs = get_favorites_manager().records(server).expect("records");
         assert_eq!(favs, vec!["newer".to_string(), "older".to_string()]);

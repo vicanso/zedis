@@ -48,6 +48,13 @@ struct ZedisZsetValues {
     server_state: Entity<ZedisServerState>,
 }
 
+/// A score as `ZADD` takes it: a number, or `inf` / `-inf`. Anything else
+/// is refused rather than read as 0 — `1,5` or `10分` used to overwrite a
+/// member's score with 0 without a word, on a leaderboard as anywhere.
+fn parse_score(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok().filter(|score| !score.is_nan())
+}
+
 impl ZedisKvFetcher for ZedisZsetValues {
     fn key_type(&self) -> KeyType {
         KeyType::Zset
@@ -170,8 +177,12 @@ impl ZedisKvFetcher for ZedisZsetValues {
         }
 
         let server_state = self.server_state.clone();
-        // Parse score from string (default to 0.0 if invalid)
-        let score = values[1].parse::<f64>().unwrap_or(0.0);
+        let Some(score) = parse_score(&values[1]) else {
+            server_state.update(cx, |state, cx| {
+                state.emit_error_notification(i18n_kv_table(cx, "score_invalid"), cx);
+            });
+            return;
+        };
 
         // Execute the add operation on server state
         server_state.update(cx, |this, cx| {
@@ -199,8 +210,12 @@ impl ZedisKvFetcher for ZedisZsetValues {
             return;
         };
 
-        // Parse score and execute update operation
-        let score = score_str.parse::<f64>().unwrap_or(0.0);
+        let Some(score) = parse_score(score_str) else {
+            self.server_state.update(cx, |state, cx| {
+                state.emit_error_notification(i18n_kv_table(cx, "score_invalid"), cx);
+            });
+            return;
+        };
         let Ok(member) = original_member.bytes_from_edit(member) else {
             self.server_state.update(cx, |state, cx| {
                 state.emit_error_notification(i18n_kv_table(cx, "hex_invalid"), cx);
@@ -245,5 +260,21 @@ impl ZedisZsetEditor {
     pub fn set_action_button_factory(&self, factory: ActionButtonFactory, cx: &mut Context<Self>) {
         self.table_state
             .update(cx, |table, _| table.set_action_button_factory(factory));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_score;
+
+    #[test]
+    fn only_a_number_is_a_score() {
+        assert_eq!(parse_score(" 1.5 "), Some(1.5));
+        assert_eq!(parse_score("-3"), Some(-3.0));
+        assert_eq!(parse_score("inf"), Some(f64::INFINITY));
+        assert_eq!(parse_score("-inf"), Some(f64::NEG_INFINITY));
+        for text in ["1,5", "1.2.3", "10分", "", "NaN"] {
+            assert_eq!(parse_score(text), None, "{text}");
+        }
     }
 }

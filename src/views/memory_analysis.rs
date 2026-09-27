@@ -352,6 +352,10 @@ pub struct ZedisMemoryAnalysis {
     /// mid-run). `None` otherwise. Mirrors `ai_output` for the AI path.
     scan_error: Option<SharedString>,
     analysis_task: Option<Task<()>>,
+    /// The server and database the online analysis on screen scanned, so a
+    /// switch away from them can drop it — and a reconnect to the same one
+    /// does not.
+    analyzed: Option<(String, usize)>,
     /// Database key count fetched on load.
     dbsize: Option<u64>,
     /// User-editable sample ratio (0.0–1.0).
@@ -499,6 +503,23 @@ impl ZedisMemoryAnalysis {
             if !matches!(event, ServerEvent::ServerInfoUpdated | ServerEvent::ServerSelected(_)) {
                 return;
             }
+            // An online analysis belongs to the server it scanned. The view
+            // outlives a server switch, and left alone the run went on
+            // sending SCAN + MEMORY USAGE to the previous server while its
+            // rows — and "open key" / "search prefix" — landed on the new
+            // one. An RDB file's analysis names no server and stays.
+            if matches!(event, ServerEvent::ServerSelected(_)) && this.rdb_file.is_none() {
+                let now = {
+                    let state = state.read(cx);
+                    (state.server_id().to_string(), state.db())
+                };
+                if this.analyzed.as_ref().is_some_and(|analyzed| *analyzed != now) {
+                    this.analysis_task.take();
+                    this.analyzed = None;
+                    this.reset_for_run(false, cx);
+                    this.status = AnalysisStatus::Idle;
+                }
+            }
             let dbsize = state.read(cx).dbsize();
             if this.dbsize == dbsize {
                 return;
@@ -560,6 +581,7 @@ impl ZedisMemoryAnalysis {
             progress_value: 0,
             scan_error: None,
             analysis_task: None,
+            analyzed: None,
             dbsize,
             ratio: default_ratio,
             ratio_input_state,
@@ -846,6 +868,7 @@ impl ZedisMemoryAnalysis {
         let server_state = self.server_state.read(cx);
         let server_id = server_state.server_id().to_string();
         let db = server_state.db();
+        self.analyzed = Some((server_id.clone(), db));
         // One extra O(1) command per sampled key, skipped entirely on a
         // server the probe found unable to run it.
         let with_encoding = server_state.features().is_usable(ServerCommand::ObjectEncoding);

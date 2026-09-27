@@ -786,6 +786,27 @@ struct UpdateServerRequest {
 /// secret is saying it does not know it.
 fn merge_update(stored: &RedisServer, mut incoming: RedisServer, keep: &[String]) -> Result<RedisServer, String> {
     incoming.id = stored.id.clone();
+    // A kept secret goes only where it went before. The bridge dials an edit
+    // before it keeps it, with the stored secrets filled in, so an edit that
+    // pointed the host — or the SSH hop in front of it — somewhere new
+    // handed the stored password to whoever answers there: anyone who could
+    // write a shared entry could read its credentials. Moving an entry is
+    // fine; its secrets are typed again for the new address.
+    let ssh_route = |s: &RedisServer| (s.is_ssh_tunnel(), s.ssh_addr.clone(), s.ssh_username.clone());
+    let ssh_moved = ssh_route(&incoming) != ssh_route(stored);
+    let redis_moved = ssh_moved || incoming.host != stored.host || incoming.port != stored.port;
+    for name in keep {
+        let moved = if name.starts_with("ssh_") {
+            ssh_moved
+        } else {
+            redis_moved
+        };
+        if moved && RedisServer::SECRET_FIELDS.contains(&name.as_str()) {
+            return Err(format!(
+                "`{name}` was stored for another address; enter it again to use it with the new one"
+            ));
+        }
+    }
     let mut stored = stored.clone();
     for name in keep {
         let (Some(kept), Some(slot)) = (stored.secret_mut(name).map(|s| s.take()), incoming.secret_mut(name)) else {
@@ -1530,15 +1551,15 @@ mod server_tests {
         let edit = RedisServer {
             id: "whatever-the-caller-sent".to_string(),
             name: "prod-renamed".to_string(),
-            host: "10.0.0.6".to_string(),
-            port: 6380,
+            host: "10.0.0.5".to_string(),
+            port: 6379,
             ..Default::default()
         };
         let merged = merge_update(&stored(), edit, &["password".to_string()]).expect("merge");
         assert_eq!(merged.id, "srv-1", "the path names the entry, not the body");
         assert_eq!(
             (merged.name.as_str(), merged.host.as_str(), merged.port),
-            ("prod-renamed", "10.0.0.6", 6380)
+            ("prod-renamed", "10.0.0.5", 6379)
         );
         assert_eq!(merged.password.as_deref(), Some("hunter2"), "named: kept as stored");
         assert_eq!(merged.ssh_key, None, "neither named nor given: cleared");
@@ -1557,6 +1578,47 @@ mod server_tests {
         assert_eq!(merged.password.as_deref(), Some("new-password"));
         assert_eq!(merged.ssh_key.as_deref(), Some("-----BEGIN KEY-----"));
         assert_eq!(merged.name, "h:0", "an empty name falls back to the address");
+    }
+
+    #[test]
+    fn a_stored_secret_is_never_sent_to_a_new_address() {
+        let moved = |edit: RedisServer, keep: &str| merge_update(&stored(), edit, &[keep.to_string()]);
+        // Another host or port: the stored password stays behind.
+        let elsewhere = RedisServer {
+            host: "attacker.example".to_string(),
+            port: 6379,
+            ..Default::default()
+        };
+        let err = moved(elsewhere, "password").expect_err("a new host");
+        assert!(err.contains("`password`"), "{err}");
+        let other_port = RedisServer {
+            host: "10.0.0.5".to_string(),
+            port: 6380,
+            ..Default::default()
+        };
+        assert!(moved(other_port, "password").is_err(), "a new port");
+        // The same host behind a new SSH hop is a new address too.
+        let tunnelled = RedisServer {
+            host: "10.0.0.5".to_string(),
+            port: 6379,
+            ssh_tunnel: Some(true),
+            ssh_addr: Some("attacker.example:22".to_string()),
+            ..Default::default()
+        };
+        assert!(moved(tunnelled.clone(), "password").is_err(), "a new SSH route");
+        assert!(
+            moved(tunnelled, "ssh_key").is_err(),
+            "the SSH key follows the SSH route"
+        );
+        // A secret typed again is simply the new one.
+        let retyped = RedisServer {
+            host: "10.0.0.9".to_string(),
+            port: 6379,
+            password: Some("typed-again".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_update(&stored(), retyped, &[]).expect("merge");
+        assert_eq!(merged.password.as_deref(), Some("typed-again"));
     }
 
     #[test]
