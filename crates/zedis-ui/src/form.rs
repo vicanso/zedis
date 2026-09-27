@@ -116,6 +116,10 @@ pub struct ZedisFormField {
     /// from submission while the condition is not met.
     visible_on_filled: Option<SharedString>,
     suffix_builder: Option<ZedisFormFieldSuffixBuilder>,
+    /// Submit the text exactly as typed. Off by default, where the form
+    /// trims — right for settings, names and numbers, wrong for a field
+    /// whose text *is* data (a Redis value, a member, a hash field name).
+    verbatim: bool,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -192,6 +196,7 @@ impl ZedisFormField {
             style: StyleRefinement::default(),
             fill: false,
             suffix_builder: None,
+            verbatim: false,
         }
     }
 
@@ -240,6 +245,14 @@ impl ZedisFormField {
     /// Enable password masking on this field.
     pub fn mask(mut self) -> Self {
         self.mask = true;
+        self
+    }
+
+    /// Submit this field's text as typed, without trimming: its leading and
+    /// trailing whitespace is part of the data. `required` then rejects only
+    /// a truly empty value, since a lone space is a value too.
+    pub fn verbatim(mut self) -> Self {
+        self.verbatim = true;
         self
     }
 
@@ -932,8 +945,7 @@ impl ZedisForm {
             if !self.should_collect_field_value(field, cx) {
                 continue;
             }
-            let value = state.value(cx).to_string();
-            let value = value.trim().to_string();
+            let value = submitted_value(state.value(cx).as_ref(), field.verbatim);
 
             if field.required && value.is_empty() {
                 self.errors.insert(field.name.clone(), self.required_msg.clone());
@@ -1384,4 +1396,27 @@ fn fill_field(field: &ZedisFormField, control: AnyElement, cx: &App) -> AnyEleme
         )
         .child(v_flex().flex_1().min_h_0().w_full().child(control))
         .into_any_element()
+}
+
+/// The text a field submits: trimmed, unless the field is verbatim.
+fn submitted_value(raw: &str, verbatim: bool) -> String {
+    if verbatim {
+        raw.to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::submitted_value;
+
+    #[test]
+    fn only_a_verbatim_field_keeps_its_surrounding_whitespace() {
+        // A setting or a number is trimmed, as it always was.
+        assert_eq!(submitted_value("  6379 \n", false), "6379");
+        // A value is data: an indented YAML line and its final newline stay.
+        assert_eq!(submitted_value("  a: 1\n", true), "  a: 1\n");
+        assert_eq!(submitted_value("name ", true), "name ");
+    }
 }

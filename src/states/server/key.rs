@@ -216,6 +216,10 @@ impl ZedisServerState {
             format!("match=*{keyword}* count={key_scan_count} offset={offset}")
         };
         let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
+        // The scan session this page belongs to: a type filter, a refresh or
+        // a new search starts another (`reset_scan` bumps it) without
+        // necessarily changing the keyword.
+        let epoch = self.scan_epoch;
         self.spawn_with_arg(
             ServerTask::ScanKeys,
             scan_arg,
@@ -232,11 +236,15 @@ impl ZedisServerState {
                 Ok(scan_page(&at, cursors, &pattern, count, with_ttl, type_arg).await?)
             },
             move |this, result, cx| {
-                // Abandon a page whose keyword filter no longer matches the
-                // active scan — a stale page would inject the previous
-                // query's keys into the current tree. (Server/db switches are
-                // already filtered out by spawn_with_arg's stale guard.)
-                if this.keyword != processing_keyword {
+                // Abandon a page from another scan session — a stale page
+                // would inject the previous query's keys into the current
+                // tree, write its cursors over the new scan's (so the old
+                // chain's end marked the new scan complete) and carry on
+                // paging beside it. The keyword alone misses a type filter
+                // or a refresh, which keep it; the epoch does not.
+                // (Server/db switches are already filtered out by
+                // spawn_with_arg's stale guard.)
+                if this.keyword != processing_keyword || this.scan_epoch != epoch {
                     return;
                 }
                 let mut should_select_processing_key = false;
@@ -260,6 +268,12 @@ impl ZedisServerState {
                     }
                     Err(_) => {
                         this.cursors = None;
+                        // A refresh keeps the rows until its first batch
+                        // lands; with no batch coming they stay. Left set,
+                        // the flag silenced every auto-refresh and let the
+                        // next folder expand replace the tree with that
+                        // folder alone.
+                        this.keys_superseded_by_next_batch = false;
                     }
                 };
                 if this.cursors.is_some() {
@@ -318,6 +332,13 @@ impl ZedisServerState {
     }
 
     pub fn handle_auto_refresh(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
+        // Nobody is looking: a background tab, or an app left unattended
+        // (`pacing::unattended`). The heartbeat and the sampling panels stop
+        // for that already (ADR 5); a key tree refresh is a SCAN plus a TYPE
+        // and a TTL per key, on a server that may bill every one of them.
+        if self.is_background() {
+            return;
+        }
         if self.query_mode == QueryMode::Exact {
             self.select_key(keyword, cx);
             return;
@@ -332,11 +353,17 @@ impl ZedisServerState {
         // auto-refresh keeps the loaded view fresh instead of pulling a fixed
         // 10k-per-master batch — which ignored "Per Scan" and ballooned the
         // tree to 10000×masters on a multi-master cluster. Floored at one
-        // "Per Scan" batch so a tiny view still re-scans sensibly.
+        // "Per Scan" batch so a tiny view still re-scans sensibly, and capped
+        // at one per master: a view grown by "Load more" to 500k keys asked
+        // each master for `SCAN … COUNT 500000` — one command walking half a
+        // million slots on the server's main thread — then a TYPE and a TTL
+        // for each key it returned, every interval. Past that size a round
+        // is a sample: new keys still appear, and removals wait for a round
+        // that covers the keyspace (`plan_auto_refresh`).
         let key_scan_count = self.key_scan_count();
         let with_ttl = self.show_key_tree_ttl();
         let masters = self.nodes.0.max(1);
-        let count = (self.keys.len().max(key_scan_count) / masters).max(1);
+        let count = (self.keys.len().max(key_scan_count) / masters).clamp(1, key_scan_count.max(1));
         let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
         self.spawn_with_arg(
             ServerTask::AutoRefresh,
@@ -861,6 +888,7 @@ impl ZedisServerState {
                                 cx.emit(ServerEvent::KeyTreeUpdated);
                             }
                         }
+                        this.next_value_epoch();
                         this.value = Some(value);
                     }
                     Err(e) => {
@@ -871,6 +899,7 @@ impl ZedisServerState {
                         // "no key selected". The editor renders this inline
                         // with a retry button.
                         let message: SharedString = e.to_string().into();
+                        this.next_value_epoch();
                         match this.value.as_mut() {
                             Some(value) => {
                                 value.status = RedisValueStatus::Failed(message);
@@ -987,6 +1016,7 @@ impl ZedisServerState {
         self.size_gate_bypassed = Some(key.clone());
         // Blank + busy while the (large) payload downloads — mirrors the
         // first-load rendering instead of leaving the stale gate panel up.
+        self.next_value_epoch();
         self.value = Some(RedisValue {
             status: RedisValueStatus::Loading,
             ..Default::default()
@@ -998,6 +1028,7 @@ impl ZedisServerState {
     }
     /// Sets the channel mode for current server.
     pub fn change_channel_mode(&mut self, cx: &mut Context<Self>) {
+        self.next_value_epoch();
         self.value = Some(RedisValue {
             key_type: KeyType::Channel,
             ..Default::default()
@@ -1034,6 +1065,7 @@ impl ZedisServerState {
 
     /// Selects a key and fetches its details (Type, TTL, Value).
     pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.next_value_epoch();
         self.key = Some(key.clone());
         if key.is_empty() {
             return;
@@ -1098,6 +1130,7 @@ impl ZedisServerState {
                     if this.key == Some(remove_key) {
                         this.key = None;
                         this.value = None;
+                        this.next_value_epoch();
                     }
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
@@ -1174,6 +1207,7 @@ impl ZedisServerState {
                     this.histories.clear();
                     this.key = None;
                     this.value = None;
+                    this.next_value_epoch();
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     let message = if all {
@@ -1293,6 +1327,7 @@ impl ZedisServerState {
         };
         value.status = RedisValueStatus::Updating;
         let original_ttl = value.expire_at;
+        let epoch = self.value_epoch;
 
         let mut new_ttl = Duration::ZERO;
         let mut parse_fail_error = "".to_string();
@@ -1320,6 +1355,11 @@ impl ZedisServerState {
                 Ok(ttl)
             },
             move |this, result, cx| {
+                // The value on screen now is another one's: its expiry and
+                // status are not this change's to restore.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     if result.is_err() {
                         value.expire_at = original_ttl;
@@ -1348,6 +1388,7 @@ impl ZedisServerState {
         };
         value.status = RedisValueStatus::Updating;
         let original_ttl = value.expire_at;
+        let epoch = self.value_epoch;
         value.expire_at = Some(at);
         cx.notify();
         self.spawn_with_arg(
@@ -1358,6 +1399,11 @@ impl ZedisServerState {
                 Ok(at)
             },
             move |this, result, cx| {
+                // The value on screen now is another one's: its expiry and
+                // status are not this change's to restore.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     if result.is_err() {
                         value.expire_at = original_ttl;

@@ -293,7 +293,6 @@ pub async fn preview_dump_conflicts(
     use std::io::BufReader;
 
     let client = get_connection_manager().get_client(server_id, db).await?;
-    let mut conn = client.connection();
 
     let path_for_open = input_path.clone();
     let mut reader = smol::unblock(move || -> Result<DumpReader<BufReader<File>>> {
@@ -332,7 +331,7 @@ pub async fn preview_dump_conflicts(
         if batch.is_empty() {
             break;
         }
-        let exists = keys_exist(&mut conn, &batch).await?;
+        let exists = keys_exist(&client, &batch).await?;
         for (key, is_there) in batch.into_iter().zip(exists) {
             total += 1;
             if is_there {

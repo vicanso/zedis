@@ -34,11 +34,12 @@
 //! ```
 
 use super::conn::RedisAsyncConn;
-use super::manager::get_connection_manager;
+use super::manager::{RedisClient, get_connection_manager};
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
 use crate::logical_copy::restore_or_recreate_chunk;
+use crate::reply;
 use crate::server_db::ServerDb;
 use futures::future::try_join_all;
 use redis::cmd;
@@ -255,17 +256,21 @@ async fn restore_single_key(
     }
 }
 
-/// Batch `EXISTS` for binary key names. Returns one bool per key (order preserved).
-pub async fn keys_exist(conn: &mut RedisAsyncConn, keys: &[Vec<u8>]) -> Result<Vec<bool>> {
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut pipe = redis::pipe();
-    for key in keys {
-        pipe.cmd("EXISTS").arg(key.as_slice());
-    }
-    let results: Vec<i64> = pipe.query_async(conn).await?;
-    Ok(results.into_iter().map(|n| n > 0).collect())
+/// Batch `EXISTS` for binary key names. Returns one bool per key (order
+/// preserved). One `EXISTS` per key through [`RedisClient::pipeline_per_key`],
+/// so a batch that spans slots works on a cluster too.
+pub async fn keys_exist(client: &RedisClient, keys: &[Vec<u8>]) -> Result<Vec<bool>> {
+    let replies = client
+        .pipeline_per_key(keys, |key| {
+            let mut pipeline = redis::pipe();
+            pipeline.cmd("EXISTS").arg(key);
+            pipeline
+        })
+        .await?;
+    Ok(replies
+        .iter()
+        .map(|reply| reply.first().and_then(reply::int).is_some_and(|n| n > 0))
+        .collect())
 }
 
 /// Dry-run conflict scan for a server-to-server copy: `EXISTS` for every
@@ -281,7 +286,6 @@ pub async fn preview_key_conflicts(
 ) -> Result<ConflictPreview> {
     const BATCH: usize = 64;
     let client = get_connection_manager().get_client(server_id, db).await?;
-    let mut conn = client.connection();
     let mut preview = ConflictPreview {
         total: keys.len() as u64,
         ..Default::default()
@@ -291,7 +295,7 @@ pub async fn preview_key_conflicts(
             break;
         }
         let batch: Vec<Vec<u8>> = chunk.iter().map(|key| key.as_bytes().to_vec()).collect();
-        let exists = keys_exist(&mut conn, &batch).await?;
+        let exists = keys_exist(&client, &batch).await?;
         for (key, is_there) in chunk.iter().zip(exists) {
             if is_there {
                 preview.conflicting += 1;

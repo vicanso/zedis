@@ -121,6 +121,10 @@ pub struct KillFilterSupport {
     pub user: bool,
     pub laddr: bool,
     pub maxage: bool,
+    /// Whether an ID names one connection. Not on a cluster: each node
+    /// numbers its own clients, and the filter runs on every master, so an
+    /// ID would kill whichever unrelated connection holds it on each one.
+    pub ids: bool,
 }
 
 /// What the kill dialog produced: the commands to run and the text the
@@ -176,6 +180,9 @@ impl ZedisClientKillFilterDialog {
                 Ok(id) => ids.push(id),
                 Err(_) => return self.fail("kill_filter_invalid", cx),
             }
+        }
+        if !ids.is_empty() && !self.support.ids {
+            return self.fail("kill_filter_ids_cluster", cx);
         }
         let maxage_text = text(&self.maxage);
         let maxage_secs = if maxage_text.is_empty() {

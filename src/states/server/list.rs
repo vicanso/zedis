@@ -54,19 +54,23 @@ pub(crate) async fn first_load_list_value(at: &ServerDb, key: &str) -> Result<Re
 }
 
 impl ZedisServerState {
-    /// A generic helper to execute Redis List operations with optimistic UI updates and rollback support.
+    /// A generic helper to execute Redis List operations with optimistic UI updates.
     ///
     /// - `task`: The specific server task type for tracking.
     /// - `optimistic_update`: Logic to modify the local state immediately for better UI responsiveness.
     /// - `redis_op`: The actual async Redis command execution.
-    /// - `rollback`: Logic to revert the local state if the Redis command fails.
+    ///
+    /// A failure reloads the list from the server (`reload_after_failed_write`)
+    /// instead of undoing the optimistic change by hand: a hand-written undo
+    /// has to know what the change did, and the one for `RPUSH` popped the
+    /// last *loaded* element even when the push had not been shown there —
+    /// on a partly loaded list, a real element vanished from the table.
     fn exec_list_op<F, Fut, R>(
         &mut self,
         task: ServerTask,
         cx: &mut Context<Self>,
         optimistic_update: impl FnOnce(&mut RedisListValue),
         redis_op: F,
-        rollback: impl FnOnce(&mut RedisListValue) + Send + 'static,
         // Runs only when the write succeeded — where the change log records,
         // so a failed write never appears in it.
         on_success: impl FnOnce(&mut Self, &mut Context<Self>) + Send + 'static,
@@ -74,6 +78,8 @@ impl ZedisServerState {
         F: FnOnce(String, ServerDb) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<R>> + Send,
     {
+        // The value generation this write belongs to — see `value_epoch`.
+        let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
@@ -97,19 +103,20 @@ impl ZedisServerState {
                 Ok(())
             },
             move |this, result, cx| {
+                // Another value is on screen now (a key switch, a reload):
+                // its rows and status are not this write's to touch.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
-
-                    // Step 3: Handle error by rolling back the local state
-                    if result.is_err()
-                        && let Some(RedisValueData::List(list_data)) = value.data.as_mut()
-                    {
-                        rollback(Arc::make_mut(list_data));
-                        cx.emit(ServerEvent::ValueUpdated);
-                    }
                 }
+                // Step 3: what the server holds, not what the optimistic
+                // update assumed, after a failure.
                 if result.is_ok() {
                     on_success(this, cx);
+                } else {
+                    this.reload_after_failed_write(cx);
                 }
                 cx.notify();
             },
@@ -157,7 +164,6 @@ impl ZedisServerState {
                 remove_list_indexes(&at, &key, &[index]).await?;
                 Ok(())
             },
-            |_list| { /* Optional: Re-fetch or re-insert if critical */ },
             move |this, _cx| {
                 if let Some(log_key) = log_key {
                     this.record_changes(
@@ -215,7 +221,6 @@ impl ZedisServerState {
                 remove_list_indexes(&at, &key, &indexes).await?;
                 Ok(())
             },
-            |_list| {},
             move |this, _cx| {
                 if let Some(log_key) = log_key {
                     let at = unix_ts();
@@ -251,14 +256,6 @@ impl ZedisServerState {
                 list_push(&at, &key, new_value.as_bytes(), is_lpush).await?;
                 Ok(())
             },
-            move |list| {
-                list.size -= 1;
-                if is_lpush {
-                    list.values.remove(0);
-                } else {
-                    list.values.pop();
-                }
-            },
             move |this, _cx| {
                 if let Some(log_key) = log_key {
                     // Named by command: a position would be stale by the next push.
@@ -278,7 +275,6 @@ impl ZedisServerState {
     pub fn update_list_value(&mut self, index: usize, original: KvElement, new: Bytes, cx: &mut Context<Self>) {
         let new = KvElement::from_raw(new);
         let new_val = new.clone();
-        let old_val = original.clone();
         let log_key = self.key.clone();
         let log_old = original.text().to_string();
         let log_new = new.text().to_string();
@@ -300,11 +296,6 @@ impl ZedisServerState {
                     });
                 }
                 Ok(())
-            },
-            move |list| {
-                if index < list.values.len() {
-                    list.values[index] = old_val;
-                }
             },
             move |this, _cx| {
                 if let Some(log_key) = log_key {
@@ -340,6 +331,7 @@ impl ZedisServerState {
         let start = current_len;
         let stop = start + 99; // Load 100 items
         cx.emit(ServerEvent::ValuePaginationStarted);
+        let epoch = self.value_epoch;
         self.spawn_with_arg(
             ServerTask::LoadMoreValue,
             key.clone(),
@@ -349,6 +341,11 @@ impl ZedisServerState {
                 Ok(new_values)
             },
             move |this, result, cx| {
+                // A page of another key's list, or of this one before a
+                // reload, would be appended to the rows on screen.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Ok(new_values) = result
                     && !new_values.is_empty()
                 {

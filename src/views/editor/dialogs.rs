@@ -48,7 +48,14 @@ impl ZedisEditor {
             )
             .child(move || Input::new(&input_child))
             .on_ok(move |_, _window, cx| {
-                let new = input_ok.read(cx).value().trim().to_string();
+                let typed = input_ok.read(cx).value();
+                // Unchanged is decided before trimming: a key whose name
+                // ends in a space would otherwise be renamed to its trimmed
+                // self by a plain OK.
+                if typed.as_ref() == old.as_ref() {
+                    return true;
+                }
+                let new = typed.trim().to_string();
                 if new.is_empty() || new.as_str() == old.as_ref() {
                     return true;
                 }

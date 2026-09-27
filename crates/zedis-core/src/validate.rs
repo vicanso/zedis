@@ -19,6 +19,24 @@ pub fn validate_ttl(s: &str) -> bool {
     humantime::parse_duration(s).is_ok()
 }
 
+/// The whole seconds a TTL field asks for: a bare number is seconds, anything
+/// else a humantime duration (`90s`, `1h30m`, `7d`). `None` when it asks for
+/// nothing `EXPIRE` should be sent — blank, unparsable, or under one second.
+///
+/// Zero is refused on purpose: `EXPIRE key 0` is a TTL already in the past,
+/// so the server *deletes* the key, and `500ms` truncates to that. A TTL
+/// field is never where a key gets deleted; that has its own confirmed path.
+/// [`validate_ttl`] stays the looser keystroke filter, so typing is not
+/// blocked on the way to a valid value.
+pub fn ttl_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let secs = match s.parse::<u64>() {
+        Ok(secs) => secs,
+        Err(_) => humantime::parse_duration(s).ok()?.as_secs(),
+    };
+    (secs > 0).then_some(secs)
+}
+
 pub fn validate_long_string(s: &str) -> bool {
     s.len() <= 4096
 }
@@ -56,6 +74,31 @@ pub fn normalize_score_bound(input: &str) -> Option<String> {
         return None;
     }
     Some(format!("{prefix}{number}"))
+}
+
+#[cfg(test)]
+mod ttl_secs_tests {
+    use super::ttl_secs;
+
+    #[test]
+    fn a_ttl_is_whole_seconds_and_at_least_one() {
+        assert_eq!(ttl_secs("3600"), Some(3600));
+        assert_eq!(ttl_secs(" 90s "), Some(90));
+        assert_eq!(ttl_secs("1h30m"), Some(5400));
+        assert_eq!(ttl_secs("7d"), Some(604_800));
+        assert_eq!(ttl_secs("1.5s"), Some(1));
+    }
+
+    #[test]
+    fn nothing_that_would_delete_the_key_is_a_ttl() {
+        // `EXPIRE key 0` deletes the key; so does anything that truncates to 0.
+        assert_eq!(ttl_secs("0"), None);
+        assert_eq!(ttl_secs("0s"), None);
+        assert_eq!(ttl_secs("500ms"), None);
+        assert_eq!(ttl_secs("0.5s"), None);
+        assert_eq!(ttl_secs(""), None);
+        assert_eq!(ttl_secs("soon"), None);
+    }
 }
 
 #[cfg(test)]

@@ -247,6 +247,16 @@ const CELL_AGE: usize = 13;
 const CELL_IDLE: usize = 14;
 const CELL_QBUF: usize = 15;
 const CELL_TOT_MEM: usize = 16;
+/// The node the row was listed from, as `host:port` — the key the kill
+/// button and the batch kill find that node by. A client id alone is not:
+/// every node numbers its own clients, so on a cluster the same id is a
+/// different connection on each master.
+const CELL_NODE: usize = 17;
+
+/// The key a listed node is found by in [`KillContext::nodes`].
+fn node_key(node: &RedisServer) -> String {
+    format!("{}:{}", node.host, node.port)
+}
 
 impl ClientRow {
     fn cells(&self) -> Vec<SharedString> {
@@ -268,6 +278,7 @@ impl ClientRow {
             self.idle.to_string().into(),
             self.qbuf.to_string().into(),
             self.tot_mem.to_string().into(),
+            node_key(&self.node).into(),
         ]
     }
 }
@@ -280,7 +291,8 @@ fn is_replica_link(flags: &str) -> bool {
 
 /// What the per-row kill button needs beyond the row: whether kills are
 /// allowed at all, the server (for the PROD-escalated wording), the
-/// callback, and the node each client id was listed from. Shared between
+/// callback, and the nodes the rows were listed from, by [`node_key`] (the
+/// row's [`CELL_NODE`]). Shared between
 /// the view, which refreshes it with every `CLIENT LIST`, and the table's
 /// cell renderer.
 #[derive(Default)]
@@ -438,7 +450,7 @@ fn build_table(
             let ctx = kill.borrow();
             (
                 ctx.callback.clone(),
-                ctx.nodes.get(client_id.as_ref()).cloned(),
+                ctx.nodes.get(cell(CELL_NODE).as_ref()).cloned(),
                 ctx.server_id.clone(),
             )
         };
@@ -688,7 +700,7 @@ impl ZedisClientsManager {
                             let mut kill = this.kill.borrow_mut();
                             kill.readonly = readonly;
                             kill.server_id = server_id_for_delegate;
-                            kill.nodes = rows.iter().map(|r| (r.id.to_string(), r.node.clone())).collect();
+                            kill.nodes = rows.iter().map(|r| (node_key(&r.node), r.node.clone())).collect();
                         }
                         table_state.update(cx, |state, _| {
                             let delegate = state.delegate_mut();
@@ -722,7 +734,7 @@ impl ZedisClientsManager {
             .filter(|cells| !cells.get(FLAGS_COLUMN).is_some_and(|f| is_replica_link(f)))
             .filter_map(|cells| {
                 let id = cells.get(ID_COLUMN)?;
-                let node = kill.nodes.get(id.as_ref())?;
+                let node = kill.nodes.get(cells.get(CELL_NODE)?.as_ref())?;
                 Some((id.clone(), node.clone()))
             })
             .collect()
@@ -992,6 +1004,7 @@ impl ZedisClientsManager {
                 user: state.supports(floors::CLIENT_KILL_USER),
                 laddr: state.supports(floors::CLIENT_KILL_LADDR),
                 maxage: state.supports(floors::CLIENT_KILL_MAXAGE),
+                ids: state.nodes().0 <= 1,
             }
         };
         let view = cx.new(|cx| ZedisClientKillFilterDialog::new(support, window, cx));
@@ -1272,6 +1285,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_row_is_found_by_its_node_and_id_not_the_id_alone() {
+        // Two masters that both happen to have a client 137 — ids are
+        // per-process counters, so on a cluster this is the common case.
+        let node = |port: u16| RedisServer {
+            host: "10.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        };
+        let (a, b) = (node(7000), node(7001));
+        let raw = "id=137 addr=10.0.0.9:50000 age=1 idle=0 flags=N db=0 cmd=get\n";
+        let row_a = parse_client_list(raw, &a).remove(0).cells();
+        let row_b = parse_client_list(raw, &b).remove(0).cells();
+        assert_eq!(row_a[ID_COLUMN], row_b[ID_COLUMN]);
+        assert_ne!(row_a[CELL_NODE], row_b[CELL_NODE]);
+
+        let nodes: HashMap<String, RedisServer> = [&a, &b].into_iter().map(|n| (node_key(n), n.clone())).collect();
+        assert_eq!(nodes.get(row_a[CELL_NODE].as_ref()).map(|n| n.port), Some(7000));
+        assert_eq!(nodes.get(row_b[CELL_NODE].as_ref()).map(|n| n.port), Some(7001));
+    }
+
+    #[test]
     fn client_list_lines_carry_user_library_and_memory() {
         let node = RedisServer::default();
         let raw = "id=7 addr=10.0.0.9:50000 laddr=10.0.0.1:6379 fd=12 name=zedis age=120 idle=3 flags=N db=2 \
@@ -1293,7 +1327,7 @@ mod tests {
         let cells = first.cells();
         assert_eq!(cells[CELL_QBUF].as_ref(), "26");
         assert_eq!(cells[CELL_TOT_MEM].as_ref(), "22400");
-        assert_eq!(cells.len(), CELL_TOT_MEM + 1);
+        assert_eq!(cells.len(), CELL_NODE + 1);
         // A client that announced nothing: empty user / library, zero bytes.
         let second = &rows[1];
         assert_eq!(

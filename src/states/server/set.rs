@@ -107,6 +107,8 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // The value generation this write belongs to — see `value_epoch`.
+        let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
@@ -127,6 +129,11 @@ impl ZedisServerState {
             task,
             move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
+                // Another value is on screen now (a key switch, a reload):
+                // its rows and status are not this write's to touch.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
@@ -134,8 +141,8 @@ impl ZedisServerState {
                 match result {
                     Ok(data) => on_success(this, data, cx),
                     Err(e) => {
-                        // Handle error (e.g., show notification and potentially rollback if needed)
                         this.emit_error_notification(e.to_string().into(), cx);
+                        this.reload_after_failed_write(cx);
                     }
                 }
                 cx.notify();
@@ -250,6 +257,10 @@ impl ZedisServerState {
             ..Default::default()
         };
         value.data = Some(RedisValueData::Set(Arc::new(new_set)));
+        // A new scan: a page of the previous keyword still in flight is
+        // dropped by the generation, so it cannot hold this one back either.
+        value.status = RedisValueStatus::Idle;
+        self.next_value_epoch();
 
         // Trigger load with the new filter
         self.load_more_set_value(cx);
@@ -277,6 +288,7 @@ impl ZedisServerState {
         cx.notify();
 
         let at = self.at();
+        let epoch = self.value_epoch;
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         let keyword_clone = keyword.clone().unwrap_or_default();
@@ -293,6 +305,12 @@ impl ZedisServerState {
             },
             // UI callback: merge results and handle auto-loading for filters
             move |this, result, cx| {
+                // A page of another value — another key, a reload, an older
+                // filter — would append its members and carry its cursor on
+                // over this one.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 let mut should_load_more = false;
 
                 if let Ok((new_cursor, new_values)) = result

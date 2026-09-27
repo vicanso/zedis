@@ -145,7 +145,9 @@ impl ZedisKvFetcher for ZedisStreamValues {
                     if index == 0 {
                         KvTableColumn::new_auto_created(entry_id.as_ref())
                     } else {
-                        KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
+                        KvTableColumn::new(field.as_str(), None)
+                            .field_type(ZedisFormFieldType::Editor)
+                            .verbatim()
                     }
                 })
                 .collect(),
@@ -419,7 +421,9 @@ impl ZedisStreamEditor {
                         if index == 0 {
                             KvTableColumn::new_auto_created(entry_id.as_ref())
                         } else {
-                            KvTableColumn::new(field.as_str(), None).field_type(ZedisFormFieldType::Editor)
+                            KvTableColumn::new(field.as_str(), None)
+                                .field_type(ZedisFormFieldType::Editor)
+                                .verbatim()
                         }
                     })
                     .collect(),

@@ -385,6 +385,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                             delegate.clear_selection();
                         }
                     });
+                    // The open editor is addressed by row index too: a reload,
+                    // a pop or a filter can put another element behind it, and
+                    // Update would then write to that one.
+                    if renumbered {
+                        this.close_editor_if_row_moved();
+                    }
                 }
                 // Read-only was toggled from the status bar — recompute the
                 // effective mode from the configured base mode so the edit /
@@ -606,6 +612,31 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
     fn is_adding_row(&self) -> bool {
         self.edit_row == Some(usize::MAX)
+    }
+
+    fn close_row_editor(&mut self) {
+        self.edit_row = None;
+        self.editor_form = None;
+    }
+
+    /// Close the row editor when the row it is addressed by no longer holds
+    /// the element it opened on. Update and Remove act on `edit_row`, so an
+    /// editor left open over a renumbered table writes to whatever element
+    /// moved into that slot — a hash would even take it for a rename and
+    /// delete that field. A row that still holds the same values keeps its
+    /// editor, so a reload that changed nothing does not throw away typing.
+    fn close_editor_if_row_moved(&mut self) {
+        let Some(row_ix) = self.edit_row.filter(|row| *row != usize::MAX) else {
+            return;
+        };
+        let fetcher = &self.fetcher;
+        let unchanged = row_ix < fetcher.rows_count()
+            && row_holds(&self.columns, &self.original_values, |column_ix| {
+                fetcher.get_edit(row_ix, column_ix + 1)
+            });
+        if !unchanged {
+            self.close_row_editor();
+        }
     }
 
     /// Whether the multi-select column belongs in this table: the type must
@@ -953,9 +984,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
+        // A different keyword means different rows behind the same indices,
+        // so neither the open editor nor the ticks can carry over. (Adding a
+        // row is not tied to an index and stays open.)
+        if !self.is_adding_row() {
+            self.close_row_editor();
+        }
         self.table_state.update(cx, |state, cx| {
-            // A different keyword means different rows behind the same
-            // indices, so the ticks cannot carry over.
             state.delegate_mut().clear_selection();
             state.delegate().fetcher().filter(keyword, cx);
         });
@@ -1170,6 +1205,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
             if column.flex {
                 field = field.fill();
+            }
+            if column.verbatim {
+                field = field.verbatim();
             }
             if let Some(field_type) = column.field_type.clone() {
                 if field_type == ZedisFormFieldType::Editor && !column.flex {
@@ -1618,10 +1656,62 @@ macro_rules! define_kv_editor {
 
 pub(crate) use define_kv_editor;
 
+/// Whether a row still holds `original` — the value-column texts an editor
+/// captured when it opened — given how to read the row's cell for a column
+/// index. Every value column must match; a missing cell never does.
+fn row_holds(
+    columns: &[KvTableColumn],
+    original: &IndexMap<SharedString, SharedString>,
+    cell: impl Fn(usize) -> Option<SharedString>,
+) -> bool {
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.column_type == KvTableColumnType::Value)
+        .all(|(index, column)| match (cell(index), original.get(&column.name)) {
+            (Some(current), Some(opened)) => &current == opened,
+            _ => false,
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PreviewMode, element_json_document, parse_bulk_rows, preview_modes, tree_editable};
+    use super::{PreviewMode, element_json_document, parse_bulk_rows, preview_modes, row_holds, tree_editable};
+    use crate::components::KvTableColumn;
     use crate::states::{DataFormat, KvElement};
+    use gpui::SharedString;
+    use indexmap::IndexMap;
+
+    fn opened(pairs: &[(&str, &str)]) -> IndexMap<SharedString, SharedString> {
+        pairs
+            .iter()
+            .map(|(k, v)| (SharedString::from(k.to_string()), SharedString::from(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn an_editor_stays_only_on_the_row_it_opened_on() {
+        let columns = vec![KvTableColumn::new("field", None), KvTableColumn::new_flex("value")];
+        let original = opened(&[("field", "name"), ("value", "zedis")]);
+
+        // The same field and value in the slot: nothing moved.
+        let same = |ix: usize| Some(SharedString::from(["name", "zedis"][ix]));
+        assert!(row_holds(&columns, &original, same));
+
+        // A filter put another field behind the index: Update would rename
+        // it away, so the editor must close.
+        let other = |ix: usize| Some(SharedString::from(["age", "42"][ix]));
+        assert!(!row_holds(&columns, &original, other));
+
+        // The same field with a value changed elsewhere is not the element
+        // the user started editing either.
+        let changed = |ix: usize| Some(SharedString::from(["name", "other"][ix]));
+        assert!(!row_holds(&columns, &original, changed));
+
+        // A row that is gone never matches, even against empty originals.
+        let empty = opened(&[("field", ""), ("value", "")]);
+        assert!(!row_holds(&columns, &empty, |_| None));
+    }
 
     #[test]
     fn json_shaped_elements_offer_a_tree_and_the_rest_do_not() {

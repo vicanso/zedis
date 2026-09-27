@@ -732,7 +732,14 @@ impl ConnectionManager {
         };
         let master_nodes: Vec<RedisNode> = nodes
             .iter()
-            .filter(|node| node.role == NodeRole::Master)
+            .filter(|node| {
+                joins_fan_out(
+                    &node.role,
+                    node.health,
+                    node.server.port,
+                    server_type == ServerType::Cluster,
+                )
+            })
             .cloned()
             .collect();
         let master_nodes_description: Vec<String> = master_nodes.iter().map(|node| node.host_port()).collect();

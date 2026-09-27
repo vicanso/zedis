@@ -27,8 +27,8 @@ use crate::{
     },
     helpers::{
         EditorAction, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
-        humanize_keystroke, parse_duration, single_child_expanded_set, split_key_segments, theme_color_for_tag,
-        ttl_chip_kind, validate_long_string, validate_ttl,
+        humanize_keystroke, single_child_expanded_set, split_key_segments, theme_color_for_tag, ttl_chip_kind,
+        ttl_secs, validate_long_string,
     },
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, ProbKind, QueryMode, ServerEvent, ServerView, ZedisGlobalStore,
@@ -114,17 +114,14 @@ struct KeyTreeState {
     server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
-    /// Cached key tree ID — tracks which key_tree_id the cached_keys and
-    /// cached_key_ttls correspond to.
+    /// Cached key tree ID — tracks which key_tree_id the cached_keys
+    /// correspond to.
     cached_key_tree_id: SharedString,
     /// Cached keys snapshot, **pre-sorted** (once per key-set change) so
     /// expand/collapse and filter rebuilds skip the O(N log N) sort —
     /// `new_key_tree_items` requires sorted input, and
     /// `apply_local_key_filters` preserves relative order.
     cached_keys: Arc<Vec<(SharedString, KeyType)>>,
-    /// Snapshot of `ZedisServerState::key_ttls`, refreshed in lockstep with
-    /// `cached_keys`. Used to color leaf rows in the tree.
-    cached_key_ttls: Arc<AHashMap<SharedString, i64>>,
     /// Whether the tree is empty (no keys found)
     is_empty: bool,
     /// Current query mode (All/Prefix/Exact)
@@ -698,11 +695,6 @@ impl ZedisKeyTree {
         // Only re-clone keys from server state when key_tree_id actually changed
         // (keys added/removed/type changed). For expand/collapse, reuse cached snapshot.
         let keys_snapshot = if self.state.cached_key_tree_id != key_tree_id {
-            // Arc share, not a structural copy — the server side mutates
-            // its map through `Arc::make_mut`, so this snapshot stays
-            // immutable for the background build while writes COW at most
-            // once per build window.
-            self.state.cached_key_ttls = server_state.key_ttls_arc();
             // Copied here because the map belongs to an entity; *sorted* by
             // the build, off this thread. The sorted result comes back with
             // the rows and becomes the cache, so expand / collapse and
@@ -713,7 +705,16 @@ impl ZedisKeyTree {
             KeySnapshot::Sorted(self.state.cached_keys.clone())
         };
         let snapshot_tree_id: SharedString = key_tree_id.to_string().into();
-        let key_ttls_snapshot = self.state.cached_key_ttls.clone();
+        // The TTLs as they are now, shared rather than copied, and held by
+        // the build alone. The server side writes through `Arc::make_mut`,
+        // which copies the whole map whenever anyone else holds it — and
+        // this view used to keep it between builds, so every single write
+        // (a scan page, a rename, a new key, a batch TTL) copied every TTL
+        // of every loaded key. The rows carry their TTL once built, so the
+        // map is needed only while one is being built; a rebuild from the
+        // cached keys looks them up in the current map, which is the fresher
+        // one anyway.
+        let key_ttls_snapshot = server_state.key_ttls_arc();
         let readonly = server_state.readonly();
         let scanning_prefixes = server_state.scanning_prefixes().clone();
         let incomplete_prefixes = server_state.incomplete_prefix_set();
@@ -956,6 +957,7 @@ impl ZedisKeyTree {
         }
         // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5, Json=6(optional)
         let json_index = category_list.iter().position(|&s| s == "Json");
+        let ttl_invalid = i18n_common(cx, "ttl_invalid");
         let fields = vec![
             ZedisFormField::new("category", i18n_key_tree(cx, "category"))
                 .field_type(ZedisFormFieldType::RadioGroup)
@@ -975,10 +977,13 @@ impl ZedisKeyTree {
             ZedisFormField::new("ttl", i18n_common(cx, "ttl"))
                 .placeholder(i18n_common(cx, "ttl_placeholder"))
                 .validate(move |s| {
-                    if validate_ttl(s) {
+                    // Blank means no expiry; anything else must be a TTL
+                    // EXPIRE can take — a `0` would create the key and
+                    // delete it in the same breath.
+                    if s.trim().is_empty() || ttl_secs(s).is_some() {
                         None
                     } else {
-                        Some("Invalid TTL".into())
+                        Some(ttl_invalid.clone())
                     }
                 }),
             // Value field for String, List, Set

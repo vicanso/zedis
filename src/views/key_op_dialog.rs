@@ -126,10 +126,18 @@ impl ZedisKeyOpDialog {
         Self { action, inputs }
     }
 
+    /// A field that is parsed — a number, a path, a count, a TTL — trimmed.
     fn value(&self, index: usize, cx: &gpui::App) -> String {
+        self.raw(index, cx).trim().to_string()
+    }
+
+    /// A field that is data — appended text, a member, a hash field — as
+    /// typed: `APPEND ' world'` appends the space, and a member named `' a'`
+    /// is not the member `'a'`.
+    fn raw(&self, index: usize, cx: &gpui::App) -> String {
         self.inputs
             .get(index)
-            .map(|(_, state)| state.read(cx).value().trim().to_string())
+            .map(|(_, state)| state.read(cx).value().to_string())
             .unwrap_or_default()
     }
 
@@ -163,20 +171,22 @@ impl ZedisKeyOpDialog {
                 count: positive_count(&first)?,
             }),
             KeyOpAction::ZsetIncrBy => {
-                if first.is_empty() {
+                let member = self.raw(0, cx);
+                if member.is_empty() {
                     return None;
                 }
                 Some(KeyOp::ZsetIncrBy {
-                    member: first,
+                    member,
                     delta: second.parse().ok()?,
                 })
             }
             KeyOpAction::HashIncrBy => {
-                if first.is_empty() {
+                let field = self.raw(0, cx);
+                if field.is_empty() {
                     return None;
                 }
                 Some(KeyOp::HashIncrBy {
-                    field: first,
+                    field,
                     delta: second.parse().ok()?,
                 })
             }
@@ -184,7 +194,10 @@ impl ZedisKeyOpDialog {
                 delta: first.parse().ok()?,
             }),
             // An empty append is a no-op, not an error worth sending.
-            KeyOpAction::StringAppend => (!first.is_empty()).then_some(KeyOp::StringAppend { text: first }),
+            KeyOpAction::StringAppend => {
+                let text = self.raw(0, cx);
+                (!text.is_empty()).then_some(KeyOp::StringAppend { text })
+            }
             // Blank means PERSIST: "no expiry" is a real answer here, so an
             // empty field is valid rather than missing.
             KeyOpAction::StringGetEx => {
@@ -202,10 +215,11 @@ impl ZedisKeyOpDialog {
             KeyOpAction::JsonToggle => json(first, JsonPathOp::Toggle),
             KeyOpAction::JsonArrAppend => json(first, JsonPathOp::ArrAppend(parse_json(&second)?)),
             KeyOpAction::JsonStrAppend => {
-                if second.is_empty() {
+                let text = self.raw(1, cx);
+                if text.is_empty() {
                     return None;
                 }
-                json(first, JsonPathOp::StrAppend(second))
+                json(first, JsonPathOp::StrAppend(text))
             }
             KeyOpAction::JsonClear => json(first, JsonPathOp::Clear),
         }

@@ -275,8 +275,10 @@ impl ZedisHashEditor {
         };
 
         let mut columns = vec![
-            KvTableColumn::new(i18n_kv_table(cx, "field").as_ref(), Some(field_width)),
-            KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref()).field_type(ZedisFormFieldType::Editor),
+            KvTableColumn::new(i18n_kv_table(cx, "field").as_ref(), Some(field_width)).verbatim(),
+            KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
+                .field_type(ZedisFormFieldType::Editor)
+                .verbatim(),
         ];
         if supports_field_ttl {
             // TTL column: shows seconds remaining (empty = no expiry). Optional

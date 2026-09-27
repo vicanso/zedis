@@ -968,6 +968,19 @@ pub(crate) fn json_merge_diff(old: &JsonValue, new: &JsonValue) -> Option<JsonVa
     }
 }
 
+/// What a string save needs back when its write returns — see
+/// `finish_string_save`.
+struct StringSave {
+    /// The value generation the save started on (`value_epoch`).
+    epoch: u64,
+    key: SharedString,
+    /// The bytes the user saved, for the conflict dialog's overwrite.
+    draft: Bytes,
+    /// What was loaded, restored if the write is refused or fails.
+    original_size: u64,
+    original_bytes_value: Arc<RedisBytesValue>,
+}
+
 impl ZedisServerState {
     /// Updates a new value for a Redis string key
     ///
@@ -982,6 +995,7 @@ impl ZedisServerState {
     /// the editor can offer an explicit overwrite.
     pub fn update_value(&mut self, key: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         let at = self.at();
+        let epoch = self.value_epoch;
 
         // Inspection phase: pull everything we need out of `self.value`
         // before mutating any state, so we can also call
@@ -1010,6 +1024,11 @@ impl ZedisServerState {
                 let old_json = serde_json::from_str::<JsonValue>(old_text).ok()?;
                 let new_json = serde_json::from_str::<JsonValue>(new_value.as_ref()).ok()?;
                 let patch = json_merge_diff(&old_json, &new_json);
+                // A null the user wrote reads as "delete this member" to
+                // JSON.MERGE, so a document that keeps one is written whole.
+                if patch.as_ref().is_some_and(|p| !merge_patch_is_faithful(p, &new_json)) {
+                    return None;
+                }
                 Some(patch.and_then(|p| serde_json::to_string(&p).ok()))
             })
         } else {
@@ -1042,7 +1061,13 @@ impl ZedisServerState {
         cx.notify();
         let cas_baseline = original_bytes_value.bytes.clone();
         let draft = Bytes::from(wire_text.to_string().into_bytes());
-        let key_done = key.clone();
+        let save = StringSave {
+            epoch,
+            key: key.clone(),
+            draft,
+            original_size,
+            original_bytes_value: original_bytes_value.clone(),
+        };
         self.spawn_with_arg(
             ServerTask::SaveValue,
             key.clone(),
@@ -1068,7 +1093,7 @@ impl ZedisServerState {
                 .await?)
             },
             move |this, result, cx| {
-                this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);
+                this.finish_string_save(result, save, cx);
             },
             cx,
         );
@@ -1078,15 +1103,22 @@ impl ZedisServerState {
     /// [`Self::update_value_bytes`]: apply the fresh size, roll the display
     /// back on failure, and turn a CAS refusal into a reload plus
     /// [`ServerEvent::ValueSaveConflict`].
-    fn finish_string_save(
-        &mut self,
-        result: Result<StringWrite>,
-        key: SharedString,
-        draft: Bytes,
-        original_size: u64,
-        original_bytes_value: Arc<RedisBytesValue>,
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_string_save(&mut self, result: Result<StringWrite>, save: StringSave, cx: &mut Context<Self>) {
+        let StringSave {
+            epoch,
+            key,
+            draft,
+            original_size,
+            original_bytes_value,
+        } = save;
+        // Another value is on screen now — the key switched, or this one
+        // was reloaded. Restoring "what was loaded" over it would put the
+        // old key's bytes into the other key's editor, and make them its
+        // compare-and-set baseline. The failure itself was already reported
+        // by the task.
+        if self.value_epoch != epoch {
+            return;
+        }
         let conflict = matches!(result, Ok(StringWrite::Conflict));
         if let Some(value) = self.value.as_mut() {
             value.status = RedisValueStatus::Idle;
@@ -1123,6 +1155,7 @@ impl ZedisServerState {
     /// save-conflict dialog's explicit "overwrite anyway" re-dispatch.
     pub fn update_value_bytes(&mut self, key: SharedString, new_bytes: Vec<u8>, force: bool, cx: &mut Context<Self>) {
         let at = self.at();
+        let epoch = self.value_epoch;
 
         // See update_value for the borrow-split rationale.
         let (format, original_size, original_bytes_value, ttl) = {
@@ -1151,8 +1184,13 @@ impl ZedisServerState {
 
         cx.notify();
         let cas_baseline = original_bytes_value.bytes.clone();
-        let draft = new_bytes_arc.clone();
-        let key_done = key.clone();
+        let save = StringSave {
+            epoch,
+            key: key.clone(),
+            draft: new_bytes_arc.clone(),
+            original_size,
+            original_bytes_value: original_bytes_value.clone(),
+        };
         self.spawn_with_arg(
             ServerTask::SaveValue,
             key.clone(),
@@ -1163,7 +1201,7 @@ impl ZedisServerState {
                 Ok(string_set(&at, key.as_str(), &new_bytes, ttl, cas_baseline.as_deref()).await?)
             },
             move |this, result, cx| {
-                this.finish_string_save(result, key_done, draft, original_size, original_bytes_value, cx);
+                this.finish_string_save(result, save, cx);
             },
             cx,
         );
@@ -1184,9 +1222,54 @@ impl ZedisServerState {
     }
 }
 
+/// Whether applying `patch` as an RFC 7396 merge patch produces `new`.
+///
+/// A merge patch has no way to *write* a null: `null` in it means "remove
+/// this member", and a member whose object is created or replaced by the
+/// patch loses its null-valued members the same way. So `{"a":1}` edited to
+/// `{"a":null}` diffs to `{"a":null}`, which JSON.MERGE turns into `{}`.
+/// Every null in the patch's objects must therefore be a member `new` no
+/// longer has; arrays are replaced whole and keep their nulls.
+fn merge_patch_is_faithful(patch: &JsonValue, new: &JsonValue) -> bool {
+    let JsonValue::Object(patch_map) = patch else {
+        return true;
+    };
+    let new_map = new.as_object();
+    patch_map.iter().all(
+        |(key, patch_value)| match (patch_value, new_map.and_then(|map| map.get(key))) {
+            (JsonValue::Null, kept) => kept.is_none(),
+            (JsonValue::Object(_), Some(new_value)) => merge_patch_is_faithful(patch_value, new_value),
+            (JsonValue::Object(_), None) => false,
+            _ => true,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn merge_writes(old: &str, new: &str) -> Option<bool> {
+        let old: JsonValue = serde_json::from_str(old).expect("old json");
+        let new: JsonValue = serde_json::from_str(new).expect("new json");
+        json_merge_diff(&old, &new).map(|patch| merge_patch_is_faithful(&patch, &new))
+    }
+
+    #[test]
+    fn a_merge_patch_is_used_only_when_it_writes_the_edited_document() {
+        // Ordinary edits and a real deletion are what a merge patch is for.
+        assert_eq!(merge_writes(r#"{"a":1,"b":2}"#, r#"{"a":3,"b":2}"#), Some(true));
+        assert_eq!(merge_writes(r#"{"a":1,"b":2}"#, r#"{"a":1}"#), Some(true));
+        assert_eq!(merge_writes(r#"{"a":1}"#, r#"{"a":[1,null]}"#), Some(true));
+        // Setting a member to null, adding a null member, or a new object
+        // carrying one would all be deleted by JSON.MERGE instead.
+        assert_eq!(merge_writes(r#"{"a":1}"#, r#"{"a":null}"#), Some(false));
+        assert_eq!(merge_writes(r#"{"a":1}"#, r#"{"a":1,"c":null}"#), Some(false));
+        assert_eq!(merge_writes(r#"{"a":1}"#, r#"{"a":{"x":null}}"#), Some(false));
+        assert_eq!(merge_writes(r#"{"o":{"x":1}}"#, r#"{"o":{"x":null}}"#), Some(false));
+        // A null that was already there is not part of the patch at all.
+        assert_eq!(merge_writes(r#"{"a":null,"b":1}"#, r#"{"a":null,"b":2}"#), Some(true));
+    }
 
     fn fmt(s: &str) -> DataFormat {
         detect_format(s.as_bytes()).0

@@ -152,6 +152,8 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // The value generation this write belongs to — see `value_epoch`.
+        let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
@@ -171,12 +173,20 @@ impl ZedisServerState {
             task,
             move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
+                // Another value is on screen now (a key switch, a reload):
+                // its rows and status are not this write's to touch.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
                 match result {
                     Ok(data) => on_success(this, data, cx),
-                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                    Err(e) => {
+                        this.emit_error_notification(e.to_string().into(), cx);
+                        this.reload_after_failed_write(cx);
+                    }
                 }
                 cx.notify();
             },
@@ -354,7 +364,10 @@ impl ZedisServerState {
     /// * `keyword` - The search keyword to filter members (empty to clear filter)
     /// * `cx` - GPUI context for UI updates
     pub fn filter_zset_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some((_, value)) = self.try_get_mut_key_value() else {
+        // Not behind the busy guard: a filter typed while the previous one
+        // is still paging must replace it, not be dropped (the generation
+        // below turns the old pages away).
+        let Some(value) = self.value.as_mut() else {
             return;
         };
         let Some(zset) = value.zset_value() else {
@@ -372,6 +385,8 @@ impl ZedisServerState {
             ..Default::default()
         };
         value.data = Some(RedisValueData::Zset(Arc::new(new_zset)));
+        value.status = RedisValueStatus::Idle;
+        self.next_value_epoch();
 
         // Trigger load with the new filter
         self.load_more_zset_value(cx);
@@ -397,6 +412,7 @@ impl ZedisServerState {
             ..Default::default()
         };
         value.data = Some(RedisValueData::Zset(Arc::new(new_zset)));
+        self.next_value_epoch();
         self.load_more_zset_value(cx);
     }
 
@@ -429,6 +445,8 @@ impl ZedisServerState {
         value.status = RedisValueStatus::Loading;
         cx.emit(ServerEvent::ValueUpdated);
         cx.notify();
+        self.next_value_epoch();
+        let epoch = self.value_epoch;
 
         let at = self.at();
         self.spawn_with_arg(
@@ -440,6 +458,9 @@ impl ZedisServerState {
                 Ok((size, values))
             },
             move |this, result, cx| {
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
@@ -519,6 +540,7 @@ impl ZedisServerState {
 
         cx.emit(ServerEvent::ValuePaginationStarted);
         let keyword_clone = keyword.clone();
+        let epoch = self.value_epoch;
 
         self.spawn_with_arg(
             ServerTask::LoadMoreValue,
@@ -543,6 +565,11 @@ impl ZedisServerState {
             },
             // UI callback: merge results and handle auto-loading for filters
             move |this, result, cx| {
+                // A page of another value — another key, a reload, an older
+                // filter or order — would append its members over this one.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 let mut should_load_more = false;
 
                 if let Ok((new_cursor, new_values)) = result

@@ -88,54 +88,6 @@ short preview, server_info and slowlog read INFO and SLOWLOG GET on every master
 any other read-only command. Writes and administration are refused, results are cut to a size that fits \
 a context, and every call is written to the bridge's audit log.";
 
-/// Reads by the allowlist that change or hold the connection they run on
-/// — which here is the pooled one every caller of that server shares. A
-/// `SELECT` would move everyone's later commands to another database, an
-/// `AUTH` would re-sign the connection, a `SUBSCRIBE` or `MONITOR` would
-/// take it over. The page never sends these outside a session of its own;
-/// a model asked to "switch to db 3" might. `CLIENT` is judged by its
-/// subcommand ([`CLIENT_STATE`]): `CLIENT LIST` is a read worth having.
-const CONNECTION_STATE: [&str; 20] = [
-    "AUTH",
-    "HELLO",
-    "SELECT",
-    "RESET",
-    "QUIT",
-    "READONLY",
-    "READWRITE",
-    "ASKING",
-    "WAIT",
-    "WAITAOF",
-    "MONITOR",
-    "SUBSCRIBE",
-    "PSUBSCRIBE",
-    "SSUBSCRIBE",
-    "UNSUBSCRIBE",
-    "PUNSUBSCRIBE",
-    "SUNSUBSCRIBE",
-    "SYNC",
-    "PSYNC",
-    "DEBUG",
-];
-
-/// The `CLIENT` subcommands that set something on the connection.
-const CLIENT_STATE: [&str; 7] = [
-    "SETNAME", "SETINFO", "NO-EVICT", "NO-TOUCH", "TRACKING", "CACHING", "REPLY",
-];
-
-/// Whether `args` would change or hold the connection it runs on.
-fn holds_connection(args: &[Vec<u8>]) -> bool {
-    let name = command_name(args);
-    if CONNECTION_STATE.contains(&name.as_str()) {
-        return true;
-    }
-    name == "CLIENT"
-        && args
-            .get(1)
-            .map(|sub| String::from_utf8_lossy(sub).to_ascii_uppercase())
-            .is_some_and(|sub| CLIENT_STATE.contains(&sub.as_str()))
-}
-
 /// The tools, in the order `tools/list` names them.
 const TOOLS: [&str; 6] = [
     "list_servers",
@@ -571,10 +523,10 @@ async fn run(
     every_master: bool,
 ) -> Result<(Vec<Value>, Vec<String>), String> {
     for args in &commands {
-        if holds_connection(args) {
+        if policy::holds_connection(args) {
             return Err(format!(
                 "{} changes or holds the connection the tools share; the tools select the database themselves",
-                command_name(args)
+                policy::command_name(args)
             ));
         }
         match policy::check(server, args, None, true, false, false) {
@@ -582,13 +534,13 @@ async fn run(
             policy::Verdict::Deny => {
                 return Err(format!(
                     "{} is not a read command; this entry point only reads",
-                    command_name(args)
+                    policy::command_name(args)
                 ));
             }
             policy::Verdict::Confirm { .. } => {
                 return Err(format!(
                     "{} needs a confirmation this entry point cannot give",
-                    command_name(args)
+                    policy::command_name(args)
                 ));
             }
         }
@@ -601,12 +553,6 @@ async fn run(
 async fn one(state: &AppState, server: &RedisServer, db: usize, args: Vec<Vec<u8>>) -> Result<Value, String> {
     let (mut values, _) = run(state, server, db, vec![args], Vec::new(), false).await?;
     values.pop().ok_or_else(|| "no reply".to_string())
-}
-
-fn command_name(args: &[Vec<u8>]) -> String {
-    args.first()
-        .map(|name| String::from_utf8_lossy(name).to_ascii_uppercase())
-        .unwrap_or_default()
 }
 
 fn words(parts: &[&str]) -> Vec<Vec<u8>> {
@@ -1255,7 +1201,7 @@ mod tests {
             vec!["MONITOR"],
             vec!["WAIT", "1", "0"],
         ] {
-            assert!(holds_connection(&words(&cmd)), "{cmd:?}");
+            assert!(policy::holds_connection(&words(&cmd)), "{cmd:?}");
         }
         for cmd in [
             vec!["GET", "k"],
@@ -1266,7 +1212,7 @@ mod tests {
             vec!["SLOWLOG", "GET"],
             vec!["JSON.GET", "k"],
         ] {
-            assert!(!holds_connection(&words(&cmd)), "{cmd:?}");
+            assert!(!policy::holds_connection(&words(&cmd)), "{cmd:?}");
         }
     }
 

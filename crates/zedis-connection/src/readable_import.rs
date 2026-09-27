@@ -473,7 +473,6 @@ pub async fn preview_import_conflicts(
     .await?;
 
     let client = get_connection_manager().get_client(server_id, db).await?;
-    let mut conn = client.connection();
     let mut preview = ConflictPreview::default();
     const BATCH: usize = 64;
     for chunk in entries.chunks(BATCH) {
@@ -481,7 +480,7 @@ pub async fn preview_import_conflicts(
             break;
         }
         let keys: Vec<Vec<u8>> = chunk.iter().map(|e| e.key.as_bytes().to_vec()).collect();
-        let exists = keys_exist(&mut conn, &keys).await?;
+        let exists = keys_exist(&client, &keys).await?;
         for (entry, is_there) in chunk.iter().zip(exists) {
             preview.total += 1;
             if is_there {

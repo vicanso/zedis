@@ -259,7 +259,9 @@ impl ZedisListEditor {
         let table_state = cx.new(|cx| {
             ZedisKvTable::<ZedisListValues>::new(
                 vec![
-                    KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref()).field_type(ZedisFormFieldType::Editor),
+                    KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
+                        .field_type(ZedisFormFieldType::Editor)
+                        .verbatim(),
                 ],
                 server_state,
                 window,

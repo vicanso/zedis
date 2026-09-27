@@ -157,6 +157,8 @@ impl ZedisServerState {
         Fut: std::future::Future<Output = Result<R>> + Send,
         R: Send + 'static,
     {
+        // The value generation this write belongs to — see `value_epoch`.
+        let epoch = self.value_epoch;
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
@@ -177,13 +179,21 @@ impl ZedisServerState {
             task,
             move || async move { redis_op(key_str, at).await },
             move |this, result, cx| {
+                // Another value is on screen now (a key switch, a reload):
+                // its rows and status are not this write's to touch.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
 
                 match result {
                     Ok(data) => on_success(this, data, cx),
-                    Err(e) => this.emit_error_notification(e.to_string().into(), cx),
+                    Err(e) => {
+                        this.emit_error_notification(e.to_string().into(), cx);
+                        this.reload_after_failed_write(cx);
+                    }
                 }
                 cx.notify();
             },
@@ -401,6 +411,10 @@ impl ZedisServerState {
             ..Default::default()
         };
         value.data = Some(RedisValueData::Hash(Arc::new(new_hash)));
+        // A new scan: a page of the previous keyword still in flight is
+        // dropped by the generation, so it cannot hold this one back either.
+        value.status = RedisValueStatus::Idle;
+        self.next_value_epoch();
 
         // Trigger load with the new filter
         self.load_more_hash_value(cx);
@@ -518,6 +532,7 @@ impl ZedisServerState {
 
         let at = self.at();
         let supports_field_ttl = self.supports_hash_field_ttl();
+        let epoch = self.value_epoch;
         cx.emit(ServerEvent::ValuePaginationStarted);
 
         self.spawn_with_arg(
@@ -544,6 +559,12 @@ impl ZedisServerState {
             },
             // UI callback: merge results into local state
             move |this, result, cx| {
+                // A page of another value — another key, a reload, an older
+                // filter — would append its fields and carry its cursor on
+                // over this one.
+                if this.value_epoch != epoch {
+                    return;
+                }
                 let mut should_load_more = false;
                 if let Ok((new_cursor, new_values, new_ttls)) = result
                     && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())

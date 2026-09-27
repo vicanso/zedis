@@ -607,7 +607,10 @@ impl BatchTtlForm {
     /// open) and the condition — never one on a server that predates the
     /// option words, so nothing extra goes on the wire there.
     fn submission(&self, cx: &App) -> Option<(u64, Option<ExpireCondition>)> {
-        let secs = parse_duration(self.ttl.read(cx).value().trim()).ok()?.as_secs();
+        // `ttl_secs`, not a bare duration parse: it takes the `3600` the
+        // placeholder suggests, and refuses the `0` that EXPIRE would turn
+        // into deleting every key in scope.
+        let secs = ttl_secs(self.ttl.read(cx).value().as_ref())?;
         Some((secs, self.show_condition.then_some(self.condition).flatten()))
     }
 }
@@ -664,12 +667,15 @@ fn open_batch_ttl_dialog(
                 .cancel_text(i18n_common(cx, "cancel")),
         )
         .child(move || body.clone())
-        .on_ok(move |_, _, cx| match form.read(cx).submission(cx) {
+        .on_ok(move |_, window, cx| match form.read(cx).submission(cx) {
             Some((secs, condition)) => {
                 apply(secs, condition, cx);
                 true
             }
-            None => false,
+            None => {
+                window.push_notification(Notification::error(i18n_common(cx, "ttl_invalid")), cx);
+                false
+            }
         })
         .open(window, cx);
 }

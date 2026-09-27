@@ -327,8 +327,22 @@ pub async fn rename_key(at: &ServerDb, old: &str, new: &str, overwrite: bool) ->
     Ok(renamed == 1)
 }
 
+/// Refuse a duration `EXPIRE` of zero. `EXPIRE key 0` sets a TTL already in
+/// the past, which the server answers by deleting the key — never what a TTL
+/// field meant. Every duration `EXPIRE` this crate sends passes here, so a
+/// caller that let a zero through fails instead of deleting data.
+pub(crate) fn expire_seconds(seconds: u64) -> Result<u64> {
+    if seconds == 0 {
+        return Err(Error::Invalid {
+            message: "a TTL must be at least 1 second: EXPIRE with 0 deletes the key".to_string(),
+        });
+    }
+    Ok(seconds)
+}
+
 /// `EXPIRE key seconds`.
 pub async fn expire_key(at: &ServerDb, key: &str, seconds: u64) -> Result<()> {
+    let seconds = expire_seconds(seconds)?;
     Ok(cmd("EXPIRE")
         .arg(key)
         .arg(seconds)
@@ -401,6 +415,9 @@ pub async fn create_key(
     args: &[String],
     ttl_secs: Option<u64>,
 ) -> Result<bool> {
+    // Checked before anything is written: a key created and then expired at
+    // once would look like a successful create of a key that is gone.
+    let ttl_secs = ttl_secs.map(expire_seconds).transpose()?;
     let conn = &mut at.connection().await?;
     let exists: bool = cmd("EXISTS").arg(key).query_async(conn).await?;
     if exists {
@@ -421,6 +438,17 @@ pub async fn publish(at: &ServerDb, channel: &str, message: &str, sharded: bool)
         .arg(message)
         .query_async(&mut at.connection().await?)
         .await?)
+}
+
+#[cfg(test)]
+mod expire_seconds_tests {
+    use super::expire_seconds;
+
+    #[test]
+    fn a_zero_second_expire_is_never_sent() {
+        assert!(expire_seconds(0).is_err());
+        assert_eq!(expire_seconds(1).ok(), Some(1));
+    }
 }
 
 #[cfg(test)]

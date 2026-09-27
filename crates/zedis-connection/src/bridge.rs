@@ -30,9 +30,10 @@
 #[cfg(target_family = "wasm")]
 use crate::conn::RedisAsyncConn;
 use futures::future::BoxFuture;
-#[cfg(target_family = "wasm")]
-use redis::FromRedisValue;
-use redis::{Cmd, ErrorKind, Pipeline, RedisError, Value};
+// The blocking `ConnectionLike` — the one `Pipeline::query` takes — named
+// apart from `aio`'s, which the host build imports below.
+use redis::ConnectionLike as BlockingConnectionLike;
+use redis::{Cmd, ErrorKind, FromRedisValue, Pipeline, RedisError, RedisResult, Value};
 // `aio` is what carries `ConnectionLike` and `Cmd::query_async`, and it cannot
 // be built for `wasm32-unknown-unknown` — it insists on a socket runtime. The
 // browser gets the same call sites from the traits at the bottom of this file
@@ -113,6 +114,71 @@ pub struct PipelineSpec {
     pub count: usize,
     /// Whether redis-rs wraps this in `MULTI`/`EXEC`.
     pub atomic: bool,
+}
+
+impl PipelineSpec {
+    /// The framing redis-rs asks a connection for when it runs a pipeline
+    /// of `len` commands: every reply, or — for a transaction, whose `MULTI`
+    /// and `QUEUED`s arrive first — the single `EXEC` array.
+    ///
+    /// Both sides of the bridge use this. The page frames a pipeline exactly
+    /// as the desktop does, and the bridge refuses any other framing: on a
+    /// multiplexed connection the count is how replies are handed out, so a
+    /// wrong one gives another caller's replies to this one.
+    pub fn for_pipeline(len: usize, atomic: bool) -> Self {
+        if atomic {
+            Self {
+                offset: len + 1,
+                count: 1,
+                atomic,
+            }
+        } else {
+            Self {
+                offset: 0,
+                count: len,
+                atomic,
+            }
+        }
+    }
+}
+
+/// Replies a pipeline already received, played back to redis-rs's own
+/// blocking `Pipeline::query`, so the request is finished by the same code
+/// as on the host: a transaction's `EXEC` array unwrapped, what `.ignore()`
+/// marked dropped, an error reply surfaced. That code is private to redis-rs;
+/// this is the one way to reach it without a socket.
+struct Replayed(Option<Vec<Value>>);
+
+impl BlockingConnectionLike for Replayed {
+    fn req_packed_command(&mut self, _cmd: &[u8]) -> RedisResult<Value> {
+        Err(RedisError::from((
+            ErrorKind::Client,
+            "redis bridge",
+            "a replayed pipeline answers pipelines only".to_string(),
+        )))
+    }
+
+    fn req_packed_commands(&mut self, _cmd: &[u8], _offset: usize, _count: usize) -> RedisResult<Vec<Value>> {
+        self.0.take().ok_or_else(|| {
+            RedisError::from((
+                ErrorKind::Client,
+                "redis bridge",
+                "a replayed pipeline answers once".to_string(),
+            ))
+        })
+    }
+
+    fn get_db(&self) -> i64 {
+        0
+    }
+
+    fn check_connection(&mut self) -> bool {
+        true
+    }
+
+    fn is_open(&self) -> bool {
+        true
+    }
 }
 
 /// One call to the bridge.
@@ -428,6 +494,20 @@ impl BridgeConn {
             .collect()
     }
 
+    /// Run `pipeline` and finish it the way redis-rs's `Pipeline::query_async`
+    /// does on the host — the framing from [`PipelineSpec::for_pipeline`], the
+    /// replies through [`Replayed`]. A transaction yields its commands'
+    /// results rather than the raw `EXEC` frame, and an `.ignore()`d command
+    /// yields none.
+    pub async fn query_pipeline<T: FromRedisValue>(&self, pipeline: &Pipeline) -> Result<T, RedisError> {
+        if pipeline.is_empty() {
+            return T::from_redis_value(Value::Array(Vec::new())).map_err(RedisError::from);
+        }
+        let spec = PipelineSpec::for_pipeline(pipeline.len(), pipeline.is_transaction());
+        let replies = self.send_pipeline(pipeline, spec.offset, spec.count).await?;
+        pipeline.query(&mut Replayed(Some(replies)))
+    }
+
     fn db(&self) -> i64 {
         self.db as i64
     }
@@ -493,16 +573,12 @@ pub trait BridgePipeline {
 impl BridgePipeline for Pipeline {
     async fn query_async<T: FromRedisValue>(&self, conn: &mut RedisAsyncConn) -> Result<T, RedisError> {
         let RedisAsyncConn::Bridge(conn) = conn;
-        let count = self.len();
-        let values = conn.send_pipeline(self, 0, count).await?;
-        T::from_redis_value(Value::Array(values)).map_err(RedisError::from)
+        conn.query_pipeline(self).await
     }
 
     async fn exec_async(&self, conn: &mut RedisAsyncConn) -> Result<(), RedisError> {
         let RedisAsyncConn::Bridge(conn) = conn;
-        let count = self.len();
-        conn.send_pipeline(self, 0, count).await?;
-        Ok(())
+        conn.query_pipeline::<()>(self).await
     }
 }
 
@@ -596,6 +672,37 @@ mod tests {
         assert_eq!(spec.count, 2);
         assert!(spec.atomic, "an atomic pipeline must say so, or EXEC is lost");
         assert_eq!(seen[0].commands.len(), 2, "MULTI/EXEC are added by the far side");
+    }
+
+    #[test]
+    fn a_transaction_is_framed_and_finished_the_way_redis_rs_does_it() {
+        // The bridge answers a transaction with the one EXEC array; the page
+        // gets the commands' results, minus what `.ignore()` marked.
+        let rec = recorder(frames(vec![b"*2\r\n+OK\r\n$1\r\n7\r\n".to_vec()]));
+        let conn = BridgeConn::new(rec.clone(), "srv", 0);
+        let mut pipe = redis::pipe();
+        pipe.atomic().cmd("SET").arg("a").arg(7).ignore().cmd("GET").arg("a");
+        let (got,): (String,) = smol::block_on(conn.query_pipeline(&pipe)).expect("transaction");
+        assert_eq!(got, "7");
+
+        let seen = rec.seen.lock().expect("lock");
+        let spec = seen[0].pipeline.expect("pipeline spec");
+        // `MULTI` and two `QUEUED`s skipped, then the one `EXEC` reply — any
+        // other count hands replies to the wrong caller of a shared connection.
+        assert_eq!(spec, PipelineSpec::for_pipeline(2, true));
+        assert_eq!((spec.offset, spec.count), (3, 1));
+    }
+
+    #[test]
+    fn a_plain_pipeline_drops_what_was_ignored() {
+        let rec = recorder(frames(vec![b"+OK\r\n".to_vec(), b":5\r\n".to_vec()]));
+        let conn = BridgeConn::new(rec.clone(), "srv", 0);
+        let mut pipe = redis::pipe();
+        pipe.cmd("SET").arg("n").arg(4).ignore().cmd("INCR").arg("n");
+        let (n,): (i64,) = smol::block_on(conn.query_pipeline(&pipe)).expect("pipeline");
+        assert_eq!(n, 5);
+        let spec = rec.seen.lock().expect("lock")[0].pipeline.expect("pipeline spec");
+        assert_eq!((spec.offset, spec.count, spec.atomic), (0, 2, false));
     }
 
     #[test]

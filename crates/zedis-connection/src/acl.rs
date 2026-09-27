@@ -82,11 +82,15 @@ impl AclUser {
     /// along as `( … )` groups — see [`split_acl_rules`] for why they must
     /// survive tokenization as single arguments.
     ///
-    /// Unlike the root rules, `( … )` groups are **append** operations —
-    /// re-applying this text would duplicate every selector on each save
-    /// (verified live on 8.6.1). `clearselectors` in front of the groups
-    /// makes the text authoritative for selectors: what you see is exactly
-    /// what the user ends up with, save after save.
+    /// `ACL SETUSER` *adds* key patterns, channel patterns and `( … )`
+    /// groups to what the user already has; it never takes one away. So
+    /// each list is preceded by its reset — `resetkeys`, `resetchannels`,
+    /// `clearselectors` — which makes the text authoritative: a pattern the
+    /// admin deletes from it is gone after the save, instead of the save
+    /// reporting success while the permission stays. (Selectors duplicated
+    /// on every save without theirs, verified live on 8.6.1.) The command
+    /// spec needs none: `GETUSER` always opens it with `+@all` or `-@all`,
+    /// which resets the commands by itself.
     pub fn to_rules_text(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for flag in &self.flags {
@@ -95,9 +99,11 @@ impl AclUser {
         if !self.commands.is_empty() {
             parts.push(self.commands.to_string());
         }
+        parts.push("resetkeys".to_string());
         for k in &self.keys {
             parts.push(k.to_string());
         }
+        parts.push("resetchannels".to_string());
         for c in &self.channels {
             parts.push(c.to_string());
         }
@@ -405,10 +411,10 @@ fn parse_get_user(username: &str, value: &Value) -> Option<AclUser> {
                 user.commands = reply::text(&val).unwrap_or_default();
             }
             "keys" => {
-                user.keys = parse_keys_or_channels(&val);
+                user.keys = parse_keys_or_channels(&val, PatternKind::Keys);
             }
             "channels" => {
-                user.channels = parse_keys_or_channels(&val);
+                user.channels = parse_keys_or_channels(&val, PatternKind::Channels);
             }
             "selectors" => {
                 user.selectors = parse_selectors(&val);
@@ -434,8 +440,8 @@ fn parse_selectors(v: &Value) -> Vec<AclSelector> {
             for (key, val) in pairs {
                 match key.as_str() {
                     "commands" => selector.commands = reply::text(&val).unwrap_or_default(),
-                    "keys" => selector.keys = parse_keys_or_channels(&val),
-                    "channels" => selector.channels = parse_keys_or_channels(&val),
+                    "keys" => selector.keys = parse_keys_or_channels(&val, PatternKind::Keys),
+                    "channels" => selector.channels = parse_keys_or_channels(&val, PatternKind::Channels),
                     _ => {}
                 }
             }
@@ -444,16 +450,45 @@ fn parse_selectors(v: &Value) -> Vec<AclSelector> {
         .collect()
 }
 
+/// Which list a `GETUSER` pattern field is, for the sigil its rules take.
+#[derive(Clone, Copy)]
+enum PatternKind {
+    Keys,
+    Channels,
+}
+
+impl PatternKind {
+    /// The pattern as an `ACL SETUSER` rule. Redis 7.0+ answers in rule
+    /// syntax already (`~user:*`, `%R~ro:*`, `&events:*`); Redis 6.x answers
+    /// with the bare patterns (`*`, `user:*`), which `SETUSER` rejects as a
+    /// syntax error — so an unchanged save on 6.2 used to fail.
+    fn as_rule(self, pattern: &str) -> String {
+        let has_sigil = match self {
+            Self::Keys => pattern.starts_with('~') || pattern.starts_with('%'),
+            Self::Channels => pattern.starts_with('&'),
+        };
+        if has_sigil {
+            return pattern.to_string();
+        }
+        match self {
+            Self::Keys => format!("~{pattern}"),
+            Self::Channels => format!("&{pattern}"),
+        }
+    }
+}
+
 /// `keys` / `channels` may come as an `Array<BulkString>` (one pattern each)
-/// or as a single space-joined `BulkString`. Normalize both into a token list.
-fn parse_keys_or_channels(v: &Value) -> Vec<String> {
-    if let Some(items) = reply::string_array(v) {
-        return items.into_iter().collect();
-    }
-    if let Some(joined) = reply::text(v) {
-        return joined.split_whitespace().map(|s| s.to_string()).collect();
-    }
-    Vec::new()
+/// or as a single space-joined `BulkString`. Normalize both into a list of
+/// rules — see [`PatternKind::as_rule`] for the 6.x shape.
+fn parse_keys_or_channels(v: &Value, kind: PatternKind) -> Vec<String> {
+    let patterns: Vec<String> = if let Some(items) = reply::string_array(v) {
+        items
+    } else if let Some(joined) = reply::text(v) {
+        joined.split_whitespace().map(|s| s.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    patterns.iter().map(|pattern| kind.as_rule(pattern)).collect()
 }
 
 #[cfg(test)]
@@ -587,7 +622,52 @@ mod tests {
             channels: vec!["&log:*".into()],
             ..Default::default()
         };
-        assert_eq!(user.to_rules_text(), "on +@read ~ro:* &log:*");
+        assert_eq!(user.to_rules_text(), "on +@read resetkeys ~ro:* resetchannels &log:*");
+    }
+
+    #[test]
+    fn a_pattern_deleted_from_the_text_is_revoked_on_save() {
+        // SETUSER only adds patterns, so the text must reset each list
+        // before naming it; otherwise narrowing `~*` to `~app:*` leaves `~*`.
+        let user = AclUser {
+            flags: vec!["on".into()],
+            commands: "+@all".into(),
+            keys: vec!["~app:*".into()],
+            ..Default::default()
+        };
+        let rules = split_acl_rules(&user.to_rules_text());
+        let reset_at = rules.iter().position(|r| r == "resetkeys").expect("resetkeys");
+        let pattern_at = rules.iter().position(|r| r == "~app:*").expect("pattern");
+        assert!(reset_at < pattern_at, "{rules:?}");
+        assert!(
+            rules.iter().any(|r| r == "resetchannels"),
+            "an empty list is reset too: {rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_redis_6_user_round_trips_as_valid_rules() {
+        // Redis 6.2 answers bare patterns, which SETUSER refuses as-is.
+        let raw = Value::Array(vec![
+            bs("flags"),
+            Value::Array(vec![bs("on"), bs("allkeys"), bs("allchannels"), bs("allcommands")]),
+            bs("commands"),
+            bs("+@all"),
+            bs("keys"),
+            Value::Array(vec![bs("*")]),
+            bs("channels"),
+            Value::Array(vec![bs("*")]),
+        ]);
+        let user = parse_get_user("legacy", &raw).expect("parse failed");
+        assert_eq!(user.keys, vec!["~*".to_string()]);
+        assert_eq!(user.channels, vec!["&*".to_string()]);
+        assert_eq!(
+            user.to_rules_text(),
+            "on allkeys allchannels allcommands +@all resetkeys ~* resetchannels &*"
+        );
+        // A 7.0 answer keeps its own sigils, read-write selectors included.
+        assert_eq!(PatternKind::Keys.as_rule("%R~ro:*"), "%R~ro:*");
+        assert_eq!(PatternKind::Channels.as_rule("&events:*"), "&events:*");
     }
 
     #[test]
@@ -627,7 +707,7 @@ mod tests {
         // so without it every save would duplicate the selectors.
         assert_eq!(
             user.to_rules_text(),
-            "on -@all +@read ~app:* clearselectors (-@all +lpush ~queue:*)"
+            "on -@all +@read resetkeys ~app:* resetchannels clearselectors (-@all +lpush ~queue:*)"
         );
     }
 

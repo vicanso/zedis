@@ -341,6 +341,18 @@ pub struct ZedisServerState {
     /// same keyword, so only a generation bump distinguishes the sessions.
     scan_epoch: u64,
 
+    /// Generation of the selected value: bumped when a key is selected, a
+    /// value is (re)loaded or replaced, or a collection filter starts over
+    /// (`next_value_epoch`). A task that reads or writes the loaded value —
+    /// a page of a hash / list / set / zset, a write and its follow-up, a
+    /// string save, a TTL change — captures it at launch, and its callback
+    /// leaves the value alone when it moved on. Without it one key's fields
+    /// were appended to another's table, an `HSCAN` went on over the new key
+    /// from the old one's cursor, and a failed string save wrote the old
+    /// key's bytes into the new key's editor. The key name cannot tell:
+    /// re-selecting the same key is a new generation too.
+    value_epoch: u64,
+
     /// Unique ID for current key tree (changes when keys are reloaded)
     key_tree_id: SharedString,
 
@@ -372,8 +384,9 @@ pub struct ZedisServerState {
     /// Behind an `Arc` so the key tree's background build snapshots it with
     /// an Arc clone instead of a structural copy (with 500k keys that copy
     /// was ~20MB resident, twice). Writers go through `Arc::make_mut`: the
-    /// map is copied at most once per build window (only while a snapshot
-    /// is actually held), which is what the per-rebuild clone used to cost.
+    /// map is copied only when a write lands while a build holds it. Keep it
+    /// that way — a reader that keeps the `Arc` between builds turns every
+    /// write into a copy of the whole map (the key tree once did).
     key_ttls: Arc<AHashMap<SharedString, i64>>,
 
     /// Set by [`Self::begin_refresh_scan`]: the rows currently on screen are
@@ -539,6 +552,7 @@ impl ZedisServerState {
         // any manual-disconnect pause (reconnect routes through here too).
         self.manually_offline = false;
         self.value = None;
+        self.next_value_epoch();
         self.size_gate_bypassed = None;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
@@ -762,6 +776,21 @@ impl ZedisServerState {
             })
         })
         .detach();
+    }
+
+    /// Start a new generation of the selected value — see `value_epoch`.
+    fn next_value_epoch(&mut self) {
+        self.value_epoch = self.value_epoch.wrapping_add(1);
+    }
+
+    /// After a write to the loaded value failed: the optimistic change never
+    /// reached the server, so read back what the server holds rather than
+    /// keep showing a write that did not happen — or guess at undoing it,
+    /// which for an `RPUSH` onto a partly loaded list popped a real element.
+    fn reload_after_failed_write(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.key.clone().filter(|key| !key.is_empty()) {
+            self.reload_value(key, cx);
+        }
     }
 
     fn try_get_mut_key_value(&mut self) -> Option<(SharedString, &mut RedisValue)> {

@@ -24,7 +24,7 @@ use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::server_db::ServerDb;
-use redis::{cmd, pipe};
+use redis::{FromRedisValue, RedisError, Value, cmd, pipe};
 use zedis_core::csv::build_csv_record;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -270,19 +270,27 @@ async fn read_stream(conn: &mut RedisAsyncConn, key: &str, limits: ReadLimits) -
 
 /// Fetch one chunk of keys with full values. Keys that vanished between
 /// SCAN and the fetch (`TYPE` = none) are silently dropped, matching the
-/// binary exporter. Cluster-safe: every command is keyed. Collections are
-/// paged and capped per `limits` — see [`ReadLimits`].
+/// binary exporter. Cluster-safe: every command names one key, and the
+/// `TYPE` + `PTTL` round goes key by key on a cluster, where one pipeline
+/// for the chunk would span slots. Collections are paged and capped per
+/// `limits` — see [`ReadLimits`].
 pub async fn read_readable_chunk(at: &ServerDb, keys: &[String], limits: ReadLimits) -> Result<Vec<ReadableEntry>> {
-    let conn = &mut at.connection().await?;
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    // TYPE + PTTL for the whole chunk in one pipeline round-trip.
-    let mut meta_pipe = pipe();
-    for key in keys {
-        meta_pipe.cmd("TYPE").arg(key).cmd("PTTL").arg(key);
-    }
-    let meta: Vec<(String, i64)> = meta_pipe.query_async(conn).await?;
+    let client = at.client().await?;
+    let conn = &mut client.connection();
+    // TYPE + PTTL for the whole chunk: one round trip on a standalone.
+    let meta: Vec<(String, i64)> = client
+        .pipeline_per_key(keys, |key| {
+            let mut pipeline = pipe();
+            pipeline.cmd("TYPE").arg(key).cmd("PTTL").arg(key);
+            pipeline
+        })
+        .await?
+        .into_iter()
+        .map(|replies| <(String, i64)>::from_redis_value(Value::Array(replies)).map_err(RedisError::from))
+        .collect::<std::result::Result<_, _>>()?;
 
     let mut entries = Vec::with_capacity(keys.len());
     for (key, (key_type, pttl_ms)) in keys.iter().zip(meta) {

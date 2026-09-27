@@ -28,7 +28,7 @@ use crate::{
     db::get_favorites_manager,
     helpers::{
         EditorAction, KeyOpAction, card_background, format_duration, format_duration_units, format_unix_secs,
-        get_mono_font_family, humanize_keystroke, unix_ts, validate_ttl,
+        get_mono_font_family, humanize_keystroke, ttl_secs, unix_ts, validate_ttl,
     },
     states::{
         DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
@@ -551,8 +551,16 @@ impl ZedisEditor {
             return;
         }
 
-        self.ttl_edit_mode = false;
         let ttl = format_ttl_string(&self.ttl_input_state.read(cx).value());
+        // `0` or `500ms` would reach `EXPIRE key 0`, which deletes the key.
+        // Keep the field open with the reason instead of sending that.
+        if !ttl.is_empty() && ttl_secs(&ttl).is_none() {
+            self.server_state.update(cx, |state, cx| {
+                state.emit_error_notification(i18n_common(cx, "ttl_invalid"), cx);
+            });
+            return;
+        }
+        self.ttl_edit_mode = false;
 
         self.server_state.update(cx, move |state, cx| {
             state.update_key_ttl(key, ttl.into(), cx);

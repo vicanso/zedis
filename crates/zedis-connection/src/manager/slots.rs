@@ -30,8 +30,12 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
         message: format!("Invalid address format: {}", addr_part),
     })?;
 
-    // Parse cluster bus port if present
+    // Parse cluster bus port if present. Redis 7.0+ appends the announced
+    // hostname to it (`@16379,redis-0.svc`) when `cluster-announce-hostname`
+    // is set, and failing the whole topology over a port nobody uses made
+    // such a cluster impossible to connect to.
     let cport = cport_part
+        .map(|s| s.split(',').next().unwrap_or(s))
         .map(|s| {
             s.parse::<u16>().map_err(|e| Error::Invalid {
                 message: format!("Invalid cluster bus port '{}': {}", s, e),
@@ -542,6 +546,38 @@ c3 10.0.0.3:7000@17000 myself,master - 0 0 2 connected 5461-16383";
         assert_eq!(nodes[1].role, NodeRole::Slave);
         assert_eq!(nodes[1].health, NodeHealth::Failing);
         assert_eq!(nodes[2].health, NodeHealth::Ok);
+    }
+
+    #[test]
+    fn an_announced_hostname_after_the_bus_port_is_not_an_error() {
+        // `cluster-announce-hostname` (Redis 7.0+): `ip:port@cport,hostname`.
+        let raw = "\
+a1 10.0.0.1:6379@16379,redis-0.redis.svc myself,master - 0 0 1 connected 0-16383
+b2 10.0.0.2:6379@16379,redis-1.redis.svc slave a1 0 0 1 connected";
+        let nodes = parse_cluster_nodes(raw).expect("a hostname must not fail the topology");
+        assert_eq!((nodes[0].ip.as_str(), nodes[0].port), ("10.0.0.1", 6379));
+        assert_eq!(nodes[1].role, NodeRole::Slave);
+    }
+
+    #[test]
+    fn a_failed_or_addressless_master_is_left_out_of_the_fan_out() {
+        // After a failover the old master stays `master,fail` until it is
+        // forgotten; a `noaddr` entry has nothing to dial. Either would fail
+        // every fan-out after a connect timeout.
+        let raw = "\
+a1 10.0.0.1:7000@17000 myself,master - 0 0 3 connected 0-16383
+b2 10.0.0.2:7000@17000 master,fail - 0 0 1 disconnected
+c3 :0@0 master,noaddr - 0 0 0 disconnected
+d4 10.0.0.4:7000@17000 master,fail? - 0 0 2 connected";
+        let nodes = parse_cluster_nodes(raw).expect("parse");
+        let joins: Vec<bool> = nodes
+            .iter()
+            .map(|n| joins_fan_out(&n.role, n.health, n.port, true))
+            .collect();
+        // A suspicion (`fail?`) is one node's view and may clear; it stays.
+        assert_eq!(joins, vec![true, false, false, true]);
+        // Port 0 means "no address" on a cluster only.
+        assert!(joins_fan_out(&NodeRole::Master, NodeHealth::Ok, 0, false));
     }
 
     #[test]

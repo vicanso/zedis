@@ -320,6 +320,22 @@ pub enum NodeHealth {
     Failing,
 }
 
+/// Whether a node is one of the masters every fan-out joins — the key
+/// tree's scan, the heartbeat's `INFO`, `FLUSHDB`, the slow log — and the
+/// rebalance planner hands slots to.
+///
+/// Not a master the cluster has marked `fail`: after a failover the old
+/// master keeps its role flag until it is forgotten, and joining it made
+/// each of those fail as a whole after a connect timeout, so the key tree
+/// never loaded and the heartbeat reconnected in a loop. Nor a cluster's
+/// `noaddr` entry (`:0@0`), which has no port to dial — only on a cluster,
+/// where port 0 means exactly that; an entry of the user's own keeps its
+/// port whatever it is. The full list stays in `nodes` for the topology
+/// page, and `fail?` — one node's suspicion — still joins.
+fn joins_fan_out(role: &NodeRole, health: NodeHealth, port: u16, cluster: bool) -> bool {
+    *role == NodeRole::Master && health != NodeHealth::Failing && !(cluster && port == 0)
+}
+
 // Represents a single Redis node
 #[derive(Debug, Clone, Default)]
 struct RedisNode {

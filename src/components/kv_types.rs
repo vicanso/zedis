@@ -71,6 +71,9 @@ pub struct KvTableColumn {
     /// Whether this column is optional in the add/edit form — i.e. NOT marked
     /// required even when the fetcher requires fields (e.g. per-field TTL).
     pub optional: bool,
+    /// The column holds data (a value, a member, a field name), so its form
+    /// field submits the text as typed instead of trimmed.
+    pub verbatim: bool,
 }
 
 impl KvTableColumn {
@@ -104,6 +107,12 @@ impl KvTableColumn {
     /// when the fetcher requires fields (e.g. the per-field TTL column).
     pub fn optional(mut self) -> Self {
         self.optional = true;
+        self
+    }
+    /// Mark this column as data: its form field keeps leading and trailing
+    /// whitespace, which a Redis value, member or field name may carry.
+    pub fn verbatim(mut self) -> Self {
+        self.verbatim = true;
         self
     }
 }

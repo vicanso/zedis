@@ -22,6 +22,7 @@ use crate::bridge::BridgeConn;
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::floors::{self, Floor};
 use crate::hotkeys::HotkeysReport;
+use crate::keyspace::expire_seconds;
 use crate::slot_stats::{SlotStatMetric, SlotStatRow, parse_slot_stats};
 use redis::Pipeline;
 use zedis_core::keysizes::{KeysizesDist, merge_keysizes, parse_keysizes};
@@ -515,6 +516,8 @@ impl RedisClient {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
+        // `EXPIRE key 0` would delete every key in the batch.
+        let ttl_secs = ttl_secs.map(expire_seconds).transpose()?;
         let build = move |key: &str| {
             let mut c = match ttl_secs {
                 Some(secs) => {
@@ -559,6 +562,56 @@ impl RedisClient {
             applied.extend(flags);
         }
         Ok(applied)
+    }
+
+    /// Run one small pipeline per key — `per_key(key)` builds it, and every
+    /// command in it names that one key — and answer each key's replies, in
+    /// the keys' order.
+    ///
+    /// A chunk of keys spans hash slots, and redis-rs refuses a cluster
+    /// pipeline that does (`CrossSlot`; a multi-key `EXISTS` is sent to a
+    /// random node and `MOVED` back until the retries run out). Each key's
+    /// own pipeline stays in its slot and is routed there. So: one pipeline
+    /// for the whole batch on a standalone, the per-key pipelines at once —
+    /// 1000 at a time, as [`Self::set_ttl_keys_scattered`] does — on a
+    /// cluster.
+    pub async fn pipeline_per_key<K: AsRef<[u8]>>(
+        &self,
+        keys: &[K],
+        per_key: impl Fn(&[u8]) -> Pipeline,
+    ) -> Result<Vec<Vec<Value>>, Error> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pipelines: Vec<Pipeline> = keys.iter().map(|key| per_key(key.as_ref())).collect();
+        if !self.is_cluster() {
+            let mut batch = redis::pipe();
+            for pipeline in &pipelines {
+                for command in pipeline.cmd_iter() {
+                    batch.add_command(command.clone());
+                }
+            }
+            let mut conn = self.connection();
+            let replies: Vec<Value> = batch.query_async(&mut conn).await?;
+            let mut replies = replies.into_iter();
+            return Ok(pipelines
+                .iter()
+                .map(|pipeline| replies.by_ref().take(pipeline.len()).collect())
+                .collect());
+        }
+        let conn = self.connection();
+        let mut answers = Vec::with_capacity(pipelines.len());
+        for chunk in pipelines.chunks(1000) {
+            let futures = chunk.iter().map(|pipeline| {
+                let mut conn = conn.clone();
+                async move {
+                    let replies: Vec<Value> = pipeline.query_async(&mut conn).await?;
+                    Ok::<Vec<Value>, Error>(replies)
+                }
+            });
+            answers.extend(try_join_all(futures).await?);
+        }
+        Ok(answers)
     }
 
     /// Returns the memory usage of a key.

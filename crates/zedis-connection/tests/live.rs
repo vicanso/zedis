@@ -5150,6 +5150,45 @@ fn sentinel_without_a_master_name_takes_the_first_and_lists_all() {
 
 // ── cluster ──────────────────────────────────────────────────────────────
 
+/// A chunk of keys spans hash slots, and redis-rs refuses a cluster pipeline
+/// that does. The conflict preview (`EXISTS` per key) and the readable
+/// export (`TYPE` + `PTTL` per key) used to send the whole chunk as one
+/// pipeline, so on a cluster the first chunk failed; they now go key by key
+/// there (`RedisClient::pipeline_per_key`).
+#[test]
+#[ignore]
+fn cluster_chunk_reads_span_slots() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-chunks", addr)).await;
+        let prefix = unique("chunks");
+        let keys: Vec<String> = (0..20).map(|i| format!("{prefix}:{i}")).collect();
+        let mut c = conn(&id, 0).await;
+        for key in &keys {
+            cmd("SET").arg(key).arg("v").exec_async(&mut c).await.expect("set");
+        }
+        let missing = format!("{prefix}:missing");
+
+        let mut asked = keys.clone();
+        asked.push(missing.clone());
+        let cancel = AtomicBool::new(false);
+        let preview = preview_key_conflicts(&id, 0, &asked, 5, &cancel)
+            .await
+            .expect("a preview across slots");
+        assert_eq!((preview.conflicting, preview.free), (20, 1));
+
+        let at = ServerDb::new(&id, 0);
+        let entries = read_readable_chunk(&at, &asked, ReadLimits::default())
+            .await
+            .expect("an export chunk across slots");
+        assert_eq!(entries.len(), 20, "the missing key is dropped, the rest read");
+
+        for key in &keys {
+            cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");
+        }
+    });
+}
+
 #[test]
 #[ignore]
 fn cluster_discovers_nodes_and_scans_every_master() {
@@ -5404,6 +5443,54 @@ fn standalone_acl_selectors_round_trip() {
             .expect("re-apply rules text");
         let again = acl_get_user(&at, &username).await.expect("getuser again");
         assert_eq!(again.selectors, user.selectors, "re-applying is lossless");
+
+        acl_del_user(&at, &username).await.expect("deluser");
+    });
+}
+
+/// The ACL editor's save is the text it showed, applied with `ACL SETUSER`,
+/// which only ever *adds* patterns. Deleting a key pattern from the text has
+/// to revoke it on the server, not leave it in place behind a success — and
+/// an unchanged save has to apply on every lane, 6.2 included, whose
+/// `GETUSER` answers bare patterns that `SETUSER` refuses as written.
+#[test]
+#[ignore]
+fn acl_editor_text_is_authoritative_for_keys_and_channels() {
+    smol::block_on(async {
+        let id = register(server("it-acl-revoke", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        if acl_whoami(&at).await.expect("whoami").is_empty() {
+            eprintln!("skipped: server has no ACL (Redis < 6)");
+            return;
+        }
+        let username = unique("acl-revoke").replace(':', "-");
+        acl_set_user(&at, &username, &split_acl_rules("on nopass +@all ~* &*"))
+            .await
+            .expect("setuser");
+
+        // The unchanged text re-applies.
+        let user = acl_get_user(&at, &username).await.expect("getuser");
+        acl_set_user(&at, &username, &split_acl_rules(&user.to_rules_text()))
+            .await
+            .expect("an unchanged save applies");
+
+        // Narrow the keys and drop the channels, the way an admin edits it.
+        let narrowed = user
+            .to_rules_text()
+            .replace(" ~* ", " ~app:* ")
+            .replace(" &*", "")
+            .replace(" allkeys", "")
+            .replace(" allchannels", "");
+        acl_set_user(&at, &username, &split_acl_rules(&narrowed))
+            .await
+            .expect("narrowed save");
+        let after = acl_get_user(&at, &username).await.expect("getuser after");
+        assert_eq!(
+            after.keys,
+            vec!["~app:*".to_string()],
+            "the old ~* must be gone: {after:?}"
+        );
+        assert!(after.channels.is_empty(), "the old &* must be gone: {after:?}");
 
         acl_del_user(&at, &username).await.expect("deluser");
     });

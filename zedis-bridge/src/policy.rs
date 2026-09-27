@@ -33,6 +33,90 @@ use zedis_connection::{
     is_read_only_command, is_write_command, requires_write_confirm,
 };
 
+/// Commands that change or hold the connection they run on.
+///
+/// Without a session the bridge runs a caller's commands on a connection it
+/// shares: the pooled one for that server and database, or each master's
+/// cached one for a fan-out. Every account, the page's own reads and the MCP
+/// tools use the same one. So a `SELECT` there moves everyone's later
+/// commands to another database, `AUTH` or `RESET` re-signs it, `MULTI` turns
+/// everyone's next commands into `QUEUED`, a blocking pop or `WAIT` stalls
+/// every reply queued behind it, and a `SUBSCRIBE` takes it over. Most of these
+/// are reads to the allowlist, which is why this is a separate question.
+/// They are fine on a session, whose connection is the caller's alone.
+const CONNECTION_STATE: [&str; 33] = [
+    "AUTH",
+    "HELLO",
+    "SELECT",
+    "RESET",
+    "QUIT",
+    "READONLY",
+    "READWRITE",
+    "ASKING",
+    "MULTI",
+    "EXEC",
+    "DISCARD",
+    "WATCH",
+    "UNWATCH",
+    "WAIT",
+    "WAITAOF",
+    "BLPOP",
+    "BRPOP",
+    "BRPOPLPUSH",
+    "BLMOVE",
+    "BLMPOP",
+    "BZPOPMIN",
+    "BZPOPMAX",
+    "BZMPOP",
+    "MONITOR",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "SSUBSCRIBE",
+    "UNSUBSCRIBE",
+    "PUNSUBSCRIBE",
+    "SUNSUBSCRIBE",
+    "SYNC",
+    "PSYNC",
+    "DEBUG",
+];
+
+/// The `CLIENT` subcommands that set something on the connection.
+const CLIENT_STATE: [&str; 7] = [
+    "SETNAME", "SETINFO", "NO-EVICT", "NO-TOUCH", "TRACKING", "CACHING", "REPLY",
+];
+
+/// The command name of `args`, upper-cased.
+pub(crate) fn command_name(args: &[Vec<u8>]) -> String {
+    args.first()
+        .map(|name| String::from_utf8_lossy(name).to_ascii_uppercase())
+        .unwrap_or_default()
+}
+
+/// Whether `args` would change or hold the connection it runs on — see
+/// [`CONNECTION_STATE`]. `CLIENT` is judged by its subcommand, so `CLIENT
+/// LIST` stays a read worth having; `XREAD` / `XREADGROUP` hold the
+/// connection only with `BLOCK`, which comes before `STREAMS`.
+pub(crate) fn holds_connection(args: &[Vec<u8>]) -> bool {
+    let name = command_name(args);
+    if CONNECTION_STATE.contains(&name.as_str()) {
+        return true;
+    }
+    let word = |arg: &Vec<u8>| String::from_utf8_lossy(arg).to_ascii_uppercase();
+    match name.as_str() {
+        "CLIENT" => args
+            .get(1)
+            .map(word)
+            .is_some_and(|sub| CLIENT_STATE.contains(&sub.as_str())),
+        "XREAD" | "XREADGROUP" => args
+            .iter()
+            .skip(1)
+            .map(word)
+            .take_while(|arg| arg != "STREAMS")
+            .any(|arg| arg == "BLOCK"),
+        _ => false,
+    }
+}
+
 /// What the bridge will do with a command.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -214,6 +298,36 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<Vec<u8>> {
         parts.iter().map(|p| p.as_bytes().to_vec()).collect()
+    }
+
+    #[test]
+    fn what_would_change_a_shared_connection_is_named() {
+        // Transactions and blocking commands change what every other caller
+        // of the connection gets back, however they read to the allowlist.
+        for cmd in [
+            vec!["MULTI"],
+            vec!["exec"],
+            vec!["WATCH", "k"],
+            vec!["BLPOP", "q", "0"],
+            vec!["BZPOPMIN", "z", "0"],
+            vec!["XREAD", "BLOCK", "0", "STREAMS", "s", "$"],
+            vec!["XREADGROUP", "GROUP", "g", "c", "block", "10", "STREAMS", "s", ">"],
+            vec!["SELECT", "3"],
+            vec!["CLIENT", "REPLY", "OFF"],
+        ] {
+            assert!(holds_connection(&args(&cmd)), "{cmd:?}");
+        }
+        // A non-blocking read stays a read — including one whose *key* is
+        // spelled BLOCK, which comes after STREAMS.
+        for cmd in [
+            vec!["XREAD", "COUNT", "10", "STREAMS", "s", "0"],
+            vec!["XREAD", "STREAMS", "BLOCK", "0"],
+            vec!["LPOP", "q"],
+            vec!["CLIENT", "LIST"],
+            vec!["GET", "MULTI"],
+        ] {
+            assert!(!holds_connection(&args(&cmd)), "{cmd:?}");
+        }
     }
 
     fn plain() -> RedisServer {

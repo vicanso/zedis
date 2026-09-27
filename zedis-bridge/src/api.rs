@@ -36,7 +36,7 @@ use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::path::Path as FsPath;
 use uuid::Uuid;
-use zedis_connection::{RedisServer, get_connection_manager, get_server, get_servers, save_servers};
+use zedis_connection::{PipelineSpec, RedisServer, get_connection_manager, get_server, get_servers, save_servers};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -659,12 +659,16 @@ async fn add_server(
         (None, Some(server)) => (server, req.shared),
         _ => return Err(ApiError::BadRequest("give either `url` or `server`".to_string())),
     };
-    // An id the caller cannot see is either free or someone else's, and the
-    // two must look the same: a fresh id, never an overwrite and never a
-    // refusal that would confirm the other entry exists.
-    if server.id.trim().is_empty()
-        || get_server(&server.id).is_ok_and(|taken| !visible_to(&state.accounts, &taken, &account))
-    {
+    // Adding never overwrites. An id that is already taken gets a fresh one,
+    // whoever's entry holds it: an edit is a PUT, which asks whether this
+    // account may write that entry, and a POST that kept a visible id went
+    // around the check — and around the dial-or-roll-back, whose roll-back
+    // for a *new* entry deleted the one it had replaced. Taken by an entry
+    // the caller cannot see looks the same, so the reply never confirms that
+    // one exists. An id that could not travel as one path segment is
+    // replaced too: the page builds `/v1/servers/{id}` from it, and a
+    // `../servers/<other>` there would aim another account's edit elsewhere.
+    if !is_plain_id(&server.id) || get_server(&server.id).is_ok() {
         server.id = Uuid::now_v7().to_string();
     }
     assign_owner(&mut server, &account, shared, None);
@@ -696,6 +700,13 @@ async fn add_server(
         },
     );
     result.map(Json)
+}
+
+/// Whether `id` can name an entry as it is: non-empty, short, and made of
+/// the characters a UUID or a hand-written slug uses, so it is one URL path
+/// segment as written.
+fn is_plain_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Put `server` into the shared list and prove it reachable, or put the list
@@ -1176,6 +1187,18 @@ pub(crate) async fn forward_values(
     req: &ExecRequest,
     decoded: &[Vec<Vec<u8>>],
 ) -> ApiResult<(Vec<redis::Value>, Vec<String>)> {
+    // Without a session — and always for a fan-out, which ignores one — the
+    // commands run on a connection other callers share. What would change or
+    // hold it is refused here, the one path both the exec route and the MCP
+    // tools take, whatever the allowlist thinks of it (`policy::holds_connection`).
+    if (req.session.is_none() || req.fanout.is_some())
+        && let Some(args) = decoded.iter().find(|args| policy::holds_connection(args))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "{} changes or holds the connection it runs on, which other callers share; open a session for it",
+            policy::command_name(args)
+        )));
+    }
     // Fan-out is its own path: it needs the client, not a connection, because
     // reaching every master is topology knowledge this process owns.
     if let Some(mode) = &req.fanout {
@@ -1262,6 +1285,13 @@ pub(crate) async fn forward_values(
 
     let values = match &req.pipeline {
         None => {
+            // One command. More without a pipeline would have been judged and
+            // audited in full and then sent as only the first.
+            if decoded.len() != 1 {
+                return Err(ApiError::BadRequest(
+                    "several commands are a pipeline; send them with its framing".to_string(),
+                ));
+            }
             let cmd = resp::command_from_args(&decoded[0]);
             vec![
                 conn.req_packed_command(&cmd)
@@ -1270,6 +1300,20 @@ pub(crate) async fn forward_values(
             ]
         }
         Some(spec) => {
+            // The framing is checked, not trusted: on a multiplexed connection
+            // `count` is how replies are dealt out, so a count these commands
+            // do not produce hands another caller's replies to this one, or
+            // this one's to the next.
+            let expected = PipelineSpec::for_pipeline(decoded.len(), spec.atomic);
+            if (spec.offset, spec.count) != (expected.offset, expected.count) {
+                return Err(ApiError::BadRequest(format!(
+                    "a pipeline of {} commands{} is framed as offset {}, count {}",
+                    decoded.len(),
+                    if spec.atomic { " in a transaction" } else { "" },
+                    expected.offset,
+                    expected.count
+                )));
+            }
             let mut pipe = redis::Pipeline::with_capacity(decoded.len());
             if spec.atomic {
                 pipe.atomic();
@@ -1284,6 +1328,22 @@ pub(crate) async fn forward_values(
     };
 
     Ok((values, Vec::new()))
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::is_plain_id;
+
+    #[test]
+    fn only_an_id_that_is_one_path_segment_is_kept() {
+        assert!(is_plain_id("0192f3c4-7b1e-7d2a-9c3e-1a2b3c4d5e6f"));
+        assert!(is_plain_id("staging_eu-1"));
+        assert!(!is_plain_id(""));
+        assert!(!is_plain_id("../servers/prod"));
+        assert!(!is_plain_id("a/b"));
+        assert!(!is_plain_id("a%2Fb"));
+        assert!(!is_plain_id(&"x".repeat(129)));
+    }
 }
 
 #[cfg(test)]

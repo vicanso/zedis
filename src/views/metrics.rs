@@ -493,6 +493,26 @@ fn make_x_labels_band(
         .collect()
 }
 
+/// Where `ScalePoint::tick` puts the point at `index` of `len` evenly spread
+/// over `range` — the same arithmetic, without the search of the domain for
+/// the point's label that `tick` starts with.
+///
+/// The live window holds 1800 samples a series, so that search made every
+/// paint quadratic (a ten-series chart ≈ 16M string comparisons a frame,
+/// repeated on each tick, scroll and hover). And two samples in the same
+/// second share a `%H:%M:%S` label, so the search put the second at the
+/// first one's x and the line doubled back. The axis labels still come from
+/// the scale; only the points are placed by position.
+fn point_x(index: usize, len: usize, range: [f32; 2]) -> f32 {
+    let start = range[0].min(range[1]);
+    let span = range[0].max(range[1]) - start;
+    if len <= 1 {
+        start + span / 2.
+    } else {
+        start + index as f32 * (span / (len - 1) as f32)
+    }
+}
+
 fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Background)>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -528,16 +548,17 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Backg
             }
             .paint(&bounds, window, cx);
 
+            let len = dates.len();
+            let x_range = [0., width - Y_LABEL_WIDTH];
             for (values, stroke, fill) in series.iter() {
-                let x_c = x.clone();
                 let y_c = y.clone();
-                let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
+                let data: Vec<(usize, f64)> = values.iter().copied().take(len).enumerate().collect();
 
                 Area::new()
                     .data(data)
-                    .x(move |d: &(SharedString, f64)| x_c.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
+                    .x(move |d: &(usize, f64)| Some(point_x(d.0, len, x_range) + Y_LABEL_WIDTH))
                     .y0(height)
-                    .y1(move |d: &(SharedString, f64)| y_c.tick(&d.1))
+                    .y1(move |d: &(usize, f64)| y_c.tick(&d.1))
                     .stroke(*stroke)
                     .fill(*fill)
                     .paint(&bounds, window);
@@ -592,14 +613,15 @@ fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, st
             }
             .paint(&bounds, window, cx);
 
+            let len = dates.len();
+            let x_range = [0., width - Y_LABEL_WIDTH];
             for (values, stroke) in &series {
-                let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
-                let x = x.clone();
+                let data: Vec<(usize, f64)> = values.iter().copied().take(len).enumerate().collect();
                 let y = y.clone();
                 let mut line = Line::new()
                     .data(data)
-                    .x(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
-                    .y(move |d: &(SharedString, f64)| y.tick(&d.1))
+                    .x(move |d: &(usize, f64)| Some(point_x(d.0, len, x_range) + Y_LABEL_WIDTH))
+                    .y(move |d: &(usize, f64)| y.tick(&d.1))
                     .stroke(*stroke)
                     .stroke_width(2.);
 
@@ -1314,6 +1336,29 @@ fn metrics_csv(samples: &[RedisMetrics]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_lands_where_the_point_scale_would_put_it() {
+        // Same x as `ScalePoint::tick` for every point, without its search —
+        // including one point (centred) and a range given backwards.
+        for (len, range) in [
+            (1, [0., 300.]),
+            (2, [0., 300.]),
+            (7, [0., 512.5]),
+            (1800, [0., 900.]),
+            (5, [40., -10.]),
+        ] {
+            let domain: Vec<usize> = (0..len).collect();
+            let scale = ScalePoint::new(domain.clone(), range.to_vec());
+            for index in domain {
+                assert_eq!(
+                    Some(point_x(index, len, range)),
+                    scale.tick(&index),
+                    "len {len} index {index}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_csv_has_one_row_per_sample_with_the_raw_numbers() {
