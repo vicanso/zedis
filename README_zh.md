@@ -301,11 +301,11 @@ read_only = true
 
 ### 生产环境的写入锁
 
-打了 **Prod** 标签的条目，桌面和浏览器里写入都默认锁定（任何条目都可以在“安全”标签页的“写入”里选：跟随标签 / 允许 / 锁定 / 只读）。状态栏的锁要求输入服务器名，然后打开一个 **15 分钟**的窗口——按钮上显示剩余时间，到点自动重新锁上。浏览器里 bridge 按账号维护同一个窗口（`POST` / `DELETE /v1/servers/{id}/unlock`，审计记为 `unlocked` / `locked`），窗口之外的写入和破坏性命令一样收到 `428`，脚本和页面一视同仁。升级后已有的 Prod 条目会以锁定状态开始；不想要就把它的“写入”改为“允许”。
+打了 **Prod** 标签的条目，桌面和浏览器里写入都默认锁定（任何条目都可以在“安全”标签页的“写入”里选：跟随标签 / 允许 / 锁定 / 只读）。状态栏的锁要求输入服务器名，然后打开一个 **15 分钟**的窗口——按钮上显示剩余时间，到点自动重新锁上。浏览器里 bridge 按账号维护同一个窗口（`POST` / `DELETE /v1/servers/{id}/unlock`，审计记为 `unlocked` / `locked`），窗口之外的写入和破坏性命令一样收到 `428`，脚本和页面一视同仁。从浏览器发往这类条目的 Lua 脚本或函数调用（`EVAL` / `EVALSHA` / `FCALL`，`_RO` 形式除外）每次都要确认，窗口内也一样，Prod 上要输入名字——脚本里写了什么，命令分类器看不见。升级后已有的 Prod 条目会以锁定状态开始；不想要就把它的“写入”改为“允许”。
 
 ### 审计日志
 
-`--audit-log /data/audit.log`（`ZEDIS_BRIDGE_AUDIT_LOG`）会为每个事件追加一行 JSON：每次登录与登录失败、只读账号被拒绝的每次请求、服务器条目的新增、编辑（改了哪些设置、改前改后的值；改了哪些密钥，只记名字不记值；私有条目被改为共享）和删除、每条管理服务器的命令 —— `CONFIG SET`、`ACL SETUSER`、`REPLICAOF`、`MODULE LOAD`、`CLIENT KILL`、`FLUSHDB` 之类 —— 以及每条需要人确认才放行的命令，所以开了"每次写都要确认"的条目，它的每一次写都会留痕。`--audit-writes`（`ZEDIS_BRIDGE_AUDIT_WRITES=1`）再加上普通的数据写命令；读命令永远不记。参数里的密码会被抹掉，过长的值会截断，同一批里的同名命令合并成一行并记数量，文件以仅属主可读的权限创建。
+`--audit-log /data/audit.log`（`ZEDIS_BRIDGE_AUDIT_LOG`）会为每个事件追加一行 JSON：每次登录与登录失败、只读账号被拒绝的每次请求、服务器条目的新增、编辑（改了哪些设置、改前改后的值；改了哪些密钥，只记名字不记值；私有条目被改为共享）和删除、每条管理服务器的命令 —— `CONFIG SET`、`ACL SETUSER`、`REPLICAOF`、`MODULE LOAD`、`CLIENT KILL`、`FLUSHDB` 之类 —— 以及每条需要人确认才放行的命令，所以开了"每次写都要确认"的条目，在终端里输入的每一次写都会留痕。`--audit-writes`（`ZEDIS_BRIDGE_AUDIT_WRITES=1`）再加上普通的数据写命令；读命令永远不记。参数里的密码会被抹掉，过长的值会截断，同一批里的同名命令合并成一行并记数量，文件以仅属主可读的权限创建。
 
 ```json
 {"ts":"2026-09-25T08:12:03.417Z","account":"alice","peer":"10.0.0.7:51234","event":"command","server":{"id":"0199…","name":"prod"},"db":0,"command":"CONFIG","args":["SET","maxmemory","2gb"],"outcome":"confirmed","kind":"config_set","confirm":"type_name"}
@@ -315,7 +315,7 @@ read_only = true
 
 ### 让 AI 助手走同一扇门（MCP）
 
-`POST /v1/mcp` 是一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务端，Claude Code、Cursor 或任何 MCP 客户端都可以经由 bridge 读取你的 Redis —— 只能读。助手像脚本一样用 HTTP Basic 登录，账号**必须是只读的**（`ai:ro@secret`，或 `read_only = true`），完整权限的账号无论问什么都会被拒绝。工具是按模型而不是按终端的习惯设计的：`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一小段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`，跑任意其它只读命令。工具发出的每条命令都过页面同一份只读白名单，再加一层拒绝会改动共享连接状态的命令（`SELECT`、`AUTH`、`CLIENT SETNAME`、`SUBSCRIBE` 等）；写入、脚本和管理命令都会被拒绝，并附上模型读得懂的原因。大值会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，而且**每次调用都是审计日志里的一行** —— 读也记，因为调用者是替人做事的程序。
+`POST /v1/mcp` 是一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务端，Claude Code、Cursor 或任何 MCP 客户端都可以经由 bridge 读取你的 Redis —— 只能读。助手像脚本一样用 HTTP Basic 登录，账号**必须是只读的**（`ai:ro@secret`，或 `read_only = true`），完整权限的账号无论问什么都会被拒绝。工具是按模型而不是按终端的习惯设计的：`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一小段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`，跑任意其它只读命令。工具发出的每条命令都过页面同一份只读白名单，再加一层拒绝会改动共享连接状态的命令（`SELECT`、`AUTH`、`CLIENT SETNAME`、`SUBSCRIBE` 等）；写入、`_RO` 形式以外的脚本、管理命令以及会返回凭据的读（读密码的 `CONFIG GET`、`ACL LIST`）都会被拒绝，并附上模型读得懂的原因。大值会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，而且**每次调用都是审计日志里的一行** —— 读也记，因为调用者是替人做事的程序。
 
 ```sh
 claude mcp add --transport http zedis https://bridge.example.com/v1/mcp \

@@ -29,6 +29,13 @@ Zedis is a **local desktop client** — it stores connection secrets encrypted a
 - the custom script viewer (which runs local shell commands),
 - the optional AI analysis (what leaves your machine, and where).
 
+The self-hosted web version adds a server of its own, `zedis-bridge`: it holds the server list and its secrets, signs accounts in and forwards their commands, so it is reachable over the network by design. Reports about it are just as welcome, in particular:
+
+- sign-in, saved logins and the trusted-proxy header (`--trusted-header` / `--trusted-proxy`),
+- a read-only account, or a `:ro` entry, getting a write through — the MCP entry point (`/v1/mcp`) included,
+- one account seeing another's private server entry, or any secret reaching the browser,
+- the audit log leaving out something it says it records.
+
 ### Threat model
 A Redis server you connect to is treated as **untrusted input**. Key names and
 values are chosen by whoever can write to that server, so Zedis never lets them
@@ -68,6 +75,13 @@ Zedis 是**本地桌面客户端** —— 连接密钥加密存储,元数据(标
 - TLS/SSL 与 SSH 隧道的处理;
 - 自定义脚本查看器(会执行本地 Shell 命令);
 - 可选的 AI 分析(哪些数据离开本机、发往何处)。
+
+自托管的 Web 版多了一个自己的服务端 `zedis-bridge`:它保存服务器列表及其密钥、负责账号登录并代为转发命令,因此按设计就是网络可达的。关于它的报告同样欢迎,尤其是:
+
+- 登录、已保存的登录会话与受信代理请求头(`--trusted-header` / `--trusted-proxy`);
+- 只读账号或标了 `:ro` 的条目让写入通过了 —— 包括 MCP 入口(`/v1/mcp`);
+- 一个账号看到了另一个账号的私有服务器条目,或任何密钥到达了浏览器;
+- 审计日志漏记了它声称会记录的事件。
 
 ### 威胁模型
 所连接的 Redis 服务端被视为**不可信输入**。键名与值由任何对该服务端有写权限的人决定,

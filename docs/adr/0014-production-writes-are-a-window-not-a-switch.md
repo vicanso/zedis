@@ -71,3 +71,16 @@ picked. The tag sits first on that tab, so the choice reads downward.
   terminal line. *Confirm Writes* stays the terminal's rule on both sides:
   the bridge applies it to session requests only, which are the terminal's,
   since an editor's write is a question the page could not answer.
+
+## Amended 2026-09-27 — a script is asked every time
+
+"Inside the window, writes are plain `Allow`" has one exception on the
+bridge. A script — `EVAL` / `EVALSHA` / `FCALL`, not the `_RO` forms — sent
+to a write-locked or production entry is answered `Confirm { Script }`
+every time, inside the window too, by the server's name on production
+(`danger::classify_guarded_script`): what a script writes is invisible to
+the classifier, so a window opened for a `SET` would otherwise pass a
+`FLUSHALL` inside one. The page asks first, through the `bridge_danger`
+seam (`views/danger_confirm.rs`), from the two places it sends a script —
+the terminal and the function editor; a new place that sends one asks it
+too. The desktop does not ask this question.

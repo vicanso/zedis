@@ -29,21 +29,24 @@ make release  # optimized release build (--features mimalloc)
 Run these locally and make sure they pass — they are the same gates CI enforces:
 
 ```bash
-make fmt      # cargo fmt
-make lint     # typos + clippy --all-targets --all -- --deny=warnings
-cargo test
+make fmt        # cargo fmt
+make lint       # cargo fmt --check + typos + clippy --all-targets --all -- --deny=warnings
+make test       # cargo test --workspace (a bare `cargo test` skips the sub-crates' suites)
+make check-web  # every crate for wasm32 — the browser build, which `make lint` cannot see
 ```
+
+`make check-web` builds from `zedis-web/`, whose `rust-toolchain.toml` pins nightly with the `wasm32-unknown-unknown` target — rustup fetches both on the first run. It matters for a change to a file with a `#[cfg(target_family = "wasm")]` gate or to anything under `crates/`.
 
 A few project-specific rules:
 - **No `.unwrap()`** — Clippy runs with `unwrap_used = "deny"` **including tests**. Use `.expect("…")` or proper matching.
 - **i18n parity** — UI strings live in `locales/*.toml`. All 8 locales must have the **exact same key set**, or `build.rs` fails the build. Adding or removing a UI string means editing all 8 files; translate natively where the surrounding section already is.
 - **README parity** — keep `README.md` / `README_zh.md` (and the `docs/FEATURES.md` / `docs/FEATURES_zh.md` pair) in sync when features change.
 - **Components** — prefer `gpui-component`'s built-in components first; fall back to the shared widgets in `crates/zedis-ui` only when none fit.
-- **Connection-layer changes** — anything that depends on a real server (ACL, versions, modules, cluster / sentinel / TLS) has live tests in `crates/zedis-connection/tests/live.rs`: `make it-up && make it && make it-down` (needs `redis-server` on PATH, or `REDIS_IMAGE=redis:7.2 make it-up` with docker). CI runs them against Redis 6.2 / 7.2 / 8.0, Valkey and redis-stack.
+- **Connection-layer changes** — anything that depends on a real server (ACL, versions, modules, cluster / sentinel / TLS) has live tests in `crates/zedis-connection/tests/live.rs`: `make it-up && make it && make it-down` (needs `redis-server` on PATH, or `REDIS_IMAGE=redis:7.2 make it-up` with docker). CI runs them against Redis 6.2 / 7.2 / 8.0 / 8.10, Valkey 8.0 / 9.0, redis-stack and valkey-bundle.
 
 ### Submitting a Pull Request
 1. Fork the repo and create a branch off `main`.
-2. Make your change; ensure `make fmt`, `make lint`, and `cargo test` all pass.
+2. Make your change; ensure `make fmt`, `make lint`, `make test` and `make check-web` all pass.
 3. Open a PR using the template and complete the checklist.
 4. By submitting a PR, you agree to the [Contributor License Agreement](CLA.md) — confirming your contribution is original and licensed under the project's open-source terms.
 
@@ -78,20 +81,23 @@ make release  # 优化的发布构建(--features mimalloc)
 请在本地运行以下命令并确保通过 —— 与 CI 的门禁一致:
 
 ```bash
-make fmt      # cargo fmt
-make lint     # typos + clippy --all-targets --all -- --deny=warnings
-cargo test
+make fmt        # cargo fmt
+make lint       # cargo fmt --check + typos + clippy --all-targets --all -- --deny=warnings
+make test       # cargo test --workspace(单独的 `cargo test` 会漏掉子 crate 的测试)
+make check-web  # 把每个 crate 编译到 wasm32 —— 浏览器版,`make lint` 看不到它
 ```
+
+`make check-web` 在 `zedis-web/` 下构建,那里的 `rust-toolchain.toml` 固定了 nightly 与 `wasm32-unknown-unknown` target,首次运行时 rustup 会自动装好。改动了带 `#[cfg(target_family = "wasm")]` 的文件或 `crates/` 下的任何内容时,都要跑它。
 
 几条项目专属规则:
 - **禁用 `.unwrap()`** —— Clippy 以 `unwrap_used = "deny"` 运行,**包括测试**。请用 `.expect("…")` 或正确的匹配处理。
 - **i18n 一致性** —— UI 文案位于 `locales/*.toml`。8 种语言必须拥有**完全相同的 key 集合**,否则 `build.rs` 会编译失败。新增/删除一条 UI 文案需同时改 8 个文件;所在区段已翻译的请原生翻译。
 - **README 一致性** —— 功能变动时,保持 `README.md` / `README_zh.md`(以及 `docs/FEATURES.md` / `docs/FEATURES_zh.md`)同步。
 - **组件选用** —— 优先使用 `gpui-component` 的内置组件;仅当没有合适组件时,才用 `crates/zedis-ui` 里的共享控件。
-- **连接层改动** —— 凡依赖真实服务端的行为(ACL、版本、模块、cluster / sentinel / TLS)都有实机测试 `crates/zedis-connection/tests/live.rs`:`make it-up && make it && make it-down`(需要 PATH 里有 `redis-server`,或用 docker:`REDIS_IMAGE=redis:7.2 make it-up`)。CI 会对 Redis 6.2 / 7.2 / 8.0、Valkey 和 redis-stack 各跑一遍。
+- **连接层改动** —— 凡依赖真实服务端的行为(ACL、版本、模块、cluster / sentinel / TLS)都有实机测试 `crates/zedis-connection/tests/live.rs`:`make it-up && make it && make it-down`(需要 PATH 里有 `redis-server`,或用 docker:`REDIS_IMAGE=redis:7.2 make it-up`)。CI 会对 Redis 6.2 / 7.2 / 8.0 / 8.10、Valkey 8.0 / 9.0、redis-stack 与 valkey-bundle 各跑一遍。
 
 ### 提交 Pull Request
 1. Fork 仓库,从 `main` 切出分支。
-2. 完成改动;确保 `make fmt`、`make lint`、`cargo test` 全部通过。
+2. 完成改动;确保 `make fmt`、`make lint`、`make test`、`make check-web` 全部通过。
 3. 使用模板提 PR 并完成自查表。
 4. 提交 PR 即表示你同意 [贡献者许可协议(CLA)](CLA.md) —— 确认你的贡献为原创,并授权在项目开源协议下使用。

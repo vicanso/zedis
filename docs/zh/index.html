@@ -222,10 +222,10 @@
             </article>
             <article class="card">
               <div class="icon">🧭</div>
-              <h3>受限服务端也能用</h3>
+              <h3>Valkey 与受限服务端</h3>
               <p>
-                连接后自动探测能力：代理、ElastiCache / Azure / Tair、Valkey / Dragonfly / KeyDB
-                上跑不了的功能会灰显<em>并说明原因</em>，而不是报错。
+                Redis 与 Valkey 都是一等公民 &mdash;&mdash; 每个版本门槛都有自己的 Valkey 下限。连接后自动探测能力：代理、ElastiCache
+                / Azure / Tair、Dragonfly / KeyDB 上跑不了的功能会灰显<em>并说明原因</em>，而不是报错。
               </p>
             </article>
             <article class="card">
@@ -248,7 +248,8 @@
               <h3>浏览器里也能用</h3>
               <p>
                 同一套代码编译成 WebAssembly，一个约 26&nbsp;MB 的 Docker 镜像即可自托管 &mdash;&mdash;
-                部署在 Redis 旁边，整个团队从标签页上手。
+                部署在 Redis 旁边，整个团队从标签页上手。MCP 入口让 Claude Code、Cursor 以只读账号读取 Redis &mdash;&mdash;
+                只能读。
               </p>
             </article>
           </div>

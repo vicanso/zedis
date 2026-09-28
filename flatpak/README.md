@@ -21,8 +21,9 @@ Files here are the source of truth for the Flathub submission
 This pins the manifest's git source to the tag (fills the `commit:`
 placeholder via `git rev-parse <tag>^{}`) and runs
 `scripts/gen-flatpak-sources.sh <tag>`, which mirrors every crate in that
-tag's `Cargo.lock` (including git dependencies like GPUI) into
-`flatpak/cargo-sources.json` — Flathub builders have no network access.
+tag's `Cargo.lock` (all from crates.io, GPUI included since it moved to the
+`gpui-pre` releases) into `flatpak/cargo-sources.json` — Flathub builders
+have no network access.
 
 The tag must already contain the `flatpak/` directory (i.e. v0.4.7 or later)
 and the release assets must be published.

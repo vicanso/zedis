@@ -101,7 +101,7 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动
 ### 性能诊断
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 
-Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` 含用户、客户端库、查询缓冲与内存列 / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开，另有按 ID / ADDR / LADDR / USER / TYPE / MAXAGE 的**按条件终止**表单，以及与 `UNPAUSE` 并列的定时 `CLIENT PAUSE`（WRITE 或 ALL））、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。一键还可取回服务端自己的诊断结论——**`MEMORY DOCTOR`**、**`MEMORY STATS`** 与 **`LATENCY DOCTOR`**——渲染成可读报告，而不是一堵原始文本墙。Valkey 8.1+ 上慢日志面板还接入 **`COMMANDLOG`**：慢命令旁边并列服务端记录的超大**请求**与超大**回复**日志，正是用来揪出那个发送 10 MB 参数的客户端。
+Performance 面板把**慢日志**与 `LATENCY` 事件交叉关联（±5 秒徽章一键跳到 `LATENCY HISTORY` 折线图），可按**命令聚合**为按总耗时排名的 Top 视图（一键回到原始明细），并把过滤后的视图导出为 **CSV/JSON**——另有带确认保护的 `SLOWLOG RESET` 用于开启新的观察窗口；外加关键字过滤的实时 `MONITOR`——支持暂停、实时速率徽标（流量失控自动停止）与 CSV/JSON 导出、客户端管理（`CLIENT LIST` 含用户、客户端库、查询缓冲与内存列 / `CLIENT KILL`，可按连接类型过滤——普通 / 副本 / 主 / monitor / 发布订阅 / 阻塞中——并可对当前过滤结果做带确认的批量断开，另有按 ID / ADDR / LADDR / USER / TYPE / MAXAGE 的**按条件终止**表单，以及与 `UNPAUSE` 并列的定时 `CLIENT PAUSE`（WRITE 或 ALL））、以及来自 `INFO commandstats` 的每命令 **次/秒** 表——带汇总行、闲置/自身连接噪声过滤与导出。一键还可取回服务端自己的诊断结论——**`MEMORY DOCTOR`**、**`MEMORY STATS`** 与 **`LATENCY DOCTOR`**——渲染成可读报告，而不是一堵原始文本墙。Valkey 8.1+ 上慢日志面板还接入 **`COMMANDLOG`**：慢命令旁边并列服务端记录的超大**请求**与超大**回复**日志，正是用来揪出那个发送 10 MB 参数的客户端。每个延迟事件还带一列**平均值**——Valkey 8.1+ 服务端保存了总和，因此是自上次重置以来的精确均值，其他服务端取 `LATENCY HISTORY` 的均值；Valkey 8.0+ 上，慢日志里的 `EVALSHA` 可以直接打开这个摘要背后的**脚本源码**（`SCRIPT SHOW`）。生效中的 `CLIENT PAUSE` 会在状态栏显示为带剩余时间的标记，点一下即解除：Valkey 8.1+ 会在 `INFO clients` 里上报暂停，所以不论是谁暂停的都看得到；其他服务端只显示 Zedis 自己发出的那次。
 
 ### 热点 Key
 **`HOTKEYS` 跟踪（Redis 8.6+）：哪些 key 在烧 CPU 和带宽。**
@@ -116,14 +116,14 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 集群健康与管理
 **带复制延迟的拓扑树、slot 分布图、逐节点负载，以及重分片向导。**
 
-以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE`，Sentinel 下则有 `FAILOVER` / `RESET` / `REMOVE` / `MONITOR`（添加主节点）/ `SET`（quorum、down-after、failover-timeout、parallel-syncs、auth-pass）/ `FLUSHCONFIG`，`CKQUORUM` 按哨兵逐个回答——每个写操作都过确认对话框、PROD 升级。`SENTINEL` 命令直接发给哨兵本身（连接里的种子加上它们上报的同伴），绝不发给池化的数据主节点；每个主节点行显示哨兵对它的描述：quorum、哨兵数、各时间、宕机标记。连接未填主节点名而哨兵监控多个主节点时，取名字排序的第一个并提示，其余在面板里一键切换并写回连接。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。**无人认领或被两个节点同时认领**的 slot 会被标出并提供一键修复，**再平衡**可将其重新均分；Valkey 9+ 上迁移直接走服务端自己的**原子槽位交接**，无需逐 key 搬运。
+以树状查看 Cluster/Sentinel 拓扑（master、slot 范围、replica、源于 `INFO replication` 的逐副本延迟），并可操作：`CLUSTER FAILOVER` / `FORGET` / `MEET` / `REPLICATE`，Sentinel 下则有 `FAILOVER` / `RESET` / `REMOVE` / `MONITOR`（添加主节点）/ `SET`（quorum、down-after、failover-timeout、parallel-syncs、auth-pass）/ `FLUSHCONFIG`，`CKQUORUM` 按哨兵逐个回答——每个写操作都过确认对话框、PROD 升级。`SENTINEL` 命令直接发给哨兵本身（连接里的种子加上它们上报的同伴），绝不发给池化的数据主节点；每个主节点行显示哨兵对它的描述：quorum、哨兵数、各时间、宕机标记。连接未填主节点名而哨兵监控多个主节点时，取名字排序的第一个并提示，其余在面板里一键切换并写回连接。另有三个页签深入细节：**Slots** 展示各 master 的 slot 范围与迁移中的 slot，外加一张 **热点 Slot** 表（`CLUSTER SLOT-STATS`，Redis 8.2+）—— 按 key 数排名的 Top slot，开启 `cluster-slot-stats-enabled` 的集群还可按内存 / CPU / 网络 I/O 排序，每行以颜色对应所属 master；**Load** 采样各 master 的内存 / OPS / 客户端数，**重分片**向导在 master 间迁移 slot —— 选择目标节点（源节点可选，在 Load 卡片上一键指定）、预览方案，再执行带确认保护的 `CLUSTER RESHARD`，执行中逐 slot 显示实时进度条。**无人认领或被两个节点同时认领**的 slot 会被标出并提供一键修复，**再平衡**可将其重新均分；Valkey 9+ 与 Redis 8.4+ 上迁移直接走服务端自己的**原子槽位交接**（Valkey 用 `CLUSTER MIGRATESLOTS`，Redis 用 `CLUSTER MIGRATION`），无需逐 key 搬运。节点列表会统计集群标记为**已失败**或**疑似失败**的节点（`CLUSTER NODES` 里的 `fail` / `fail?`），Valkey 8.1+ 上还会显示每个节点的**可用区**。
 
 **单机**服务器上，同一页面即**复制视图**：按 `INFO replication` 呈现主库与各从库及其延迟，并提供改变拓扑的命令。`REPLICAOF host port` 挂载从库，`REPLICAOF NO ONE` 将其提升为主，**`FAILOVER`** 以协调的方式移交主库角色而非强行切换。Sentinel 与 Cluster 条目则各自使用它们自己的故障转移机制，因此该页面不会给出两套做法。
 
 ### 持久化与键事件
 **RDB/AOF 状态 + 一键保存，外加实时键事件排查。**
 
-持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。**FLUSHDB / FLUSHALL** 位于同一个 Tools → 管理分组，只读连接下置灰，执行前走破坏性命令确认弹窗（PROD 升级），清空开发库不必再切到命令行。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
+持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（PROD 升级），Valkey 8.1+ 上还可**取消**进行中的快照（`BGSAVE CANCEL`），集群下逐节点显示状态行，并有 **Policy & 路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。**FLUSHDB / FLUSHALL** 位于同一个 Tools → 管理分组，只读连接下置灰，执行前走破坏性命令确认弹窗（PROD 升级），清空开发库不必再切到命令行。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
 
 ### 原始 INFO 浏览器
 **`INFO everything` 全部字段，单个可过滤表格。**
@@ -147,7 +147,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### Key 编辑与历史
 **重命名、字段级 TTL、文件导入导出、批量粘贴、版本历史。**
 
-原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+；8.0+ 上字段写入与 TTL 合为一条 `HSETEX`，编辑值时 `KEEPTTL` 保住原 TTL）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚。删除**单个** key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，可在 工具 → 已删除的键 恢复、TTL 原样保留；设置中可关闭 —— 批量删除不入回收站）——生产环境手滑删 key 不再是不可挽回的事故。超大的 String/JSON 值绝不盲目加载：编辑器先显示大小，点击**仍要加载**才真正拉取。Redis 8.4+ / Valkey 8.1+ 上，string 保存是**乐观并发**（`SET … IFEQ` 对比你加载时的字节）：并发写入者的修改绝不会被静默覆盖——保存被拒绝时会重新加载最新值，并在覆盖前征求确认。键栏会显示值的**存储编码**与**空闲时间**，TTL 也可以用日期选择器设为一个**绝对时刻**（`EXPIREAT`），而不必换算成秒数。值编辑器支持**查找替换**；内容为 JSON 的字符串可以用 **JSON 树**打开并按路径操作（`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR`——当 key 只是普通字符串而非 RedisJSON 文档时在本地施加），每次保存前都会**校验，并可先格式化或压缩**。每个会话还有一份**变更日志**记录你改过什么，集合类型附带结构化 diff。
+原子**重命名**（`RENAMENX`，带覆盖保护）、字段级 **Hash TTL**（`HEXPIRE`/`HPERSIST`，Redis 7.4+；8.0+ 上字段写入与 TTL 合为一条 `HSETEX`，编辑值时 `KEEPTTL` 保住原 TTL）、**Value 文件导出 / 导入**（二进制安全、`KEEPTTL`）、TSV/CSV **批量粘贴**到 Hash/List/Set/ZSet，以及纯客户端的**最近 10 版本**写入历史，可 diff 可一键回滚——大值也逐行对齐比较，未改动的段落自动折叠，并可在改动之间逐个跳转。删除**单个** key 时会先把 `DUMP` 载荷存入**本地回收站**（保留 24 小时，可在 工具 → 已删除的键 恢复、TTL 原样保留；设置中可关闭 —— 批量删除不入回收站）——生产环境手滑删 key 不再是不可挽回的事故。超大的 String/JSON 值绝不盲目加载：编辑器先显示大小，点击**仍要加载**才真正拉取。Redis 8.4+ / Valkey 8.1+ 上，string 保存是**乐观并发**（`SET … IFEQ` 对比你加载时的字节）：并发写入者的修改绝不会被静默覆盖——保存被拒绝时会重新加载最新值，并在覆盖前征求确认。键栏会显示值的**存储编码**与**空闲时间**，TTL 也可以用日期选择器设为一个**绝对时刻**（`EXPIREAT`），而不必换算成秒数。值编辑器支持**查找替换**；内容为 JSON 的字符串可以用 **JSON 树**打开并按路径操作（`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR`——当 key 只是普通字符串而非 RedisJSON 文档时在本地施加），每次保存前都会**校验，并可先格式化或压缩**。每个会话还有一份**变更日志**记录你改过什么，集合类型附带结构化 diff。
 
 ### 批量 Key 操作
 **多选删除、批量 TTL、DUMP/RESTORE 导入导出、自动刷新。**
@@ -157,7 +157,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 跨服务器工具
 **在两台服务器间复制 / 对比 key、或对比完整配置。**
 
-**复制** key（连值带 TTL，`DUMP`/`RESTORE`）、**对比** string key 与对端同名 key（并排 diff）、或**对比**两台的 `CONFIG GET *`（斑马线表格只列差异）。专为排查"prod 和 staging 为何不一致"。整个**前缀**也能搬：按模式选定 key，Zedis 直接经 `DUMP` / `RESTORE` 流式送到另一台服务器，保留 TTL，并给出逐 key 的结果列表。两个**数据库**还可以按前缀比对——两边都有、只此处有、只彼处有、或两边都有但值不同——迁移结果因此可以核验，而不是全靠假设。
+**复制** key（连值带 TTL，`DUMP`/`RESTORE`）、**对比** string key 与对端同名 key（并排 diff）、或**对比**两台的 `CONFIG GET *`（斑马线表格只列差异）。专为排查"prod 和 staging 为何不一致"。整个**前缀**也能搬：按模式选定 key，Zedis 直接经 `DUMP` / `RESTORE` 流式送到另一台服务器，保留 TTL，并给出逐 key 的结果列表。Redis 与 Valkey 之间的复制——单个 key 或整个前缀——同样能落地：两者 `DUMP` 载荷的 RDB 版本号各自编排，除 Valkey 8 → Redis 外 `RESTORE` 都会拒绝，这时 Zedis 改为从源端**按类型重建**该 key（string、hash、list、set、sorted set、带条目 id 的 stream、JSON，TTL 一并保留），日志会标出哪些 key 是这样过去的；模块类型、消费者组和字段级 TTL 无法这样搬运，会逐一列出。两个**数据库**还可以按前缀比对——两边都有、只此处有、只彼处有、或两边都有但值不同——迁移结果因此可以核验，而不是全靠假设。
 
 ---
 
@@ -171,7 +171,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 连接安全
 **环境标签 + 对生产升级措辞的确认对话框。**
 
-为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏；标题栏同时显示当前 **db**，高风险连接时附轻量 **Prod** 徽章。状态栏 **DB 下拉** 会列出各库及其 **key 数量**（来自 `INFO keyspace`），便于一眼选到非空库；每台服务器还可**固定打开的数据库**（留空则沿用上次使用的库）。并可把任意连接锁为**只读** —— 既可写进该服务器的配置，也可在状态栏只对当前会话生效。**Prod** 服务器的写入默认**锁定**（任何服务器都可在“安全”标签页的“写入”里选择）：状态栏的锁要求输入服务器名，打开一个 **15 分钟**的窗口，显示剩余时间，到点自动重新锁上——浏览器里由 bridge 强制同一窗口，脚本也绕不过页面。破坏性操作（`FLUSHALL` / `FLUSHDB`、`CONFIG SET` / `REWRITE` / `RESETSTAT`、`SHUTDOWN`、`DEBUG`、`SCRIPT FLUSH`、`KEYS *`、一次删 50 个以上 key 的 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。每台服务器还有一个 **Confirm Writes** 开关，把这张网扩到*所有*写命令 —— 用在"任何改动都不该是手滑"的连接上。
+为每台服务器选择预设环境 —— **Dev / UAT / Prod** —— 以颜色 chip 显示在侧栏与状态栏；标题栏同时显示当前 **db**，高风险连接时附轻量 **Prod** 徽章。状态栏 **DB 下拉** 会列出各库及其 **key 数量**（来自 `INFO keyspace`），便于一眼选到非空库；每台服务器还可**固定打开的数据库**（留空则沿用上次使用的库）。并可把任意连接锁为**只读** —— 既可写进该服务器的配置，也可在状态栏只对当前会话生效。**Prod** 服务器的写入默认**锁定**（任何服务器都可在“安全”标签页的“写入”里选择）：状态栏的锁要求输入服务器名，打开一个 **15 分钟**的窗口，显示剩余时间，到点自动重新锁上——浏览器里由 bridge 强制同一窗口，脚本也绕不过页面。浏览器里发往锁定条目或 **Prod** 条目的 Lua 脚本或函数调用（`EVAL` / `EVALSHA` / `FCALL`，`_RO` 形式除外）每次都要确认，窗口内也一样，**Prod** 上要输入服务器名——脚本里写了什么，命令分类器看不见。破坏性操作（`FLUSHALL` / `FLUSHDB`、`CONFIG SET` / `REWRITE` / `RESETSTAT`、`SHUTDOWN`、`DEBUG`、`SCRIPT FLUSH`、`FUNCTION FLUSH` / `DELETE`、`SWAPDB`、`KEYS *`、一次删 50 个以上 key 的 `DEL`、key/服务器删除、`XGROUP DESTROY`、cluster 操作…）执行前拦截，对 **Prod** 服务器使用更严肃的确认文案。每台服务器还有一个 **Confirm Writes** 开关，把这张网扩到终端里输入的*所有*写命令 —— 用在"任何改动都不该是手滑"的连接上。
 
 ### ACL 用户管理（Redis 6+）
 **覆盖完整 ACL 生命周期的 GUI。**
@@ -187,6 +187,15 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 **2 秒一次的心跳，如实反映连接状态，并能自行恢复。**
 
 每个连接都以 2 秒心跳 PING；状态栏的圆点显示 **已连接 / 重连中 / 离线**（连续失败若干次才判离线，一次慢往返不会误报），圆点本身就是断开 / 重连按钮。服务端状态类回复——链路中断、`LOADING`、`BUSY`、`READONLY`、`MASTERDOWN`、`CLUSTERDOWN`——会被收敛成**一条限流的本地化提示**，而不是刷屏的原始报错，同时丢弃失效的连接池对象，下一次调用即重建：在 Sentinel 与 Cluster 上这会重新执行拓扑发现，因此**故障转移后会自动连到新的 master**。心跳恢复时会重新加载当前选中的键并刷新面板——你看到的是"连接已恢复"，而不是一屏过期数据。连到副本时会明确标注，因为在那里写入会返回 `READONLY`。
+
+---
+
+## 🔀 Redis 与 Valkey
+
+### 两者都是一等公民
+**每个版本门槛都有自己的 Valkey 下限，Valkey 独有的功能也都有对应面板。**
+
+Valkey 从 Redis 7.2.4 分叉，版本号走自己的节奏，所以为 Redis 写的版本判断会给 Valkey 发去它从没实现过的命令，或者扣下它早已支持的命令。Zedis 里每个依赖版本的功能都按两种服务端分别设门槛，Valkey 独有的功能也都有面板或操作：`COMMANDLOG` 大小日志、原子槽位迁移、集群模式多数据库、`SCRIPT SHOW`、可用区、`BGSAVE CANCEL` 以及服务端上报的客户端暂停。模块浏览器按 valkey-json、valkey-search、valkey-bloom 的实际能力工作，valkey-search 缺少的 `FT.*` 命令会标为不可用，而不是报错。会让服务端崩溃的设置不会发出：Redis 8.0–8.2.6 与 Valkey 8.0 在设置了 `CLIENT NO-TOUCH` 的客户端解除另一个客户端的阻塞时会崩溃，Zedis 在这些版本上不设这个标志。两者之间的复制会在 `RESTORE` 拒绝对方载荷时按类型重建 key（见*跨服务器工具*）。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8.0 / 9.0、`redis-stack` 与 `valkey-bundle`。完整的差异表（附两边各自的版本）见 README 的 [Redis 与 Valkey](../README_zh.md#-redis-与-valkey)。
 
 ---
 
@@ -214,6 +223,11 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 **必须登录；条目在你共享之前都是私有的；Redis 密码永远不会下发到浏览器；审计日志可以记下谁做了什么。**
 
 账号是必填项 —— `ZEDIS_BRIDGE_USERS`（`alice@secret,bob:ro@hunter2`）或一份 `[[users]]` 表格式的 TOML 文件（`--users-file`），二选一且不能同时给，否则 bridge 拒绝启动。页面要求输入用户名与密码；脚本可用 HTTP Basic 走同一套账号。账号可以是**只读**的（`:ro`，或 `read_only = true`）：能看到的都能看，但什么都改不了 —— 由 bridge 回 `403` 拒绝，而不是由页面拦，判据是读命令白名单，所以 `EVAL`、`BITFIELD`、`GETDEL` 以及一切不认识的模块命令都会被拒，确认参数也换不来放行。**服务器条目归添加它的账号所有**，其他人看不到，除非勾选 **Shared** —— 勾选后它就是所有人的。Redis 凭据只留在 bridge 上；浏览器拿到的是占位符而非密文，只改设置的编辑会保留已存的密码。明文 http 下账号密码是裸奔的，所以试用之外的场景都该放在 HTTPS 反向代理之后 —— 如果 bridge 对内网之外可达，再加一层限流。**审计日志**（`--audit-log`）为每次登录与登录失败、每次拒绝、每次服务器条目变更、每条管理命令和每条经确认的命令记一行 JSON —— 用 `--audit-writes` 可再加上数据写命令；读命令永远不记，参数里的密码会被抹掉。放在认证反向代理之后时，bridge 可以从请求头取登录身份（`--trusted-header`），只相信来自代理地址的连接（`--trusted-proxy`），且名字必须是已有账号——角色由 users 文件给出，这类账号可以不写密码。`[[users]]` 里还可以写 `servers = ["prod-*:ro", …]`：该账号能看到哪些共享条目（按名字通配或 id），以及在哪些上只读。
+
+### 让 AI 助手走同一扇门（MCP）
+**Claude Code、Cursor 或任何 MCP 客户端都能经由 bridge 读取你的 Redis —— 以只读账号，只能读。**
+
+`POST /v1/mcp` 是一个 Model Context Protocol 服务端，与页面共用同一套登录。助手像脚本一样用 HTTP Basic 登录，账号必须是只读的；完整权限的账号无论问什么都会被拒绝，能看到哪些条目由 users 文件的 `servers` 规则决定。六个工具按模型而不是终端的习惯设计——`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`。每条命令都过页面同一份只读白名单，工具还会额外拒绝会返回凭据的读（读密码的 `CONFIG GET`、`ACL LIST`），以及会改动或占住共享连接的命令（`SELECT`——工具直接接收 `db` 参数——`MULTI`、阻塞读、`SUBSCRIBE` 等）；脚本只能以 `_RO` 形式运行。回复会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，每次调用（包括读）都是审计日志里的一行。一行 `claude mcp add` 的接入方式见 README 的 [MCP](../README_zh.md#让-ai-助手走同一扇门mcp)。
 
 ### 浏览器里没有什么
 **凡是"一问一答"的都能用；流式面板和需要落盘的功能留在桌面端。**

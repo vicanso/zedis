@@ -5,10 +5,15 @@
 ### ⛰️  Features
 
 - *(bridge)* An AI assistant is a read-only account at the MCP door - ([b6184f6](https://github.com/vicanso/zedis/commit/b6184f6077a70deb7103e641eaa9d430f4b69af6))
+- *(bridge)* A users-file entry may say which shared servers it sees, and production's writes are a window, not a switch - ([b6ea5f7](https://github.com/vicanso/zedis/commit/b6ea5f77a17df004760802441b7c18ddf097b99e))
 - *(bridge)* Sign in by the identity a trusted reverse proxy asserts - ([96bfb87](https://github.com/vicanso/zedis/commit/96bfb877dd6743aff5f0316c5115777d31c354fa))
 - *(bridge)* An audit log of who went through the door - ([9fc8708](https://github.com/vicanso/zedis/commit/9fc8708b6b6a83c91e4a4ba3d264e6a8a69d6702))
+- *(cluster)* Redis 8.4's CLUSTER MIGRATION is the second dialect of atomic slot migration - ([291ab99](https://github.com/vicanso/zedis/commit/291ab990696d5d6112f60dc9107af2d2d56eb2d8))
 - *(key-tree)* The folder-delete confirmation counts before it asks - ([fce7e66](https://github.com/vicanso/zedis/commit/fce7e667c4b2d4a39c1e6a936e39e314c2e47acd))
+- *(migration)* A copy between Redis and Valkey re-creates the key where RESTORE refuses the payload - ([b1a246d](https://github.com/vicanso/zedis/commit/b1a246dc6adb3c8c7021a488c5522b508a1b314f))
+- *(observability)* Valkey-search's backfill, BGSAVE CANCEL, a pause chip, average latency and pfail counts - aligned across both flavors - ([b487574](https://github.com/vicanso/zedis/commit/b487574d47b87bdc87cd4ff6ad234e01ef48c168))
 - *(sidebar)* The server list marks what matters and nothing else - ([a8f6759](https://github.com/vicanso/zedis/commit/a8f6759479f6785f3663fafc4ead32f6db74290d))
+- *(valkey)* SCRIPT SHOW and availability zones, lanes pinned to 8.0 / 9.0, and the three defects the pinned lanes and a real cluster turned up - ([4560808](https://github.com/vicanso/zedis/commit/4560808e6c43a89cba929d76eaa7fe48a6237b22))
 - Read valkey:// and valkeys:// connection strings - ([750fa49](https://github.com/vicanso/zedis/commit/750fa4991f6ab516de6528fd0b7b3be5b57f563e))
 
 ### 🐛 Bug Fixes
@@ -38,41 +43,6 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(release)* Version 0.12.0 - ([95356b2](https://github.com/vicanso/zedis/commit/95356b236a17d3245248463184f7f201a37586df))
-
-## [0.12.0](https://github.com/vicanso/zedis/compare/v0.11.1..v0.12.0) - 2026-09-27
-
-### ⛰️  Features
-
-- *(bridge)* An AI assistant is a read-only account at the MCP door - ([b6184f6](https://github.com/vicanso/zedis/commit/b6184f6077a70deb7103e641eaa9d430f4b69af6))
-- *(bridge)* Sign in by the identity a trusted reverse proxy asserts - ([96bfb87](https://github.com/vicanso/zedis/commit/96bfb877dd6743aff5f0316c5115777d31c354fa))
-- *(bridge)* An audit log of who went through the door - ([9fc8708](https://github.com/vicanso/zedis/commit/9fc8708b6b6a83c91e4a4ba3d264e6a8a69d6702))
-- *(key-tree)* The folder-delete confirmation counts before it asks - ([fce7e66](https://github.com/vicanso/zedis/commit/fce7e667c4b2d4a39c1e6a936e39e314c2e47acd))
-- *(sidebar)* The server list marks what matters and nothing else - ([a8f6759](https://github.com/vicanso/zedis/commit/a8f6759479f6785f3663fafc4ead32f6db74290d))
-- Read valkey:// and valkeys:// connection strings - ([750fa49](https://github.com/vicanso/zedis/commit/750fa4991f6ab516de6528fd0b7b3be5b57f563e))
-
-### 🐛 Bug Fixes
-
-- *(bridge)* Confirm every script sent to a guarded entry - ([cc999e6](https://github.com/vicanso/zedis/commit/cc999e635bb69777929526556a3a3ff4f9ec122a))
-- *(cluster)* The database count and slot-migration cancel on every Redis lane - ([74cc87b](https://github.com/vicanso/zedis/commit/74cc87b5ac58facf9182022d5d2eab5f589cef06))
-- *(shortcuts)* Hints show the key that is bound, not the default - ([13152be](https://github.com/vicanso/zedis/commit/13152be2eb32eac7220e57b6fa9fc319ff49cfbb))
-- *(sidebar)* The database icon is back on every server row - ([899c471](https://github.com/vicanso/zedis/commit/899c47149df687f58268fc7fcfab0b1a156e2db7))
-- *(ssh)* MONITOR goes through the tunnel - ([840c678](https://github.com/vicanso/zedis/commit/840c6780a607271631fc6218d7058ebf97737f52))
-- *(topology)* The rebalance confirmation describes the path it will take - ([35413e1](https://github.com/vicanso/zedis/commit/35413e10fb6cc3aca18bdb2fa67151c2969199bc))
-- *(web)* A dialog's answer reaches the bridge with the command it confirmed - ([79e3157](https://github.com/vicanso/zedis/commit/79e31572b42199a39100e6c4933ef3376a5bf133))
-- Remaining review findings — consistency, performance, copy and hardening - ([b11d79b](https://github.com/vicanso/zedis/commit/b11d79b14967373be53202fae449b9a33ad85fb4))
-- Write guards, secret handling and pub/sub routing from the review - ([5ef81b9](https://github.com/vicanso/zedis/commit/5ef81b92de56fbe692df8a27a49896196fb8a9d3))
-- Data-safety, bridge and cluster fixes - ([1b05ace](https://github.com/vicanso/zedis/commit/1b05ace635d0ce6d52042bd4228b04d570f928ab))
-- The key tree stops losing rows to auto-refresh, and the browser keeps its server list current - ([296d6df](https://github.com/vicanso/zedis/commit/296d6dfe4c736eebcd02eab5059c43770583585d))
-
-### 🚜 Refactor
-
-- *(servers)* The form's Advanced tab is connection settings, and safety gets a tab of its own - ([c4402da](https://github.com/vicanso/zedis/commit/c4402da57869237f731dd6aa5b02397d4a608dbf))
-
-### ⚡ Performance
-
-- *(key-tree)* The loaded keys are a persistent B-tree - ([2759f94](https://github.com/vicanso/zedis/commit/2759f94bef097059949587aae07967006ea823b7))
-- *(value-diff)* Virtualize the diff and make large values diffable - ([9724656](https://github.com/vicanso/zedis/commit/9724656298f75a00d2ba83b1ec59926092e0cf1b))
-- *(views)* Stop copying whole tables on every repaint - ([dc66c85](https://github.com/vicanso/zedis/commit/dc66c8574e8d4e9b1f9a176bbc72988dcd6adf69))
 
 ## [0.11.1](https://github.com/vicanso/zedis/compare/v0.11.0..v0.11.1) - 2026-09-22
 

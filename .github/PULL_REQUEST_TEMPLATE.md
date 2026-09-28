@@ -17,8 +17,8 @@ To help us review your Pull Request efficiently, please provide the following in
 - [ ] 📝 Documentation / i18n update
 
 ### Developer Checklist
-- [ ] I have run `cargo fmt` to format the code.
-- [ ] I have run `cargo clippy` and resolved any warnings.
+- [ ] I have run `make fmt`, and `make lint` passes (format check, typos, clippy).
+- [ ] `make test` passes, and `make check-web` too if the change touches a `wasm`-gated file or anything under `crates/`.
 - [ ] My code builds and runs successfully.
 - [ ] ⚖️ **I have read and agree to the [Zedis Contributor License Agreement](CLA.md), confirming my contribution is original and licensed under the project's open-source terms.**
 - [ ] (Optional) I have tested this on: [ ] macOS / [ ] Windows / [ ] Linux.
@@ -41,8 +41,8 @@ To help us review your Pull Request efficiently, please provide the following in
 - [ ] 📝 文档完善 / 多语言 (i18n) 更新
 
 ### 开发者自查表
-- [ ] 我已运行 `cargo fmt` 格式化代码。
-- [ ] 我已运行 `cargo clippy` 并修复了所有警告。
+- [ ] 我已运行 `make fmt`，且 `make lint` 通过（格式检查、typos、clippy）。
+- [ ] `make test` 通过；改动涉及带 `wasm` 门控的文件或 `crates/` 下的内容时，`make check-web` 也通过。
 - [ ] 我的代码可以在本地成功编译并运行。
 - [ ] ⚖️ **我已阅读并同意 [Zedis 贡献者许可协议](CLA.md)，确认我的贡献为原创，并授权在项目的开源协议下使用。**
 - [ ] (可选) 我已在以下平台进行过测试： [ ] macOS / [ ] Windows / [ ] Linux。

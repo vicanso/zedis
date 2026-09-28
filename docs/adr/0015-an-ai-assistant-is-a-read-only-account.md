@@ -72,6 +72,9 @@ model in a loop scans faster than a person clicks.
   needs any of them cannot use this server yet; the reference client
   (`@modelcontextprotocol/inspector`) and Claude Code's HTTP transport do
   not.
-- The page's `/v1/exec` still forwards a `SELECT` from any account onto the
-  pooled connection — the page itself never sends one. Noted here, not
-  changed here.
+- The page's `/v1/exec` still forwarded a `SELECT` from any account onto the
+  pooled connection when this was written — the page itself never sends
+  one. Changed 2026-09-27: `forward_values` applies `policy::holds_connection`
+  to every request without a session and to every fan-out, whose per-node
+  connections are shared too, and checks a pipeline's `offset` / `count`
+  against `PipelineSpec::for_pipeline` instead of trusting them.
