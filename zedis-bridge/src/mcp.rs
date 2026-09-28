@@ -262,7 +262,9 @@ fn initialize(params: &Json) -> Json {
         "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "zedis-bridge", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": INSTRUCTIONS,
+        "instructions": format!(
+            "{INSTRUCTIONS} Each account may make {CALLS_PER_MINUTE} calls a minute; past that a call answers with an error saying to wait."
+        ),
     })
 }
 
@@ -277,7 +279,7 @@ fn tool_list() -> Vec<Json> {
         json!({
             "name": "list_servers",
             "title": "List servers",
-            "description": "The servers this account may read, with the name and id the other tools take.",
+            "description": "The servers this account may read, each with its id, name, address (host:port) and tag. Call it first: every other tool takes a server by the name or id shown here.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
             "annotations": read_only,
         }),
@@ -303,10 +305,10 @@ fn tool_list() -> Vec<Json> {
         json!({
             "name": "inspect_key",
             "title": "Inspect a key",
-            "description": "Describe one key: its type, TTL, memory, encoding, length and a short preview of its value.",
+            "description": format!("Describe one key: type, ttl_seconds (null when it does not expire), memory_bytes, encoding, length and a preview of the value — about {PREVIEW_ITEMS} items of a collection, 20 entries of a stream, the first {MAX_STRING_CHARS} characters of a string — with preview_is_partial set when there is more. A missing key answers exists: false; memory_bytes and encoding are null where the server does not report them."),
             "inputSchema": {
                 "type": "object",
-                "properties": { "server": server, "db": db, "key": { "type": "string" } },
+                "properties": { "server": server, "db": db, "key": { "type": "string", "description": "The key's exact name, not a pattern." } },
                 "required": ["server", "key"],
                 "additionalProperties": false
             },
@@ -330,12 +332,12 @@ fn tool_list() -> Vec<Json> {
         json!({
             "name": "slowlog",
             "title": "Slow log",
-            "description": "The newest entries of SLOWLOG GET on every master: when, how long, and the command.",
+            "description": "The newest entries of SLOWLOG GET on every master, grouped by node: each with its id, unix_time, duration_us, the command's words, and the client's address and name.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "server": server,
-                    "count": { "type": "integer", "minimum": 1, "maximum": MAX_SLOWLOG, "default": DEFAULT_SLOWLOG }
+                    "count": { "type": "integer", "minimum": 1, "maximum": MAX_SLOWLOG, "default": DEFAULT_SLOWLOG, "description": "How many entries to read from each master." }
                 },
                 "required": ["server"],
                 "additionalProperties": false
@@ -345,14 +347,14 @@ fn tool_list() -> Vec<Json> {
         json!({
             "name": "read_command",
             "title": "Run a read-only command",
-            "description": "Run one read-only Redis command, given as its words (for example [\"HGETALL\", \"user:42\"]). A command that writes, runs a script or administers the server is refused. On a cluster a command with a key is routed to its node; set every_master to run it on each master instead.",
+            "description": format!("Run one read-only Redis command, given as its words (for example [\"HGETALL\", \"user:42\"]). Refused: writes, scripts other than EVAL_RO / EVALSHA_RO / FCALL_RO, administration, reads that return credentials (CONFIG GET of a password, ACL GETUSER / LIST), and commands that change or hold the connection the tools share (SELECT — pass db instead — AUTH, HELLO, MULTI / EXEC / WATCH, blocking reads such as BLPOP and XREAD BLOCK, SUBSCRIBE, MONITOR, WAIT). On a cluster a command with a key is routed to its node; set every_master to run it on each master instead. Strings over {MAX_STRING_CHARS} characters and arrays or maps over {MAX_ITEMS} items are cut, with what was dropped counted in place."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "server": server,
                     "db": db,
                     "command": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The command and its arguments, one word each." },
-                    "every_master": { "type": "boolean", "default": false }
+                    "every_master": { "type": "boolean", "default": false, "description": "Run the command on every master and answer one reply per node, instead of routing it by key." }
                 },
                 "required": ["server", "command"],
                 "additionalProperties": false
