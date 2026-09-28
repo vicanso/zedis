@@ -822,9 +822,16 @@ jobs:
             local method="$1" path="$2"; shift 2
             local body status
             body="$(mktemp)"
-            status="$(curl -sS -X "$method" -o "$body" -w '%{http_code}' \
+            # A transfer that dies outright (`curl: (52)`, a reset, the stall
+            # limit below) has to come back as a failure: under an `if` or a
+            # `||`, `set -e` does not reach into this function, and `-w`
+            # would have printed `000`, which the status check reads as fine.
+            if ! status="$(curl -sS -X "$method" -o "$body" -w '%{http_code}' \
               --url-query "access_token=$GITEE_TOKEN" \
-              "https://gitee.com/api/v5$path" "$@")"
+              "https://gitee.com/api/v5$path" "$@")"; then
+              rm -f "$body"
+              return 1
+            fi
             if [ "$status" -ge 400 ]; then
               echo "gitee $method $path -> $status" >&2
               cat "$body" >&2
@@ -890,32 +897,96 @@ jobs:
             echo "reusing Gitee release $release_id for $tag"
           fi
 
+          # The runner-to-Gitee path is erratic: the same 17 MB installer has
+          # taken ten seconds and twelve minutes, and v0.12.0's first one
+          # stalled for seventeen before Gitee hung up (`curl: (52) Empty
+          # reply from server`) and took the whole mirror with it. So every
+          # file gets five tries, a transfer under 10 KB/s for two minutes is
+          # cut and started on a fresh connection instead of being left to
+          # Gitee's own timeout, and a file that is already there at the right
+          # size is left alone — a re-run with `mirror_tag` finishes a mirror
+          # rather than starting it over.
+          #
           # Gitee has no --clobber: an attachment of the same name would sit
           # beside the old one and the download page would offer two files
-          # with one name. Delete first, so a re-run replaces.
-          existing="$(api GET "/repos/$GITEE_REPO/releases/$release_id/attach_files?per_page=100")"
-          for file in assets/*; do
-            name="$(basename "$file")"
-            for old in $(printf '%s' "$existing" | jq -r --arg n "$name" '.[] | select(.name == $n) | .id'); do
-              api DELETE "/repos/$GITEE_REPO/releases/$release_id/attach_files/$old" >/dev/null
-              echo "removed previous $name ($old)"
+          # with one name. Whatever carries the name goes first — a stale
+          # copy, or what a failed upload left behind.
+          attach="/repos/$GITEE_REPO/releases/$release_id/attach_files"
+          # Exactly one attachment called $1, of $2 bytes.
+          present() {
+            local listing
+            listing="$(api GET "$attach?per_page=100")" || return 1
+            printf '%s' "$listing" | jq -e --arg n "$1" --argjson s "$2" \
+              '[.[] | select(.name == $n)] | length == 1 and .[0].size == $s' >/dev/null
+          }
+          clear_name() {
+            local listing old
+            listing="$(api GET "$attach?per_page=100")" || return 1
+            for old in $(printf '%s' "$listing" | jq -r --arg n "$1" '.[] | select(.name == $n) | .id'); do
+              api DELETE "$attach/$old" >/dev/null || return 1
+              echo "removed previous $1 ($old)"
             done
-            api POST "/repos/$GITEE_REPO/releases/$release_id/attach_files" \
-              -F "file=@$file" >/dev/null
-            echo "uploaded $name"
+          }
+          upload() {
+            local file="$1" name size attempt
+            name="$(basename "$file")"
+            size="$(wc -c < "$file" | tr -d ' ')"
+            if present "$name" "$size"; then
+              echo "already on Gitee: $name"
+              return 0
+            fi
+            for attempt in 1 2 3 4 5; do
+              if clear_name "$name" && api POST "$attach" \
+                --speed-limit 10240 --speed-time 120 --max-time 1800 \
+                -F "file=@$file" >/dev/null; then
+                echo "uploaded $name"
+                return 0
+              fi
+              # The upload may have landed and only the reply been lost.
+              if present "$name" "$size"; then
+                echo "uploaded $name (the reply was lost, the file was not)"
+                return 0
+              fi
+              echo "upload of $name failed (attempt $attempt of 5)" >&2
+              sleep $((attempt * 20))
+            done
+            return 1
+          }
+
+          # Installers first, the files that describe them last: until every
+          # installer is there, the mirror carries no latest.json pointing at
+          # one it does not have.
+          failed=0
+          for file in assets/*; do
+            case "$(basename "$file")" in
+              SHA256SUMS | latest.json) continue ;;
+            esac
+            upload "$file" || failed=1
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "not every installer reached Gitee, so SHA256SUMS and latest.json were held back; re-run with mirror_tag=$tag" >&2
+            exit 1
+          fi
+          for name in SHA256SUMS latest.json; do
+            if [ -e "assets/$name" ]; then
+              upload "assets/$name"
+            fi
           done
 
           # Say what the mirror ends up carrying, and fail if anything this
-          # release ships is missing from it: a partial mirror that reports
-          # success is a download link that 404s for the people it exists for.
-          uploaded="$(api GET "/repos/$GITEE_REPO/releases/$release_id/attach_files?per_page=100")"
+          # release ships is missing from it, or is there at another size: a
+          # partial mirror that reports success is a download link that 404s
+          # for the people it exists for.
+          uploaded="$(api GET "$attach?per_page=100")"
           echo "--- gitee attachments ---"
           printf '%s' "$uploaded" | jq -r '.[] | "\(.name)\t\(.size)\t\(.browser_download_url)"'
           missing=0
           for file in assets/*; do
             name="$(basename "$file")"
-            if ! printf '%s' "$uploaded" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-              echo "missing on Gitee: $name" >&2
+            size="$(wc -c < "$file" | tr -d ' ')"
+            if ! printf '%s' "$uploaded" | jq -e --arg n "$name" --argjson s "$size" \
+              'any(.[]; .name == $n and .size == $s)' >/dev/null; then
+              echo "missing on Gitee, or at another size: $name" >&2
               missing=1
             fi
           done

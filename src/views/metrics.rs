@@ -25,7 +25,8 @@ use gpui::{
 };
 use gpui_kit::component::h_flex;
 use gpui_kit::component::plot::{
-    AXIS_GAP, AxisText, Grid, PlotAxis, StrokeStyle,
+    AxisText, Curve, Grid, PlotAxis, axis_gutter,
+    label::TEXT_SIZE,
     scale::{Scale, ScaleBand, ScaleLinear},
     shape::{Area, Bar, Line},
 };
@@ -510,8 +511,9 @@ fn make_x_labels_band(
 }
 
 /// Where `ScalePoint::tick` puts the point at `index` of `len` evenly spread
-/// over `range` — the same arithmetic, without the search of the domain for
-/// the point's label that `tick` starts with.
+/// from `range[0]` to `range[1]` — the same arithmetic as its `tick_at`,
+/// without the domain vector a `ScalePoint` would have to be built with on
+/// every paint, or the search of it for the point's label that `tick` does.
 ///
 /// The live window holds 1800 samples a series, so that search made every
 /// paint quadratic (a ten-series chart ≈ 16M string comparisons a frame,
@@ -520,12 +522,11 @@ fn make_x_labels_band(
 /// first one's x and the line doubled back. The axis labels still come from
 /// the scale; only the points are placed by position.
 fn point_x(index: usize, len: usize, range: [f32; 2]) -> f32 {
-    let start = range[0].min(range[1]);
-    let span = range[0].max(range[1]) - start;
+    let span = range[1] - range[0];
     if len <= 1 {
-        start + span / 2.
+        range[0] + span / 2.
     } else {
-        start + index as f32 * (span / (len - 1) as f32)
+        range[0] + index as f32 * (span / (len - 1) as f32)
     }
 }
 
@@ -549,9 +550,9 @@ fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Backg
                 return;
             }
             let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - AXIS_GAP;
+            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
 
-            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
 
             let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
@@ -614,9 +615,9 @@ fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, st
                 return;
             }
             let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - AXIS_GAP;
+            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
 
-            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
 
             let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
@@ -642,7 +643,7 @@ fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, st
                     .stroke_width(2.);
 
                 if step_after {
-                    line = line.stroke_style(StrokeStyle::StepAfter);
+                    line = line.curve(Curve::StepAfter);
                 }
                 line.paint(&bounds, window);
             }
@@ -671,13 +672,16 @@ pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_c
                 return;
             }
             let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - AXIS_GAP;
+            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
 
-            let x = ScaleBand::new(dates.clone(), vec![0., width - Y_LABEL_WIDTH])
+            // gpui-kit 0.7 dropped the band scale's built-in 30px cap; keep
+            // it, or a week of bars in a wide window turns into slabs.
+            let x = ScaleBand::new(dates.iter().cloned(), [0., width - Y_LABEL_WIDTH])
                 .padding_inner(0.4)
-                .padding_outer(0.2);
+                .padding_outer(0.2)
+                .max_band_width(30.);
             let band_width = x.band_width();
-            let y = ScaleLinear::new(vec![*y_min, *y_max], vec![height, 10.]);
+            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
 
             let x_labels = make_x_labels_band(dates, &x, band_width, *tick_margin, *muted_fg);
             let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
@@ -1381,7 +1385,7 @@ mod tests {
             (5, [40., -10.]),
         ] {
             let domain: Vec<usize> = (0..len).collect();
-            let scale = ScalePoint::new(domain.clone(), range.to_vec());
+            let scale = ScalePoint::new(domain.clone(), range);
             for index in domain {
                 assert_eq!(
                     Some(point_x(index, len, range)),

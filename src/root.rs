@@ -64,7 +64,7 @@ use std::collections::HashMap;
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 use gpui_kit::component::{
-    ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode, WindowExt,
+    ActiveTheme, IconName, Sizable, Theme, ThemeMode, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -851,8 +851,6 @@ impl Zedis {
 
 impl Render for Zedis {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
         let current_bounds = window.bounds();
         if current_bounds != self.last_bounds {
             // The display the window is currently on, used to anchor the saved
@@ -964,9 +962,7 @@ impl Render for Zedis {
                             // than overflowing) instead of pushing the bar off-screen.
                             .child(div().flex_1().min_h_0().w_full().child(self.active_content()))
                             .when(show_status_bar, |this| this.child(status_bar)),
-                    )
-                    .children(dialog_layer)
-                    .children(notification_layer),
+                    ),
             )
             // Command palette overlays everything (absolute, full-size
             // when open; zero-footprint when closed).

@@ -48,7 +48,6 @@ use std::io;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 use web_time::Instant;
-use zedis_ui::stable_gutter_padding;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -1268,7 +1267,6 @@ impl Render for ZedisTerminal {
                             .w_full()
                             .h_full()
                             .font_family(font_family.clone())
-                            .pl(stable_gutter_padding(&self.cmd_output_state, font_family.clone(), cx))
                             .readonly(true)
                             .appearance(false)
                             .bordered(false)
@@ -1391,7 +1389,6 @@ impl Render for ZedisTerminal {
                                     .w_full()
                                     .h_full()
                                     .font_family(font_family.clone())
-                                    .pl(stable_gutter_padding(&self.batch_input_state, font_family.clone(), cx))
                                     .appearance(false),
                             ),
                         )

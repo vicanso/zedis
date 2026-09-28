@@ -51,7 +51,7 @@ use gpui_kit::component::{
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
-use zedis_ui::{ZedisDialog, stable_gutter_padding};
+use zedis_ui::ZedisDialog;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -1085,7 +1085,6 @@ impl ZedisLuaScriptLibrary {
                             .disabled(true)
                             .h_full()
                             .w_full()
-                            .pl(stable_gutter_padding(viewer, get_mono_font_family(), cx))
                             .font_family(get_mono_font_family()),
                     )
                     .into_any_element()
@@ -1488,7 +1487,6 @@ impl ZedisLuaScriptLibrary {
                                             .appearance(false)
                                             .bordered(false)
                                             .h_full()
-                                            .pl(stable_gutter_padding(&form.code, get_mono_font_family(), cx))
                                             .font_family(get_mono_font_family()),
                                     ),
                             ),

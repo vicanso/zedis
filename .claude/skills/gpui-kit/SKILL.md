@@ -97,13 +97,15 @@ Setup and examples: [references/usage.md](references/usage.md).
 
 ```rust
 use gpui_kit::*;
-use gpui_kit::component::Root;
 
 gpui_kit::application()
     .with_assets(gpui_kit::assets::Assets)
     .run(|cx| {
         gpui_kit::init(cx);                       // first, before anything else
-        // ... open_window(..., |window, cx| cx.new(|cx| Root::new(view, window, cx)))
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| AppView::new(window, cx))
+        })
+        .expect("failed to open window");
     });
 ```
 
@@ -142,6 +144,7 @@ fetch the component's `.md` doc.
 | `Stepper`     | `stepper::Stepper`                              | Stateless. Multi-step progress               |
 | `ColorPicker` | `color_picker::{ColorPicker, ColorPickerState}` | Stateful.                                    |
 | `DatePicker`  | `date_picker::{DatePicker, DatePickerState}`    | Stateful.                                    |
+| `TimeField`   | `time_field::{TimeField, TimeFieldState}`       | Stateful. Time of day, 24/12-hour            |
 | `Calendar`    | `calendar::{Calendar, CalendarState}`           | Stateful. Inline month view                  |
 | `Form`        | `form::{v_form, h_form, field}`                 | Layout container for form fields             |
 

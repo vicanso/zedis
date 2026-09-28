@@ -44,7 +44,6 @@ use rust_i18n::t;
 use serde_json::Value;
 use tracing::info;
 use zedis_core::json::{JsonSyntaxError, format_json, minify_json, numbers_survive_round_trip};
-use zedis_ui::stable_gutter_padding;
 
 // Constants for editor configuration
 const DEFAULT_TAB_SIZE: usize = 2;
@@ -831,7 +830,6 @@ impl Render for ZedisBytesEditor {
                     // subscription instead (edits snap back to the original).
                     .appearance(false)
                     .p_0()
-                    .pl(stable_gutter_padding(&self.editor, get_mono_font_family(), cx))
                     .w_full()
                     .font_family(get_mono_font_family());
                 if !self.is_json_value {
@@ -1019,11 +1017,6 @@ impl ZedisBytesEditor {
                             .bordered(false)
                             .appearance(false)
                             .p_0()
-                            .pl(stable_gutter_padding(
-                                &self.jsonpath_result_editor,
-                                get_mono_font_family(),
-                                cx,
-                            ))
                             .w_full()
                             .font_family(get_mono_font_family()),
                     )
