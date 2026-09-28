@@ -269,13 +269,13 @@ mod tests {
         // A `[section]` table flattens to the dotted `section.key` form the
         // `t!("section.key")` call sites expect.
         assert_eq!(
-            backend.translate("en", "status_bar.module_not_loaded").as_deref(),
-            Some("module not loaded")
+            backend.translate("en", "status_bar.group_admin").as_deref(),
+            Some("Administration")
         );
         // Native (non-English) values resolve, not just the fallback.
         assert_eq!(
-            backend.translate("zh", "status_bar.module_not_loaded").as_deref(),
-            Some("模块未加载")
+            backend.translate("zh", "status_bar.group_admin").as_deref(),
+            Some("管理")
         );
         // Unknown keys return None so the `fallback = "en"` chain can engage.
         assert!(backend.translate("en", "status_bar.__does_not_exist__").is_none());
@@ -293,7 +293,7 @@ mod tests {
         );
 
         // Looking up a `zh` key inflates `zh` and nothing else.
-        assert!(backend.translate("zh", "status_bar.module_not_loaded").is_some());
+        assert!(backend.translate("zh", "status_bar.group_admin").is_some());
         for (name, cell) in &backend.locales {
             assert_eq!(
                 cell.get().is_some(),

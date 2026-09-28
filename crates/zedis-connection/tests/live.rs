@@ -931,7 +931,12 @@ fn standalone_feature_probe_matches_the_server() {
         // Mutating commands are never executed: on 7+ ACL DRYRUN says
         // Available, on 6.x COMMAND INFO proves existence and the status
         // stays optimistic — either way they must not read as unusable.
-        for c in [ServerCommand::Monitor, ServerCommand::Bgsave, ServerCommand::FlushDb] {
+        for c in [
+            ServerCommand::Monitor,
+            ServerCommand::Bgsave,
+            ServerCommand::FlushDb,
+            ServerCommand::FlushAll,
+        ] {
             assert!(features.is_usable(c), "{c:?} → {:?}", features.status(c));
             if has_functions {
                 assert_eq!(features.status(c), CommandStatus::Available, "{c:?}");
@@ -2876,7 +2881,12 @@ fn standalone_acl_users_are_classified() {
         }
         assert_eq!(features.status(ServerCommand::Scan), CommandStatus::Available);
         if supports(&admin_id, floors::ACL_V2).await {
-            for c in [ServerCommand::ConfigSet, ServerCommand::Bgsave, ServerCommand::FlushDb] {
+            for c in [
+                ServerCommand::ConfigSet,
+                ServerCommand::Bgsave,
+                ServerCommand::FlushDb,
+                ServerCommand::FlushAll,
+            ] {
                 assert_eq!(features.status(c), CommandStatus::Denied, "{c:?} (ACL DRYRUN)");
             }
         }

@@ -18,14 +18,18 @@ use crate::states::{command_status_label, i18n_features};
 use crate::states::i18n_trash;
 use crate::{
     assets::CustomIconName,
-    connection::{DangerKind, KillTarget, RedisClientDescription, ServerFeatures, WRITE_UNLOCK_SECS, get_server},
+    connection::{
+        CommandStatus, DangerKind, KillTarget, RedisClientDescription, ServerCommand, ServerFeatures,
+        WRITE_UNLOCK_SECS, get_server,
+    },
     constants::STATUS_BAR_HEIGHT,
     helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing, resolve_tag_chip, with_hot_key},
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
-        ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_common,
-        i18n_hotkeys, i18n_key_tree, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar,
-        i18n_timeseries, i18n_topology, i18n_value_search, save_session_option,
+        ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_acl,
+        i18n_common, i18n_config_editor, i18n_functions, i18n_hotkeys, i18n_key_tree, i18n_keyspace_notifications,
+        i18n_lua_scripts, i18n_monitor, i18n_persistence, i18n_search, i18n_server_info, i18n_server_load,
+        i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology, i18n_value_search, save_session_option,
     },
     views::confirm_dangerous_command,
 };
@@ -214,6 +218,15 @@ struct ToolsMenuGates {
     supports_topology: bool,
     readonly: bool,
     features: Arc<ServerFeatures>,
+}
+
+/// One Tools-menu entry, built when the menu opens and moved into the
+/// submenu that draws it.
+struct ToolEntry {
+    label: SharedString,
+    icon: Icon,
+    action: ServerToolsAction,
+    disabled: bool,
 }
 
 /// Inputs for a clickable status-bar metric chip (icon + value → tool page).
@@ -660,20 +673,27 @@ impl ZedisStatusBar {
             }
         }));
     }
-    /// Build the "Tools" dropdown that gathers server-scoped navigation
-    /// actions (Monitor / Config / ACL / Search). Items dispatch
-    /// [`ServerToolsAction`] which is handled centrally in `main.rs`,
-    /// so the dropdown does not need per-item `on_click` listeners.
+    /// Build the "Tools" dropdown: four submenus by purpose — observability,
+    /// query & scripting, keys & data, administration — then Topology and the
+    /// capability matrix, so the top level stays eight rows however many
+    /// panels the server can open. Items dispatch [`ServerToolsAction`],
+    /// handled centrally on the `Zedis` root; a submenu inherits the
+    /// dropdown's action context, so its items reach the same handlers.
     ///
-    /// `supports_search` / `supports_acl` / `supports_functions` gate
-    /// per-server-capability menu entries. Monitor and Config work on
-    /// all Redis versions so they stay unconditional. Capability-gated
-    /// entries stay *visible but disabled* with a why-suffix (e.g.
-    /// "module not loaded" / "requires Redis ≥ 7.0") so the feature is
-    /// discoverable and the user knows what to enable. `supports_topology`
-    /// is the exception: a topology isn't a feature you can turn on, so
-    /// that group is simply absent until the server type is known.
-    fn render_tools_menu(this: PopupMenu, gates: &ToolsMenuGates, cx: &gpui::App) -> PopupMenu {
+    /// What the server does not have — a module that is not loaded, a
+    /// version below the feature's floor, a command it answers `unknown
+    /// command` to — is left out rather than greyed: it is nothing this user
+    /// can change, the ⌘K palette leaves it out the same way, and Server
+    /// capabilities lists every command with its verdict. What can change
+    /// stays in the menu, disabled with the reason: a command this ACL user
+    /// is denied, and a write on a read-only connection. A submenu with
+    /// nothing left in it is left out too.
+    fn render_tools_menu(
+        this: PopupMenu,
+        gates: &ToolsMenuGates,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
         let ToolsMenuGates {
             supports_search,
             supports_acl,
@@ -682,310 +702,323 @@ impl ZedisStatusBar {
             readonly,
             features,
         } = gates;
-        let (supports_search, supports_acl, supports_functions, supports_topology, readonly) = (
-            *supports_search,
-            *supports_acl,
-            *supports_functions,
-            *supports_topology,
-            *readonly,
-        );
         let features: &ServerFeatures = features;
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        // Label + disabled flag for a panel entry, folding in the feature
-        // matrix: an explicit `unavailable` (module / version gate, already
-        // worded by the caller) wins; otherwise the probe's verdict decides.
-        let gated =
-            |label: SharedString, view: ServerView, unavailable: Option<SharedString>| -> (SharedString, bool) {
-                if let Some(reason) = unavailable {
-                    return (format!("{label}  ·  {reason}").into(), true);
-                }
-                match features.first_unusable(view.required_commands()) {
-                    Some((command, _)) => {
-                        let suffix = t!("features.menu_suffix", command = command.label(), locale = &locale);
-                        (format!("{label}  ·  {suffix}").into(), true)
-                    }
-                    None => (label, false),
-                }
+        let tool = |label: SharedString,
+                    icon: Icon,
+                    action: ServerToolsAction,
+                    required: &[ServerCommand],
+                    writes: bool|
+         -> Option<ToolEntry> {
+            let statuses: Vec<(ServerCommand, CommandStatus)> = required
+                .iter()
+                .map(|command| (*command, features.status(*command)))
+                .filter(|(_, status)| !status.is_usable())
+                .collect();
+            if statuses.iter().any(|(_, status)| *status == CommandStatus::Missing) {
+                return None;
+            }
+            // Read-only wins the wording: it is the reason the user can undo.
+            let reason = if writes && *readonly {
+                Some(i18n_common(cx, "disable_in_readonly"))
+            } else {
+                statuses.first().map(|(command, _)| {
+                    t!("features.menu_suffix", command = command.label(), locale = &locale)
+                        .to_string()
+                        .into()
+                })
             };
-        // The tool list has grown, so it's split into titled,
-        // separator-delimited sections. Each group is anchored by an
-        // always-available item (Monitor / Lua / Config+Persistence /
-        // Topology), so the capability-gated entries can drop out without ever
-        // leaving a dangling separator or an empty group heading. `label()`
-        // renders a dimmed, non-clickable section header.
+            Some(ToolEntry {
+                label: match &reason {
+                    Some(reason) => format!("{label}  ·  {reason}").into(),
+                    None => label,
+                },
+                icon,
+                action,
+                disabled: reason.is_some(),
+            })
+        };
 
-        // ── Observability ──
-        let (monitor_label, monitor_off) =
-            gated(i18n_status_bar(cx, "toggle_monitor_tooltip"), ServerView::Monitor, None);
-        let (load_label, load_off) = gated(i18n_server_load(cx, "title"), ServerView::ServerLoad, None);
-        // HOTKEYS tracking — Redis 8.6; the probe's verdict on HOTKEYS GET
-        // disables it (with the command as the why-suffix) everywhere else.
-        let (hotkeys_label, hotkeys_off) = gated(i18n_hotkeys(cx, "title"), ServerView::Hotkeys, None);
-        let (ts_explorer_label, ts_explorer_off) = gated(
-            i18n_timeseries(cx, "explorer_title"),
-            ServerView::TimeSeriesExplorer,
-            None,
+        let observability: Vec<ToolEntry> = [
+            tool(
+                i18n_monitor(cx, "title"),
+                Icon::new(CustomIconName::Radar),
+                ServerToolsAction::Monitor,
+                ServerView::Monitor.required_commands(),
+                false,
+            ),
+            tool(
+                i18n_server_load(cx, "title"),
+                Icon::new(CustomIconName::Zap),
+                ServerToolsAction::ServerLoad,
+                ServerView::ServerLoad.required_commands(),
+                false,
+            ),
+            // HOTKEYS tracking — Redis 8.6; absent from the menu elsewhere.
+            tool(
+                i18n_hotkeys(cx, "title"),
+                Icon::new(CustomIconName::Flame),
+                ServerToolsAction::Hotkeys,
+                ServerView::Hotkeys.required_commands(),
+                false,
+            ),
+            // `notify-keyspace-events` may be empty: the panel offers a
+            // one-click Enable. Its hard dependency is SUBSCRIBE.
+            tool(
+                i18n_keyspace_notifications(cx, "title"),
+                Icon::new(CustomIconName::AudioWaveform),
+                ServerToolsAction::KeyspaceNotifications,
+                ServerView::KeyspaceNotifications.required_commands(),
+                false,
+            ),
+            // RedisTimeSeries only.
+            tool(
+                i18n_timeseries(cx, "explorer_title"),
+                Icon::new(CustomIconName::Activity),
+                ServerToolsAction::TimeSeriesExplorer,
+                ServerView::TimeSeriesExplorer.required_commands(),
+                false,
+            ),
+            // Pub/Sub is the editor suite's channel mode, mirrored here next
+            // to its observability siblings.
+            tool(
+                i18n_key_tree(cx, "pubsub_mode"),
+                Icon::new(CustomIconName::Rss),
+                ServerToolsAction::PubsubMode,
+                &[],
+                false,
+            ),
+            tool(
+                i18n_server_info(cx, "title"),
+                Icon::new(IconName::Info),
+                ServerToolsAction::ServerInfo,
+                ServerView::ServerInfo.required_commands(),
+                false,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let scripting: Vec<ToolEntry> = [
+            tool(
+                i18n_value_search(cx, "title"),
+                Icon::new(IconName::Search),
+                ServerToolsAction::ValueSearch,
+                ServerView::ValueSearch.required_commands(),
+                false,
+            ),
+            // RediSearch / valkey-search, when the module is loaded.
+            supports_search
+                .then(|| {
+                    tool(
+                        i18n_search(cx, "title"),
+                        Icon::new(IconName::Search),
+                        ServerToolsAction::Search,
+                        ServerView::Search.required_commands(),
+                        false,
+                    )
+                })
+                .flatten(),
+            // `FUNCTION`, Redis 7.0+.
+            supports_functions
+                .then(|| {
+                    tool(
+                        i18n_functions(cx, "title"),
+                        Icon::new(IconName::Asterisk),
+                        ServerToolsAction::Functions,
+                        ServerView::Functions.required_commands(),
+                        false,
+                    )
+                })
+                .flatten(),
+            // The saved scripts are local, so the library opens everywhere;
+            // running one needs EVAL and degrades inside.
+            tool(
+                i18n_lua_scripts(cx, "title"),
+                Icon::new(IconName::SquareTerminal),
+                ServerToolsAction::LuaScripts,
+                &[],
+                false,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let mut data: Vec<ToolEntry> = Vec::new();
+        // The local recycle bin — a dialog, and not in the browser, which
+        // keeps no bin (`ZedisAppState::soft_delete`).
+        #[cfg(not(target_family = "wasm"))]
+        data.extend(tool(
+            i18n_trash(cx, "menu"),
+            Icon::new(CustomIconName::FileXCorner),
+            ServerToolsAction::Trash,
+            &[],
+            false,
+        ));
+        data.extend(
+            [
+                // RESTORE: disabled, not hidden, on a read-only connection so
+                // the user knows where it lives.
+                tool(
+                    i18n_status_bar(cx, "import_keys_menu"),
+                    Icon::new(CustomIconName::Upload),
+                    ServerToolsAction::ImportKeys,
+                    &[],
+                    true,
+                ),
+                tool(
+                    i18n_status_bar(cx, "export_keys_menu"),
+                    Icon::new(CustomIconName::Download),
+                    ServerToolsAction::ExportKeys,
+                    &[],
+                    false,
+                ),
+                tool(
+                    i18n_status_bar(cx, "compare_keys_menu"),
+                    Icon::new(CustomIconName::GitCompareArrows),
+                    ServerToolsAction::CompareKeys,
+                    &[],
+                    false,
+                ),
+            ]
+            .into_iter()
+            .flatten(),
         );
-        // Keyspace Notifications relies on `notify-keyspace-events`
-        // (since 2.8); an empty config surfaces a one-click Enable banner
-        // inside the panel. Its hard dependency is SUBSCRIBE.
-        let (keyspace_label, keyspace_off) = gated(
-            i18n_status_bar(cx, "toggle_keyspace_notifications_tooltip"),
-            ServerView::KeyspaceNotifications,
-            None,
-        );
-        let (info_label, info_off) = gated(i18n_server_info(cx, "title"), ServerView::ServerInfo, None);
-        // The probed command matrix — a read-only look at the server, so it
-        // sits with INFO. Quiet by design: a count suffix here (and a line in
-        // the status tooltip) rather than a badge in the bar.
+
+        let mut admin: Vec<ToolEntry> = [
+            // CONFIG GET is the one managed clouds most often take away.
+            tool(
+                i18n_config_editor(cx, "title"),
+                Icon::new(IconName::Settings),
+                ServerToolsAction::Config,
+                ServerView::Config.required_commands(),
+                false,
+            ),
+            // ACL, Redis 6.0+.
+            supports_acl
+                .then(|| {
+                    tool(
+                        i18n_acl(cx, "title"),
+                        Icon::new(IconName::CircleUser),
+                        ServerToolsAction::Acl,
+                        ServerView::Acl.required_commands(),
+                        false,
+                    )
+                })
+                .flatten(),
+            tool(
+                i18n_persistence(cx, "title"),
+                Icon::new(CustomIconName::HardDrive),
+                ServerToolsAction::Persistence,
+                ServerView::Persistence.required_commands(),
+                false,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // FLUSHDB / FLUSHALL go through the same destructive-command confirm
+        // a typed one hits in the terminal: the menu adds an entry point, not
+        // a second policy. Kept apart from the panels below a divider.
+        let flush: Vec<ToolEntry> = [
+            tool(
+                i18n_status_bar(cx, "flush_db_menu"),
+                Icon::new(CustomIconName::Eraser),
+                ServerToolsAction::FlushDb,
+                &[ServerCommand::FlushDb],
+                true,
+            ),
+            tool(
+                i18n_status_bar(cx, "flush_all_menu"),
+                Icon::new(CustomIconName::DatabaseZap),
+                ServerToolsAction::FlushAll,
+                &[ServerCommand::FlushAll],
+                true,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let flush_after = (!admin.is_empty() && !flush.is_empty()).then_some(admin.len());
+        admin.extend(flush);
+
+        let groups = [
+            (
+                Icon::new(IconName::ChartPie),
+                i18n_status_bar(cx, "group_observability"),
+                observability,
+                None,
+            ),
+            (
+                Icon::new(CustomIconName::Braces),
+                i18n_status_bar(cx, "group_scripting"),
+                scripting,
+                None,
+            ),
+            (
+                Icon::new(CustomIconName::Database),
+                i18n_status_bar(cx, "group_data"),
+                data,
+                None,
+            ),
+            (
+                Icon::new(IconName::Settings),
+                i18n_status_bar(cx, "group_admin"),
+                admin,
+                flush_after,
+            ),
+        ];
+        let topology_label = i18n_topology(cx, "title");
+        // The probed command matrix: a count suffix here rather than a badge
+        // in the bar.
         let unusable = features.unusable().len();
         let capabilities_label: SharedString = if unusable == 0 {
-            i18n_features(cx, "dialog_title")
+            format!("{}…", i18n_features(cx, "dialog_title")).into()
         } else {
             format!(
-                "{}  ·  {}",
+                "{}…  ·  {}",
                 i18n_features(cx, "dialog_title"),
-                t!("servers.diag_capabilities_limited", count = unusable, locale = &locale)
+                t!("status_bar.capabilities_limited", count = unusable, locale = &locale)
             )
             .into()
         };
-        let mut menu = this
-            .label(i18n_status_bar(cx, "group_observability"))
-            .menu_with_icon_and_disabled(
-                monitor_label,
-                Icon::new(CustomIconName::Radar),
-                Box::new(ServerToolsAction::Monitor),
-                monitor_off,
-            )
-            .menu_with_icon_and_disabled(
-                load_label,
-                Icon::new(CustomIconName::Zap),
-                Box::new(ServerToolsAction::ServerLoad),
-                load_off,
-            )
-            .menu_with_icon_and_disabled(
-                hotkeys_label,
-                Icon::new(CustomIconName::Flame),
-                Box::new(ServerToolsAction::Hotkeys),
-                hotkeys_off,
-            )
-            .menu_with_icon_and_disabled(
-                keyspace_label,
-                Icon::new(CustomIconName::AudioWaveform),
-                Box::new(ServerToolsAction::KeyspaceNotifications),
-                keyspace_off,
-            )
-            // Multi-series TimeSeries explorer — greyed out (with the
-            // reason) wherever RedisTimeSeries is not loaded.
-            .menu_with_icon_and_disabled(
-                ts_explorer_label,
-                Icon::new(CustomIconName::Activity),
-                Box::new(ServerToolsAction::TimeSeriesExplorer),
-                ts_explorer_off,
-            )
-            // Pub/Sub (channel mode in the editor suite) — mirrored here so
-            // the connection-level messaging tool is findable next to its
-            // observability siblings, not only in the key tree's menu.
-            .menu_element_with_icon(
-                Icon::new(CustomIconName::Rss),
-                Box::new(ServerToolsAction::PubsubMode),
-                move |_window, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
-            )
-            // Raw INFO browser — plain `INFO` works on every Redis; only a
-            // proxy that blocks INFO altogether disables it.
-            .menu_with_icon_and_disabled(
-                info_label,
-                Icon::new(IconName::Info),
-                Box::new(ServerToolsAction::ServerInfo),
-                info_off,
-            )
-            .menu_with_icon(
-                capabilities_label,
-                Icon::new(CustomIconName::ListCheck),
-                Box::new(ServerToolsAction::Capabilities),
-            );
 
-        // ── Query & Scripting ──
-        menu = menu.separator().label(i18n_status_bar(cx, "group_scripting"));
-        // Search keys by value content — works on any Redis (no module), so it
-        // anchors this group.
-        // Value search needs SCAN — a proxy without it gets the placeholder.
-        let (value_search_label, value_search_off) =
-            gated(i18n_value_search(cx, "title"), ServerView::ValueSearch, None);
-        menu = menu.menu_with_icon_and_disabled(
-            value_search_label,
-            Icon::new(IconName::Search),
-            Box::new(ServerToolsAction::ValueSearch),
-            value_search_off,
-        );
-        // RediSearch (module `search`). Shown disabled with a "module not
-        // loaded" suffix when the module is absent, so the feature stays
-        // discoverable and the user knows what to enable.
-        let (search_label, search_off) = gated(
-            i18n_status_bar(cx, "toggle_search_tooltip"),
-            ServerView::Search,
-            (!supports_search).then(|| i18n_status_bar(cx, "module_not_loaded")),
-        );
-        menu = menu.menu_with_icon_and_disabled(
-            search_label,
-            Icon::new(IconName::Search),
-            Box::new(ServerToolsAction::Search),
-            search_off,
-        );
-        // Functions (`FUNCTION`, Redis 7.0+). Version-gated rather than a
-        // module, so the suffix points at the required Redis version; on a
-        // 7+ server the probe's verdict on FUNCTION LIST applies.
-        let (functions_label, functions_off) = gated(
-            i18n_status_bar(cx, "toggle_functions_tooltip"),
-            ServerView::Functions,
-            (!supports_functions).then(|| i18n_status_bar(cx, "requires_redis_7")),
-        );
-        menu = menu.menu_with_icon_and_disabled(
-            functions_label,
-            Icon::new(IconName::Asterisk),
-            Box::new(ServerToolsAction::Functions),
-            functions_off,
-        );
-        // Lua script library: the saved scripts are local, so the panel
-        // opens everywhere; running needs EVAL and degrades inside.
-        menu = menu.menu_element_with_icon(
-            Icon::new(IconName::SquareTerminal),
-            Box::new(ServerToolsAction::LuaScripts),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "toggle_lua_scripts_tooltip")),
-        );
-
-        // ── Administration ──
-        menu = menu.separator().label(i18n_status_bar(cx, "group_admin"));
-        // CONFIG GET is the one managed clouds most often take away.
-        let (config_label, config_off) = gated(i18n_status_bar(cx, "toggle_config_tooltip"), ServerView::Config, None);
-        menu = menu.menu_with_icon_and_disabled(
-            config_label,
-            Icon::new(IconName::Settings),
-            Box::new(ServerToolsAction::Config),
-            config_off,
-        );
-        // Local recycle bin (soft-deleted keys) — a dialog, not a sub-route,
-        // and always available since the bin lives client-side. The menu
-        // uses the descriptive `menu` label ("Deleted Keys (Trash)"): a bare
-        // "Trash" next to entries like "Keyspace Notifications" reads as a
-        // mystery; the dialog itself keeps the short `title`. Not in the
-        // browser, which keeps no bin (`ZedisAppState::soft_delete`).
-        #[cfg(not(target_family = "wasm"))]
-        {
-            menu = menu.menu_element_with_icon(
-                Icon::new(CustomIconName::FileXCorner),
-                Box::new(ServerToolsAction::Trash),
-                move |_window, cx| Label::new(i18n_trash(cx, "menu")),
-            );
+        let mut menu = this;
+        for (icon, label, entries, separator_at) in groups {
+            if entries.is_empty() {
+                continue;
+            }
+            menu = menu.submenu_with_icon(Some(icon), label, window, cx, move |mut submenu, _, _| {
+                for (index, entry) in entries.iter().enumerate() {
+                    if separator_at == Some(index) {
+                        submenu = submenu.separator();
+                    }
+                    submenu = submenu.menu_with_icon_and_disabled(
+                        entry.label.clone(),
+                        entry.icon.clone(),
+                        Box::new(entry.action),
+                        entry.disabled,
+                    );
+                }
+                submenu
+            });
         }
-        // Import framed dump into the current server / db. Needs write
-        // (RESTORE); keep visible when readonly so users know where it lives.
-        let import_label: SharedString = if readonly {
-            format!(
-                "{}  ·  {}",
-                i18n_status_bar(cx, "import_keys_menu"),
-                i18n_common(cx, "disable_in_readonly")
-            )
-            .into()
-        } else {
-            i18n_status_bar(cx, "import_keys_menu")
-        };
-        menu = menu.menu_with_icon_and_disabled(
-            import_label,
-            Icon::new(CustomIconName::Upload),
-            Box::new(ServerToolsAction::ImportKeys),
-            readonly,
-        );
-        // Export the loaded keys of the current db (binary / JSON / CSV) —
-        // the selection-free counterpart to the key tree's context-menu
-        // export. Read-only, so no readonly gate.
-        menu = menu.menu_element_with_icon(
-            Icon::new(CustomIconName::Download),
-            Box::new(ServerToolsAction::ExportKeys),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "export_keys_menu")),
-        );
-        // Compare the keys under a prefix with another server / db — reads
-        // both sides, writes nothing.
-        menu = menu.menu_element_with_icon(
-            Icon::new(CustomIconName::GitCompareArrows),
-            Box::new(ServerToolsAction::CompareKeys),
-            move |_window, cx| Label::new(i18n_status_bar(cx, "compare_keys_menu")),
-        );
-        // ACL (Redis 6.0+). Version-gated; suffix points at the required
-        // Redis version when unavailable.
-        let (acl_label, acl_off) = gated(
-            i18n_status_bar(cx, "toggle_acl_tooltip"),
-            ServerView::Acl,
-            (!supports_acl).then(|| i18n_status_bar(cx, "requires_redis_6")),
-        );
-        menu = menu.menu_with_icon_and_disabled(
-            acl_label,
-            Icon::new(IconName::CircleUser),
-            Box::new(ServerToolsAction::Acl),
-            acl_off,
-        );
-        // Persistence reads INFO persistence; BGSAVE / BGREWRITEAOF degrade
-        // inside the panel when denied.
-        let (persistence_label, persistence_off) = gated(
-            i18n_status_bar(cx, "toggle_persistence_tooltip"),
-            ServerView::Persistence,
-            None,
-        );
-        menu = menu.menu_with_icon_and_disabled(
-            persistence_label,
-            Icon::new(CustomIconName::HardDrive),
-            Box::new(ServerToolsAction::Persistence),
-            persistence_off,
-        );
-        // FLUSHDB / FLUSHALL (#129). Both route through the same
-        // destructive-command confirm a typed `FLUSHALL` hits in the
-        // terminal, so the menu adds an entry point, not a second policy.
-        // Disabled — not hidden — on a read-only connection, like Import
-        // Keys above.
-        for (label_key, icon, action) in [
-            ("flush_db_menu", CustomIconName::Eraser, ServerToolsAction::FlushDb),
-            (
-                "flush_all_menu",
-                CustomIconName::DatabaseZap,
-                ServerToolsAction::FlushAll,
-            ),
-        ] {
-            // Read-only wins the wording; otherwise a FLUSHDB the ACL denies
-            // (the usual managed-cloud setup) is disabled with its reason.
-            let flush_block = features.first_unusable(&[crate::connection::ServerCommand::FlushDb]);
-            let (label, disabled): (SharedString, bool) = if readonly {
-                (
-                    format!(
-                        "{}  ·  {}",
-                        i18n_status_bar(cx, label_key),
-                        i18n_common(cx, "disable_in_readonly")
-                    )
-                    .into(),
-                    true,
-                )
-            } else if let Some((command, _)) = flush_block {
-                let suffix = t!("features.menu_suffix", command = command.label(), locale = &locale);
-                (format!("{}  ·  {suffix}", i18n_status_bar(cx, label_key)).into(), true)
-            } else {
-                (i18n_status_bar(cx, label_key), false)
-            };
-            menu = menu.menu_with_icon_and_disabled(label, Icon::new(icon), Box::new(action), disabled);
-        }
-
-        // ── Topology & Replication ── (absent only while the server type is
-        // unknown: the page adapts to Cluster / Sentinel / Standalone).
-        if supports_topology {
-            menu = menu.separator().label(i18n_status_bar(cx, "group_topology"));
-            // Re-uses `topology.title` as the label to avoid an extra
-            // 8-locale tooltip key.
-            menu = menu.menu_element_with_icon(
+        // The page adapts to Cluster / Sentinel / Standalone; absent only
+        // while the server type is unknown.
+        if *supports_topology {
+            menu = menu.menu_with_icon(
+                topology_label,
                 Icon::new(CustomIconName::Network),
                 Box::new(ServerToolsAction::Topology),
-                move |_window, cx| Label::new(i18n_topology(cx, "title")),
             );
         }
-
-        menu
+        menu.menu_with_icon(
+            capabilities_label,
+            Icon::new(CustomIconName::ListCheck),
+            Box::new(ServerToolsAction::Capabilities),
+        )
     }
     /// Render the server status
     /// DB-dropdown menu width, hugging the current content: the default
@@ -1202,8 +1235,8 @@ impl ZedisStatusBar {
                             .tooltip(i18n_status_bar(cx, "tools_tooltip"))
                             // Status bar sits at the bottom, so open the menu
                             // upward (its bottom edge anchored to the button).
-                            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |this, _, cx| {
-                                Self::render_tools_menu(this, &gates, cx)
+                            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |this, window, cx| {
+                                Self::render_tools_menu(this, &gates, window, cx)
                             }),
                     ),
             )

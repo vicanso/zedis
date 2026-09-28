@@ -68,6 +68,9 @@ pub enum ServerCommand {
     ClusterInfo,
     ClusterSlotStats,
     FlushDb,
+    /// Probed apart from `FLUSHDB`: an ACL often allows one and not the other
+    /// (`-flushall` is the usual managed-cloud setup).
+    FlushAll,
     HotkeysGet,
     HotkeysStart,
     /// `HSETEX` — a hash field and its TTL in one write (Redis 8.0).
@@ -160,6 +163,7 @@ impl ServerCommand {
         ServerCommand::ClusterInfo,
         ServerCommand::ClusterSlotStats,
         ServerCommand::FlushDb,
+        ServerCommand::FlushAll,
         ServerCommand::HotkeysGet,
         ServerCommand::HotkeysStart,
         ServerCommand::HSetEx,
@@ -214,6 +218,7 @@ impl ServerCommand {
             ServerCommand::Publish => "PUBLISH",
             ServerCommand::ClusterInfo | ServerCommand::ClusterSlotStats => "CLUSTER",
             ServerCommand::FlushDb => "FLUSHDB",
+            ServerCommand::FlushAll => "FLUSHALL",
             ServerCommand::HotkeysGet | ServerCommand::HotkeysStart => "HOTKEYS",
             ServerCommand::HSetEx => "HSETEX",
             ServerCommand::Replicaof => "REPLICAOF",
@@ -297,6 +302,7 @@ impl ServerCommand {
                 | ServerCommand::Publish
                 | ServerCommand::Subscribe
                 | ServerCommand::FlushDb
+                | ServerCommand::FlushAll
                 | ServerCommand::HotkeysStart
                 | ServerCommand::HSetEx
                 | ServerCommand::Replicaof

@@ -444,6 +444,7 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
         ServerCommand::Publish => &["PUBLISH", PROBE_KEY, "x"],
         ServerCommand::Subscribe => &["SUBSCRIBE", PROBE_KEY],
         ServerCommand::FlushDb => &["FLUSHDB"],
+        ServerCommand::FlushAll => &["FLUSHALL"],
         ServerCommand::HotkeysStart => &["HOTKEYS", "START", "METRICS", "1", "CPU"],
         ServerCommand::HSetEx => &["HSETEX", PROBE_KEY, "FIELDS", "1", "f", "v"],
         ServerCommand::Replicaof => &["REPLICAOF", "NO", "ONE"],
