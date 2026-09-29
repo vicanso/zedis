@@ -53,7 +53,7 @@ POST   /v1/servers { url | server }   -> { id, name, version, … }             
 PUT    /v1/servers/{id} { server, keep_secrets[] }   -> the same                  # an edit, dialled before it is kept
 DELETE /v1/servers/{id}
 POST   /v1/session { server, db }     -> { session }
-POST   /v1/exec    { server, db, commands[], pipeline?, session?, confirm? }
+POST   /v1/exec    { server, db, commands[], pipeline?, session?, confirm?, desc[]? }
                                       -> { replies[] }
 DELETE /v1/session/{token}
 ```
@@ -61,6 +61,14 @@ DELETE /v1/session/{token}
 `commands` and `replies` carry base64 RESP in both directions: one command for a
 plain call, several plus `pipeline` for a batch. The generic `T: FromRedisValue`
 decoding stays client-side and never enters the protocol.
+
+`desc` (added 2026-09-29) is the page's readable label per command —
+`HSET user:1 (+4 args)`, `ACL LIST` — so a request read in the browser's network
+panel says what it does; base64 does not. The bridge never reads it: a label is
+the caller's claim, and the policy judges `commands`. It names a key only for a
+command that takes one first (`describe_packed_command`), so `AUTH`, `CONFIG SET`
+or `ACL SETUSER` are counted, never labelled with what may be a credential, and a
+long batch is labelled up to `DESCRIBED_COMMANDS` and then counted.
 
 `fanout: "masters"` runs the commands on every master and answers with a `nodes`
 list of `host:port` labels beside the replies. **The caller never names a node.**

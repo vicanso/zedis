@@ -73,6 +73,17 @@ pub fn commands_metadata_loaded() -> bool {
     COMMANDS_JSON.get().is_some()
 }
 
+/// The group `commands.json` files `name` under (`"string"`, `"server"`, …),
+/// for a name as the table spells it — `"ACL LIST"` for a subcommand.
+pub(crate) fn command_group(name: &str) -> Option<&'static str> {
+    get_commands().get(name)?.group.as_deref()
+}
+
+/// Whether `commands.json` lists `name` (`"ACL LIST"` for a subcommand).
+pub(crate) fn is_known_command(name: &str) -> bool {
+    get_commands().contains_key(name)
+}
+
 fn get_commands() -> &'static CommandsMap {
     static EMPTY: OnceLock<CommandsMap> = OnceLock::new();
     // Do not `get_or_init` COMMANDS_MAP until the bytes are in: an empty

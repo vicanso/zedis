@@ -42,6 +42,8 @@ use redis::{Cmd, ErrorKind, FromRedisValue, Pipeline, RedisError, RedisResult, V
 use redis::{RedisFuture, aio::ConnectionLike};
 use std::sync::{Arc, OnceLock};
 
+use crate::command::{command_group, is_known_command};
+
 /// Why a bridge call failed, in terms the UI can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeErrorKind {
@@ -212,6 +214,154 @@ pub struct BridgeRequest {
     pub fanout_nodes: Vec<String>,
     /// Replayed after a [`BridgeErrorKind::ConfirmationRequired`] refusal.
     pub confirm: Option<String>,
+}
+
+/// How many commands of one request get a [`describe_packed_command`] label.
+/// A key-tree round packs two thousand; the labels are for a person reading
+/// the request, and the first few tell them what it is.
+pub const DESCRIBED_COMMANDS: usize = 32;
+
+/// The `commands.json` groups whose commands take a key first.
+const KEY_FIRST_GROUPS: [&str; 11] = [
+    "string",
+    "hash",
+    "list",
+    "set",
+    "sorted_set",
+    "stream",
+    "geo",
+    "bitmap",
+    "hyperloglog",
+    "array",
+    "generic",
+];
+
+/// Module families the table does not carry, whose first argument is a key
+/// (or an index name, `FT.*`) — never a credential.
+const KEY_FIRST_PREFIXES: [&str; 8] = ["JSON.", "TS.", "BF.", "CF.", "CMS.", "TOPK.", "TDIGEST.", "FT."];
+
+/// Commands outside those groups that take a key first: the vector sets, which
+/// the table does not carry either, and `MEMORY USAGE`, which it files under
+/// `server`.
+const KEY_FIRST_COMMANDS: [&str; 14] = [
+    "MEMORY USAGE",
+    "VADD",
+    "VCARD",
+    "VDIM",
+    "VEMB",
+    "VGETATTR",
+    "VINFO",
+    "VISMEMBER",
+    "VLINKS",
+    "VRANDMEMBER",
+    "VRANGE",
+    "VREM",
+    "VSETATTR",
+    "VSIM",
+];
+
+/// Characters of a key a label keeps.
+const LABEL_KEY_CHARS: usize = 64;
+
+/// Readable labels for a request's packed commands — one per command up to
+/// [`DESCRIBED_COMMANDS`], then one `… +N more` — sent beside them as `desc`
+/// so the browser's network panel says what a request does. The bridge never
+/// reads them: its policy judges the commands themselves.
+pub fn describe_commands(commands: &[Vec<u8>]) -> Vec<String> {
+    let mut labels: Vec<String> = commands
+        .iter()
+        .take(DESCRIBED_COMMANDS)
+        .map(|packed| describe_packed_command(packed))
+        .collect();
+    if commands.len() > DESCRIBED_COMMANDS {
+        labels.push(format!("… +{} more", commands.len() - DESCRIBED_COMMANDS));
+    }
+    labels
+}
+
+/// A packed command as a person reads it: its name — with the subcommand,
+/// `ACL LIST` — the key when it has one, and how many arguments follow:
+/// `HSET user:1 (+4 args)`.
+///
+/// The key is shown only for a command that takes one first — the keyspace
+/// groups of `commands.json`, the module families, the vector sets — so an
+/// argument that may be a credential (`AUTH`, `CONFIG SET requirepass`,
+/// `ACL SETUSER`, `HELLO … AUTH`) or a whole script (`EVAL`) is counted and
+/// never shown. So is anything the table does not know, which in the browser
+/// includes every command sent before `commands.json` has arrived.
+pub fn describe_packed_command(packed: &[u8]) -> String {
+    let Some(args) = unpack_command(packed) else {
+        return "(unreadable command)".to_string();
+    };
+    let Some((first, mut rest)) = args.split_first() else {
+        return "(empty command)".to_string();
+    };
+    let mut name = String::from_utf8_lossy(first).to_ascii_uppercase();
+    if let Some((sub, after)) = rest.split_first() {
+        let full = format!("{name} {}", String::from_utf8_lossy(sub).to_ascii_uppercase());
+        if is_known_command(&full) {
+            name = full;
+            rest = after;
+        }
+    }
+    let takes_key = KEY_FIRST_COMMANDS.contains(&name.as_str())
+        || match command_group(&name) {
+            Some(group) => KEY_FIRST_GROUPS.contains(&group),
+            None => KEY_FIRST_PREFIXES.iter().any(|prefix| name.starts_with(prefix)),
+        };
+    let key = rest.first().filter(|_| takes_key);
+    let mut label = name;
+    if let Some(key) = key {
+        label.push(' ');
+        label.push_str(&label_key(key));
+    }
+    match rest.len() - usize::from(key.is_some()) {
+        0 => {}
+        1 => label.push_str(" (+1 arg)"),
+        n => label.push_str(&format!(" (+{n} args)")),
+    }
+    label
+}
+
+/// A key as a label shows it: as typed when it is plain text, quoted and
+/// escaped when a space, a quote or bytes that are not UTF-8 would make it
+/// ambiguous, and cut at [`LABEL_KEY_CHARS`].
+fn label_key(key: &[u8]) -> String {
+    let text = String::from_utf8_lossy(key);
+    let mut shown: String = text.chars().take(LABEL_KEY_CHARS).collect();
+    let cut = text.chars().count() > LABEL_KEY_CHARS;
+    let plain = std::str::from_utf8(key).is_ok()
+        && !shown.is_empty()
+        && !shown
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\');
+    if !plain {
+        shown = format!("{shown:?}");
+    }
+    if cut {
+        shown.push('…');
+    }
+    shown
+}
+
+/// The arguments of a command as `Cmd::get_packed_command` packs it: a RESP
+/// array of bulk strings. `None` for anything else.
+fn unpack_command(packed: &[u8]) -> Option<Vec<&[u8]>> {
+    fn line(bytes: &[u8], at: usize) -> Option<(&[u8], usize)> {
+        let end = at + bytes.get(at..)?.windows(2).position(|w| w == b"\r\n")?;
+        Some((&bytes[at..end], end + 2))
+    }
+    let (header, mut at) = line(packed, 0)?;
+    let count: usize = std::str::from_utf8(header.strip_prefix(b"*")?).ok()?.parse().ok()?;
+    let mut args = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        let (len, next) = line(packed, at)?;
+        let len: usize = std::str::from_utf8(len.strip_prefix(b"$")?).ok()?.parse().ok()?;
+        let arg = packed.get(next..next.checked_add(len)?)?;
+        args.push(arg);
+        at = next + len + 2;
+    }
+    Some(args)
 }
 
 /// What a bridge call produced.
@@ -586,6 +736,97 @@ impl BridgePipeline for Pipeline {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// `args` packed the way redis-rs packs a command. The name goes in as a
+    /// variable so the `cmd("…")` scans in `tests/` do not count these.
+    fn packed(args: &[&[u8]]) -> Vec<u8> {
+        let mut command = redis::cmd(std::str::from_utf8(args[0]).expect("name"));
+        for arg in &args[1..] {
+            command.arg(*arg);
+        }
+        command.get_packed_command()
+    }
+
+    fn label(args: &[&str]) -> String {
+        crate::init_commands_json(include_bytes!("../../../assets/commands.json").to_vec());
+        let args: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
+        describe_packed_command(&packed(&args))
+    }
+
+    #[test]
+    fn a_label_names_the_command_its_key_and_how_many_arguments_follow() {
+        assert_eq!(label(&["get", "user:42"]), "GET user:42");
+        assert_eq!(
+            label(&["HSET", "user:1", "name", "alice", "age", "30"]),
+            "HSET user:1 (+4 args)"
+        );
+        assert_eq!(label(&["ACL", "LIST"]), "ACL LIST");
+        assert_eq!(label(&["OBJECT", "ENCODING", "user:1"]), "OBJECT ENCODING user:1");
+        assert_eq!(
+            label(&["MEMORY", "USAGE", "user:1", "SAMPLES", "0"]),
+            "MEMORY USAGE user:1 (+2 args)"
+        );
+        assert_eq!(label(&["JSON.GET", "doc", "$.a"]), "JSON.GET doc (+1 arg)");
+        assert_eq!(label(&["VSIM", "vs", "ELE", "a"]), "VSIM vs (+2 args)");
+        assert_eq!(label(&["PING"]), "PING");
+    }
+
+    #[test]
+    fn a_label_never_shows_an_argument_that_may_be_a_credential() {
+        for (args, expected) in [
+            (vec!["AUTH", "hunter2"], "AUTH (+1 arg)"),
+            (vec!["AUTH", "alice", "hunter2"], "AUTH (+2 args)"),
+            (vec!["CONFIG", "SET", "requirepass", "hunter2"], "CONFIG SET (+2 args)"),
+            (
+                vec!["ACL", "SETUSER", "alice", "on", ">hunter2"],
+                "ACL SETUSER (+3 args)",
+            ),
+            (vec!["HELLO", "3", "AUTH", "alice", "hunter2"], "HELLO (+4 args)"),
+            (vec!["CLIENT", "SETNAME", "hunter2"], "CLIENT SETNAME (+1 arg)"),
+            (vec!["EVAL", "return 'hunter2'", "0"], "EVAL (+2 args)"),
+            // Unknown to the table: counted, not shown.
+            (vec!["VENDOR.LOGIN", "hunter2"], "VENDOR.LOGIN (+1 arg)"),
+        ] {
+            let shown = label(&args);
+            assert_eq!(shown, expected, "{args:?}");
+            assert!(!shown.contains("hunter2"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_key_that_would_read_ambiguously_is_quoted_and_a_long_one_cut() {
+        assert_eq!(label(&["GET", "my key"]), r#"GET "my key""#);
+        assert_eq!(label(&["GET", ""]), r#"GET """#);
+        let long = "k".repeat(100);
+        assert_eq!(label(&["GET", &long]), format!("GET {}…", "k".repeat(LABEL_KEY_CHARS)));
+        crate::init_commands_json(include_bytes!("../../../assets/commands.json").to_vec());
+        let binary = describe_packed_command(&packed(&[b"GET", b"\xff\x00k"]));
+        // Not UTF-8: replaced, quoted, and a NUL shown as `\0`.
+        assert_eq!(binary, "GET \"\u{fffd}\\0k\"");
+    }
+
+    #[test]
+    fn a_long_batch_is_labelled_up_to_the_cap_and_then_counted() {
+        let commands: Vec<Vec<u8>> = (0..DESCRIBED_COMMANDS + 8)
+            .map(|i| packed(&[b"TYPE", format!("k{i}").as_bytes()]))
+            .collect();
+        crate::init_commands_json(include_bytes!("../../../assets/commands.json").to_vec());
+        let labels = describe_commands(&commands);
+        assert_eq!(labels.len(), DESCRIBED_COMMANDS + 1);
+        assert_eq!(labels[0], "TYPE k0");
+        assert_eq!(labels[DESCRIBED_COMMANDS], "… +8 more");
+        assert_eq!(describe_commands(&commands[..2]), ["TYPE k0", "TYPE k1"]);
+    }
+
+    #[test]
+    fn a_frame_that_is_not_a_packed_command_is_said_to_be_one() {
+        assert_eq!(describe_packed_command(b"+OK\r\n"), "(unreadable command)");
+        assert_eq!(
+            describe_packed_command(b"*2\r\n$3\r\nGET\r\n$9\r\nshort"),
+            "(unreadable command)"
+        );
+        assert_eq!(describe_packed_command(b"*0\r\n"), "(empty command)");
+    }
 
     /// Records what it was asked to send and replays canned frames.
     struct Recorder {

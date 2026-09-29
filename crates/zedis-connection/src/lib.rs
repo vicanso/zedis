@@ -110,7 +110,8 @@ pub use audit::{is_administration_command, redact_secrets};
 pub use bitmap::{BitOpKind, BitmapInfo, bit_field, bit_op, bitmap_info, set_bit};
 pub use bridge::{
     BridgeConn, BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport,
-    PipelineSpec, bridge_server_store, bridge_transport, set_bridge_server_store, set_bridge_transport,
+    DESCRIBED_COMMANDS, PipelineSpec, bridge_server_store, bridge_transport, describe_commands,
+    describe_packed_command, set_bridge_server_store, set_bridge_transport,
 };
 /// What stands in for redis-rs's `Cmd::query_async` / `Pipeline::query_async`
 /// in the browser, where the `aio` feature that provides them cannot be built.

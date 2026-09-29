@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use zedis_connection::{
     BridgeError, BridgeErrorKind, BridgeReply, BridgeRequest, BridgeServerStore, BridgeTransport, RedisServer,
-    get_servers, set_account_read_only_on,
+    describe_commands, get_servers, set_account_read_only_on,
 };
 
 /// Talks to one `zedis-bridge`.
@@ -192,12 +192,16 @@ fn sign_in_again() {}
 ///
 /// Field names are the contract with `zedis-bridge`'s `ExecRequest`; the test
 /// below is what keeps the two from drifting apart silently, since a rename
-/// on either side would otherwise only show up as a 400 at runtime.
+/// on either side would otherwise only show up as a 400 at runtime. `desc` is
+/// the one field outside that contract: a readable label per command
+/// (`describe_commands`) for whoever reads the request in the browser's
+/// network panel, where `commands` is only base64. The bridge ignores it.
 fn exec_payload(request: &BridgeRequest) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "server": request.server_id,
         "db": request.db,
         "commands": request.commands.iter().map(|c| B64.encode(c)).collect::<Vec<_>>(),
+        "desc": describe_commands(&request.commands),
     });
     if request.fanout_masters {
         payload["fanout"] = serde_json::Value::String("masters".to_string());
@@ -491,6 +495,7 @@ mod tests {
         assert_eq!(body["server"], "srv");
         assert_eq!(body["db"], 3);
         assert_eq!(body["commands"].as_array().expect("commands").len(), 1);
+        assert_eq!(body["desc"], serde_json::json!(["PING"]));
         // Absent, not null: the server reads these with `#[serde(default)]`.
         assert!(body.get("pipeline").is_none());
         assert!(body.get("fanout").is_none());

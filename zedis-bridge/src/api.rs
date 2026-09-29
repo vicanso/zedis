@@ -1103,6 +1103,10 @@ pub(crate) struct ExecRequest {
     db: usize,
     /// The packed commands, base64 of what `Cmd::get_packed_command()` made.
     /// One entry is a plain command; several are a pipeline.
+    ///
+    /// The page also sends `desc`, a readable label per command for its own
+    /// network panel. It is deliberately not a field here: a label is the
+    /// caller's claim about the commands, and the policy judges the commands.
     commands: Vec<String>,
     /// Present only for a pipeline, carrying the framing redis-rs asks a
     /// connection for. `MULTI`/`EXEC` are added here from `atomic`, exactly
@@ -1757,5 +1761,26 @@ mod fanout_tests {
     #[test]
     fn no_masters_means_nothing_to_aim_at() {
         assert!(aim_at_nodes(&[], &labels(&["a:1"])).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod exec_request_tests {
+    use super::ExecRequest;
+
+    #[test]
+    fn the_page_s_readable_labels_are_accepted_and_ignored() {
+        // `desc` is not a field: a body that carries it must still parse, or
+        // every request from the page would be a 400.
+        let body = serde_json::json!({
+            "server": "srv",
+            "db": 2,
+            "commands": ["KjENCiQ0DQpQSU5HDQo="],
+            "desc": ["PING"],
+        });
+        let request: ExecRequest = serde_json::from_value(body).expect("a labelled body parses");
+        assert_eq!(request.server, "srv");
+        assert_eq!(request.db, 2);
+        assert_eq!(request.commands.len(), 1);
     }
 }
