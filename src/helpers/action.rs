@@ -15,7 +15,10 @@
 use crate::helpers::keybinding_overrides;
 use gpui::Action;
 use gpui::KeyBinding;
-#[cfg(target_os = "macos")]
+// `input::Copy` and not an import of it: the name would shadow the trait.
+#[cfg(target_family = "wasm")]
+use gpui_kit::component::input;
+#[cfg(any(target_os = "macos", target_family = "wasm"))]
 use gpui_kit::component::input::Replace;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -322,8 +325,9 @@ pub fn uses_command_key() -> bool {
 static WEB_COMMAND_KEY: AtomicBool = AtomicBool::new(false);
 
 /// The browser is on an Apple keyboard. Set by the web entry before
-/// `launch`, from the page's `navigator`; it only decides how shortcuts are
-/// *drawn* — both spellings are bound either way ([`web_twin`]).
+/// `launch`, from the page's `navigator`. It decides how shortcuts are drawn
+/// — both spellings of ours are bound either way ([`web_twin`]) — and whether
+/// a text input also answers the Mac set of its own ([`apple_input_keys`]).
 #[cfg(target_family = "wasm")]
 pub fn set_web_command_key(apple_keyboard: bool) {
     WEB_COMMAND_KEY.store(apple_keyboard, Ordering::Relaxed);
@@ -693,6 +697,58 @@ pub fn shortcut_reference() -> Vec<ShortcutGroup> {
     groups
 }
 
+/// macOS's text-input shortcuts, for a Mac keyboard in the browser.
+///
+/// A text input's shortcuts are gpui-base's, bound per platform when it is
+/// compiled (`#[cfg(target_os = "macos")]`), and a wasm module is never
+/// compiled for macOS: in the browser every input answers the Windows set —
+/// Ctrl+F, Ctrl+Z, Ctrl+A — on every machine, and ⌘F, ⌘Z, ⌘A, ⌥← do nothing
+/// on a Mac. [`web_twin`] does not reach them, being the kit's bindings and not
+/// ours, so on an Apple keyboard the Mac set is bound beside them. Only there:
+/// on Windows and Linux the Ctrl set already works and ⌥← is the browser's
+/// Back. Left out are the emacs-style Ctrl keys (`ctrl-a` is Select All in the
+/// set already bound) and adding a cursor, which the kit exports no action for.
+#[cfg(not(target_family = "wasm"))]
+fn apple_input_keys() -> Vec<KeyBinding> {
+    Vec::new()
+}
+#[cfg(target_family = "wasm")]
+fn apple_input_keys() -> Vec<KeyBinding> {
+    if !uses_command_key() {
+        return Vec::new();
+    }
+    let text = Some("Input");
+    vec![
+        KeyBinding::new("cmd-a", input::SelectAll, text),
+        KeyBinding::new("cmd-c", input::Copy, text),
+        KeyBinding::new("cmd-x", input::Cut, text),
+        KeyBinding::new("cmd-v", input::Paste, text),
+        KeyBinding::new("cmd-z", input::Undo, text),
+        KeyBinding::new("cmd-shift-z", input::Redo, text),
+        KeyBinding::new("cmd-f", input::Search, text),
+        // Context-free, as on the desktop: `multi_search`'s ⌘⇧F twin has no
+        // context, and one without a context out-ranks one scoped to `Input`.
+        KeyBinding::new("cmd-shift-f", Replace, None),
+        KeyBinding::new("cmd-.", input::ToggleCodeActions, text),
+        KeyBinding::new("cmd-left", input::MoveHome, text),
+        KeyBinding::new("cmd-right", input::MoveEnd, text),
+        KeyBinding::new("cmd-up", input::MoveToStart, text),
+        KeyBinding::new("cmd-down", input::MoveToEnd, text),
+        KeyBinding::new("shift-cmd-left", input::SelectToStartOfLine, text),
+        KeyBinding::new("shift-cmd-right", input::SelectToEndOfLine, text),
+        KeyBinding::new("cmd-shift-up", input::SelectToStart, text),
+        KeyBinding::new("cmd-shift-down", input::SelectToEnd, text),
+        KeyBinding::new("alt-left", input::MoveToPreviousWord, text),
+        KeyBinding::new("alt-right", input::MoveToNextWord, text),
+        KeyBinding::new("cmd-backspace", input::DeleteToBeginningOfLine, text),
+        KeyBinding::new("cmd-delete", input::DeleteToEndOfLine, text),
+        KeyBinding::new("alt-backspace", input::DeleteToPreviousWordStart, text),
+        KeyBinding::new("alt-delete", input::DeleteToNextWordEnd, text),
+        KeyBinding::new("cmd-]", input::Indent, text),
+        KeyBinding::new("cmd-[", input::Outdent, text),
+    ]
+}
+
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     let mut keys: Vec<KeyBinding> = Vec::new();
     // The twin goes in *first*. A menu draws the last keystroke bound to its
@@ -759,6 +815,7 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
     // keystroke goes on to multi-db search.
     #[cfg(target_os = "macos")]
     keys.push(KeyBinding::new("cmd-shift-f", Replace, None));
+    keys.extend(apple_input_keys());
     keys
 }
 
