@@ -617,20 +617,19 @@ impl ZedisMemoryAnalysis {
         const TARGET_X_LABELS: usize = 5;
         let tick_margin = values.len().div_ceil(TARGET_X_LABELS).max(1);
         let params = ChartParams {
+            id: "memory-fragmentation".into(),
             y_min: 0.0,
             dates: series.dates.clone(),
             y_max,
             y_format: Box::new(|v| format!("{v:.2}")),
             tick_margin,
-            border: theme.border,
-            muted_fg: theme.muted_foreground,
         };
-        let chart = make_line_canvas(params, series.values.clone(), stroke, false);
+        let chart = make_line_chart(params, series.values.clone(), stroke);
 
         Some(
             v_flex()
                 // `w_full` is critical — without it the card collapses
-                // to the label's natural width (~200px) and the canvas
+                // to the label's natural width (~200px) and the chart
                 // inherits that, jamming HH:MM:SS x-axis labels on top
                 // of each other. `flex_none` prevents vertical squeeze
                 // when the body has many siblings.
@@ -648,7 +647,7 @@ impl ZedisMemoryAnalysis {
     }
 
     /// Render the TTL distribution body — a 6-bar histogram plus a
-    /// summary line. Bars share the canvas helpers used by the Metrics
+    /// summary line. Bars share the chart helpers used by the Metrics
     /// panel so visual styling stays consistent. `ratio` is folded into
     /// the summary so users see both the sampled count and an estimated
     /// total ("12,345 sampled → ~123,450 estimated") which matters when
@@ -675,15 +674,14 @@ impl ZedisMemoryAnalysis {
         let raw_max = values.iter().cloned().fold(0.0_f64, f64::max);
         let y_max = (raw_max * 1.1).max(1.0);
         let params = ChartParams {
+            id: "memory-keysizes".into(),
             y_min: 0.0,
             dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.0}")),
             tick_margin: 1,
-            border: theme.border,
-            muted_fg: muted,
         };
-        let chart = make_bar_canvas(params, Arc::new(values), theme.chart_1);
+        let chart = make_bar_chart(params, Arc::new(values), theme.chart_1);
 
         // Type picker — Redis type names verbatim, with each type's exact
         // key count so the busiest type is pickable at a glance.
@@ -977,13 +975,12 @@ impl ZedisMemoryAnalysis {
 
         // 6 buckets and the chart is usually wide → label every bar.
         let params = ChartParams {
+            id: "memory-ttl".into(),
             y_min: 0.0,
             dates: Arc::new(dates),
             y_max,
             y_format: Box::new(|v| format!("{v:.0}")),
             tick_margin: 1,
-            border: theme.border,
-            muted_fg: muted,
         };
 
         // Pick fill colour by aggregate urgency: if the leftmost two
@@ -995,7 +992,7 @@ impl ZedisMemoryAnalysis {
         } else {
             theme.chart_2
         };
-        let chart = make_bar_canvas(params, Arc::new(values), fill_color);
+        let chart = make_bar_chart(params, Arc::new(values), fill_color);
 
         // Summary line: sampled total + (if ratio<1) estimated full
         // population + no-TTL share (the "are we leaking?" signal).

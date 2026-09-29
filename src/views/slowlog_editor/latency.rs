@@ -502,7 +502,7 @@ impl ZedisSlowlogEditor {
         // Sparkline block: native GPU line chart sourced from LATENCY
         // HISTORY. Replaces the previous monospace ASCII `LATENCY
         // GRAPH` block — server-side ASCII art doesn't scale with the
-        // panel and clashes visually with the Metrics view's canvases.
+        // panel and clashes visually with the Metrics view's charts.
         let graph_block: gpui::AnyElement = match history.as_deref() {
             // No samples yet → render the loading placeholder so the
             // expanded row has something while the background fetch is
@@ -529,26 +529,26 @@ impl ZedisSlowlogEditor {
                 // to reuse it without forking a second formatter.
                 let dates: Vec<SharedString> = h.iter().map(|s| format_timestamp_ms(s.timestamp * 1000)).collect();
                 let values: Vec<f64> = h.iter().map(|s| s.latency_ms as f64).collect();
-                // Floor y_max at 0.01 — `make_line_canvas` divides by
-                // y_max for scale, so 0 would produce NaN.
+                // Floor y_max at 0.01: a chart whose y range starts and
+                // ends at the same value draws nothing, and an all-zero
+                // history would be an empty frame.
                 let y_max = values.iter().copied().fold(0.01_f64, f64::max);
                 // Roughly 4 x-axis labels evenly spaced; clamp at 1 so
                 // a single-sample history still renders a tick.
                 let tick_margin = (h.len() / 4).max(1);
                 let params = ChartParams {
+                    id: "latency-history".into(),
                     y_min: 0.0,
                     dates: Arc::new(dates),
                     y_max,
                     y_format: Box::new(|v| format!("{:.0} ms", v)),
                     tick_margin,
-                    border: theme.border,
-                    muted_fg: muted,
                 };
                 div()
                     .h(px(140.))
                     .px_3()
                     .py_2()
-                    .child(make_line_canvas(params, Arc::new(values), theme.chart_2, false))
+                    .child(make_line_chart(params, Arc::new(values), theme.chart_2))
                     .into_any_element()
             }
         };

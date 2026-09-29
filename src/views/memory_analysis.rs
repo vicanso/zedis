@@ -28,7 +28,7 @@ use crate::states::{
     content_area_width, get_metrics_cache, i18n_common, i18n_hints, i18n_memory_analysis,
     update_app_state_and_save_quiet,
 };
-use crate::views::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas};
+use crate::views::{ChartParams, format_timestamp_ms, make_bar_chart, make_line_chart};
 /// Redis Memory Analysis viewer.
 ///
 /// Samples keys from the database, groups by prefix and displays two tables:

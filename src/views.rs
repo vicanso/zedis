@@ -17,6 +17,7 @@ mod acl_manager;
 mod bitmap_editor;
 mod bytes_editor;
 mod change_log_dialog;
+mod charts;
 mod client_dialogs;
 mod clients_manager;
 mod command_palette;
@@ -141,14 +142,14 @@ pub use score_filter_dialog::open_score_filter_dialog;
 pub use sentinel_dialogs::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
 pub use server_report_dialog::{ServerReport, open_server_report_dialog};
 pub use timeseries_explorer::ZedisTimeSeriesExplorer;
-// Chart helpers re-exported so other diagnostic panels (e.g.
-// memory_analysis) can reuse the metrics view's canvas primitives
-// without each one re-implementing axis / tick rendering.
+// The charts every diagnostic panel draws, one module so the axes and the
+// tooltip read the same in all of them.
+pub(crate) use charts::{ChartParams, ChartSeries, make_bar_chart, make_line_chart, make_series_chart, value_range};
 #[cfg(not(target_family = "wasm"))]
 pub use compare_window::open_compare_window;
 pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
-pub(crate) use metrics::{ChartParams, format_timestamp_ms, make_bar_canvas, make_line_canvas, value_range};
+pub(crate) use metrics::format_timestamp_ms;
 #[cfg(not(target_family = "wasm"))]
 pub use migration_window::{
     CopyPreset, ExportSource, open_migration_copy_window, open_migration_export_window, open_migration_import_window,

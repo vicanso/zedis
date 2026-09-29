@@ -29,7 +29,7 @@ use crate::connection::{ServerDb, TS_AGGREGATORS, TsMRange, TsSeries, has_positi
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, unix_ts_millis};
 use crate::states::{ZedisServerState, content_area_width, i18n_common, i18n_timeseries};
-use crate::views::{ChartParams, format_timestamp_ms, make_line_canvas, value_range};
+use crate::views::{ChartParams, ChartSeries, format_timestamp_ms, make_series_chart, value_range};
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable,
@@ -307,12 +307,9 @@ impl ZedisTimeSeriesExplorer {
         self.table_state = Some(cx.new(|cx| TableState::new(table, window, cx)));
     }
 
-    /// Every plotted series on one axis, drawn as overlaid canvases.
-    ///
-    /// Each `make_line_canvas` paints inside its own bounds, so stacking
-    /// them absolutely in a positioned parent overlays the lines; they share
-    /// one `y_max` and one date axis, which is the whole reason the query
-    /// aggregates.
+    /// Every plotted series on one chart: one date axis and one `y` range,
+    /// which is the whole reason the query aggregates, and a hover tooltip
+    /// with a row per key.
     fn render_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let plotted: Vec<TsSeries> = self.series.iter().take(MAX_PLOTTED).cloned().collect();
         let (axis, rows) = align_series(&plotted);
@@ -330,26 +327,30 @@ impl ZedisTimeSeriesExplorer {
             cx.theme().chart_4,
             cx.theme().chart_5,
         ];
-        let mut stack = div().relative().w_full().h(px(CHART_HEIGHT));
-        for (index, row) in rows.into_iter().enumerate() {
-            let params = ChartParams {
-                y_min,
-                dates: dates.clone(),
-                y_max,
-                y_format: Box::new(|v: f64| format!("{v:.2}")),
-                tick_margin,
-                border: cx.theme().border,
-                muted_fg: cx.theme().muted_foreground,
-            };
-            let stroke = palette[index % palette.len()];
-            stack = stack.child(div().absolute().inset_0().child(make_line_canvas(
-                params,
-                Arc::new(row),
-                stroke,
-                false,
-            )));
-        }
-        stack.into_any_element()
+        let series = plotted
+            .iter()
+            .zip(rows)
+            .enumerate()
+            .map(|(index, (plotted, row))| ChartSeries {
+                name: plotted.key.clone().into(),
+                values: Arc::new(row),
+                stroke: palette[index % palette.len()],
+                fill: None,
+            })
+            .collect();
+        let params = ChartParams {
+            id: "ts-explorer".into(),
+            y_min,
+            dates,
+            y_max,
+            y_format: Box::new(|v: f64| format!("{v:.2}")),
+            tick_margin,
+        };
+        div()
+            .w_full()
+            .h(px(CHART_HEIGHT))
+            .child(make_series_chart(params, series, false))
+            .into_any_element()
     }
 
     /// Which colour belongs to which series — an overlay without a legend is

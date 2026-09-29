@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::metrics::{ChartParams, format_timestamp_ms, make_line_canvas};
 use crate::assets::CustomIconName;
 use crate::connection::ServerCommand;
 /// Redis Slow Log viewer.
@@ -34,6 +33,7 @@ use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
     dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
 };
+use crate::views::{ChartParams, format_timestamp_ms, make_line_chart};
 use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
 use ahash::AHashMap;
 use gpui::{

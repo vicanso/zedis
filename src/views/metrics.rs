@@ -17,19 +17,16 @@ use crate::connection::{ServerCommand, get_server};
 use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family, pacing};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_metrics};
-use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
+use crate::views::{
+    ChartParams, ChartSeries, ServerReport, export_to_file, make_bar_chart, make_line_chart, make_series_chart,
+    open_server_report_dialog,
+};
 use core::f64;
 use gpui::{
-    App, Background, Bounds, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, canvas, div,
-    linear_color_stop, linear_gradient, prelude::*, px,
+    App, Entity, Pixels, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*,
+    px,
 };
 use gpui_kit::component::h_flex;
-use gpui_kit::component::plot::{
-    AxisText, Curve, Grid, PlotAxis, axis_gutter,
-    label::TEXT_SIZE,
-    scale::{Scale, ScaleBand, ScaleLinear},
-    shape::{Area, Bar, Line},
-};
 use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
@@ -43,64 +40,6 @@ use zedis_ui::ZedisSkeletonLoading;
 const TIME_FORMAT: &str = "%H:%M:%S";
 const CHART_CARD_HEIGHT: Pixels = px(300.);
 const BYTES_TO_MB: f64 = 1_000_000.;
-const Y_LABEL_WIDTH: f32 = 45.;
-const Y_TICK_COUNT: usize = 4;
-
-/// Shared chart layout parameters. `pub(crate)` so other diagnostic
-/// views (e.g. memory_analysis) can reuse the same axis-rendering
-/// primitives without duplicating the y-tick / x-label logic.
-pub(crate) struct ChartParams {
-    pub dates: Arc<Vec<SharedString>>,
-    /// The bottom of the y axis: 0 for the counts and sizes most charts
-    /// draw, the lowest sample for a series that can go negative.
-    pub y_min: f64,
-    pub y_max: f64,
-    pub y_format: Box<dyn Fn(f64) -> String>,
-    pub tick_margin: usize,
-    pub border: Hsla,
-    pub muted_fg: Hsla,
-}
-
-/// The y axis for a series: from 0, or from below its lowest sample when
-/// that is negative (a temperature, a balance) — the axis started at 0 and
-/// drew those under it — to a little above its highest.
-pub(crate) fn value_range(values: &[f64]) -> (f64, f64) {
-    let max = values.iter().copied().fold(0.0_f64, f64::max);
-    let min = values.iter().copied().fold(0.0_f64, f64::min);
-    let y_max = if max <= 0.0 {
-        if min < 0.0 { 0.0 } else { 1.0 }
-    } else {
-        max * 1.1
-    };
-    let y_min = if min < 0.0 { min * 1.1 } else { 0.0 };
-    (y_min, y_max)
-}
-
-struct ChartFrame {
-    height: f32,
-    x_labels: Vec<AxisText>,
-    y_grid: Vec<f32>,
-    y_labels: Vec<AxisText>,
-    border: Hsla,
-}
-
-impl ChartFrame {
-    fn paint(self, bounds: &Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        Grid::new()
-            .y(self.y_grid)
-            .stroke(self.border)
-            .dash_array(&[px(4.), px(2.)])
-            .paint(bounds, window);
-
-        PlotAxis::new()
-            .x(self.height)
-            .x_label(self.x_labels)
-            .y(px(0.))
-            .y_label(self.y_labels)
-            .stroke(self.border)
-            .paint(bounds, window, cx);
-    }
-}
 
 /// Chart-ready series, computed once per heartbeat in
 /// [`convert_metrics_to_chart_data`] and rendered by borrowing: each
@@ -421,294 +360,6 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
     )
 }
 
-fn make_y_ticks(
-    min_val: f64,
-    max_val: f64,
-    y: &ScaleLinear<f64>,
-    format_fn: &dyn Fn(f64) -> String,
-    muted_fg: Hsla,
-) -> (Vec<f32>, Vec<AxisText>) {
-    let at = |i: usize| min_val + (max_val - min_val) * i as f64 / Y_TICK_COUNT as f64;
-    let grid: Vec<f32> = (0..=Y_TICK_COUNT).filter_map(|i| y.tick(&at(i))).collect();
-    let labels: Vec<AxisText> = (0..=Y_TICK_COUNT)
-        .filter_map(|i| {
-            let v = at(i);
-            y.tick(&v).map(|tick| AxisText::new(format_fn(v), tick, muted_fg))
-        })
-        .collect();
-    (grid, labels)
-}
-
-/// The x-axis labels of a point chart, each at its sample's position — by
-/// index, like the points ([`point_x`]): placing them by their text put a
-/// label at the first sample that read the same (a day-long window has two
-/// `12:00`s), so the newest label sat at the left edge.
-fn make_x_labels_point(dates: &[SharedString], range: [f32; 2], tick_margin: usize, muted_fg: Hsla) -> Vec<AxisText> {
-    let n = dates.len();
-    // Pre-scan to know which indices will actually be drawn — we need
-    // first/last to pick the right alignment. Avoids two pitfalls
-    // from earlier iterations:
-    //   1. Original code skipped i=0 when tick_margin > 1 and the
-    //      next drawn label was Center-aligned near the left edge,
-    //      bleeding into the Y-axis gutter.
-    //   2. Naively forcing i=0 placed two labels (i=0 + i=tick_margin-1)
-    //      right next to each other on the left, which collided.
-    // Now: keep the original modulo selection, but give whichever
-    // index is *first drawn* the Left alignment, and *last drawn* the
-    // Right alignment.
-    let drawn: Vec<usize> = dates
-        .iter()
-        .enumerate()
-        .filter_map(|(i, _)| {
-            if (i + 1).is_multiple_of(tick_margin) {
-                Some(i)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let first_drawn = drawn.first().copied();
-    let last_drawn = drawn.last().copied();
-
-    drawn
-        .into_iter()
-        .map(|i| {
-            let align = if n == 1 {
-                TextAlign::Center
-            } else if Some(i) == first_drawn {
-                TextAlign::Left
-            } else if Some(i) == last_drawn {
-                TextAlign::Right
-            } else {
-                TextAlign::Center
-            };
-            AxisText::new(dates[i].clone(), point_x(i, n, range) + Y_LABEL_WIDTH, muted_fg).align(align)
-        })
-        .collect()
-}
-
-fn make_x_labels_band(
-    dates: &[SharedString],
-    x: &ScaleBand<SharedString>,
-    band_width: f32,
-    tick_margin: usize,
-    muted_fg: Hsla,
-) -> Vec<AxisText> {
-    dates
-        .iter()
-        .enumerate()
-        .filter_map(|(i, date)| {
-            if (i + 1) % tick_margin == 0 {
-                x.tick(date).map(|x_tick| {
-                    AxisText::new(date.clone(), x_tick + band_width / 2. + Y_LABEL_WIDTH, muted_fg)
-                        .align(TextAlign::Center)
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Where `ScalePoint::tick` puts the point at `index` of `len` evenly spread
-/// from `range[0]` to `range[1]` — the same arithmetic as its `tick_at`,
-/// without the domain vector a `ScalePoint` would have to be built with on
-/// every paint, or the search of it for the point's label that `tick` does.
-///
-/// The live window holds 1800 samples a series, so that search made every
-/// paint quadratic (a ten-series chart ≈ 16M string comparisons a frame,
-/// repeated on each tick, scroll and hover). And two samples in the same
-/// second share a `%H:%M:%S` label, so the search put the second at the
-/// first one's x and the line doubled back. The axis labels still come from
-/// the scale; only the points are placed by position.
-fn point_x(index: usize, len: usize, range: [f32; 2]) -> f32 {
-    let span = range[1] - range[0];
-    if len <= 1 {
-        range[0] + span / 2.
-    } else {
-        range[0] + index as f32 * (span / (len - 1) as f32)
-    }
-}
-
-fn make_area_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla, Background)>) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| {
-            let ChartParams {
-                y_min,
-                dates,
-                y_max,
-                y_format,
-                tick_margin,
-                border,
-                muted_fg,
-            } = &params;
-            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
-            // the rest of the paint code (and the chart lib) stays unchanged.
-            let dates: &Vec<SharedString> = dates;
-            if dates.is_empty() {
-                return;
-            }
-            let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
-
-            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
-
-            let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame {
-                height,
-                x_labels,
-                y_grid,
-                y_labels,
-                border: *border,
-            }
-            .paint(&bounds, window, cx);
-
-            let len = dates.len();
-            let x_range = [0., width - Y_LABEL_WIDTH];
-            for (values, stroke, fill) in series.iter() {
-                let y_c = y.clone();
-                let data: Vec<(usize, f64)> = values.iter().copied().take(len).enumerate().collect();
-
-                Area::new()
-                    .data(data)
-                    .x(move |d: &(usize, f64)| Some(point_x(d.0, len, x_range) + Y_LABEL_WIDTH))
-                    .y0(height)
-                    .y1(move |d: &(usize, f64)| y_c.tick(&d.1))
-                    .stroke(*stroke)
-                    .fill(*fill)
-                    .paint(&bounds, window);
-            }
-        },
-    )
-    .size_full()
-}
-
-pub(crate) fn make_line_canvas(
-    params: ChartParams,
-    values: Arc<Vec<f64>>,
-    stroke: Hsla,
-    step_after: bool,
-) -> impl IntoElement {
-    make_lines_canvas(params, vec![(values, stroke)], step_after)
-}
-
-/// Several lines on one frame, each with its own colour, sharing the axes.
-fn make_lines_canvas(params: ChartParams, series: Vec<(Arc<Vec<f64>>, Hsla)>, step_after: bool) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| {
-            let ChartParams {
-                y_min,
-                dates,
-                y_max,
-                y_format,
-                tick_margin,
-                border,
-                muted_fg,
-            } = &params;
-            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
-            // the rest of the paint code (and the chart lib) stays unchanged.
-            let dates: &Vec<SharedString> = dates;
-            if dates.is_empty() {
-                return;
-            }
-            let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
-
-            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
-
-            let x_labels = make_x_labels_point(dates, [0., width - Y_LABEL_WIDTH], *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame {
-                height,
-                x_labels,
-                y_grid,
-                y_labels,
-                border: *border,
-            }
-            .paint(&bounds, window, cx);
-
-            let len = dates.len();
-            let x_range = [0., width - Y_LABEL_WIDTH];
-            for (values, stroke) in &series {
-                let data: Vec<(usize, f64)> = values.iter().copied().take(len).enumerate().collect();
-                let y = y.clone();
-                let mut line = Line::new()
-                    .data(data)
-                    .x(move |d: &(usize, f64)| Some(point_x(d.0, len, x_range) + Y_LABEL_WIDTH))
-                    .y(move |d: &(usize, f64)| y.tick(&d.1))
-                    .stroke(*stroke)
-                    .stroke_width(2.);
-
-                if step_after {
-                    line = line.curve(Curve::StepAfter);
-                }
-                line.paint(&bounds, window);
-            }
-        },
-    )
-    .size_full()
-}
-
-pub(crate) fn make_bar_canvas(params: ChartParams, values: Arc<Vec<f64>>, fill_color: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| {
-            let ChartParams {
-                y_min,
-                dates,
-                y_max,
-                y_format,
-                tick_margin,
-                border,
-                muted_fg,
-            } = &params;
-            // `params.dates` is an `Arc<Vec<_>>`; deref to a plain `Vec` ref so
-            // the rest of the paint code (and the chart lib) stays unchanged.
-            let dates: &Vec<SharedString> = dates;
-            if dates.is_empty() {
-                return;
-            }
-            let width = bounds.size.width.as_f32();
-            let height = bounds.size.height.as_f32() - axis_gutter(px(TEXT_SIZE));
-
-            // gpui-kit 0.7 dropped the band scale's built-in 30px cap; keep
-            // it, or a week of bars in a wide window turns into slabs.
-            let x = ScaleBand::new(dates.iter().cloned(), [0., width - Y_LABEL_WIDTH])
-                .padding_inner(0.4)
-                .padding_outer(0.2)
-                .max_band_width(30.);
-            let band_width = x.band_width();
-            let y = ScaleLinear::new([*y_min, *y_max], [height, 10.]);
-
-            let x_labels = make_x_labels_band(dates, &x, band_width, *tick_margin, *muted_fg);
-            let (y_grid, y_labels) = make_y_ticks(*y_min, *y_max, &y, y_format.as_ref(), *muted_fg);
-            ChartFrame {
-                height,
-                x_labels,
-                y_grid,
-                y_labels,
-                border: *border,
-            }
-            .paint(&bounds, window, cx);
-
-            let data: Vec<(SharedString, f64)> = dates.iter().cloned().zip(values.iter().copied()).collect();
-
-            Bar::new()
-                .data(data)
-                .band_width(band_width)
-                .cross(move |d: &(SharedString, f64)| x.tick(&d.0).map(|t| t + Y_LABEL_WIDTH))
-                .base(move |_| height)
-                .value(move |d: &(SharedString, f64)| y.tick(&d.1))
-                .fill(move |_, _, _| fill_color)
-                .paint(&bounds, window, cx);
-        },
-    )
-    .size_full()
-}
-
 impl ZedisMetrics {
     pub fn new(server_state: Entity<ZedisServerState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let server_id = server_state.read(cx).server_id().to_string();
@@ -841,19 +492,18 @@ impl ZedisMetrics {
 
     fn chart_params(
         &self,
-        cx: &mut Context<Self>,
+        id: &'static str,
         dates: Arc<Vec<SharedString>>,
         y_max: f64,
         y_format: impl Fn(f64) -> String + 'static,
     ) -> ChartParams {
         ChartParams {
+            id: id.into(),
             y_min: 0.0,
             dates,
             y_max,
             y_format: Box::new(y_format),
             tick_margin: self.tick_margin,
-            border: cx.theme().border,
-            muted_fg: cx.theme().muted_foreground,
         }
     }
 
@@ -939,28 +589,31 @@ impl ZedisMetrics {
         let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
         let bg = cx.theme().background;
-        let chart = make_area_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.1}%", v)),
+        let chart = make_series_chart(
+            self.chart_params("metrics-cpu", dates, max_val, |v| format!("{:.1}%", v)),
             vec![
-                (
-                    sys_values,
-                    chart_1,
-                    linear_gradient(
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_system"),
+                    values: sys_values,
+                    stroke: chart_1,
+                    fill: Some(linear_gradient(
                         0.,
                         linear_color_stop(chart_1.opacity(0.4), 1.),
                         linear_color_stop(bg.opacity(0.3), 0.),
-                    ),
-                ),
-                (
-                    user_values,
-                    chart_2,
-                    linear_gradient(
+                    )),
+                },
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_user"),
+                    values: user_values,
+                    stroke: chart_2,
+                    fill: Some(linear_gradient(
                         0.,
                         linear_color_stop(chart_2.opacity(0.4), 1.),
                         linear_color_stop(bg.opacity(0.3), 0.),
-                    ),
-                ),
+                    )),
+                },
             ],
+            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -976,8 +629,8 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.memory.clone();
         let max_val = self.metrics_chart_data.max_memory.max(0.01);
         let fill_color = cx.theme().chart_2;
-        let chart = make_bar_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+        let chart = make_bar_chart(
+            self.chart_params("metrics-memory", dates, max_val, |v| format!("{:.0}", v)),
             values,
             fill_color,
         );
@@ -995,11 +648,10 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.latency.clone();
         let max_val = self.metrics_chart_data.max_latency_ms.max(0.01);
         let stroke = cx.theme().chart_2;
-        let chart = make_line_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+        let chart = make_line_chart(
+            self.chart_params("metrics-latency", dates, max_val, |v| format!("{:.0}", v)),
             values,
             stroke,
-            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -1019,9 +671,22 @@ impl ZedisMetrics {
         let max_val = self.metrics_chart_data.max_connected_clients.max(0.01);
         let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
-        let chart = make_lines_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
-            vec![(connected, chart_2), (blocked, chart_1)],
+        let chart = make_series_chart(
+            self.chart_params("metrics-clients", dates, max_val, |v| format!("{:.0}", v)),
+            vec![
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_connected"),
+                    values: connected,
+                    stroke: chart_2,
+                    fill: None,
+                },
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_blocked"),
+                    values: blocked,
+                    stroke: chart_1,
+                    fill: None,
+                },
+            ],
             true,
         );
         self.render_chart_card(cx, label, chart)
@@ -1038,11 +703,10 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.fragmentation.clone();
         let max_val = self.metrics_chart_data.max_fragmentation.max(0.01);
         let stroke = cx.theme().chart_2;
-        let chart = make_line_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.2}", v)),
+        let chart = make_line_chart(
+            self.chart_params("metrics-fragmentation", dates, max_val, |v| format!("{:.2}", v)),
             values,
             stroke,
-            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -1058,11 +722,10 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.total_commands_processed.clone();
         let max_val = self.metrics_chart_data.max_total_commands_processed.max(0.01);
         let stroke = cx.theme().chart_2;
-        let chart = make_line_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+        let chart = make_line_chart(
+            self.chart_params("metrics-commands", dates, max_val, |v| format!("{:.0}", v)),
             values,
             stroke,
-            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -1080,12 +743,23 @@ impl ZedisMetrics {
         let max_val = self.metrics_chart_data.max_net_kbps.max(0.01);
         let chart_1 = cx.theme().chart_1;
         let chart_2 = cx.theme().chart_2;
-        let chart = make_area_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
+        let chart = make_series_chart(
+            self.chart_params("metrics-net", dates, max_val, |v| format!("{:.0}", v)),
             vec![
-                (input, chart_1, chart_1.opacity(0.4).into()),
-                (output, chart_2, chart_2.opacity(0.4).into()),
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_in"),
+                    values: input,
+                    stroke: chart_1,
+                    fill: Some(chart_1.opacity(0.4).into()),
+                },
+                ChartSeries {
+                    name: i18n_metrics(cx, "series_out"),
+                    values: output,
+                    stroke: chart_2,
+                    fill: Some(chart_2.opacity(0.4).into()),
+                },
             ],
+            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -1155,8 +829,8 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.key_hit_rate.clone();
         let max_val = self.metrics_chart_data.max_key_hit_rate.max(0.01);
         let fill_color = cx.theme().chart_2;
-        let chart = make_bar_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}%", v)),
+        let chart = make_bar_chart(
+            self.chart_params("metrics-hit-rate", dates, max_val, |v| format!("{:.0}%", v)),
             values,
             fill_color,
         );
@@ -1174,9 +848,15 @@ impl ZedisMetrics {
         let values = self.metrics_chart_data.evicted_keys.clone();
         let max_val = self.metrics_chart_data.max_evicted_keys.max(0.01);
         let chart_2 = cx.theme().chart_2;
-        let chart = make_area_canvas(
-            self.chart_params(cx, dates, max_val, |v| format!("{:.0}", v)),
-            vec![(values, chart_2, chart_2.opacity(0.4).into())],
+        let chart = make_series_chart(
+            self.chart_params("metrics-evicted", dates, max_val, |v| format!("{:.0}", v)),
+            vec![ChartSeries {
+                name: i18n_metrics(cx, "evicted_keys"),
+                values,
+                stroke: chart_2,
+                fill: Some(chart_2.opacity(0.4).into()),
+            }],
+            false,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -1361,40 +1041,6 @@ fn metrics_csv(samples: &[RedisMetrics]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::component::plot::scale::ScalePoint;
-
-    #[test]
-    fn a_negative_series_gets_an_axis_below_zero() {
-        assert_eq!(value_range(&[1.0, 10.0]), (0.0, 11.0));
-        let (low, high) = value_range(&[-5.0, 2.0]);
-        assert!(low < -5.0 && high > 2.0, "{low}..{high}");
-        let (low, high) = value_range(&[-5.0, -1.0]);
-        assert!(low < -5.0 && high == 0.0, "{low}..{high}");
-        assert_eq!(value_range(&[]), (0.0, 1.0), "nothing to draw still has an axis");
-    }
-
-    #[test]
-    fn a_point_lands_where_the_point_scale_would_put_it() {
-        // Same x as `ScalePoint::tick` for every point, without its search —
-        // including one point (centred) and a range given backwards.
-        for (len, range) in [
-            (1, [0., 300.]),
-            (2, [0., 300.]),
-            (7, [0., 512.5]),
-            (1800, [0., 900.]),
-            (5, [40., -10.]),
-        ] {
-            let domain: Vec<usize> = (0..len).collect();
-            let scale = ScalePoint::new(domain.clone(), range);
-            for index in domain {
-                assert_eq!(
-                    Some(point_x(index, len, range)),
-                    scale.tick(&index),
-                    "len {len} index {index}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn the_csv_has_one_row_per_sample_with_the_raw_numbers() {
