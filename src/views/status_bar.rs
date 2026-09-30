@@ -220,6 +220,26 @@ struct ToolsMenuGates {
     features: Arc<ServerFeatures>,
 }
 
+/// Make `db` the database select's committed choice, unless it already is.
+///
+/// `set_items` swaps the rows and nothing else. A choice made while there
+/// were none — the first build, the moment after a server switch — stays
+/// empty, and the trigger still reads "DB: n" off the list's cursor; Esc then
+/// puts that cursor back on the (empty) committed choice and the trigger goes
+/// blank. Not re-applied when it already matches: the rows are rebuilt
+/// whenever a key count changes, and that would pull the cursor back under a
+/// user moving it through the open menu.
+fn commit_selected_db(
+    state: &mut SelectState<Vec<DbInfo>>,
+    db: usize,
+    window: &mut Window,
+    cx: &mut Context<SelectState<Vec<DbInfo>>>,
+) {
+    if state.selected_value() != Some(&db) {
+        state.set_selected_index(Some(IndexPath::new(db)), window, cx);
+    }
+}
+
 /// One Tools-menu entry, built when the menu opens and moved into the
 /// submenu that draws it.
 struct ToolEntry {
@@ -1648,8 +1668,15 @@ impl Render for ZedisStatusBar {
                     keys: self.db_key_counts.get(db).copied().unwrap_or(0),
                 })
                 .collect::<Vec<_>>();
+            let db = cx
+                .global::<ZedisGlobalStore>()
+                .read(cx)
+                .selected_server()
+                .map(|(_, db)| *db)
+                .unwrap_or_default();
             self.db_state.update(cx, |state, cx| {
                 state.set_items(db_items, window, cx);
+                commit_selected_db(state, db, window, cx);
             });
         }
         let status_text = status_text_color(cx.theme().is_dark());
@@ -1694,6 +1721,44 @@ impl Render for ZedisStatusBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
+
+    fn db_rows(count: usize) -> Vec<DbInfo> {
+        (0..count)
+            .map(|db| DbInfo {
+                label: format!("DB: {db}").into(),
+                db,
+                keys: 0,
+            })
+            .collect()
+    }
+
+    /// The order the status bar builds its database select in: created
+    /// empty, told which database is open before the rows arrive, then given
+    /// them. Esc puts the list's cursor back on the committed choice, so an
+    /// empty one blanked the trigger.
+    #[gpui::test]
+    fn the_open_database_is_committed_once_the_rows_arrive(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::component::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let select = cx.new(|cx| SelectState::new(Vec::<DbInfo>::new(), Some(IndexPath::new(0)), window, cx));
+            select.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(2)), window, cx);
+                state.set_items(db_rows(4), window, cx);
+                assert_eq!(state.selected_value(), None, "set_items commits nothing by itself");
+
+                commit_selected_db(state, 2, window, cx);
+                assert_eq!(state.selected_value(), Some(&2));
+                assert_eq!(state.selected_index(cx), Some(IndexPath::new(2)));
+
+                // New key counts rebuild the rows; the choice stands.
+                state.set_items(db_rows(4), window, cx);
+                commit_selected_db(state, 2, window, cx);
+                assert_eq!(state.selected_value(), Some(&2));
+            });
+        });
+    }
 
     #[test]
     fn format_size_groups_both_counts() {
