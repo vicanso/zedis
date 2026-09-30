@@ -164,6 +164,22 @@ impl ZedisEditor {
         )
         .to_string()
         .into();
+        // A String can be read in part, so it also offers its first bytes —
+        // usually enough to tell what the value is without the whole load.
+        let preview: Option<SharedString> = self
+            .server_state
+            .read(cx)
+            .value()
+            .is_some_and(|v| v.key_type() == KeyType::String)
+            .then(|| {
+                t!(
+                    "editor.preview_value",
+                    size = format_size(VALUE_PREVIEW_BYTES as u64, DECIMAL),
+                    locale = locale
+                )
+                .to_string()
+                .into()
+            });
         let load_anyway = i18n_editor(cx, "load_anyway");
         let muted = cx.theme().muted_foreground;
         v_flex()
@@ -175,9 +191,81 @@ impl ZedisEditor {
             .child(Label::new(title))
             .child(Label::new(message).text_sm().text_color(muted))
             .child(
-                Button::new("value-load-anyway")
+                h_flex()
+                    .gap_2()
+                    .when_some(preview, |this, label| {
+                        this.child(
+                            Button::new("value-preview")
+                                .primary()
+                                .label(label)
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    let key = this.server_state.read(cx).key();
+                                    if let Some(key) = key {
+                                        this.server_state
+                                            .update(cx, |state, cx| state.load_value_preview(key, cx));
+                                    }
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("value-load-anyway")
+                            .outline()
+                            .label(load_anyway)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                let key = this.server_state.read(cx).key();
+                                if let Some(key) = key {
+                                    this.server_state
+                                        .update(cx, |state, cx| state.load_value_ignore_size_limit(key, cx));
+                                }
+                            })),
+                    ),
+            )
+    }
+
+    /// The strip above a preview: how much of the value is shown, that it is
+    /// read-only, and the way to the whole value.
+    fn render_preview_banner(&self, total: u64, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let shown = self
+            .server_state
+            .read(cx)
+            .value()
+            .and_then(|v| v.bytes_value())
+            .map_or(0, |b| b.bytes.len() as u64);
+        let message: SharedString = t!(
+            "editor.value_preview_banner",
+            // Whole units: a text preview ends a byte or three short of the
+            // cap where the cut split a character, and "255.99 kB" is noise.
+            shown = format_size(shown, DECIMAL.decimal_places(0)),
+            size = format_size(total, DECIMAL),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let theme = cx.theme();
+        h_flex()
+            .flex_none()
+            .mx_4()
+            .my_1()
+            .px_3()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .child(
+                Icon::new(CustomIconName::Lock)
+                    .xsmall()
+                    .text_color(theme.muted_foreground),
+            )
+            .child(Label::new(message).text_xs().text_color(theme.muted_foreground))
+            .child(div().flex_1())
+            .child(
+                Button::new("value-preview-load-whole")
+                    .xsmall()
                     .outline()
-                    .label(load_anyway)
+                    .label(i18n_editor(cx, "load_whole_value"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         let key = this.server_state.read(cx).key();
                         if let Some(key) = key {
@@ -224,13 +312,18 @@ impl ZedisEditor {
         // HyperLogLog sketches live in string keys; detect them from the
         // already-loaded bytes (the "HYLL" magic) so the dispatch can show
         // the dedicated read-only card instead of the raw bytes editor.
+        // The first bytes of an oversized String: always the bytes editor
+        // (read-only), whatever those bytes happen to look like.
+        let preview_of = value.preview_of();
         let is_hll = value.key_type() == KeyType::String
+            && preview_of.is_none()
             && value.bytes_value().is_some_and(|b| looks_like_hll(b.bytes.as_ref()));
         // Bitmap view: only for genuinely opaque (`DataFormat::Bytes`) non-HLL
         // string keys — anything the format pipeline decoded (Protobuf,
         // MessagePack, JSON, timestamps, compressed, …) keeps its own viewer.
         // Then the user's explicit override, else the small-binary heuristic.
         let bitmap_view = value.key_type() == KeyType::String
+            && preview_of.is_none()
             && !is_hll
             && value.bytes_value().is_some_and(|b| {
                 matches!(b.format, DataFormat::Bytes)
@@ -453,6 +546,12 @@ impl ZedisEditor {
                 // edits.
                 if let Some(diff_view) = self.diff_view.as_ref() {
                     diff_view.clone().into_any_element()
+                } else if let Some(total) = preview_of {
+                    v_flex()
+                        .size_full()
+                        .child(self.render_preview_banner(total, cx))
+                        .child(v_flex().flex_1().min_h_0().child(editor))
+                        .into_any_element()
                 } else {
                     editor.into_any_element()
                 }

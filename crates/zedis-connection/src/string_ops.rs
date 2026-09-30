@@ -30,6 +30,24 @@ pub async fn string_get(at: &ServerDb, key: &str) -> Result<Vec<u8>> {
     Ok(cmd("GET").arg(key).query_async(&mut at.connection().await?).await?)
 }
 
+/// The first `len` bytes of a string and its whole length (`STRLEN` +
+/// `GETRANGE`) — the preview of a value too large to load whole. A string
+/// shorter than `len` comes back whole, a missing key empty with length 0.
+pub async fn string_prefix(at: &ServerDb, key: &str, len: usize) -> Result<(Vec<u8>, u64)> {
+    let mut conn = at.connection().await?;
+    let total: u64 = cmd("STRLEN").arg(key).query_async(&mut conn).await?;
+    if len == 0 {
+        return Ok((Vec::new(), total));
+    }
+    let head: Vec<u8> = cmd("GETRANGE")
+        .arg(key)
+        .arg(0)
+        .arg(len - 1)
+        .query_async(&mut conn)
+        .await?;
+    Ok((head, total))
+}
+
 /// `JSON.GET key` — the whole document, as the server serialises it.
 pub async fn json_get(at: &ServerDb, key: &str) -> Result<String> {
     Ok(cmd("JSON.GET")

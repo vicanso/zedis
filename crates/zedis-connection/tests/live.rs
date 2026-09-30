@@ -57,10 +57,11 @@ use zedis_connection::{
     sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, server_summary, server_supports, set_add,
     set_bit, set_card, set_keys_ttl, set_remove, set_replace_member, set_scan, set_ttl_matching, slow_logs,
     snapshot_key, sniff_import_format, split_acl_rules, stream_ack, stream_add, stream_autoclaim, stream_claim,
-    stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim, string_get, string_set,
-    test_connection, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges,
-    value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_card,
-    zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
+    stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim, string_get, string_prefix,
+    string_set, test_connection, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange, ts_window,
+    unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field,
+    write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score,
+    zset_remove, zset_scan,
 };
 use zedis_connection::{
     MonitorFeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, copy_key, copy_key_logically,
@@ -3200,6 +3201,22 @@ fn standalone_collections_page_and_write_through_their_operations() {
             StringWrite::Saved(Some(size)) if size > 0
         ));
         assert_eq!(string_get(&at, &string).await.expect("get"), binary, "bytes, not text");
+        // The preview of a value too large to load: its first bytes and its
+        // whole length; a shorter string whole, a missing one empty.
+        assert_eq!(
+            string_prefix(&at, &string, 1).await.expect("prefix"),
+            (binary[..1].to_vec(), binary.len() as u64)
+        );
+        assert_eq!(
+            string_prefix(&at, &string, 64).await.expect("prefix"),
+            (binary.to_vec(), binary.len() as u64)
+        );
+        assert_eq!(
+            string_prefix(&at, &format!("{prefix}:no-such-string"), 8)
+                .await
+                .expect("missing"),
+            (Vec::new(), 0)
+        );
         // The TTL survives a save: KEEPTTL where the server has it, a
         // re-applied PX where it does not.
         let _: () = cmd("EXPIRE")

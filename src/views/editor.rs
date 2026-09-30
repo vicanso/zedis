@@ -31,9 +31,9 @@ use crate::{
         get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs, unix_ts, validate_ttl, with_hot_key,
     },
     states::{
-        DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, ZedisGlobalStore, ZedisServerState,
-        dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_expire_at,
-        i18n_geo_map, i18n_key_ops, i18n_shortcuts,
+        DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, VALUE_PREVIEW_BYTES, ZedisGlobalStore,
+        ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy,
+        i18n_editor, i18n_expire_at, i18n_geo_map, i18n_key_ops, i18n_shortcuts,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,

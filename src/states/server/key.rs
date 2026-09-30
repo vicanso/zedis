@@ -19,10 +19,10 @@ use super::{
     list::first_load_list_value,
     set::first_load_set_value,
     stream::first_load_stream_value,
-    string::get_redis_bytes_value,
+    string::{get_redis_bytes_preview, get_redis_bytes_value},
     value::{
         KeyType, MAX_INLINE_VALUE_SIZE, MAX_MODULE_DUMP_BYTES, ModuleTypeId, RedisBytesValue, RedisValue,
-        RedisValueData, RedisValueStatus, SortOrder, ViewMode,
+        RedisValueData, RedisValueStatus, SortOrder, VALUE_PREVIEW_BYTES, ViewMode,
     },
     zset::first_load_zset_value,
 };
@@ -846,6 +846,7 @@ impl ZedisServerState {
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
         let bypass_size_gate = self.size_gate_bypassed.as_ref() == Some(&key);
+        let preview = self.size_gate_preview.as_ref() == Some(&key);
         // Header decorations, both resolved from what the connect-time probe
         // already learned: whether `OBJECT ENCODING` answers here at all, and
         // which of FREQ / IDLETIME this server's eviction policy makes
@@ -881,6 +882,26 @@ impl ZedisServerState {
                     && let Ok(size) = key_memory_usage(&at, key.as_str(), key_type.as_str()).await
                     && size > MAX_INLINE_VALUE_SIZE
                 {
+                    // A String can be read in part (`GETRANGE`), so its
+                    // preview is its first bytes; RedisJSON has no such read.
+                    if preview && key_type == KeyType::String {
+                        let (head, (encoding, heat)) = join(
+                            get_redis_bytes_preview(&at, &key, VALUE_PREVIEW_BYTES),
+                            key_object_meta(&at, key.as_str(), with_encoding, heat_probe),
+                        )
+                        .await;
+                        let (head, total) = head?;
+                        return Ok(RedisValue {
+                            key_type,
+                            data: Some(RedisValueData::Bytes(Arc::new(head))),
+                            size,
+                            expire_at,
+                            encoding: encoding.into(),
+                            heat,
+                            preview_of: Some(total),
+                            ..Default::default()
+                        });
+                    }
                     return Ok(RedisValue {
                         key_type,
                         status: RedisValueStatus::TooLarge(size),
@@ -1042,9 +1063,12 @@ impl ZedisServerState {
         // That snapshot: the value this operation is about to change, kept
         // like a save keeps the value it overwrites, so a path write to a
         // document can be diffed and restored.
+        // Not a preview's: its bytes are the value's beginning only, and
+        // restoring them would cut the key down to that.
         let snapshot = self
             .value
             .as_ref()
+            .filter(|value| value.preview_of().is_none())
             .and_then(|value| value.bytes_value())
             .map(|bytes| bytes.bytes.clone())
             .filter(|bytes| !bytes.is_empty());
@@ -1098,9 +1122,6 @@ impl ZedisServerState {
         self.get_value(key, ServerTask::ReloadValue, cx);
     }
 
-    /// Reloads the value for a key with the oversized-value gate disabled
-    /// ("Load anyway" on the too-large panel). The bypass is remembered for
-    /// the key so a later refresh doesn't bounce back to the gate panel.
     /// The module types among the loaded keys, for the type-filter menu.
     pub fn module_types_seen(&self) -> Vec<ModuleTypeId> {
         let mut ids: Vec<ModuleTypeId> = self
@@ -1116,10 +1137,28 @@ impl ZedisServerState {
         ids
     }
 
+    /// Reloads the value for a key with the oversized-value gate disabled
+    /// ("Load anyway" on the too-large panel, "Load whole value" on a
+    /// preview). The bypass is remembered for the key so a later refresh
+    /// doesn't bounce back to the gate panel.
     pub fn load_value_ignore_size_limit(&mut self, key: SharedString, cx: &mut Context<Self>) {
         self.size_gate_bypassed = Some(key.clone());
+        self.size_gate_preview = None;
         // Blank + busy while the (large) payload downloads — mirrors the
         // first-load rendering instead of leaving the stale gate panel up.
+        self.next_value_epoch();
+        self.value = Some(RedisValue {
+            status: RedisValueStatus::Loading,
+            ..Default::default()
+        });
+        self.get_value(key, ServerTask::ReloadValue, cx);
+    }
+    /// Loads the first [`VALUE_PREVIEW_BYTES`] of a String too large to load
+    /// whole ("Preview" on the too-large panel), as a read-only value. The
+    /// choice is remembered for the key like the bypass, so a refresh keeps
+    /// showing the preview rather than the panel.
+    pub fn load_value_preview(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.size_gate_preview = Some(key.clone());
         self.next_value_epoch();
         self.value = Some(RedisValue {
             status: RedisValueStatus::Loading,

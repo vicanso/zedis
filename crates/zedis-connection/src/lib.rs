@@ -251,7 +251,7 @@ pub use stream_ops::{
     stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
 };
 pub use stream_tail::{StreamTail, StreamTailEntry};
-pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_set};
+pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_prefix, string_set};
 /// A held socket the server pushes on — Pub/Sub, `MONITOR` — has no
 /// equivalent over the HTTP bridge, and the panels that read one are left out
 /// of the web build (ADR 9).

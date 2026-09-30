@@ -71,6 +71,9 @@ impl ZedisEditor {
         let mut bitmap_candidate = false;
         let mut bitmap_view = false;
         let mut has_bytes_value = false;
+        // Only the value's first bytes are loaded: nothing that takes them
+        // for the whole value (export, import over them, a cross-server diff).
+        let mut preview = false;
         // `OBJECT ENCODING` and the server's heat metric, both absent on a
         // server that has no usable `OBJECT` (a proxy, a managed cloud, a
         // NOPERM user) — the chip then simply doesn't render.
@@ -116,7 +119,9 @@ impl ZedisEditor {
             // so we require the detected format to be the raw `Bytes` fallback.
             // `infer` can't recognise Protobuf/MessagePack, so the byte
             // heuristic alone would wrongly grab them.
+            preview = value.preview_of().is_some();
             bitmap_candidate = value.key_type() == KeyType::String
+                && !preview
                 && value.bytes_value().is_some_and(|b| {
                     matches!(b.format, DataFormat::Bytes)
                         && !looks_like_hll(b.bytes.as_ref())
@@ -295,9 +300,9 @@ impl ZedisEditor {
             _ => Vec::new(),
         };
         let bitmap_item = bitmap_candidate && !bitmap_view;
-        let export_item = has_bytes_value;
-        let diff_with_server_item = has_bytes_value;
-        let import_item = has_bytes_value && !self.readonly;
+        let export_item = has_bytes_value && !preview;
+        let diff_with_server_item = has_bytes_value && !preview;
+        let import_item = has_bytes_value && !preview && !self.readonly;
         let rename_item = !self.readonly;
         // Cross-server copy reads the source and writes a (possibly
         // different, writable) target, so it stays available even when the

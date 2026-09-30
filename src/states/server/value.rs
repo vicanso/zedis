@@ -36,6 +36,11 @@ pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 /// payload — the editor then offers an explicit "load anyway".
 /// Collection types are exempt: their first loads are paginated.
 pub const MAX_INLINE_VALUE_SIZE: u64 = 5 * 1024 * 1024;
+/// How much of a String over [`MAX_INLINE_VALUE_SIZE`] its preview shows
+/// ("Preview" on the too-large panel): enough to tell what the value is, and
+/// an amount the editor draws without a stall. Decimal, like every size the
+/// app prints, so the button reads "256 kB" rather than "262.14 kB".
+pub const VALUE_PREVIEW_BYTES: usize = 256_000;
 /// Hard cap on a module-type value fetched with `DUMP`. Unlike the native
 /// containers, which page with `HSCAN` / `LRANGE`, DUMP serializes the
 /// whole value on the server's main thread with no way to read part of
@@ -778,6 +783,10 @@ pub struct RedisValue {
     /// LFU access counter or LRU idle seconds — whichever this server's
     /// `maxmemory-policy` makes meaningful. The two are mutually exclusive.
     pub(crate) heat: HeatMetric,
+    /// Set when `data` is only the string's first [`VALUE_PREVIEW_BYTES`]:
+    /// the string's whole length in bytes. Such a value is a read-only
+    /// preview — saved, it would cut the key down to what was fetched.
+    pub(crate) preview_of: Option<u64>,
 }
 
 impl RedisValue {
@@ -791,6 +800,12 @@ impl RedisValue {
     /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
+    }
+
+    /// The string's whole length when only its first bytes were loaded (a
+    /// read-only preview), else `None`.
+    pub fn preview_of(&self) -> Option<u64> {
+        self.preview_of
     }
 
     /// The probed size when the load was skipped by the oversized-value

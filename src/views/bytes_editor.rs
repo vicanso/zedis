@@ -550,7 +550,10 @@ impl ZedisBytesEditor {
             // A module type's DUMP bytes are a read-only view: written back
             // with SET they would turn the key into a string.
             let module_dump = value.is_some_and(|v| matches!(v.key_type(), KeyType::Module(_)));
-            self.readonly = readonly || module_dump || (!hex_mode && !redis_bytes_value.is_utf8_text());
+            // Nor is a preview's: saved, the first bytes would replace the
+            // whole value.
+            let preview = value.is_some_and(|v| v.preview_of().is_some());
+            self.readonly = readonly || module_dump || preview || (!hex_mode && !redis_bytes_value.is_utf8_text());
             self.data = format_byte_editor_data(redis_bytes_value, cx);
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

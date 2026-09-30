@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{DataFormat, RedisBytesValue, detect_format};
+use super::value::{DataFormat, RedisBytesValue, ViewMode, detect_format};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
 use crate::{
-    connection::{ServerDb, string_get},
+    connection::{ServerDb, string_get, string_prefix},
     error::Error,
 };
 use bytes::Bytes;
@@ -371,6 +371,34 @@ fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
     Some(SharedString::from(text))
 }
 
+/// The first `len` bytes of a string, as its preview shows them, and the
+/// string's whole length. Text when the bytes are text — cut back to the last
+/// whole character, since the cut may land inside one — and hex otherwise.
+/// Never decoded: a compressed or serialized value cannot be read from its
+/// first bytes, and a guess at its format from them would mislead.
+pub(crate) async fn get_redis_bytes_preview(at: &ServerDb, key: &str, len: usize) -> Result<(RedisBytesValue, u64)> {
+    let (head, total) = string_prefix(at, key, len).await?;
+    Ok((preview_bytes_value(head), total))
+}
+
+fn preview_bytes_value(mut head: Vec<u8>) -> RedisBytesValue {
+    let text = match std::str::from_utf8(&head) {
+        Ok(_) => true,
+        // Invalid only in its last few bytes: a character the cut split.
+        Err(error) if error.error_len().is_none() => {
+            head.truncate(error.valid_up_to());
+            true
+        }
+        Err(_) => false,
+    };
+    RedisBytesValue {
+        format: if text { DataFormat::Text } else { DataFormat::Bytes },
+        bytes: Bytes::from(head),
+        view_mode: if text { ViewMode::Plain } else { ViewMode::Hex },
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn get_redis_bytes_value(at: &ServerDb, key: &str) -> Result<RedisBytesValue> {
     let value_bytes = string_get(at, key).await?;
     Ok(RedisBytesValue {
@@ -447,6 +475,24 @@ mod tests {
         let gzip = encoder.finish().expect("finish");
         let inflated = inflate_capped(GzDecoder::new(gzip.as_slice())).expect("inflate");
         assert_eq!(inflated.len(), MAX_INFLATED_PREVIEW - 1);
+    }
+
+    /// A preview of text stays text, cut back to its last whole character; a
+    /// preview of anything else is hex, whole.
+    #[test]
+    fn a_preview_is_text_up_to_the_split_character_else_hex() {
+        let mut head = b"abc".to_vec();
+        head.extend_from_slice(&"é".as_bytes()[..1]);
+        let value = preview_bytes_value(head);
+        assert!(matches!(value.format, DataFormat::Text));
+        assert!(matches!(value.view_mode, ViewMode::Plain));
+        assert_eq!(value.bytes.as_ref(), b"abc");
+
+        let binary = vec![0xff, 0x00, b'a', 0xfe];
+        let value = preview_bytes_value(binary.clone());
+        assert!(matches!(value.format, DataFormat::Bytes));
+        assert!(matches!(value.view_mode, ViewMode::Hex));
+        assert_eq!(value.bytes.as_ref(), binary.as_slice());
     }
 
     /// Four bytes that only look like an LZ4 size prefix are not taken at

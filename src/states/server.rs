@@ -335,6 +335,12 @@ pub struct ZedisServerState {
     /// back to the panel. Cleared on server switch.
     size_gate_bypassed: Option<SharedString>,
 
+    /// Key whose oversized String the user chose to preview ("Preview" on
+    /// the too-large panel): `get_value` then fetches its first
+    /// `VALUE_PREVIEW_BYTES` instead of stopping at the gate, so a refresh
+    /// keeps the preview. Cleared on server switch.
+    size_gate_preview: Option<SharedString>,
+
     // ===== Key scanning state =====
     /// Search keyword for filtering keys
     keyword: SharedString,
@@ -580,6 +586,7 @@ impl ZedisServerState {
         self.value = None;
         self.next_value_epoch();
         self.size_gate_bypassed = None;
+        self.size_gate_preview = None;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
         self.type_filter = None;
