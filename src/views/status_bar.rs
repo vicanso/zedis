@@ -1041,6 +1041,9 @@ impl ZedisStatusBar {
     fn render_server_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
+        // Read live, not from the snapshot: a scan round starts on this
+        // button's own press, which is no server event.
+        let scanning = self.server_state.read(cx).scanning();
         let nodes_description = server_state.nodes_description.clone();
         let terminal_tooltip = with_hot_key("terminal", &i18n_status_bar(cx, "toggle_terminal_tooltip"));
         let readonly_tooltip = i18n_status_bar(cx, "toggle_readonly_tooltip");
@@ -1249,6 +1252,7 @@ impl ZedisStatusBar {
                             .ghost()
                             .small()
                             .disabled(is_completed)
+                            .loading(scanning && !is_completed)
                             .tooltip(if is_completed {
                                 i18n_status_bar(cx, "scan_completed")
                             } else {
@@ -1260,6 +1264,7 @@ impl ZedisStatusBar {
                                 this.server_state.update(cx, |state, cx| {
                                     state.scan_next(cx);
                                 });
+                                cx.notify();
                             })),
                     )
                     .child(Label::new(server_state.size.clone()).text_color(status_text).mr_2())

@@ -252,6 +252,7 @@ impl ZedisServerState {
                     return;
                 }
                 let mut should_select_processing_key = false;
+                let mut finished = false;
                 match result {
                     Ok((cursors, keys)) => {
                         should_select_processing_key = keys.iter().any(|(k, _, _)| k == &processing_keyword);
@@ -259,7 +260,7 @@ impl ZedisServerState {
                         // Check if scan is complete (all cursors returned to 0)
                         if cursors.iter().sum::<u64>() == 0 {
                             this.scan_completed = true;
-                            cx.emit(ServerEvent::KeyScanFinished);
+                            finished = true;
                             this.cursors = None;
                         } else {
                             this.cursors = Some(cursors);
@@ -280,6 +281,19 @@ impl ZedisServerState {
                         this.keys_superseded_by_next_batch = false;
                     }
                 };
+                // Keep paging until this round's target is loaded or the scan
+                // is done. Decided — and `scanning` put back — before the
+                // events go out, so whoever redraws on them (the status bar's
+                // Load more, the tree's loading pill) sees the round's end in
+                // the same frame; and `KeyScanFinished` goes out after the
+                // last page is merged, so its handlers read the final key set.
+                let more = this.cursors.is_some() && this.keys.len() < max;
+                if !more {
+                    this.scanning = false;
+                }
+                if finished {
+                    cx.emit(ServerEvent::KeyScanFinished);
+                }
                 if this.cursors.is_some() {
                     cx.emit(ServerEvent::KeyScanPaged);
                 }
@@ -287,13 +301,10 @@ impl ZedisServerState {
                 if should_select_processing_key {
                     this.select_key(processing_keyword.clone(), cx);
                 }
-                // Automatically load more if we haven't reached the limit and scan isn't done
-                if this.cursors.is_some() && this.keys.len() < max {
-                    // run again
+                if more {
                     this.scan_keys(processing_server, processing_keyword, cx);
                     return cx.notify();
                 }
-                this.scanning = false;
                 cx.notify();
                 if this.keys.len() == 1
                     && let Some(key) = this.keys.keys().next()
@@ -590,9 +601,17 @@ impl ZedisServerState {
     }
     /// Loads the next batch of keys (pagination).
     pub fn scan_next(&mut self, cx: &mut Context<Self>) {
-        if self.scan_completed {
+        // A round already in flight would be a second paging chain over the
+        // same cursors, and each press grew the target a batch more.
+        if self.scan_completed || self.scanning {
             return;
         }
+        // Refused here rather than inside the spawn: nothing would come back
+        // to put `scanning` down again, and the tree's search waits on it.
+        if self.refuse_while_offline(cx) {
+            return;
+        }
+        self.scanning = true;
         self.scan_times += 1;
         self.scan_keys(self.server_id.clone(), self.keyword.clone(), cx);
         cx.notify();

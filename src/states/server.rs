@@ -1880,4 +1880,25 @@ mod tests {
             }
         });
     }
+    /// Load more runs one round at a time. A press while a round is in flight
+    /// adds nothing — it used to start a second paging chain over the same
+    /// cursors — and a press the offline guard refuses leaves `scanning`
+    /// down, since no round would come back to lower it and the tree's search
+    /// waits on it.
+    #[gpui::test]
+    fn load_more_starts_one_round_and_none_while_offline(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.manually_offline = true;
+            state.last_offline_notice = unix_ts();
+            state.scan_next(cx);
+            assert!(!state.scanning(), "an offline press starts nothing");
+            assert_eq!(state.scan_times, 0);
+
+            state.manually_offline = false;
+            state.scanning = true;
+            state.scan_next(cx);
+            assert_eq!(state.scan_times, 0, "a press during a round adds no batch");
+        });
+    }
 }
