@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.1](https://github.com/vicanso/zedis/compare/v0.12.0..v0.12.1) - 2026-09-30
+
+### ⛰️  Features
+
+- *(editor)* Preview the first 256 kB of an oversized string - ([e724357](https://github.com/vicanso/zedis/commit/e7243577bf44ecebfab61a442ac2537c9e83dc99))
+- *(web)* Label each command in /v1/exec for the network panel - ([aa82782](https://github.com/vicanso/zedis/commit/aa8278280006d7f05395b00e3473ce4d344e7dc1))
+
+### 🐛 Bug Fixes
+
+- *(ci)* A mirror-only dispatch builds nothing, and stops when cancelled - ([d14592c](https://github.com/vicanso/zedis/commit/d14592c803ab5c55632f828c81d5248971989563))
+- *(key-tree)* Load more shows it is loading, and runs one round at a time - ([64205ce](https://github.com/vicanso/zedis/commit/64205ce2394cf3287b3f52c8f4462696f0e14ea8))
+- *(status-bar)* Esc on the database select keeps the open database - ([eba7c8b](https://github.com/vicanso/zedis/commit/eba7c8b358bc07ff779dd0aff34bc646d4aaf69b))
+- *(web)* A text input answers the Mac shortcuts on an Apple keyboard - ([f775ab0](https://github.com/vicanso/zedis/commit/f775ab0d878c0eabbd96f3d8e320960b6c008786))
+
+### 🚜 Refactor
+
+- *(charts)* Draw every chart with gpui-kit 0.7's chart components - ([6f9c60c](https://github.com/vicanso/zedis/commit/6f9c60c300daf05b2e5006bf03a6a226ffcf28f6))
+- *(status-bar)* Group the Tools menu into submenus and leave out what the server lacks - ([3a09818](https://github.com/vicanso/zedis/commit/3a098189585dbb53ce3194943e24931efe7a5e14))
+
+### 📚 Documentation
+
+- Sync the changelog, glossary, security scope and contributor docs with 0.12.0 - ([4f82567](https://github.com/vicanso/zedis/commit/4f82567fc4f2c222f80f5ed4500d195f1bbcecce))
+- Refresh CLAUDE.md gate counts and make MCP tool descriptions match the tools - ([3d1a321](https://github.com/vicanso/zedis/commit/3d1a32176dc2f46a3a9ff98fe3c52af7a67e4607))
+
 ## [0.12.0](https://github.com/vicanso/zedis/compare/v0.11.1..v0.12.0) - 2026-09-27
 
 ### ⛰️  Features
