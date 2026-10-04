@@ -21,7 +21,8 @@ use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
 use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query};
 use crate::states::{
-    Route, ServerView, ZedisGlobalStore, ZedisServerState, command_status_label, i18n_command_palette, i18n_shortcuts,
+    Route, ServerView, SettingsAction, ZedisGlobalStore, ZedisServerState, command_status_label, i18n_command_palette,
+    i18n_shortcuts,
 };
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
@@ -68,6 +69,11 @@ enum PaletteCommand {
     /// Switch the editor area into Pub/Sub (channel) mode on the active
     /// connection — needs the ServerState entity, so handled like `Key`.
     PubsubMode,
+    /// Open the Settings window. Handed to the global `SettingsAction`
+    /// handler like the shortcuts reference: Settings is a window of its
+    /// own, and `Route::Settings` draws the connections page — going
+    /// there is what "Open Settings" used to do instead.
+    OpenSettings,
 }
 
 struct PaletteItem {
@@ -362,7 +368,7 @@ impl ZedisCommandPalette {
         };
         // (i18n key, target, available) — order defines empty-query
         // display order.
-        let commands: [(&str, Option<Route>, bool); 21] = [
+        let commands: [(&str, Option<Route>, bool); 20] = [
             ("cmd_home", Some(Route::Home), true),
             ("cmd_editor", view_route(ServerView::Editor), true),
             ("cmd_metrics", view_route(ServerView::Metrics), true),
@@ -391,7 +397,6 @@ impl ZedisCommandPalette {
             ("cmd_search", view_route(ServerView::Search), supports_search),
             ("cmd_functions", view_route(ServerView::Functions), supports_functions),
             ("cmd_lua_scripts", view_route(ServerView::LuaScripts), true),
-            ("cmd_settings", Some(Route::Settings), true),
         ];
         for (key, route, available) in commands {
             if !available {
@@ -419,6 +424,14 @@ impl ZedisCommandPalette {
                 command: PaletteCommand::Route(route),
             });
         }
+        let settings_label = i18n_command_palette(cx, "cmd_settings");
+        items.push(PaletteItem {
+            label: settings_label.clone(),
+            hint: gpui::SharedString::default(),
+            search: settings_label.to_string(),
+            prescore: None,
+            command: PaletteCommand::OpenSettings,
+        });
         // Pub/Sub mode only makes sense against a connection.
         if conn.is_some() {
             let label = i18n_command_palette(cx, "cmd_pubsub");
@@ -469,6 +482,12 @@ impl ZedisCommandPalette {
             window.dispatch_action(Box::new(ShortcutsAction::Toggle), cx);
             return;
         }
+        // The Settings window is opened by the root's handler too.
+        if let PaletteCommand::OpenSettings = command {
+            self.close(cx);
+            window.dispatch_action(Box::new(SettingsAction::Editor), cx);
+            return;
+        }
         // Selecting a key needs the per-connection ServerState entity (not the
         // global store), so handle it here rather than in the update_global
         // block below: select the key, then jump to the editor.
@@ -509,6 +528,7 @@ impl ZedisCommandPalette {
                 }
                 // Handled above (early return); arms kept for exhaustiveness.
                 PaletteCommand::ShowShortcuts => {}
+                PaletteCommand::OpenSettings => {}
                 PaletteCommand::Key(_) => {}
                 PaletteCommand::PubsubMode => {}
             });

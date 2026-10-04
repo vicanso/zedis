@@ -16,6 +16,7 @@ use crate::connection::{RedisServer, get_servers};
 use crate::helpers::{channel, pacing};
 use crate::states::Route;
 use crate::states::{GlobalEvent, RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
+use crate::views::open_settings_window;
 use gpui::{App, BorrowAppContext, Context, Subscription};
 use rust_i18n::t;
 use std::cell::RefCell;
@@ -282,16 +283,9 @@ pub fn init_tray(cx: &mut App) {
                                 }
                                 TrayAction::Preferences => {
                                     cx.activate(true);
-                                    cx.update_global::<ZedisGlobalStore, ()>(
-                                        |store: &mut ZedisGlobalStore, cx: &mut App| {
-                                            store.update(
-                                                cx,
-                                                |state: &mut ZedisAppState, cx: &mut Context<ZedisAppState>| {
-                                                    state.go_to(Route::Settings, cx);
-                                                },
-                                            );
-                                        },
-                                    );
+                                    // The window itself: `Route::Settings` draws the
+                                    // connections page, which is where this used to land.
+                                    open_settings_window(cx);
                                 }
                                 TrayAction::NewConnection => {
                                     cx.activate(true);

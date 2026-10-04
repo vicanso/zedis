@@ -28,11 +28,14 @@
 use crate::connection::{ServerDb, TS_AGGREGATORS, TsMRange, TsSeries, has_positive_matcher, ts_mrange};
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, unix_ts_millis};
-use crate::states::{ZedisServerState, content_area_width, i18n_common, i18n_timeseries};
+use crate::states::{
+    ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width, i18n_common,
+    i18n_timeseries,
+};
 use crate::views::{ChartParams, ChartSeries, format_timestamp_ms, make_series_chart, value_range};
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Sizable,
+    ActiveTheme, Disableable, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -408,6 +411,25 @@ impl Render for ZedisTimeSeriesExplorer {
             .w_full()
             .gap_2()
             .items_center()
+            // The way back and the page's name, as on every other tool page:
+            // without them this one opened straight onto a filter box.
+            .child(
+                Button::new("ts-explorer-back")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ArrowLeft)
+                    .tooltip(back_to_editor_tooltip(cx))
+                    .on_click(|_, _w, cx| {
+                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                            store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+                        });
+                    }),
+            )
+            .child(
+                Label::new(i18n_timeseries(cx, "explorer_title"))
+                    .font_semibold()
+                    .flex_none(),
+            )
             .child(div().flex_1().child(Input::new(&self.filter_input).small().h(px(32.))))
             .child(
                 Label::new(i18n_timeseries(cx, "explorer_aggregation"))

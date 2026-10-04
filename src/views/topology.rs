@@ -51,10 +51,10 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{format_lag_bytes, get_mono_font_family, pacing};
 use crate::states::{
-    ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ZedisGlobalStore,
-    ZedisServerState, dialog_button_props, escalate_dangerous_body, fetch_cluster_node_loads, fetch_slot_migrations,
-    i18n_common, i18n_hints, i18n_topology, plan_cluster_rebalance_moves, plan_cluster_reshard,
-    source_owners_for_slots, update_app_state_and_save_quiet,
+    ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ServerView,
+    ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props, escalate_dangerous_body,
+    fetch_cluster_node_loads, fetch_slot_migrations, i18n_common, i18n_hints, i18n_topology,
+    plan_cluster_rebalance_moves, plan_cluster_reshard, source_owners_for_slots, update_app_state_and_save_quiet,
 };
 use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog, unavailable_chip};
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
@@ -494,7 +494,24 @@ impl Render for ZedisTopology {
             .w_full()
             .items_center()
             .justify_between()
-            .child(Label::new(title).text_lg().font_bold())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Button::new("topology-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(back_to_editor_tooltip(cx))
+                            .on_click(|_, _w, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+                                });
+                            }),
+                    )
+                    .child(Label::new(title).text_lg().font_bold()),
+            )
             .when(
                 matches!(self.mode, TopologyMode::Standalone | TopologyMode::Unknown),
                 |this| {
