@@ -21,8 +21,9 @@ use super::*;
 use crate::views::unavailable_chip;
 
 impl ZedisMemoryAnalysis {
-    pub(super) fn render_toolbar_functions(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
-        let is_running = self.status == AnalysisStatus::Running;
+    /// The read-only figures of the toolbar: what is being analyzed and how
+    /// far the run is.
+    pub(super) fn render_toolbar_stats(&self, cx: &mut gpui::Context<Self>) -> gpui::Div {
         let is_idle = self.status == AnalysisStatus::Idle;
         let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
@@ -36,47 +37,50 @@ impl ZedisMemoryAnalysis {
         };
 
         let offline = self.rdb_file.is_some();
+        h_flex()
+            .gap_4()
+            .items_center()
+            // Offline source: name the analyzed dump instead of the
+            // live-connection chips, which don't describe the file.
+            .when_some(self.rdb_file.clone(), |this, name| {
+                this.child(stat_item(cx, "rdb_file", name))
+            })
+            // DB Size
+            .when_some(self.dbsize.filter(|_| !offline), |this, dbsize| {
+                this.child(stat_item(cx, "dbsize", format_thousands(dbsize).into()))
+            })
+            // Estimated commands
+            .when(self.est_commands > 0 && !offline, |this| {
+                this.child(stat_item(
+                    cx,
+                    "est_commands",
+                    format!("~{}", format_thousands(self.est_commands)).into(),
+                ))
+            })
+            // Active maxmemory-policy chip — explains which heat
+            // metric the Heat column is showing.
+            .when(!self.policy.is_empty(), |this| {
+                this.child(stat_item(cx, "policy", self.policy.clone()))
+            })
+            // Live sampling needs SCAN + MEMORY USAGE; without them only
+            // the offline RDB analysis is on offer (the Analyze button
+            // is disabled for the same reason).
+            .when_some(
+                self.live_scan_block(cx).filter(|_| !offline),
+                |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
+            )
+            // Progress
+            .when(!is_idle, |this| {
+                this.child(stat_item(cx, "progress", self.progress.clone()))
+            })
+    }
+
+    /// The toolbar's controls: the ranking, the sampling parameters and the
+    /// actions. Kept apart from the figures so the two wrap as two groups.
+    pub(super) fn render_toolbar_controls(&self, cx: &mut gpui::Context<Self>) -> ZedisDivider {
+        let is_running = self.status == AnalysisStatus::Running;
         ZedisDivider::new()
             .gap_4()
-            // Read-only data information display
-            .child(
-                h_flex()
-                    .gap_4() // Use moderate spacing inside the data group
-                    .items_center()
-                    // Offline source: name the analyzed dump instead of the
-                    // live-connection chips, which don't describe the file.
-                    .when_some(self.rdb_file.clone(), |this, name| {
-                        this.child(stat_item(cx, "rdb_file", name))
-                    })
-                    // DB Size
-                    .when_some(self.dbsize.filter(|_| !offline), |this, dbsize| {
-                        this.child(stat_item(cx, "dbsize", format_thousands(dbsize).into()))
-                    })
-                    // Estimated commands
-                    .when(self.est_commands > 0 && !offline, |this| {
-                        this.child(stat_item(
-                            cx,
-                            "est_commands",
-                            format!("~{}", format_thousands(self.est_commands)).into(),
-                        ))
-                    })
-                    // Active maxmemory-policy chip — explains which heat
-                    // metric the Heat column is showing.
-                    .when(!self.policy.is_empty(), |this| {
-                        this.child(stat_item(cx, "policy", self.policy.clone()))
-                    })
-                    // Live sampling needs SCAN + MEMORY USAGE; without them only
-                    // the offline RDB analysis is on offer (the Analyze button
-                    // is disabled for the same reason).
-                    .when_some(
-                        self.live_scan_block(cx).filter(|_| !offline),
-                        |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
-                    )
-                    // Progress
-                    .when(!is_idle, |this| {
-                        this.child(stat_item(cx, "progress", self.progress.clone()))
-                    }),
-            )
             // Ranking for the single-key TopN table. A dropdown rather than one
             // button per mode: the toolbar is already crowded, and this is a
             // single-valued choice — exactly what a select is for.
@@ -1137,10 +1141,6 @@ impl gpui::Render for ZedisMemoryAnalysis {
         let has_ttl_data = self.ttl_histogram.total() > 0;
         let has_type_data = !self.type_rows.is_empty();
 
-        // Lay the toolbar out as a single non-wrapping row inside a
-        // horizontal scroll container. Modern IDEs (Zed included) keep dense
-        // toolbars on one line and let the overflow scroll rather than
-        // wrapping or stacking — it stays readable at any window width.
         let nav = h_flex()
             .gap_2()
             .items_center()
@@ -1159,35 +1159,43 @@ impl gpui::Render for ZedisMemoryAnalysis {
             .child(Icon::new(CustomIconName::MemoryStick))
             .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
             .child(help_popover("memory-analysis-help", i18n_memory_analysis(cx, "help")));
-        let functions = self.render_toolbar_functions(cx);
+        let stats = self.render_toolbar_stats(cx);
+        let controls = self.render_toolbar_controls(cx);
 
         v_flex()
             .size_full()
             .overflow_hidden()
             .font_family(get_mono_font_family())
             .gap_2()
-            // ── Toolbar: single row, horizontal-scroll on overflow ──
-            // The h_flex is itself the scroll viewport (mirrors gpui-component's
-            // tab_bar). `nav`/`functions` are `flex_none` so they keep their
-            // natural width and overflow the row instead of being compressed —
-            // that overflow is what the scroll container actually scrolls. The
-            // `flex_1` spacer only grows when there is leftover space, pushing
-            // the functions group to the right edge when everything fits.
+            // ── Toolbar: one row where it fits, two where it does not ──
+            // Everything on one line needs about 1750px, which no default
+            // window has: as a single scrolling row it kept Start Analysis off
+            // screen with nothing to say it was there. So the row wraps — the
+            // title and the figures first, the controls on a line of their own
+            // — and scrolls only as a last resort, when a window is too narrow
+            // for the controls alone. All three groups are `flex_none`: they
+            // keep their width and move to the next line instead of being
+            // squeezed. The `flex_1` spacer takes what is left of the first
+            // line, which puts the controls at the right edge when all fits.
             .child(
                 h_flex()
                     .id("memory-analysis-toolbar")
                     .w_full()
                     .flex_none()
-                    .h(px(40.))
+                    .min_h(px(40.))
                     .px_4()
-                    .gap_2()
+                    .py(px(6.))
+                    .gap_x_4()
+                    .gap_y_2()
                     .items_center()
+                    .flex_wrap()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .overflow_x_scroll()
                     .child(nav.flex_none())
+                    .child(stats.flex_none())
                     .child(div().flex_1())
-                    .child(functions.flex_none()),
+                    .child(controls.flex_none()),
             )
             .children(self.show_first_visit_hint.then(|| {
                 div().w_full().flex_none().px_4().child(
