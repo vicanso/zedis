@@ -14,6 +14,7 @@
 
 use super::{
     KeyType, RedisValueData, ServerEvent, ServerTask, ZedisServerState,
+    element::decode_element,
     value::{
         RedisStreamEntry, RedisStreamValue, RedisValue, RedisValueStatus, StreamConsumerDetail, StreamGroupDetail,
         StreamIdmpInfo, StreamInfoData, StreamPendingEntry, StreamRefPolicy, StreamSummary, StreamTrim,
@@ -23,9 +24,9 @@ use crate::states::ZedisGlobalStore;
 use crate::states::i18n_stream_editor;
 use crate::{
     connection::{
-        PENDING_PAGE, ServerDb, StreamGroup, StreamInfo, StreamPending, consumer_create, consumer_delete, group_create,
-        group_destroy, group_set_id, next_stream_id, pending_page, stream_ack, stream_ack_delete, stream_add,
-        stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_nack, stream_page,
+        PENDING_PAGE, ServerDb, StreamEntry, StreamGroup, StreamInfo, StreamPending, consumer_create, consumer_delete,
+        group_create, group_destroy, group_set_id, next_stream_id, pending_page, stream_ack, stream_ack_delete,
+        stream_add, stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_nack, stream_page,
         stream_set_id, stream_trim,
     },
     error::Error,
@@ -90,11 +91,19 @@ fn project_pending(entry: StreamPending) -> StreamPendingEntry {
     }
 }
 
-fn project_entries(entries: Vec<(String, Vec<(String, String)>)>) -> Vec<RedisStreamEntry> {
+/// Entries as the table draws them: each value as the one-line text a
+/// collection's element gets ([`decode_element`]) — text as stored, a
+/// MessagePack or compressed payload decoded, anything else as hex. Read
+/// lossily instead, such a value was a run of U+FFFD. Entries are only ever
+/// appended, never written back from this text.
+pub fn project_stream_entries(entries: Vec<StreamEntry>) -> Vec<RedisStreamEntry> {
     entries
         .into_iter()
         .map(|(id, fields)| {
-            let fields = fields.into_iter().map(|(f, v)| (f.into(), v.into())).collect();
+            let fields = fields
+                .into_iter()
+                .map(|(field, value)| (field.into(), decode_element(&value).1))
+                .collect();
             (id.into(), fields)
         })
         .collect()
@@ -109,7 +118,7 @@ async fn get_redis_stream_value(
     reverse: bool,
 ) -> Result<(String, Vec<RedisStreamEntry>)> {
     let (cursor, entries) = stream_page(at, key, cursor.as_deref(), count, reverse).await?;
-    Ok((cursor, project_entries(entries)))
+    Ok((cursor, project_stream_entries(entries)))
 }
 
 pub(crate) async fn first_load_stream_value(at: &ServerDb, key: &str, reverse: bool) -> Result<RedisValue> {
@@ -757,5 +766,45 @@ impl ZedisServerState {
                 cx.emit(ServerEvent::ValueUpdated);
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the stream table shows for a value: text as stored, a MessagePack
+    /// payload decoded, opaque bytes as hex — never a run of U+FFFD.
+    #[test]
+    fn a_stream_value_is_decoded_for_its_cell() {
+        let mut msgpack = vec![0x83, 0xa3];
+        msgpack.extend_from_slice(b"sku");
+        msgpack.push(0xa5);
+        msgpack.extend_from_slice(b"SKU-1");
+        msgpack.push(0xa3);
+        msgpack.extend_from_slice(b"qty");
+        msgpack.push(0x02);
+        msgpack.push(0xa5);
+        msgpack.extend_from_slice(b"price");
+        msgpack.push(0xcb);
+        msgpack.extend_from_slice(&1.5f64.to_be_bytes());
+        let entries = vec![(
+            "1-0".to_string(),
+            vec![
+                ("event".to_string(), b"login".to_vec()),
+                ("raw".to_string(), msgpack),
+                ("blob".to_string(), vec![0xff, 0xfe, 0x00]),
+            ],
+        )];
+        let projected = project_stream_entries(entries);
+        let fields = &projected[0].1;
+        assert_eq!(projected[0].0.as_ref(), "1-0");
+        assert_eq!(fields[0].1.as_ref(), "login");
+        assert!(
+            fields[1].1.contains("SKU-1") && !fields[1].1.contains('\u{fffd}'),
+            "{}",
+            fields[1].1
+        );
+        assert!(!fields[2].1.contains('\u{fffd}'), "{}", fields[2].1);
     }
 }

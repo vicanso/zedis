@@ -3487,12 +3487,13 @@ fn standalone_stream_operations_page_describe_and_administer() {
         // Paging: a full page hands back a cursor, the last one does not.
         let (cursor, first) = stream_page(&at, &key, None, 2, false).await.expect("xrange");
         assert_eq!(first.len(), 2);
-        assert_eq!(first[0].1, vec![("n".to_string(), "1".to_string())]);
+        assert_eq!(first[0].1, vec![("n".to_string(), b"1".to_vec())]);
         assert!(!cursor.is_empty(), "more to come");
         let (next, rest) = stream_page(&at, &key, Some(&cursor), 2, false).await.expect("xrange");
         assert_eq!(rest.len(), 1, "the cursor is exclusive");
         assert!(next.is_empty(), "the end of the stream");
-        // A binary field value does not fail the page: it is shown lossily.
+        // A binary field value does not fail the page, and arrives as the
+        // bytes that were stored — what a decoder needs.
         let binary_key = format!("{key}:binary");
         cmd("XADD")
             .arg(&binary_key)
@@ -3507,13 +3508,13 @@ fn standalone_stream_operations_page_describe_and_administer() {
             .expect("a page with a non-UTF-8 value");
         assert_eq!(binary.len(), 1);
         assert_eq!(binary[0].1[0].0, "payload");
-        assert!(binary[0].1[0].1.ends_with("ok"), "{:?}", binary[0].1);
+        assert_eq!(binary[0].1[0].1, b"\x80\xffok".to_vec(), "{:?}", binary[0].1);
         cmd("DEL").arg(&binary_key).exec_async(&mut c).await.expect("cleanup");
 
         let (_, newest) = stream_page(&at, &key, None, 1, true).await.expect("xrevrange");
         assert_eq!(
             newest[0].1,
-            vec![("n".to_string(), "3".to_string())],
+            vec![("n".to_string(), b"3".to_vec())],
             "reverse starts at the top"
         );
 
@@ -3878,8 +3879,8 @@ fn standalone_stream_tail_returns_only_what_arrives_after_it_opened() {
         let fields: Vec<_> = seen.iter().map(|(_, fields)| fields.clone()).collect();
         let pair = |n: &str| {
             vec![
-                ("n".to_string(), n.to_string()),
-                ("name".to_string(), "zedis".to_string()),
+                ("n".to_string(), n.as_bytes().to_vec()),
+                ("name".to_string(), b"zedis".to_vec()),
             ]
         };
         assert_eq!(

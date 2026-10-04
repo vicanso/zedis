@@ -23,6 +23,7 @@ use crate::{
         ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
         StreamInfoData, StreamRefPolicy, StreamTrim, ZedisGlobalStore, ZedisServerState, dialog_button_props,
         escalate_dangerous_body, i18n_common, i18n_kv_table, i18n_status_bar, i18n_stream_editor,
+        project_stream_entries,
     },
     views::{ZedisKvTable, kv_table::FOOTER_HEIGHT},
 };
@@ -587,13 +588,7 @@ impl ZedisStreamEditor {
                     if entries.is_empty() {
                         continue;
                     }
-                    let entries: Vec<RedisStreamEntry> = entries
-                        .into_iter()
-                        .map(|(id, fields)| {
-                            let fields = fields.into_iter().map(|(f, v)| (f.into(), v.into())).collect();
-                            (id.into(), fields)
-                        })
-                        .collect();
+                    let entries = project_stream_entries(entries);
                     if tx.send(entries).await.is_err() {
                         break;
                     }

@@ -37,8 +37,11 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// more" click fetch this many entries.
 pub const PENDING_PAGE: usize = 100;
 
-/// One entry: its id and its field → value pairs, in order.
-pub type StreamEntry = (String, Vec<(String, String)>);
+/// One stream entry: its id and its field → value pairs, in order. A field
+/// is a name and is text; a value is its bytes — what an application puts in
+/// a stream is as often MessagePack or a compressed payload as text, and only
+/// the bytes can be decoded.
+pub type StreamEntry = (String, Vec<(String, Vec<u8>)>);
 
 /// One consumer of a group (`XINFO CONSUMERS`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -185,10 +188,10 @@ pub async fn stream_page(
     } else {
         (bound.as_str(), "+")
     };
-    // Fields and values as bytes, shown lossily: read as `String`, one field
-    // that is not UTF-8 (a msgpack or compressed payload) failed the page
-    // and the editor showed none of its entries. Entries are only ever
-    // appended, never written back from this text.
+    // Fields and values as bytes: read as `String`, one value that is not
+    // UTF-8 (a msgpack or compressed payload) failed the page and the
+    // editor showed none of its entries. The values stay bytes for the
+    // caller to decode; a field name is shown lossily.
     let raw: Vec<(String, Vec<Vec<u8>>)> = cmd(if reverse { "XREVRANGE" } else { "XRANGE" })
         .arg(key)
         .arg(from)
@@ -199,16 +202,7 @@ pub async fn stream_page(
         .await?;
 
     let done = raw.len() < count;
-    let entries: Vec<StreamEntry> = raw
-        .into_iter()
-        .map(|(id, flat)| {
-            let flat = flat
-                .iter()
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                .collect();
-            (id, pairs(flat))
-        })
-        .collect();
+    let entries: Vec<StreamEntry> = raw.into_iter().map(|(id, flat)| (id, field_values(flat))).collect();
     let next = if done {
         String::new()
     } else {
@@ -501,13 +495,13 @@ pub async fn stream_autoclaim(
     Ok(rows(&raw).nth(1).map(|ids| rows(ids).count()).unwrap_or(0))
 }
 
-/// A flat `[field, value, field, value, …]` list as pairs; a field left
-/// without a value is dropped.
-fn pairs(flat: Vec<String>) -> Vec<(String, String)> {
+/// A flat `[field, value, field, value, …]` list as pairs — the field as
+/// text, the value as its bytes; a field left without a value is dropped.
+fn field_values(flat: Vec<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::with_capacity(flat.len() / 2);
     let mut items = flat.into_iter();
     while let (Some(field), Some(value)) = (items.next(), items.next()) {
-        out.push((field, value));
+        out.push((String::from_utf8_lossy(&field).into_owned(), value));
     }
     out
 }
@@ -602,7 +596,15 @@ mod tests {
         assert_eq!(entry_id(&entry), "1-1");
         assert_eq!(entry_id(&Value::Nil), "");
 
-        let flat = ["f", "1", "g", "2", "odd"].map(str::to_string).to_vec();
-        assert_eq!(pairs(flat), vec![("f".into(), "1".into()), ("g".into(), "2".into())]);
+        let flat = ["f", "1", "g", "2", "odd"].map(|s| s.as_bytes().to_vec()).to_vec();
+        assert_eq!(
+            field_values(flat),
+            vec![("f".to_string(), b"1".to_vec()), ("g".to_string(), b"2".to_vec())]
+        );
+        // A value keeps bytes that are not text; a field name is shown lossily.
+        assert_eq!(
+            field_values(vec![vec![b'f', 0xff], vec![0x81, 0xa1, b'a', 0x01]]),
+            vec![("f\u{fffd}".to_string(), vec![0x81, 0xa1, b'a', 0x01])]
+        );
     }
 }

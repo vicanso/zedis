@@ -1181,7 +1181,8 @@ impl ZedisKeyspaceNotifications {
                             .text_xs()
                             .text_color(theme.muted_foreground),
                     )
-                    .child(div().w(px(220.)).child(Input::new(&self.key_filter_input).small())),
+                    // Wide enough for the placeholder, which names an example.
+                    .child(div().w(px(300.)).child(Input::new(&self.key_filter_input).small())),
             )
     }
 

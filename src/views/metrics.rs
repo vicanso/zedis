@@ -627,13 +627,12 @@ impl ZedisMetrics {
         );
         let dates = self.metrics_chart_data.dates.clone();
         let values = self.metrics_chart_data.memory.clone();
-        let max_val = self.metrics_chart_data.max_memory.max(0.01);
-        let fill_color = cx.theme().chart_2;
-        let chart = make_bar_chart(
-            self.chart_params("metrics-memory", dates, max_val, |v| format!("{:.0}", v)),
-            values,
-            fill_color,
-        );
+        // A line on an axis drawn around the samples: as bars from zero, a
+        // steady 500 MB was a solid wall and a 5 MB climb did not show.
+        let (y_min, y_max) = memory_axis(self.metrics_chart_data.min_memory, self.metrics_chart_data.max_memory);
+        let mut params = self.chart_params("metrics-memory", dates, y_max, |v| format!("{:.0}", v));
+        params.y_min = y_min;
+        let chart = make_line_chart(params, values, cx.theme().chart_2);
         self.render_chart_card(cx, label, chart)
     }
 
@@ -1038,9 +1037,38 @@ fn metrics_csv(samples: &[RedisMetrics]) -> String {
     )
 }
 
+/// The y axis of the memory chart, in the samples' own unit (MB): their
+/// range and a margin either side — a quarter of the range, and never less
+/// than 2% of the peak or one unit, so a flat series is a line across the
+/// middle rather than one drawn on the frame. Never below zero; `(0, 1)`
+/// while there is no sample.
+fn memory_axis(min: f64, max: f64) -> (f64, f64) {
+    if !min.is_finite() || !max.is_finite() || min > max {
+        return (0.0, 1.0);
+    }
+    let margin = ((max - min) * 0.25).max(max * 0.02).max(1.0);
+    ((min - margin).max(0.0), max + margin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_memory_axis_frames_the_samples_instead_of_starting_at_zero() {
+        // Steady: a band around the value, the line in its middle.
+        let (low, high) = memory_axis(508.0, 508.0);
+        assert!(
+            low > 490.0 && low < 508.0 && high > 508.0 && high < 526.0,
+            "{low}..{high}"
+        );
+        // Moving: the range plus a quarter of it either side.
+        assert_eq!(memory_axis(100.0, 500.0), (0.0, 600.0));
+        assert_eq!(memory_axis(400.0, 500.0), (375.0, 525.0));
+        // Small numbers never go below zero; no samples is still an axis.
+        assert_eq!(memory_axis(0.5, 0.5).0, 0.0);
+        assert_eq!(memory_axis(f64::MAX, f64::MIN), (0.0, 1.0));
+    }
 
     #[test]
     fn the_csv_has_one_row_per_sample_with_the_raw_numbers() {

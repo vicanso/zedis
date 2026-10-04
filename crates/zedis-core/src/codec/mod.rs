@@ -111,7 +111,7 @@ fn unix_now_secs() -> Option<i64> {
 }
 
 /// `rfc3339_millis` plus how far from now: `2026-09-04T08:00:00Z (in 2h 5m)`
-/// or `… (3d 4h ago)`, to the minute.
+/// or `… (3days 4h ago)`.
 fn describe_instant(seconds: i64) -> Option<String> {
     let stamp = rfc3339_millis(seconds.checked_mul(1000)?)?;
     let now = unix_now_secs()?;
@@ -120,16 +120,39 @@ fn describe_instant(seconds: i64) -> Option<String> {
     let relative = if rounded.is_zero() {
         "now".to_string()
     } else if delta > 0 {
-        format!("in {}", humantime::format_duration(rounded))
+        format!("in {}", coarse_span(rounded))
     } else {
-        format!("{} ago", humantime::format_duration(rounded))
+        format!("{} ago", coarse_span(rounded))
     };
     Some(format!("{stamp} ({relative})"))
 }
 
+/// A span by its two largest units: `3days 4h`, `4months 20days`. Rounding to
+/// the minute is not enough for a long one — a humantime month is 30.44 days,
+/// so months leave hours, minutes and seconds behind (`4months 21days 1h 47m
+/// 36s`), a precision nobody reads in "how long ago was this issued".
+fn coarse_span(span: Duration) -> String {
+    let whole = humantime::format_duration(span).to_string();
+    whole.split(' ').take(2).collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rfc3339_millis;
+    use super::{coarse_span, rfc3339_millis};
+    use std::time::Duration;
+
+    #[test]
+    fn a_span_keeps_its_two_largest_units() {
+        assert_eq!(coarse_span(Duration::from_secs(2 * 3600 + 5 * 60)), "2h 5m");
+        assert_eq!(coarse_span(Duration::from_secs(45 * 60)), "45m");
+        assert_eq!(
+            coarse_span(Duration::from_secs(3 * 86_400 + 4 * 3600 + 12 * 60)),
+            "3days 4h"
+        );
+        // Months leave odd seconds behind; none of that is kept.
+        let long = coarse_span(Duration::from_secs(142 * 86_400 + 6_456));
+        assert!(long.starts_with("4months ") && long.ends_with("days"), "{long}");
+    }
 
     #[test]
     fn an_instant_on_either_side_of_the_epoch_is_formatted_not_a_panic() {

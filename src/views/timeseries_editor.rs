@@ -60,6 +60,9 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// payload bounded) regardless of how dense the underlying series is.
 const TARGET_POINTS: i64 = 240;
 const CHART_HEIGHT: f32 = 320.;
+/// Half the width of the widest x label (`%m-%d %H:%M`), which is how far the
+/// last label reaches past the plot.
+const CHART_LABEL_OVERHANG: f32 = 40.;
 
 /// Selectable look-back windows for the chart.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -579,7 +582,14 @@ impl ZedisTimeSeriesEditor {
             tick_margin,
         };
         let chart = make_line_chart(params, Arc::new(values), cx.theme().chart_1);
-        v_flex().w_full().h(px(CHART_HEIGHT)).child(chart)
+        // The x labels are centred under their samples, so the last one
+        // overhangs the plot by half its width: without room on the right it
+        // was cut off at the pane's edge.
+        v_flex()
+            .w_full()
+            .h(px(CHART_HEIGHT))
+            .pr(px(CHART_LABEL_OVERHANG))
+            .child(chart)
     }
 }
 

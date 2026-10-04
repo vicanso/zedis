@@ -35,7 +35,7 @@ pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 /// [`RedisValueStatus::TooLarge`] placeholder instead of pulling the
 /// payload — the editor then offers an explicit "load anyway".
 /// Collection types are exempt: their first loads are paginated.
-pub const MAX_INLINE_VALUE_SIZE: u64 = 5 * 1024 * 1024;
+pub const MAX_INLINE_VALUE_SIZE: u64 = 5_000_000;
 /// How much of a String over [`MAX_INLINE_VALUE_SIZE`] its preview shows
 /// ("Preview" on the too-large panel): enough to tell what the value is, and
 /// an amount the editor draws without a stall. Decimal, like every size the

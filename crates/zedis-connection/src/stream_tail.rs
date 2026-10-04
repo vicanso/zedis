@@ -26,14 +26,15 @@ use crate::config::get_server;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::open_single_connection;
-use crate::reply::{text, text_lossy};
+use crate::reply::{bytes, text, text_lossy};
 use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// One stream entry: its id and its field → value pairs, in order.
-pub type StreamTailEntry = (String, Vec<(String, String)>);
+/// One stream entry: its id and its field → value pairs, in order — the
+/// value as its bytes, like a page's ([`crate::StreamEntry`]).
+pub type StreamTailEntry = (String, Vec<(String, Vec<u8>)>);
 
 /// A tail in progress. It starts at `$`, so only entries that arrive after
 /// [`open`](Self::open) are ever returned.
@@ -109,7 +110,7 @@ fn parse_xread(reply: &Value) -> Vec<StreamTailEntry> {
             if let Some(Value::Array(flat)) = id_and_fields.get(1) {
                 let mut it = flat.iter();
                 while let (Some(field), Some(value)) = (it.next(), it.next()) {
-                    fields.push((cell(field), cell(value)));
+                    fields.push((cell(field), bytes(value).unwrap_or_else(|| cell(value).into_bytes())));
                 }
             }
             out.push((cell(id), fields));
@@ -134,10 +135,10 @@ mod tests {
     fn xread_entries_are_read_from_both_protocols_and_nil_is_none() {
         let entries = Value::Array(vec![entry("1-1", &["a", "1"]), entry("1-2", &["b", "2", "c", "3"])]);
         let expected = vec![
-            ("1-1".to_string(), vec![("a".to_string(), "1".to_string())]),
+            ("1-1".to_string(), vec![("a".to_string(), b"1".to_vec())]),
             (
                 "1-2".to_string(),
-                vec![("b".to_string(), "2".to_string()), ("c".to_string(), "3".to_string())],
+                vec![("b".to_string(), b"2".to_vec()), ("c".to_string(), b"3".to_vec())],
             ),
         ];
         let resp2 = Value::Array(vec![Value::Array(vec![bulk("s"), entries.clone()])]);
@@ -146,7 +147,7 @@ mod tests {
         assert_eq!(parse_xread(&resp3), expected);
 
         assert!(parse_xread(&Value::Nil).is_empty(), "the block timed out");
-        // A value that is not UTF-8 is still an entry.
+        // A value that is not UTF-8 is still an entry, and still its bytes.
         let binary = Value::Array(vec![Value::Array(vec![
             bulk("s"),
             Value::Array(vec![Value::Array(vec![
@@ -156,7 +157,7 @@ mod tests {
         ])]);
         assert_eq!(
             parse_xread(&binary),
-            vec![("2-0".to_string(), vec![("f".to_string(), "\u{fffd}".to_string())])]
+            vec![("2-0".to_string(), vec![("f".to_string(), vec![0xff])])]
         );
     }
 }

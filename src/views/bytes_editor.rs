@@ -186,6 +186,22 @@ fn hex_bytes_per_row(cx: &App) -> usize {
     }
 }
 
+/// The longest side, in pixels, an image may have and still be drawn enlarged.
+const SMALL_IMAGE_MAX: i32 = 128;
+/// What an enlarged image's longest side is brought up to, at most.
+const SMALL_IMAGE_TARGET: i32 = 256;
+
+/// The whole multiple a `width` x `height` image is drawn at, or `None` when
+/// it is shown at its own size: one already large enough to read, or one that
+/// would not gain a whole step.
+fn small_image_scale(width: i32, height: i32) -> Option<i32> {
+    let longest = width.max(height);
+    if width <= 0 || height <= 0 || longest > SMALL_IMAGE_MAX {
+        return None;
+    }
+    Some(SMALL_IMAGE_TARGET / longest).filter(|scale| *scale > 1)
+}
+
 fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditorData {
     if value.bytes.is_empty() {
         return ByteEditorData::Text(value.text.clone().unwrap_or_default());
@@ -799,16 +815,49 @@ impl Render for ZedisBytesEditor {
             self.soft_wrap_changed = false;
         }
         match &self.data {
-            ByteEditorData::Image(value) => div()
-                .size_full()
-                .overflow_hidden()
-                // `img()` sizes itself to the bitmap when width/height are Auto,
-                // so object-fit is a no-op and the parent clips the overflow.
-                // Pin the element to the panel; ScaleDown letterboxes a large
-                // image inside those bounds and leaves a small image at its
-                // intrinsic size (Contain would upscale it).
-                .child(img(value.clone()).size_full().object_fit(ObjectFit::ScaleDown))
-                .into_any_element(),
+            ByteEditorData::Image(value) => {
+                // Known once the image has decoded; the frame before that it
+                // is drawn like any other.
+                let pixels = value
+                    .clone()
+                    .use_render_image(window, cx)
+                    .map(|image| image.size(0))
+                    .map(|size| (i32::from(size.width), i32::from(size.height)));
+                if let Some((width, height, scale)) = pixels.and_then(|(w, h)| Some((w, h, small_image_scale(w, h)?))) {
+                    // An icon, an avatar, a sprite: at its own size it is a
+                    // speck in the pane. A whole multiple keeps its pixels
+                    // square; the caption says it is not shown at 1:1.
+                    let muted = cx.theme().muted_foreground;
+                    return v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
+                        .overflow_hidden()
+                        .child(
+                            img(value.clone())
+                                .w(px((width * scale) as f32))
+                                .h(px((height * scale) as f32))
+                                .object_fit(ObjectFit::Fill),
+                        )
+                        .child(
+                            Label::new(format!("{width} × {height} px · ×{scale}"))
+                                .text_xs()
+                                .text_color(muted),
+                        )
+                        .into_any_element();
+                }
+                div()
+                    .size_full()
+                    .overflow_hidden()
+                    // `img()` sizes itself to the bitmap when width/height are Auto,
+                    // so object-fit is a no-op and the parent clips the overflow.
+                    // Pin the element to the panel; ScaleDown letterboxes a large
+                    // image inside those bounds and leaves a small image at its
+                    // intrinsic size (Contain would upscale it).
+                    .child(img(value.clone()).size_full().object_fit(ObjectFit::ScaleDown))
+                    .into_any_element()
+            }
             ByteEditorData::Hex(value) => {
                 let state = self
                     .hex_viewer_state
@@ -1046,5 +1095,20 @@ impl ZedisBytesEditor {
                     .into_any_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::small_image_scale;
+
+    #[test]
+    fn only_a_small_image_is_enlarged_and_by_a_whole_step() {
+        assert_eq!(small_image_scale(16, 16), Some(16));
+        assert_eq!(small_image_scale(100, 40), Some(2));
+        assert_eq!(small_image_scale(128, 128), Some(2));
+        // Already large enough to read, or nothing to draw.
+        assert_eq!(small_image_scale(129, 10), None);
+        assert_eq!(small_image_scale(0, 10), None);
     }
 }

@@ -17,7 +17,7 @@ use crate::connection::ServerCommand;
 use crate::connection::{
     DEFAULT_CONNECTION_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, set_redis_connection_timeout, set_redis_response_timeout,
 };
-use crate::connection::{RedisServer, ReplyFormat, get_server, get_servers, save_servers};
+use crate::connection::{DEFAULT_KEY_SCAN_COUNT, RedisServer, ReplyFormat, get_server, get_servers, save_servers};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
 #[cfg(target_family = "wasm")]
@@ -900,7 +900,13 @@ impl ZedisAppState {
         self.redis_response_timeout.map(timeout_text).unwrap_or_default()
     }
     pub fn key_scan_count(&self) -> usize {
-        self.key_scan_count.unwrap_or(10_000)
+        self.key_scan_count.unwrap_or(DEFAULT_KEY_SCAN_COUNT)
+    }
+    /// The count chosen in Settings, `None` while it is left at its default
+    /// — which is not one number: a production-tagged server has a smaller
+    /// one (`RedisServer::resolve_key_scan_count`).
+    pub fn key_scan_count_setting(&self) -> Option<usize> {
+        self.key_scan_count
     }
     pub fn multi_search_scope(&self) -> MultiSearchScope {
         self.multi_search_scope.clone()

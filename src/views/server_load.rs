@@ -312,7 +312,9 @@ impl ZedisServerLoad {
 
     fn summary<'a>(&'a self, filter_text: &str) -> (f64, usize, Option<&'a CmdRow>, Option<&'a CmdRow>) {
         let filtered = self.filtered_rows(filter_text);
-        let total_rate: f64 = filtered.iter().map(|r| r.rate).sum();
+        // The sum of no floats is -0.0, which prints with its sign; adding
+        // zero makes it the plain zero a rate of nothing should read as.
+        let total_rate: f64 = filtered.iter().map(|r| r.rate).sum::<f64>() + 0.0;
         let active = filtered.iter().filter(|r| r.rate > 0.0 || r.dcalls > 0).count();
         let hottest = filtered
             .iter()

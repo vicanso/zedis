@@ -53,6 +53,17 @@ pub fn text_lossy(value: &Value) -> Option<String> {
     }
 }
 
+/// A string as the bytes it is: what the user stored, undecoded. For a value
+/// that may be MessagePack or a compressed payload as readily as text, where
+/// [`text_lossy`] would destroy what a decoder needs. Strings only.
+pub fn bytes(value: &Value) -> Option<Vec<u8>> {
+    match value {
+        Value::BulkString(bytes) => Some(bytes.clone()),
+        Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone().into_bytes()),
+        _ => None,
+    }
+}
+
 /// An integer, from an `Int`, a `Double` (truncated — RESP3 reports some
 /// counters that way) or a numeric string.
 pub fn int(value: &Value) -> Option<i64> {

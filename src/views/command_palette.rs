@@ -43,7 +43,7 @@ const FAV_SIGIL: char = '*';
 /// Which slice of candidates the palette shows, selected by a leading sigil.
 #[derive(Clone, Copy, PartialEq)]
 enum Scope {
-    /// No sigil: configured servers + (when typing) loaded keys.
+    /// No sigil: configured servers + (when typing) loaded keys and commands.
     General,
     /// `>`: navigation commands / pages + the shortcuts reference.
     Commands,
@@ -234,7 +234,7 @@ impl ZedisCommandPalette {
     }
 
     /// Build the candidate list for the current scope. General lists servers
-    /// first, then (on a non-empty query) loaded-key matches; `>` lists
+    /// first, then (on a non-empty query) loaded-key matches and commands; `>` lists
     /// navigation commands + the shortcuts reference; `*` lists the active
     /// server's favorites. `query` is the effective query (sigil stripped);
     /// `ranked` scores against the same string.
@@ -269,104 +269,7 @@ impl ZedisCommandPalette {
             }
 
             // `>` — navigation commands / pages, then the shortcuts reference.
-            Scope::Commands => {
-                // Server views are offered against the current connection —
-                // `None` (not on a server route) hides them, replacing the old
-                // `needs_server` gate.
-                let conn = current_route.server();
-                let view_route = |view: ServerView| conn.clone().map(|(id, db)| Route::Server { id, db, view });
-                // Same capability gates as the status-bar Tools menu — the
-                // menu shows those entries disabled with a reason; a palette
-                // row can't carry that affordance, so gated tools are hidden
-                // outright instead of failing after navigation.
-                let (supports_search, supports_acl, supports_functions, supports_topology) = {
-                    let state = self.server_state.read(cx);
-                    (
-                        state.supports_search(),
-                        state.supports_acl(),
-                        state.supports_functions(),
-                        state.supports_topology(),
-                    )
-                };
-                // (i18n key, target, available) — order defines empty-query
-                // display order.
-                let commands: [(&str, Option<Route>, bool); 21] = [
-                    ("cmd_home", Some(Route::Home), true),
-                    ("cmd_editor", view_route(ServerView::Editor), true),
-                    ("cmd_metrics", view_route(ServerView::Metrics), true),
-                    ("cmd_performance", view_route(ServerView::Slowlog), true),
-                    ("cmd_memory", view_route(ServerView::MemoryAnalysis), true),
-                    ("cmd_clients", view_route(ServerView::Clients), true),
-                    ("cmd_monitor", view_route(ServerView::Monitor), true),
-                    ("cmd_server_load", view_route(ServerView::ServerLoad), true),
-                    ("cmd_hotkeys", view_route(ServerView::Hotkeys), true),
-                    (
-                        "cmd_timeseries_explorer",
-                        view_route(ServerView::TimeSeriesExplorer),
-                        true,
-                    ),
-                    ("cmd_persistence", view_route(ServerView::Persistence), true),
-                    (
-                        "cmd_keyspace_notifications",
-                        view_route(ServerView::KeyspaceNotifications),
-                        true,
-                    ),
-                    ("cmd_server_info", view_route(ServerView::ServerInfo), true),
-                    ("cmd_topology", view_route(ServerView::Topology), supports_topology),
-                    ("cmd_config", view_route(ServerView::Config), true),
-                    ("cmd_acl", view_route(ServerView::Acl), supports_acl),
-                    ("cmd_value_search", view_route(ServerView::ValueSearch), true),
-                    ("cmd_search", view_route(ServerView::Search), supports_search),
-                    ("cmd_functions", view_route(ServerView::Functions), supports_functions),
-                    ("cmd_lua_scripts", view_route(ServerView::LuaScripts), true),
-                    ("cmd_settings", Some(Route::Settings), true),
-                ];
-                for (key, route, available) in commands {
-                    if !available {
-                        continue;
-                    }
-                    let Some(route) = route else { continue };
-                    // Don't offer to navigate to the page we're already on.
-                    if route == current_route {
-                        continue;
-                    }
-                    // A panel the probe found unusable on this server stays
-                    // listed (navigating lands on the explanatory placeholder)
-                    // but carries the reason as its hint.
-                    let hint = route
-                        .server_view()
-                        .and_then(|view| self.server_state.read(cx).panel_block(view))
-                        .map(|(command, status)| command_status_label(cx, command, status))
-                        .unwrap_or_default();
-                    let label = i18n_command_palette(cx, key);
-                    items.push(PaletteItem {
-                        label: label.clone(),
-                        hint,
-                        search: label.to_string(),
-                        prescore: None,
-                        command: PaletteCommand::Route(route),
-                    });
-                }
-                // Pub/Sub mode only makes sense against a connection.
-                if conn.is_some() {
-                    let label = i18n_command_palette(cx, "cmd_pubsub");
-                    items.push(PaletteItem {
-                        label: label.clone(),
-                        hint: gpui::SharedString::default(),
-                        search: label.to_string(),
-                        prescore: None,
-                        command: PaletteCommand::PubsubMode,
-                    });
-                }
-                let shortcuts_label = i18n_shortcuts(cx, "title");
-                items.push(PaletteItem {
-                    label: shortcuts_label.clone(),
-                    hint: gpui::SharedString::default(),
-                    search: shortcuts_label.to_string(),
-                    prescore: None,
-                    command: PaletteCommand::ShowShortcuts,
-                });
-            }
+            Scope::Commands => self.push_commands(&mut items, &current_route, cx),
 
             // No sigil — configured servers first, then (on a non-empty query)
             // the active connection's loaded keys. Full-keyspace search stays
@@ -422,10 +325,119 @@ impl ZedisCommandPalette {
                         });
                     }
                 }
+                // And the commands, once there is something to match them
+                // against: "metrics" typed without the `>` used to find
+                // nothing, on a palette the welcome dialog introduces as where
+                // every tool lives. The sigil still narrows the list to them
+                // and, with nothing typed, lists them all.
+                if !query.is_empty() {
+                    self.push_commands(&mut items, &current_route, cx);
+                }
             }
         }
 
         items
+    }
+
+    /// The navigation commands — every page reachable from `current_route` —
+    /// then Pub/Sub mode and the shortcuts reference.
+    fn push_commands(&self, items: &mut Vec<PaletteItem>, current_route: &Route, cx: &Context<Self>) {
+        // Server views are offered against the current connection —
+        // `None` (not on a server route) hides them, replacing the old
+        // `needs_server` gate.
+        let conn = current_route.server();
+        let view_route = |view: ServerView| conn.clone().map(|(id, db)| Route::Server { id, db, view });
+        // Same capability gates as the status-bar Tools menu — the
+        // menu shows those entries disabled with a reason; a palette
+        // row can't carry that affordance, so gated tools are hidden
+        // outright instead of failing after navigation.
+        let (supports_search, supports_acl, supports_functions, supports_topology) = {
+            let state = self.server_state.read(cx);
+            (
+                state.supports_search(),
+                state.supports_acl(),
+                state.supports_functions(),
+                state.supports_topology(),
+            )
+        };
+        // (i18n key, target, available) — order defines empty-query
+        // display order.
+        let commands: [(&str, Option<Route>, bool); 21] = [
+            ("cmd_home", Some(Route::Home), true),
+            ("cmd_editor", view_route(ServerView::Editor), true),
+            ("cmd_metrics", view_route(ServerView::Metrics), true),
+            ("cmd_performance", view_route(ServerView::Slowlog), true),
+            ("cmd_memory", view_route(ServerView::MemoryAnalysis), true),
+            ("cmd_clients", view_route(ServerView::Clients), true),
+            ("cmd_monitor", view_route(ServerView::Monitor), true),
+            ("cmd_server_load", view_route(ServerView::ServerLoad), true),
+            ("cmd_hotkeys", view_route(ServerView::Hotkeys), true),
+            (
+                "cmd_timeseries_explorer",
+                view_route(ServerView::TimeSeriesExplorer),
+                true,
+            ),
+            ("cmd_persistence", view_route(ServerView::Persistence), true),
+            (
+                "cmd_keyspace_notifications",
+                view_route(ServerView::KeyspaceNotifications),
+                true,
+            ),
+            ("cmd_server_info", view_route(ServerView::ServerInfo), true),
+            ("cmd_topology", view_route(ServerView::Topology), supports_topology),
+            ("cmd_config", view_route(ServerView::Config), true),
+            ("cmd_acl", view_route(ServerView::Acl), supports_acl),
+            ("cmd_value_search", view_route(ServerView::ValueSearch), true),
+            ("cmd_search", view_route(ServerView::Search), supports_search),
+            ("cmd_functions", view_route(ServerView::Functions), supports_functions),
+            ("cmd_lua_scripts", view_route(ServerView::LuaScripts), true),
+            ("cmd_settings", Some(Route::Settings), true),
+        ];
+        for (key, route, available) in commands {
+            if !available {
+                continue;
+            }
+            let Some(route) = route else { continue };
+            // Don't offer to navigate to the page we're already on.
+            if route == *current_route {
+                continue;
+            }
+            // A panel the probe found unusable on this server stays
+            // listed (navigating lands on the explanatory placeholder)
+            // but carries the reason as its hint.
+            let hint = route
+                .server_view()
+                .and_then(|view| self.server_state.read(cx).panel_block(view))
+                .map(|(command, status)| command_status_label(cx, command, status))
+                .unwrap_or_default();
+            let label = i18n_command_palette(cx, key);
+            items.push(PaletteItem {
+                label: label.clone(),
+                hint,
+                search: label.to_string(),
+                prescore: None,
+                command: PaletteCommand::Route(route),
+            });
+        }
+        // Pub/Sub mode only makes sense against a connection.
+        if conn.is_some() {
+            let label = i18n_command_palette(cx, "cmd_pubsub");
+            items.push(PaletteItem {
+                label: label.clone(),
+                hint: gpui::SharedString::default(),
+                search: label.to_string(),
+                prescore: None,
+                command: PaletteCommand::PubsubMode,
+            });
+        }
+        let shortcuts_label = i18n_shortcuts(cx, "title");
+        items.push(PaletteItem {
+            label: shortcuts_label.clone(),
+            hint: gpui::SharedString::default(),
+            search: shortcuts_label.to_string(),
+            prescore: None,
+            command: PaletteCommand::ShowShortcuts,
+        });
     }
 
     /// Filter+rank `items` by `query`. Returns indices into `items`, best

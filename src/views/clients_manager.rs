@@ -339,7 +339,10 @@ fn build_table(
     // be read via the copy button.
     let name_width = 180.;
     let addr_width = 240.;
-    let user_width = 90.;
+    // "default", the user almost every client has. A cell spends about 67px
+    // on padding and the hover copy button (see above) before any text — the
+    // 180px name column fits 13 characters — so seven need more than 120.
+    let user_width = 150.;
     let age_width = 110.;
     let idle_width = 110.;
     let db_width = 90.;

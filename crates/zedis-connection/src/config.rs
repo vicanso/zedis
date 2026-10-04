@@ -64,6 +64,16 @@ mod tls;
 /// `canonical_tag_key`, so older servers keep their colored chip.
 pub const TAG_COLOR_PRESETS: &[&str] = &["none", "teal", "purple", "magenta"];
 
+/// Keys asked for per `SCAN` when neither the entry nor Settings names a
+/// number.
+pub const DEFAULT_KEY_SCAN_COUNT: usize = 10_000;
+/// The same default on an entry tagged as production. `SCAN` holds the
+/// server's one command thread for the whole count: 10,000 measured 43–50 ms
+/// a call on a 100,000-key database — a pause for every other client, and a
+/// line in the slow log, each time the tree loads a page. A tenth of it keeps
+/// a page a few milliseconds; the tree makes up the difference in rounds.
+pub const PRODUCTION_KEY_SCAN_COUNT: usize = 1_000;
+
 fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
     let raw = form_value?.trim();
     if raw.is_empty() {
@@ -626,11 +636,20 @@ impl RedisServer {
         self.default_db.map(usize::from).unwrap_or(remembered)
     }
 
-    /// SCAN page size; `global` is the Settings default when unset.
-    pub fn resolve_key_scan_count(&self, global: usize) -> usize {
+    /// SCAN page size: the entry's own, else the one chosen in Settings
+    /// (`global`, `None` while unset), else the default — the smaller one on
+    /// a production-tagged entry. Only the default differs by tag: a number
+    /// somebody typed is used as typed.
+    pub fn resolve_key_scan_count(&self, global: Option<usize>) -> usize {
+        let default = if self.is_high_risk_tag() {
+            PRODUCTION_KEY_SCAN_COUNT
+        } else {
+            DEFAULT_KEY_SCAN_COUNT
+        };
         self.key_scan_count
             .filter(|&n| n > 0)
-            .unwrap_or(global)
+            .or(global.filter(|&n| n > 0))
+            .unwrap_or(default)
             .clamp(10, 100_000)
     }
 
@@ -2066,10 +2085,28 @@ mod tests {
         assert_eq!(s.key_separator_override(), Some("_"));
     }
 
+    /// Only the *default* is smaller on production: a count set in Settings
+    /// or on the entry is what the user asked for, tag or no tag.
+    #[test]
+    fn a_production_entry_scans_in_smaller_pages_by_default() {
+        let mut s = sample_server();
+        s.tag_color = Some("magenta".into());
+        assert_eq!(s.resolve_key_scan_count(None), PRODUCTION_KEY_SCAN_COUNT);
+        assert_eq!(s.resolve_key_scan_count(Some(20_000)), 20_000);
+        s.key_scan_count = Some(5_000);
+        assert_eq!(s.resolve_key_scan_count(None), 5_000);
+        // Any other tag is not production.
+        s.key_scan_count = None;
+        s.tag_color = Some("teal".into());
+        assert_eq!(s.resolve_key_scan_count(None), DEFAULT_KEY_SCAN_COUNT);
+    }
+
     #[test]
     fn key_behavior_overrides_fall_back_to_global() {
         let mut s = sample_server();
-        assert_eq!(s.resolve_key_scan_count(10_000), 10_000);
+        // The sample is tagged production, so its default is that one.
+        assert_eq!(s.resolve_key_scan_count(None), PRODUCTION_KEY_SCAN_COUNT);
+        assert_eq!(s.resolve_key_scan_count(Some(2_000)), 2_000);
         assert_eq!(s.resolve_max_key_tree_depth(5), 5);
         assert_eq!(s.resolve_auto_expand_threshold(100), 100);
         assert!(s.resolve_show_key_tree_ttl(true));
@@ -2080,7 +2117,7 @@ mod tests {
         s.max_key_tree_depth = Some(3);
         s.auto_expand_threshold = Some(50);
         s.show_key_tree_ttl = Some(false);
-        assert_eq!(s.resolve_key_scan_count(10_000), 500);
+        assert_eq!(s.resolve_key_scan_count(Some(2_000)), 500);
         assert_eq!(s.resolve_max_key_tree_depth(5), 3);
         assert_eq!(s.resolve_auto_expand_threshold(100), 50);
         assert!(!s.resolve_show_key_tree_ttl(true));

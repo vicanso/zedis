@@ -115,7 +115,7 @@ fn is_image(format: DataFormat) -> bool {
 }
 
 /// The label and the one-line text a cell shows for `raw`.
-fn decode_element(raw: &[u8]) -> (DataFormat, SharedString) {
+pub(super) fn decode_element(raw: &[u8]) -> (DataFormat, SharedString) {
     if raw.is_empty() {
         return (DataFormat::Text, SharedString::default());
     }
