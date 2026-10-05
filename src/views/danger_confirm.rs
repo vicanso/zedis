@@ -66,10 +66,14 @@ pub fn confirm_dangerous_command<F>(
     let on_ok_rc: ConfirmCallback = Rc::new(on_ok);
     let confirm_label = i18n_common(cx, "confirm");
     let cancel_label = i18n_common(cx, "cancel");
-    let button_props = dialog_button_props(cx).ok_text(confirm_label).cancel_text(cancel_label);
-
-    ZedisDialog::new_alert(title, message)
-        .button_props(button_props)
+    let dialog = ZedisDialog::new_alert(title, message);
+    // What cannot be taken back is drawn as such, and Return declines it.
+    let dialog = if kind.is_destructive() {
+        dialog.danger().ok_text(confirm_label).cancel_text(cancel_label)
+    } else {
+        dialog.button_props(dialog_button_props(cx).ok_text(confirm_label).cancel_text(cancel_label))
+    };
+    dialog
         .on_ok(move |_, window, cx| {
             (on_ok_rc)(window, cx);
             true

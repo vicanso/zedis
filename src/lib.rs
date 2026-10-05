@@ -22,8 +22,8 @@ use crate::helpers::{
     set_configured_proxy, take_instance_server, take_pending_crash,
 };
 use crate::helpers::{
-    MemuAction, PaletteAction, RecentKeysAction, ShortcutsAction, apply_default_ui_font_size, apply_fonts,
-    load_keybinding_overrides, new_hot_keys, set_datetime_prefs, take_config_recoveries, with_app_identity,
+    MemuAction, PaletteAction, RecentKeysAction, ShortcutsAction, apply_fonts, load_keybinding_overrides, new_hot_keys,
+    set_datetime_prefs, take_config_recoveries, with_app_identity,
 };
 use crate::states::{
     HINT_WELCOME, Route, ServerView, ZedisAppState, ZedisGlobalStore, flush_app_state_on_quit,
@@ -39,7 +39,7 @@ use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 // server-side decorations — see the cfg at the open_window call).
 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 use gpui::TitlebarOptions;
-use gpui_kit::component::{Root, Theme};
+use gpui_kit::component::Root;
 #[cfg(not(target_family = "wasm"))]
 use sys_locale::get_locale;
 use tracing::{error, info, warn};
@@ -164,12 +164,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpui_kit::component::init(cx);
             // Match the user's chosen mode, or the OS appearance, so the error
             // window isn't a jarring light flash on a dark system.
-            let mode = match app_state.theme() {
-                Some(m) => m,
-                None => theme_mode_for_appearance(cx.window_appearance()),
-            };
-            Theme::change(mode, None, cx);
-            apply_default_ui_font_size(cx);
+            apply_startup_theme(None, app_state.theme(), cx);
             cx.activate(true);
             let bounds = Bounds::centered(None, size(px(540.), px(300.)), cx);
             let opened = cx.open_window(
@@ -347,28 +342,12 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
         };
         apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
     }
-    // A saved named theme wins; otherwise fall back to the Light/Dark/System
-    // mode (resolved against the OS appearance by the renderer).
-    let saved_theme_name = app_store.read(cx).theme_name();
-    let saved_mode = app_store.read(cx).theme();
-    let applied = match saved_theme_name {
-        Some(name) => apply_named_theme(&name, cx),
-        None => false,
+    // A saved named theme wins; otherwise the Light / Dark / System mode.
+    let (saved_theme_name, saved_mode) = {
+        let store = app_store.read(cx);
+        (store.theme_name(), store.theme())
     };
-    if !applied {
-        // Resolve System mode (no saved name/mode) against the OS appearance
-        // *before* the window opens, so the very first painted frame already
-        // uses the right light/dark theme. Otherwise the default theme shows
-        // for a frame and flashes (e.g. white before a dark theme settles).
-        let mode = match saved_mode {
-            Some(m) => m,
-            None => theme_mode_for_appearance(cx.window_appearance()),
-        };
-        Theme::change(mode, None, cx);
-    }
-    // Theme::change / apply_named_theme reset font_size to stock 16; pin
-    // the app rem base before the first frame (Root reads theme.font_size).
-    apply_default_ui_font_size(cx);
+    apply_startup_theme(saved_theme_name.as_deref(), saved_mode, cx);
     cx.set_global(app_store);
     // From here on every exit path flushes the state on the way out; nothing
     // else needs to remember to.

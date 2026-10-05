@@ -51,6 +51,7 @@ pub struct ZedisDialog {
     overlay_closable: Option<bool>,
     width: Option<Pixels>,
     alert: bool,
+    danger: bool,
     ok_text: Option<SharedString>,
     cancel_text: Option<SharedString>,
 }
@@ -165,9 +166,26 @@ impl ZedisDialog {
         self
     }
 
-    /// Switches to `AlertDialog` mode (centered footer, no close button).
+    /// Switches to `AlertDialog` mode: a confirmation, answered by its
+    /// buttons — OK and, always, Cancel. (gpui-component's alert shows OK
+    /// alone unless asked, which left every confirm in the app with one
+    /// button, the one that goes ahead.)
     pub fn alert(mut self) -> Self {
         self.alert = true;
+        self
+    }
+
+    /// Marks an alert as the confirmation of a destructive action: OK is
+    /// drawn in the danger colour, and Return answers Cancel instead of OK —
+    /// the default button of such a dialog has to be the safe one, or a
+    /// stray Return after "Delete key" deletes it. OK still answers a click,
+    /// and Space once it holds the focus.
+    ///
+    /// Needs [`Self::ok_text`] and [`Self::cancel_text`]: the buttons are
+    /// this dialog's own, because an alert's stock buttons send Return and
+    /// a click down one path and cannot tell them apart.
+    pub fn danger(mut self) -> Self {
+        self.danger = true;
         self
     }
 
@@ -182,6 +200,12 @@ impl ZedisDialog {
             "ZedisDialog \"{}\" has on_ok but no footer — set .ok_text(…) or .footer_child(…)",
             self.title
         );
+        debug_assert!(
+            !self.danger || (self.alert && self.ok_text.is_some() && self.cancel_text.is_some()),
+            "ZedisDialog \"{}\" is .danger() — it must be an alert with .ok_text(…) and .cancel_text(…)",
+            self.title
+        );
+        let danger = self.danger && self.alert;
         let title = self.title;
         let icon = self.icon;
         let message = self.message;
@@ -189,12 +213,20 @@ impl ZedisDialog {
         let footer_child = self.footer_child;
         let on_ok = self.on_ok;
         let on_close = self.on_close;
-        let button_props = self.button_props;
+        // An alert asks a question, and a question can be declined.
+        let button_props = if self.alert {
+            Some(self.button_props.unwrap_or_default().show_cancel(true))
+        } else {
+            self.button_props
+        };
         let overlay_closable = self.overlay_closable;
         let width = self.width;
         let ok_text = self.ok_text;
         let cancel_text = self.cancel_text;
-        let non_alert_footer = if !self.alert && ok_text.is_some() {
+        // The footer this dialog draws itself: a plain dialog's, and a
+        // destructive alert's (see `danger`). Any other alert keeps the
+        // stock buttons its `button_props` describe.
+        let own_footer = if ok_text.is_some() && (!self.alert || danger) {
             Some((ok_text.clone(), cancel_text.clone()))
         } else {
             None
@@ -223,7 +255,11 @@ impl ZedisDialog {
                 } else if let Some(ref msg) = message {
                     d = d.child(msg.to_string());
                 }
-                if let Some(ref ok) = on_ok {
+                if danger {
+                    // Return closes the dialog and runs nothing: on a
+                    // destructive confirm the default answer is Cancel.
+                    d = d.on_ok(|_, _, _| true);
+                } else if let Some(ref ok) = on_ok {
                     let ok = ok.clone();
                     d = d.on_ok(move |e, w, cx| ok(e, w, cx));
                 }
@@ -235,7 +271,7 @@ impl ZedisDialog {
                 // the whole action area (see `footer_child`).
                 if let Some(ref ff) = footer_child {
                     d = d.footer(ff());
-                } else if let Some((ok_label, cancel_label)) = non_alert_footer.clone() {
+                } else if let Some((ok_label, cancel_label)) = own_footer.clone() {
                     // Wire the buttons' `on_click` directly instead of using the
                     // stock `DialogAction`/`DialogClose` wrappers: those fire by
                     // dispatching an action along the window's focus path, and a
@@ -261,19 +297,19 @@ impl ZedisDialog {
                     if let Some(ok) = ok_label {
                         let ok_cb = on_ok.clone();
                         let close_cb = on_close.clone();
-                        footer = footer.child(Button::new("zedis-dialog-ok").label(ok).primary().on_click(
-                            move |e, window, cx| {
-                                // Mirror the ConfirmDialog contract: on_ok
-                                // returning false keeps the dialog open.
-                                let close = ok_cb.as_ref().map(|f| f(e, window, cx)).unwrap_or(true);
-                                if close {
-                                    window.close_dialog(cx);
-                                    if let Some(cb) = &close_cb {
-                                        cb(e, window, cx);
-                                    }
+                        let button = Button::new("zedis-dialog-ok").label(ok);
+                        let button = if danger { button.danger() } else { button.primary() };
+                        footer = footer.child(button.on_click(move |e, window, cx| {
+                            // Mirror the ConfirmDialog contract: on_ok
+                            // returning false keeps the dialog open.
+                            let close = ok_cb.as_ref().map(|f| f(e, window, cx)).unwrap_or(true);
+                            if close {
+                                window.close_dialog(cx);
+                                if let Some(cb) = &close_cb {
+                                    cb(e, window, cx);
                                 }
-                            },
-                        ));
+                            }
+                        }));
                     }
                     d = d.footer(footer);
                 }

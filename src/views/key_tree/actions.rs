@@ -388,7 +388,9 @@ impl Render for ZedisKeyTree {
                     let text = escalate_dangerous_body(cx, &server_id, text);
 
                     ZedisDialog::new_alert(i18n_key_tree(cx, "delete_key_title"), text)
-                        .button_props(dialog_button_props(cx))
+                        .danger()
+                        .ok_text(i18n_common(cx, "delete"))
+                        .cancel_text(i18n_common(cx, "cancel"))
                         .on_ok(move |_, _, cx| {
                             server_state.update(cx, |state, cx| {
                                 state.delete_key(id.clone(), cx);

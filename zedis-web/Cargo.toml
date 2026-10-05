@@ -21,12 +21,6 @@ crate-type = ["cdylib", "rlib"]
 # No `tree-sitter`: gpui-component drops that dependency on wasm but still
 # compiles the code behind the feature, so enabling it here is 37 errors.
 gpui = { workspace = true }
-# The application itself, as a library: the views, the states, the assets.
-# What this crate adds is only the browser's way in (ADR 9).
-# No `version`: this crate is never published (`publish = false`), and a
-# pinned one broke every minor bump — `scripts/bump-version.sh` moves the
-# workspace version, and `^0.11.0` does not accept 0.12.0.
-zedis-gui = { path = ".." }
 zedis-connection = { workspace = true }
 zedis-core = { workspace = true }
 
@@ -37,6 +31,15 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# The application itself, as a library: the views, the states, the assets.
+# What this crate adds is only the browser's way in (ADR 9). Here and not
+# above because every use of it is in the browser entry point: a native
+# build of this crate is the transport alone, and the weekly `cargo udeps`
+# (a native run) reported it as unused for as long as it sat with the rest.
+# No `version`: this crate is never published (`publish = false`), and a
+# pinned one broke every minor bump — `scripts/bump-version.sh` moves the
+# workspace version, and `^0.11.0` does not accept 0.12.0.
+zedis-gui = { path = ".." }
 # Only the browser entry point uses the kit: `web_init`, the single-threaded
 # app and the asset source. A native check of this crate builds the transport
 # and its tests, and needs none of it.

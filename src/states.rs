@@ -89,6 +89,7 @@ pub use server::ConnectionHealth;
 pub use server::ErrorMessage;
 pub use server::InfoSnapshot;
 pub use server::LoadedKeys;
+pub use server::WriteGate;
 pub use server::ZedisServerState;
 #[cfg(not(target_family = "wasm"))]
 pub use server::cluster::{

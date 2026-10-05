@@ -452,6 +452,32 @@ pub struct ZedisServerState {
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
 }
 
+/// What a write the user types — a terminal line — meets on a connection.
+/// The editors ask [`ZedisServerState::can`] per button; a typed command has
+/// no button to grey out, so it asks this before it is sent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WriteGate {
+    /// Writes go through.
+    Open,
+    /// Refused: read-only for the session or by the entry, a read-only ACL
+    /// user, a read-only account.
+    ReadOnly,
+    /// A write-locked entry outside its window (ADR 14): the lock's question
+    /// first, as the status bar's lock button asks it.
+    Locked,
+}
+
+/// `SafeMode` is two things under one name: the window of a write-locked
+/// entry, which the user opens, and plain read-only, which is refused.
+fn write_gate_for(mode: AccessMode, write_locked: bool) -> WriteGate {
+    match mode {
+        AccessMode::ReadWrite => WriteGate::Open,
+        AccessMode::StrictReadOnly => WriteGate::ReadOnly,
+        AccessMode::SafeMode if write_locked => WriteGate::Locked,
+        AccessMode::SafeMode => WriteGate::ReadOnly,
+    }
+}
+
 /// How many times in a row the heartbeat runs a failed load again before it
 /// is left for the user's Reconnect.
 const MAX_LOAD_RETRIES: u8 = 3;
@@ -930,6 +956,13 @@ impl ZedisServerState {
     /// Get whether the server is readonly
     pub fn readonly(&self) -> bool {
         matches!(self.access_mode, AccessMode::StrictReadOnly | AccessMode::SafeMode)
+    }
+
+    /// What a typed write meets here — see [`WriteGate`].
+    pub fn write_gate(&self) -> WriteGate {
+        // The config is only read where it decides something.
+        let write_locked = matches!(self.access_mode, AccessMode::SafeMode) && self.write_locked();
+        write_gate_for(self.access_mode, write_locked)
     }
 
     /// Whether `cap` is allowed under the current access mode *and* every
@@ -1962,6 +1995,20 @@ mod tests {
     /// Load more runs one round at a time. A press while a round is in flight
     /// adds nothing — it used to start a second paging chain over the same
     /// cursors — and a press the offline guard refuses leaves `scanning`
+    /// Read-only refuses a typed write, a write-locked entry asks first, and
+    /// only a connection that may write lets it through.
+    #[test]
+    fn a_typed_write_meets_the_connection_s_access_mode() {
+        assert_eq!(write_gate_for(AccessMode::ReadWrite, false), WriteGate::Open);
+        // Inside an unlock window a locked entry is ReadWrite.
+        assert_eq!(write_gate_for(AccessMode::ReadWrite, true), WriteGate::Open);
+        assert_eq!(write_gate_for(AccessMode::SafeMode, true), WriteGate::Locked);
+        assert_eq!(write_gate_for(AccessMode::SafeMode, false), WriteGate::ReadOnly);
+        // No window to open for a user or an account that may not write.
+        assert_eq!(write_gate_for(AccessMode::StrictReadOnly, true), WriteGate::ReadOnly);
+        assert_eq!(write_gate_for(AccessMode::StrictReadOnly, false), WriteGate::ReadOnly);
+    }
+
     /// A load the link failed is owed one retry per failure, only while it is
     /// still the failed load on screen, and not for ever.
     #[gpui::test]

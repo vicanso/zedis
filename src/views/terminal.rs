@@ -25,7 +25,10 @@ use crate::{
         TerminalAction, get_download_dir, get_mono_font_family, get_or_create_config_dir,
         starts_with_ignore_ascii_case, write_file_atomic,
     },
-    states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_terminal, update_app_state_and_save_quiet},
+    states::{
+        ServerEvent, WriteGate, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_terminal,
+        update_app_state_and_save_quiet,
+    },
     views::{bridge_danger, confirm_dangerous_command},
 };
 use chrono::Local;
@@ -66,6 +69,17 @@ const ZEDIS_LOGO: &str = r#" __________ ____ ___ ____
 /// [`is_blocking_command`]). Hardcoded English to match the rest of this
 /// panel, which is not internationalized.
 const BLOCKING_REJECT_MSG: &str = "Blocking commands (BLPOP / BRPOP / BLMOVE / BRPOPLPUSH / BLMPOP / BZPOPMIN / BZPOPMAX / BZMPOP / XREAD BLOCK / XREADGROUP BLOCK / WAIT / WAITAOF) are not run here: they would park the terminal's connection until data arrives, and the response timeout would cut the wait short and leave the connection out of step with its replies. Use the live key tail or the Monitor view for blocking reads.";
+
+/// The first line of `input` that is a write (`is_write_command` — whatever
+/// the read-only allowlist does not name, so an unknown command counts), as
+/// typed. A line that does not parse is left to the run, which reports it.
+fn first_write_line(input: &str) -> Option<String> {
+    input.lines().map(str::trim).find_map(|line| {
+        let parts = shlex::split(line)?;
+        let (name, args) = parts.split_first()?;
+        is_write_command(name, args).then(|| line.to_string())
+    })
+}
 
 /// Whether a parsed command would park the Redis connection until data
 /// arrives or it times out. The terminal has a connection of its own, so a
@@ -837,6 +851,28 @@ impl ZedisTerminal {
         };
         let server_id = self.server_state.read(cx).server_id().to_string();
 
+        // A write meets what every other write on this connection meets. The
+        // editors grey their buttons out; a typed command has none, and used
+        // to go straight to the server past a lock the status bar showed as
+        // closed. One write among the lines holds the whole input back.
+        let gate = self.server_state.read(cx).write_gate();
+        if gate != WriteGate::Open
+            && let Some(line) = first_write_line(&command)
+        {
+            match gate {
+                WriteGate::Locked => self.ask_to_unlock(command, line, window, cx),
+                _ => {
+                    let reason = i18n_common(cx, "disable_in_readonly").to_string();
+                    self.push_entry(TranscriptEntry::Command {
+                        line,
+                        reply: LineReply::Message(reason),
+                    });
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
         // Look for the first line that needs a confirm. If any line trips the
         // classifier (or the server requires confirm-on-write and the line is
         // a write), gate the whole multi-line input behind one dialog.
@@ -878,6 +914,35 @@ impl ZedisTerminal {
             }
         }
         self.run_command_lines(command, false, cx);
+    }
+
+    /// A write on a write-locked entry: the lock's own question (by name on
+    /// production), and on a yes the window opens and the input is run from
+    /// the top — so a line that is also dangerous is still asked about.
+    fn ask_to_unlock(&mut self, command: SharedString, line: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(server) = get_server(self.server_state.read(cx).server_id()) else {
+            return;
+        };
+        let server_state = self.server_state.clone();
+        let entity = cx.entity().downgrade();
+        confirm_dangerous_command(
+            &server,
+            &DangerKind::WriteLocked,
+            Some(&line),
+            window,
+            cx,
+            move |window, cx| {
+                server_state.update(cx, |state, cx| state.unlock_writes(cx));
+                let entity = entity.clone();
+                let command = command.clone();
+                // After this dialog has closed: the run may open one of
+                // its own, and closing would take that one instead.
+                window.defer(cx, move |window, cx| {
+                    let Some(this) = entity.upgrade() else { return };
+                    this.update(cx, |this, cx| this.execute_command(command, window, cx));
+                });
+            },
+        );
     }
 
     /// `? <question>` handler: ask the configured AI endpoint for the
@@ -1483,8 +1548,35 @@ impl Render for ZedisTerminal {
 #[cfg(test)]
 mod tests {
     use super::{
-        Block, LineReply, ReplyFormat, TerminalReply, TranscriptEntry, strip_redis_cli_prefix, transcript_entries_for,
+        Block, LineReply, ReplyFormat, TerminalReply, TranscriptEntry, first_write_line, strip_redis_cli_prefix,
+        transcript_entries_for,
     };
+
+    /// The line a read-only or locked connection holds the input back for.
+    #[test]
+    fn the_first_write_among_the_lines_is_found() {
+        assert_eq!(first_write_line("GET a"), None);
+        assert_eq!(first_write_line("  \n\n"), None);
+        assert_eq!(first_write_line("SET a 1").as_deref(), Some("SET a 1"));
+        // Any line of a batch, and whatever case it was typed in.
+        assert_eq!(
+            first_write_line("GET a\n  hset h f v  \nDEL a").as_deref(),
+            Some("hset h f v")
+        );
+        // Reads that carry a write's name in an argument stay reads; a
+        // container command is judged by its subcommand.
+        assert_eq!(first_write_line("GET set\nCONFIG GET maxmemory"), None);
+        assert_eq!(
+            first_write_line("CONFIG SET maxmemory 1").as_deref(),
+            Some("CONFIG SET maxmemory 1")
+        );
+        // Writes spelled like reads, a script, and a command nobody knows.
+        for line in ["GETDEL a", "EVAL 'return 1' 0", "NOSUCHCMD x"] {
+            assert_eq!(first_write_line(line).as_deref(), Some(line), "{line}");
+        }
+        // What a session needs in order to look around is not a write.
+        assert_eq!(first_write_line("SELECT 1\nPING\nINFO memory\nSCAN 0"), None);
+    }
 
     /// The transcript's text in `format`, drawn the way the view draws it.
     fn render_transcript(entries: Vec<TranscriptEntry>, format: ReplyFormat) -> String {

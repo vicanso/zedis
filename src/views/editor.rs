@@ -591,13 +591,14 @@ impl ZedisEditor {
         let message = escalate_dangerous_body(cx, &server_id, message);
 
         ZedisDialog::new_alert(i18n_editor(cx, "delete_key_title"), message)
-            .button_props(dialog_button_props(cx))
-            .on_ok(move |_, window, cx| {
+            .danger()
+            .ok_text(i18n_common(cx, "delete"))
+            .cancel_text(i18n_common(cx, "cancel"))
+            .on_ok(move |_, _window, cx| {
                 let key = key.clone();
                 server_state.update(cx, move |state, cx| {
                     state.delete_select_key(key, cx);
                 });
-                window.close_dialog(cx);
                 true
             })
             .open(window, cx);

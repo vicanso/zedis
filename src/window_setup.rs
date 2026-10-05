@@ -123,6 +123,30 @@ pub(crate) fn apply_named_theme(name: &str, cx: &mut App) -> bool {
     true
 }
 
+/// Apply the saved theme before the first window opens: the named registry
+/// theme when one is saved and still exists, else the Light / Dark mode — the
+/// user's, or the OS appearance for System.
+///
+/// The mode goes through [`restore_default_themes`], which is what gives the
+/// default themes the brand primary. Applied bare, a saved Light or Dark
+/// started with the registry's neutral primary — black buttons in light, white
+/// in dark — until the theme menu was used; a System start was only put right
+/// by the appearance observer, which a pinned mode never runs.
+pub(crate) fn apply_startup_theme(theme_name: Option<&str>, mode: Option<ThemeMode>, cx: &mut App) {
+    if theme_name.is_some_and(|name| apply_named_theme(name, cx)) {
+        return;
+    }
+    // System (no saved mode) is resolved against the OS appearance here,
+    // before the window opens, so the very first painted frame already uses
+    // the right theme instead of flashing the default one.
+    let mode = mode.unwrap_or_else(|| theme_mode_for_appearance(cx.window_appearance()));
+    restore_default_themes(cx);
+    Theme::change(mode, None, cx);
+    // `Theme::change` resets font_size to stock 16; pin the app rem base
+    // before the first frame (Root reads theme.font_size).
+    apply_default_ui_font_size(cx);
+}
+
 /// Restore the registry's default light/dark configs into the global `Theme`.
 /// `apply_config` (used to apply a named theme) overwrites the matching
 /// `light_theme`/`dark_theme` slot, so picking Light/Dark/System afterwards
@@ -176,5 +200,44 @@ pub(crate) fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMo
     match appearance {
         WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
         _ => ThemeMode::Dark,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Hsla, Rgba, TestAppContext};
+    use gpui_kit::component::ActiveTheme;
+
+    /// `0xRRGGBB` of a theme colour, so two routes to one colour compare equal.
+    fn hex(color: Hsla) -> u32 {
+        let rgba = Rgba::from(color);
+        let channel = |value: f32| (value * 255.0).round() as u32;
+        (channel(rgba.r) << 16) | (channel(rgba.g) << 8) | channel(rgba.b)
+    }
+
+    /// A pinned Light or Dark starts with the brand primary, as System does.
+    #[gpui::test]
+    fn a_pinned_mode_starts_with_the_brand_primary(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::component::init);
+        const BRAND: u32 = 0x1f6feb;
+        cx.update(|cx| {
+            // What the registry ships, and what a pinned mode used to start with.
+            Theme::change(ThemeMode::Light, None, cx);
+            assert_ne!(hex(cx.theme().primary), BRAND, "the stock primary is neutral");
+        });
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            cx.update(|cx| {
+                apply_startup_theme(None, Some(mode), cx);
+                assert_eq!(hex(cx.theme().primary), BRAND);
+                assert_eq!(cx.theme().mode.is_dark(), mode.is_dark());
+            });
+        }
+        // A saved name that is no longer in the registry falls back to the mode.
+        cx.update(|cx| {
+            apply_startup_theme(Some("No such theme"), Some(ThemeMode::Dark), cx);
+            assert_eq!(hex(cx.theme().primary), BRAND);
+            assert!(cx.theme().mode.is_dark());
+        });
     }
 }

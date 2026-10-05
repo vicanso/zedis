@@ -84,3 +84,30 @@ the classifier, so a window opened for a `SET` would otherwise pass a
 seam (`views/danger_confirm.rs`), from the two places it sends a script —
 the terminal and the function editor; a new place that sends one asks it
 too. The desktop does not ask this question.
+
+## Amended 2026-10-05 — the terminal is behind the lock too
+
+"The app's own `SafeMode` is the enforcement" was true of every editor and
+false of the terminal. The editors ask `can()` per button; a typed command
+has no button, and the terminal's own check before a run was the danger
+classifier and *Confirm Writes* only. So on a locked production entry, with
+the status bar showing the lock closed and saying so in its tooltip, `SET k v`
+typed into the terminal went straight to the server — and so did any write
+with the session set read-only. Found by trying it.
+
+The terminal now asks `ZedisServerState::write_gate()` before it sends
+anything, and one write among the lines holds the whole input back:
+
+- `ReadOnly` (session or entry read-only, a read-only ACL user or account):
+  nothing is sent; the line and the reason go into the transcript.
+- `Locked` (a write-locked entry outside its window): the lock's own
+  question, by name on production — the same dialog the status bar's button
+  opens — and on a yes the window opens and the input is run again from the
+  top, so a line that is also destructive is still asked about. Two
+  questions for a `FLUSHDB` on locked production is the point: unlocking is
+  one decision and flushing is another.
+
+What counts as a write is `is_write_command`, the complement of the read-only
+allowlist, so an unknown command is held back and `SELECT` / `PING` / `INFO`
+are not. *Confirm Writes* is unchanged and still the terminal's alone.
+
