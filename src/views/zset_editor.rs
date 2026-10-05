@@ -235,6 +235,9 @@ impl ZedisKvFetcher for ZedisZsetValues {
 
 define_kv_editor!(ZedisZsetEditor, ZedisZsetValues);
 
+/// Width of the Score column: a geo score is 16 digits, which 150px cut.
+const SCORE_WIDTH: f32 = 176.;
+
 impl ZedisZsetEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table_state = cx.new(|cx| {
@@ -243,7 +246,7 @@ impl ZedisZsetEditor {
                     KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
                         .field_type(ZedisFormFieldType::Editor)
                         .verbatim(),
-                    KvTableColumn::new(i18n_kv_table(cx, "score").as_ref(), Some(150.)),
+                    KvTableColumn::new(i18n_kv_table(cx, "score").as_ref(), Some(SCORE_WIDTH)),
                 ],
                 server_state,
                 window,

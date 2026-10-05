@@ -88,6 +88,7 @@ pub use migration::{ExportFormat, LogStatus, MigrationEvent, MigrationJob, Migra
 pub use server::ConnectionHealth;
 pub use server::ErrorMessage;
 pub use server::InfoSnapshot;
+pub use server::LinkProblem;
 pub use server::LoadedKeys;
 pub use server::WriteGate;
 pub use server::ZedisServerState;

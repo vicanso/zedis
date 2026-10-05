@@ -43,6 +43,31 @@ use std::sync::Arc;
 use std::time::Duration;
 use zedis_ui::{ZedisDialog, ZedisFormFieldType};
 
+/// Width of the Entry Id column: a whole id ("1722990000000-0", 15 mono
+/// characters) beside the cell's paddings and its hover copy button.
+const ENTRY_ID_WIDTH: f32 = 170.;
+
+/// The table's columns for a stream's fields: the entry id, then one column
+/// per field name. The id is fixed and wide enough to read whole — it is the
+/// entry's key, what XACK / XDEL / XRANGE take, and an even share of the
+/// width cut it to six digits; the fields share what is left.
+fn stream_columns(fields: &[SharedString], cx: &App) -> Vec<KvTableColumn> {
+    let entry_id = i18n_kv_table(cx, "entry_id");
+    fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if index == 0 {
+                KvTableColumn::new_auto_created(entry_id.as_ref()).width(ENTRY_ID_WIDTH)
+            } else {
+                KvTableColumn::new(field.as_str(), None)
+                    .field_type(ZedisFormFieldType::Editor)
+                    .verbatim()
+            }
+        })
+        .collect()
+}
+
 /// Manages Redis Stream values and their display state.
 ///
 /// Handles both filtered and unfiltered views of stream data, maintaining
@@ -143,22 +168,7 @@ impl ZedisKvFetcher for ZedisStreamValues {
         true
     }
     fn columns(&self, cx: &App) -> Option<Vec<KvTableColumn>> {
-        let entry_id = i18n_kv_table(cx, "entry_id");
-        Some(
-            self.fields
-                .iter()
-                .enumerate()
-                .map(|(index, field)| {
-                    if index == 0 {
-                        KvTableColumn::new_auto_created(entry_id.as_ref())
-                    } else {
-                        KvTableColumn::new(field.as_str(), None)
-                            .field_type(ZedisFormFieldType::Editor)
-                            .verbatim()
-                    }
-                })
-                .collect(),
-        )
+        Some(stream_columns(&self.fields, cx))
     }
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         let fields = value.stream_fields();
@@ -418,27 +428,9 @@ impl ZedisStreamEditor {
             vec![]
         };
 
-        let entry_id = i18n_kv_table(cx, "entry_id");
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisStreamValues>::new(
-                fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, field)| {
-                        if index == 0 {
-                            KvTableColumn::new_auto_created(entry_id.as_ref())
-                        } else {
-                            KvTableColumn::new(field.as_str(), None)
-                                .field_type(ZedisFormFieldType::Editor)
-                                .verbatim()
-                        }
-                    })
-                    .collect(),
-                server_state.clone(),
-                window,
-                cx,
-            )
-            .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER)
+            ZedisKvTable::<ZedisStreamValues>::new(stream_columns(&fields, cx), server_state.clone(), window, cx)
+                .mode(KvTableMode::ADD | KvTableMode::REMOVE | KvTableMode::FILTER)
         });
 
         // Register the info-view toggle button in the kv table footer.

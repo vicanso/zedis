@@ -382,22 +382,13 @@ impl Render for ZedisKeyTree {
                 KeyTreeAction::DeleteKey(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
-                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                    let text = t!("key_tree.delete_key_prompt", key = id.clone(), locale = locale).to_string();
                     let server_id = this.server_state.read(cx).server_id().to_string();
-                    let text = escalate_dangerous_body(cx, &server_id, text);
-
-                    ZedisDialog::new_alert(i18n_key_tree(cx, "delete_key_title"), text)
-                        .danger()
-                        .ok_text(i18n_common(cx, "delete"))
-                        .cancel_text(i18n_common(cx, "cancel"))
-                        .on_ok(move |_, _, cx| {
-                            server_state.update(cx, |state, cx| {
-                                state.delete_key(id.clone(), cx);
-                            });
-                            true
-                        })
-                        .open(window, cx);
+                    let name = id.clone();
+                    confirm_delete_key(&server_id, &name, window, cx, move |_, cx| {
+                        server_state.update(cx, |state, cx| {
+                            state.delete_key(id.clone(), cx);
+                        });
+                    });
                 }
                 KeyTreeAction::RefreshFolder(id) => {
                     let id = id.clone();

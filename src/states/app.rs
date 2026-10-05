@@ -172,6 +172,9 @@ const UPDATE_CHECK_INTERVAL: i64 = 2 * 24 * 60 * 60;
 
 /// Keys for the one-time onboarding hints (`dismissed_hints`). Each hint
 /// shows at most once, ever; the key is persisted the first time it fires.
+/// Route query key that asks the connections page to open one entry's form;
+/// its value is the server id (`ZedisAppState::edit_server`).
+pub const EDIT_SERVER_QUERY: &str = "edit";
 pub const HINT_WELCOME: &str = "welcome";
 pub const HINT_FIRST_CONNECT: &str = "first_connect";
 pub const HINT_TOPOLOGY: &str = "topology";
@@ -707,9 +710,9 @@ impl ZedisAppState {
     pub fn go_to(&mut self, route: Route, cx: &mut Context<Self>) {
         self.go_to_with_query(route, None, cx);
     }
-    // Tray-only caller (quick-connect menu) — compiled out on Linux
-    // with the tray module.
-    #[cfg(not(target_os = "linux"))]
+    /// Route with a query the target page reads once: `new` (the tray) and
+    /// `edit=<server id>` (the editor's link panel) open the connection form
+    /// on the connections page.
     pub fn go_with_query(&mut self, route: Route, query: HashMap<String, String>, cx: &mut Context<Self>) {
         self.go_to_with_query(route, Some(query), cx);
     }
@@ -1726,9 +1729,7 @@ mod tests {
         );
     }
 
-    // Tray flow — `go_with_query` (like the tray itself) is compiled out
-    // on Linux, so this regression test only exists where the tray does.
-    #[cfg(not(target_os = "linux"))]
+    // Tray flow.
     #[gpui::test]
     fn new_connection_query_survives_clear(cx: &mut TestAppContext) {
         let (state, events, _sub) = state_with_recorder(cx);

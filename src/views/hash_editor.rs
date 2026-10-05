@@ -36,6 +36,11 @@ use zedis_ui::ZedisFormFieldType;
 
 /// Column index for the TTL column (1-based, after field and value columns).
 const TTL_COL_IX: usize = 3;
+/// Fixed widths of the Field and TTL columns, so the value — what the table
+/// is opened to read — takes everything else. Field used to be 40% of the
+/// width and TTL 120px, which left the value a third of a default window.
+const FIELD_WIDTH: f32 = 200.;
+const TTL_WIDTH: f32 = 90.;
 
 /// Data adapter for Redis HASH values to work with the KV table component.
 ///
@@ -278,17 +283,8 @@ impl ZedisHashEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let supports_field_ttl = server_state.read(cx).supports_hash_field_ttl();
 
-        let window_width = window.viewport_size().width.to_f64();
-        let field_width = if window_width > 1800. {
-            0.2
-        } else if window_width > 1400. {
-            0.3
-        } else {
-            0.4
-        };
-
         let mut columns = vec![
-            KvTableColumn::new(i18n_kv_table(cx, "field").as_ref(), Some(field_width)).verbatim(),
+            KvTableColumn::new(i18n_kv_table(cx, "field").as_ref(), Some(FIELD_WIDTH)).verbatim(),
             KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
                 .field_type(ZedisFormFieldType::Editor)
                 .verbatim(),
@@ -296,7 +292,7 @@ impl ZedisHashEditor {
         if supports_field_ttl {
             // TTL column: shows seconds remaining (empty = no expiry). Optional
             // so the add/edit form never forces a TTL.
-            columns.push(KvTableColumn::new(i18n_kv_table(cx, "ttl_seconds").as_ref(), Some(120.)).optional());
+            columns.push(KvTableColumn::new(i18n_kv_table(cx, "ttl_seconds").as_ref(), Some(TTL_WIDTH)).optional());
         }
 
         let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));

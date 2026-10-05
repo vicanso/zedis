@@ -187,7 +187,11 @@ impl Error {
     /// reset / unexpected EOF), as opposed to refused outright.
     fn is_connection_dropped(&self) -> bool {
         match self {
-            Error::Redis { source } => source.is_connection_dropped(),
+            // redis-rs 1.x counts a refused connect as "dropped" as well, and
+            // a port nobody listens on does not want TLS: without the second
+            // test a server that was simply not running was reported as
+            // "TLS may be required".
+            Error::Redis { source } => source.is_connection_dropped() && !source.is_connection_refusal(),
             Error::Io { source } => matches!(
                 source.kind(),
                 std::io::ErrorKind::BrokenPipe
@@ -258,6 +262,19 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::TimedOut, "ssh handshake"),
         };
         assert_eq!(timed_out.connection_kind(), ConnectionErrorKind::Timeout);
+
+        // The TLS hint is for a link that was accepted and then dropped on a
+        // plaintext connection — never for one that was refused: nothing is
+        // listening there, with TLS or without.
+        let through_redis = |kind: std::io::ErrorKind| Error::Redis {
+            source: redis::RedisError::from(std::io::Error::new(kind, "io")),
+        };
+        let refused = through_redis(std::io::ErrorKind::ConnectionRefused);
+        assert_eq!(refused.connection_kind(), ConnectionErrorKind::Network);
+        assert_eq!(refused.connection_kind_tls_aware(false), ConnectionErrorKind::Network);
+        let reset = through_redis(std::io::ErrorKind::ConnectionReset);
+        assert_eq!(reset.connection_kind_tls_aware(false), ConnectionErrorKind::Tls);
+        assert_eq!(reset.connection_kind_tls_aware(true), ConnectionErrorKind::Network);
 
         // A redis auth-kind error maps to Auth.
         let auth = Error::Redis {

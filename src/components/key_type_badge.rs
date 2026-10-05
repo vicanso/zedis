@@ -15,7 +15,7 @@
 use crate::helpers::get_mono_font_family;
 use crate::states::KeyType;
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div, px};
-use gpui_kit::component::label::Label;
+use gpui_kit::component::{ActiveTheme, label::Label};
 
 // Constants for key type badge styling
 const KEY_TYPE_FADE_ALPHA: f32 = 0.8; // Background transparency for key type badges
@@ -42,12 +42,12 @@ impl KeyTypeBadge {
 }
 
 impl RenderOnce for KeyTypeBadge {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         if self.key_type == KeyType::Unknown {
             return div().into_any_element();
         }
 
-        let color = self.key_type.color();
+        let color = self.key_type.color(cx.theme().is_dark());
 
         if self.plain {
             // Plain colored uppercase text (compact `as_str` codes — STR / STRM

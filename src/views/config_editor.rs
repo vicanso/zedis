@@ -932,6 +932,7 @@ impl ZedisConfigEditor {
                                     if let Ok(server) = get_server(&server_id) {
                                         confirm_dangerous_command(
                                             &server,
+                                            this.server_state.read(cx).db(),
                                             &DangerKind::ConfigSet,
                                             Some(&line),
                                             window,

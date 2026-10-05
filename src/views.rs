@@ -113,7 +113,7 @@ pub use config_editor::ZedisConfigEditor;
 pub use connection_diagnostics::open_connection_diagnostics;
 pub use content::ZedisContent;
 pub use copy_key_dialog::ZedisCopyKeyDialog;
-pub use danger_confirm::{bridge_danger, confirm_dangerous_command};
+pub use danger_confirm::{bridge_danger, confirm_dangerous_command, confirm_delete_key};
 pub use editor::ZedisEditor;
 pub use expire_at_dialog::ZedisExpireAtDialog;
 pub(crate) use export::{export_filename, export_to_file, export_to_file_global};

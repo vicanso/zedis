@@ -28,6 +28,10 @@ use super::*;
 pub(super) const FIND_HINTS: [&str; 4] = ["search", "command_palette", "recent_keys", "multi_search"];
 pub(super) const ACT_HINTS: [&str; 4] = ["new_key", "reload_keys", "terminal", "keyboard_shortcuts"];
 
+/// Above this a "load anyway" is warned about in plainer words: the wait is
+/// tens of seconds, not a blink.
+const SLOW_LOAD_SIZE: u64 = 16_000_000;
+
 impl ZedisEditor {
     /// Render the appropriate editor based on the key type
     /// Inline error panel shown when a value load failed (the key stays
@@ -139,6 +143,41 @@ impl ZedisEditor {
         card
     }
 
+    /// Shown while a value is loaded past the size gate: a spinner, the
+    /// size on its way, and Cancel — back to the panel the load came from.
+    pub(super) fn render_large_load(&mut self, size: u64, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message: SharedString = t!(
+            "editor.loading_value",
+            size = format_size(size, DECIMAL),
+            locale = locale
+        )
+        .to_string()
+        .into();
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_4()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Spinner::new().color(muted))
+                    .child(Label::new(message).text_color(muted)),
+            )
+            .child(
+                Button::new("value-load-cancel")
+                    .outline()
+                    .label(i18n_common(cx, "cancel"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| state.cancel_large_load(cx));
+                    })),
+            )
+    }
+
     /// Inline panel shown when the oversized-value gate skipped the load:
     /// the probed size, the cap it exceeded, and an explicit bypass load.
     pub(super) fn render_value_too_large(&mut self, size: u64, cx: &mut Context<Self>) -> impl IntoElement {
@@ -151,8 +190,12 @@ impl ZedisEditor {
             .read(cx)
             .value()
             .is_some_and(|v| matches!(v.key_type(), KeyType::Module(_)));
+        // Past `SLOW_LOAD_SIZE` "may briefly freeze" undersells it: a 22 MB
+        // string took the editor some twenty seconds.
         let message_key = if is_module {
             "editor.module_value_too_large_message"
+        } else if size > SLOW_LOAD_SIZE {
+            "editor.value_very_large_message"
         } else {
             "editor.value_too_large_message"
         };
@@ -291,6 +334,13 @@ impl ZedisEditor {
             self.reset_editors(KeyType::Unknown);
             return div().into_any_element();
         };
+
+        // A value being loaded past the size gate: say so, with its size and
+        // a way back, instead of the blank an ordinary load shows for an
+        // instant — this one can take a while.
+        if let Some(size) = value.large_load_size() {
+            return self.render_large_load(size, cx).into_any_element();
+        }
 
         // Don't render anything if key type is unknown and still loading
         if value.key_type == KeyType::Unknown && value.is_busy() {
@@ -571,6 +621,115 @@ impl ZedisEditor {
     ///
     /// Shortcut descriptions reuse the `shortcuts.` locale section so
     /// the ⌘/ overlay and this list can never drift apart in wording.
+    /// Shown in place of the no-key screen while the link is down: the
+    /// reason in words, the error as the server or the driver gave it, and
+    /// the ways out — reconnect, fix the entry, find out what is wrong.
+    pub(super) fn render_link_down(&self, problem: LinkProblem, cx: &mut Context<Self>) -> impl IntoElement {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let server = get_server(&server_id).ok();
+        let (title, detail, retrying) = match problem {
+            LinkProblem::Disconnected => (
+                i18n_editor(cx, "link_down_disconnected"),
+                SharedString::default(),
+                false,
+            ),
+            LinkProblem::Failed { kind, detail, retrying } => {
+                let title = match (kind, &server) {
+                    // The one reason an address makes plainer than a word.
+                    (ConnectionErrorKind::Network, Some(server)) => {
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let address = format!("{}:{}", server.host, server.port);
+                        t!("editor.link_down_unreachable", address = address, locale = locale)
+                            .to_string()
+                            .into()
+                    }
+                    (ConnectionErrorKind::Unknown, _) => i18n_editor(cx, "link_down_failed"),
+                    _ => i18n_status_bar(cx, kind.reason_key()),
+                };
+                (title, detail, retrying)
+            }
+        };
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let warning = theme.warning;
+        let fg = theme.foreground;
+        let copied_message = i18n_common(cx, "copied_to_clipboard");
+
+        let actions = h_flex()
+            .gap_2()
+            .flex_wrap()
+            .justify_center()
+            .child(
+                Button::new("link-down-reconnect")
+                    .primary()
+                    .icon(Icon::new(CustomIconName::RotateCw))
+                    .label(i18n_editor(cx, "reconnect"))
+                    .loading(retrying)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.server_state.update(cx, |state, cx| state.reconnect(cx));
+                    })),
+            )
+            .child(
+                Button::new("link-down-edit")
+                    .outline()
+                    .label(i18n_editor(cx, "edit_connection"))
+                    .on_click({
+                        let server_id = server_id.clone();
+                        move |_, _window, cx| edit_connection(&server_id, cx)
+                    }),
+            );
+        #[cfg(not(target_family = "wasm"))]
+        let actions = actions.when_some(server, |this, server| {
+            this.child(
+                Button::new("link-down-diagnose")
+                    .outline()
+                    .label(i18n_servers(cx, "diagnose_connection"))
+                    .on_click(move |_, window, cx| open_connection_diagnostics(server.clone(), window, cx)),
+            )
+        });
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .pb(px(32.))
+            .px_6()
+            .gap_2()
+            .child(
+                Icon::new(IconName::TriangleAlert)
+                    .with_size(px(24.))
+                    .text_color(warning),
+            )
+            .child(Label::new(title).font_medium().text_color(fg))
+            .when(!detail.is_empty(), |this| {
+                let text = detail.clone();
+                this.child(
+                    h_flex()
+                        .max_w(px(560.))
+                        .items_start()
+                        .gap_1()
+                        .child(
+                            Label::new(detail)
+                                .text_xs()
+                                .font_family(get_mono_font_family())
+                                .text_color(muted)
+                                .whitespace_normal(),
+                        )
+                        .child(
+                            Button::new("link-down-copy")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .on_click(move |_, window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+                                    window.push_notification(Notification::info(copied_message.clone()), cx);
+                                }),
+                        ),
+                )
+            })
+            .child(div().pt_2().child(actions))
+    }
+
     pub(super) fn render_no_key_selected(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -816,8 +975,13 @@ impl Render for ZedisEditor {
         let no_key_selected = !is_channel_mode && server_state.key().is_none();
 
         // Right after connecting (no key clicked yet) the pane would
-        // otherwise be blank — show a centered empty-state hint instead.
+        // otherwise be blank — show a centered empty-state hint instead. Not
+        // while the link is down: that screen offers "New key", and what
+        // there is to say then is why nothing loaded and how to get it back.
         if no_key_selected {
+            if let Some(problem) = server_state.link_problem() {
+                return self.render_link_down(problem, cx).into_any_element();
+            }
             return self.render_no_key_selected(cx).into_any_element();
         }
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {

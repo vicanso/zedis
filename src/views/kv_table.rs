@@ -265,7 +265,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// Prepares table columns by adding index and action columns, then calculating widths.
     ///
     /// # Logic:
-    /// 1. Adds an index column at the start (80px, right-aligned)
+    /// 1. Adds an index column at the start (right-aligned)
     /// 2. Adds an action column at the end (100px, center-aligned)
     /// 3. Calculates remaining space for columns without fixed widths
     /// 4. Distributes remaining width evenly among flexible columns
@@ -1381,6 +1381,10 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             .child(
                 div().flex_1().w_full().child(
                     DataTable::new(&self.table_state)
+                        // The densest size (26px rows): this is a data grid,
+                        // and at the default 32 a 1280×800 window showed 19
+                        // rows of a hash that has 100,000.
+                        .xsmall()
                         .stripe(true) // Alternating row colors for better readability
                         .bordered(false) // Table borders
                         .scrollbar_visible(true, true), // Show both scrollbars

@@ -991,6 +991,12 @@ impl ZedisServerState {
                 if this.key.as_ref() != Some(&current_key) {
                     return;
                 }
+                // A "load anyway" the user cancelled: the gate is back, and
+                // this reply is not wanted any more.
+                if bypass_size_gate && this.size_gate_bypassed.as_ref() != Some(&current_key) {
+                    return;
+                }
+                this.size_gate_pending = None;
                 match result {
                     Ok(value) => {
                         if this.value.as_ref() == Some(&value) {
@@ -1144,14 +1150,40 @@ impl ZedisServerState {
     pub fn load_value_ignore_size_limit(&mut self, key: SharedString, cx: &mut Context<Self>) {
         self.size_gate_bypassed = Some(key.clone());
         self.size_gate_preview = None;
-        // Blank + busy while the (large) payload downloads — mirrors the
-        // first-load rendering instead of leaving the stale gate panel up.
+        // Busy while the (large) payload downloads, and carrying the size
+        // the probe found: the editor says "Loading 22.5 MB…" with a Cancel
+        // instead of going blank, and the header keeps the real size.
+        let replaced = self.value.take();
+        let size = replaced.as_ref().map_or(0, |value| value.size);
+        self.size_gate_pending = replaced.map(|value| (key.clone(), value));
         self.next_value_epoch();
         self.value = Some(RedisValue {
             status: RedisValueStatus::Loading,
+            size,
             ..Default::default()
         });
         self.get_value(key, ServerTask::ReloadValue, cx);
+    }
+    /// Gives up a "load anyway" that has not landed: what it replaced — the
+    /// too-large panel, or the preview — comes back as it was, the key is
+    /// gated again, and the reply still on its way is dropped when it
+    /// arrives (`get_value`). The download itself is not interrupted: the
+    /// reply is already on the shared connection.
+    pub fn cancel_large_load(&mut self, cx: &mut Context<Self>) {
+        let Some((key, replaced)) = self.size_gate_pending.take() else {
+            return;
+        };
+        if self.key.as_ref() != Some(&key) {
+            return;
+        }
+        self.size_gate_bypassed = None;
+        if replaced.preview_of().is_some() {
+            self.size_gate_preview = Some(key);
+        }
+        self.next_value_epoch();
+        self.value = Some(replaced);
+        cx.emit(ServerEvent::ValueLoaded);
+        cx.notify();
     }
     /// Loads the first [`VALUE_PREVIEW_BYTES`] of a String too large to load
     /// whole ("Preview" on the too-large panel), as a read-only value. The

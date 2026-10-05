@@ -17,7 +17,7 @@ use super::{Result, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::{HeatMetric, StringWrite, json_merge, json_set, string_set};
 use bytes::Bytes;
 use chrono::Local;
-use gpui::{Hsla, SharedString, prelude::*};
+use gpui::{Hsla, SharedString, prelude::*, rgb};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -725,28 +725,33 @@ impl KeyType {
         }
     }
 
-    /// Returns the color associated with this key type for UI display.
+    /// Returns the color associated with this key type for UI display, in the
+    /// light or the dark theme.
     ///
-    /// Desaturated palette (saturation ~0.35, hues unchanged): the type
-    /// badge repeats down every key-tree row, so vivid fills stack into a
-    /// noisy color column that competes with the key names. Lower
-    /// saturation keeps types distinguishable by hue while letting the
-    /// names lead. (Previous values were saturation 0.5–0.6 — restore
-    /// those to revert.) Orange/Red keep a touch more saturation so they
-    /// don't drift toward brown/gray.
-    pub fn color(&self) -> Hsla {
-        match self {
-            KeyType::String => gpui::hsla(0.6, 0.35, 0.55, 1.0),      // Blue
-            KeyType::List => gpui::hsla(0.8, 0.35, 0.6, 1.0),         // Purple
-            KeyType::Hash => gpui::hsla(0.1, 0.42, 0.52, 1.0),        // Orange
-            KeyType::Set => gpui::hsla(0.5, 0.35, 0.52, 1.0),         // Cyan
-            KeyType::Zset => gpui::hsla(0.0, 0.42, 0.6, 1.0),         // Red
-            KeyType::Stream => gpui::hsla(0.3, 0.35, 0.45, 1.0),      // Green
-            KeyType::Vectorset => gpui::hsla(0.9, 0.35, 0.6, 1.0),    // Pink
-            KeyType::TimeSeries => gpui::hsla(0.55, 0.35, 0.52, 1.0), // Teal
-            KeyType::Probabilistic(_) => gpui::hsla(0.78, 0.35, 0.6, 1.0), // Violet
-            _ => gpui::hsla(0.0, 0.0, 0.45, 1.0),                     // Gray
-        }
+    /// Desaturated palette: the type badge repeats down every key-tree row,
+    /// so vivid fills stack into a noisy color column that competes with the
+    /// key names. Lower saturation keeps types distinguishable by hue while
+    /// letting the names lead.
+    ///
+    /// Two sets, because one could not serve both themes: the values that
+    /// read on a dark row were 2.3–3.0:1 on a light one. Each is at least
+    /// 4.5:1 on the row it is hardest to read on — the selected row,
+    /// `#e2e2e2` in light and `#222222` in dark — and the test below holds
+    /// a new or retuned color to that.
+    pub fn color(&self, dark: bool) -> Hsla {
+        let (light, dark_value) = match self {
+            KeyType::String => (0x3c649f, 0x6e8cb9),           // Blue
+            KeyType::List => (0x923fa6, 0xae75bd),             // Purple
+            KeyType::Hash => (0x805d28, 0xb88f51),             // Orange
+            KeyType::Set => (0x296b6b, 0x5aafaf),              // Cyan
+            KeyType::Zset => (0xb23838, 0xc77575),             // Red
+            KeyType::Stream => (0x386f2a, 0x5b9b4b),           // Green
+            KeyType::Vectorset => (0x9f3c78, 0xbd75a0),        // Pink
+            KeyType::TimeSeries => (0x316981, 0x5a96af),       // Teal
+            KeyType::Probabilistic(_) => (0x8b42ae, 0xa879be), // Violet
+            _ => (0x735e5e, 0x8a8a8a),                         // Gray
+        };
+        rgb(if dark { dark_value } else { light }).into()
     }
 }
 
@@ -800,6 +805,13 @@ impl RedisValue {
     /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
+    }
+
+    /// The probed size of a value that is being loaded past the size gate
+    /// ("load anyway"), else `None` — an ordinary load does not know its
+    /// size until it lands.
+    pub fn large_load_size(&self) -> Option<u64> {
+        (self.is_loading() && self.key_type == KeyType::Unknown && self.size > 0).then_some(self.size)
     }
 
     /// The string's whole length when only its first bytes were loaded (a
@@ -1264,6 +1276,51 @@ fn merge_patch_is_faithful(patch: &JsonValue, new: &JsonValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::Rgba;
+
+    /// WCAG 2.x contrast ratio of two opaque colors.
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        let luminance = |color: Hsla| {
+            let Rgba { r, g, b, .. } = Rgba::from(color);
+            let linear = |c: f32| {
+                if c <= 0.03928 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn a_type_color_reads_on_the_selected_row_of_its_theme() {
+        // The key tree's selected row: the foreground at 10% over the panel.
+        let light_row: Hsla = rgb(0xe2e2e2).into();
+        let dark_row: Hsla = rgb(0x222222).into();
+        let types = [
+            KeyType::String,
+            KeyType::List,
+            KeyType::Set,
+            KeyType::Zset,
+            KeyType::Hash,
+            KeyType::Stream,
+            KeyType::Vectorset,
+            KeyType::Channel,
+            KeyType::Json,
+            KeyType::TimeSeries,
+            KeyType::Probabilistic(ProbKind::Bloom),
+            KeyType::from("graphdata"),
+        ];
+        for key_type in types {
+            let light = contrast(key_type.color(false), light_row);
+            let dark = contrast(key_type.color(true), dark_row);
+            assert!(light >= 4.5, "{key_type:?} is {light:.2}:1 on the light row");
+            assert!(dark >= 4.5, "{key_type:?} is {dark:.2}:1 on the dark row");
+        }
+    }
 
     fn merge_writes(old: &str, new: &str) -> Option<bool> {
         let old: JsonValue = serde_json::from_str(old).expect("old json");

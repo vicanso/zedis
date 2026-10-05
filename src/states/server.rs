@@ -274,6 +274,14 @@ pub struct ZedisServerState {
     /// where the heartbeat keeps retrying on its own.
     manually_offline: bool,
 
+    /// The error the link last failed with — a refused connect, a failed
+    /// beat — for the panel that says why there is nothing to show
+    /// ([`Self::link_problem`]). Kept across the retries of the same target,
+    /// which `reset` otherwise wipes, so the panel does not flicker back to
+    /// the empty state for the length of every attempt; cleared once a load
+    /// or a beat goes through.
+    link_failure: Option<(ConnectionErrorKind, SharedString)>,
+
     /// Unix seconds of the last "reconnect first" notice shown while
     /// `manually_offline`. Throttles it so a background refresh loop can't spam
     /// the notification each tick.
@@ -340,6 +348,12 @@ pub struct ZedisServerState {
     /// `VALUE_PREVIEW_BYTES` instead of stopping at the gate, so a refresh
     /// keeps the preview. Cleared on server switch.
     size_gate_preview: Option<SharedString>,
+
+    /// What a "load anyway" still in flight replaced, with its key: the
+    /// gate panel's value, or a preview. Cancel puts it back as it was —
+    /// without asking the server, whose connection is the one the large
+    /// reply is still arriving on. Cleared when the load lands.
+    size_gate_pending: Option<(SharedString, RedisValue)>,
 
     /// The last full load (`select`) failed for a reason the link explains —
     /// refused, timed out, still loading its dataset — so the heartbeat runs
@@ -450,6 +464,46 @@ pub struct ZedisServerState {
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
+}
+
+/// Why a workspace has nothing to show: the link, not an empty database.
+/// The editor draws this in place of its "no key selected" screen, whose
+/// "New key" buttons promise what an unreachable server cannot do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum LinkProblem {
+    /// The user took the connection offline.
+    Disconnected,
+    /// It could not be reached, or it stopped answering.
+    Failed {
+        kind: ConnectionErrorKind,
+        /// The error as the driver or the server worded it; empty when a
+        /// beat failed without one being kept.
+        detail: SharedString,
+        /// Another attempt is running now.
+        retrying: bool,
+    },
+}
+
+/// The decision behind [`ZedisServerState::link_problem`], on plain values.
+fn link_problem_for(
+    status: &RedisServerStatus,
+    health: ConnectionHealth,
+    manual: bool,
+    failure: Option<&(ConnectionErrorKind, SharedString)>,
+) -> Option<LinkProblem> {
+    if manual {
+        return Some(LinkProblem::Disconnected);
+    }
+    let retrying = matches!(status, RedisServerStatus::Loading);
+    let down = matches!(status, RedisServerStatus::Failed)
+        || matches!(health, ConnectionHealth::Offline | ConnectionHealth::Reconnecting)
+        // A retry of a connect that failed: still down until it lands.
+        || (retrying && failure.is_some());
+    if !down {
+        return None;
+    }
+    let (kind, detail) = failure.cloned().unwrap_or_default();
+    Some(LinkProblem::Failed { kind, detail, retrying })
 }
 
 /// What a write the user types — a terminal line — meets on a connection.
@@ -633,6 +687,7 @@ impl ZedisServerState {
         self.redis_info = None;
         self.connection_health = ConnectionHealth::Unknown;
         self.last_connection_error = ConnectionErrorKind::Unknown;
+        self.link_failure = None;
         self.ping_failures = 0;
         self.heartbeat_retry_at = None;
         self.last_heartbeat_at = None;
@@ -644,6 +699,7 @@ impl ZedisServerState {
         self.next_value_epoch();
         self.size_gate_bypassed = None;
         self.size_gate_preview = None;
+        self.size_gate_pending = None;
         self.load_retry_pending = false;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
@@ -1334,6 +1390,32 @@ impl ZedisServerState {
         self.redis_info.as_ref()
     }
 
+    /// The link problem to show in place of the workspace's content, if the
+    /// link is why there is none — see [`LinkProblem`].
+    pub fn link_problem(&self) -> Option<LinkProblem> {
+        if self.server_id.is_empty() {
+            return None;
+        }
+        link_problem_for(
+            &self.server_status,
+            self.connection_health,
+            self.manually_offline,
+            self.link_failure.as_ref(),
+        )
+    }
+
+    /// Remember what the link failed with, for [`Self::link_problem`].
+    /// TLS-aware, like the status bar's reason: a link dropped on a
+    /// plaintext connection points at the TLS toggle.
+    pub(crate) fn note_link_failure(&mut self, error: &Error) {
+        let tls_enabled = get_server(&self.server_id)
+            .map(|server| server.tls.unwrap_or(false))
+            .unwrap_or(false);
+        let kind = error.connection_kind_tls_aware(tls_enabled);
+        self.last_connection_error = kind;
+        self.link_failure = Some((kind, error.to_string().into()));
+    }
+
     /// Current live-connection health (online / reconnecting / offline),
     /// updated each heartbeat tick by `note_ping_result`.
     pub fn connection_health(&self) -> ConnectionHealth {
@@ -1643,11 +1725,15 @@ impl ZedisServerState {
             // belongs to the server it was opened on, which this still is —
             // closing it made every reconnect re-lock the entry.
             let open_window = retry_failed.then(|| (self.write_unlocked_until, self.unlock_task.clone()));
+            // And what the link failed with stays on screen while it is
+            // tried again.
+            let link_failure = if retry_failed { self.link_failure.take() } else { None };
             self.reset(cx);
             if let Some((until, task)) = open_window {
                 self.write_unlocked_until = until;
                 self.unlock_task = task;
             }
+            self.link_failure = link_failure;
             self.server_id = server_id.clone();
             self.db = db;
             // Cached matrix from an earlier connect to this server (or the
@@ -1731,6 +1817,7 @@ impl ZedisServerState {
                             supports_search,
                         }) => {
                             this.load_retries = 0;
+                            this.link_failure = None;
                             this.dbsize = Some(dbsize);
                             this.nodes = nodes;
                             this.nodes_description = Arc::new(nodes_description);
@@ -1791,6 +1878,7 @@ impl ZedisServerState {
                             }
                         }
                         Err(error) => {
+                            this.note_link_failure(&error);
                             // Worth another go by itself once the server
                             // answers, when it is the link that failed it.
                             this.load_retry_pending =
@@ -1995,6 +2083,54 @@ mod tests {
     /// Load more runs one round at a time. A press while a round is in flight
     /// adds nothing — it used to start a second paging chain over the same
     /// cursors — and a press the offline guard refuses leaves `scanning`
+    /// The link panel replaces the empty state while the link is why there
+    /// is nothing to show — a failed load, a dead heartbeat, a manual
+    /// disconnect — and stays up through the retries of a failed connect.
+    #[test]
+    fn a_down_link_is_a_problem_to_show_and_a_working_one_is_not() {
+        use ConnectionHealth as H;
+        use RedisServerStatus as S;
+        let refused = (ConnectionErrorKind::Network, SharedString::from("Connection refused"));
+        let failed = |retrying| {
+            Some(LinkProblem::Failed {
+                kind: ConnectionErrorKind::Network,
+                detail: "Connection refused".into(),
+                retrying,
+            })
+        };
+        // Connected, or still on the first connect: nothing to say.
+        assert_eq!(link_problem_for(&S::Idle, H::Connected, false, None), None);
+        assert_eq!(link_problem_for(&S::Loading, H::Unknown, false, None), None);
+        // The connect failed; the heartbeat then keeps failing.
+        assert_eq!(
+            link_problem_for(&S::Failed, H::Unknown, false, Some(&refused)),
+            failed(false)
+        );
+        assert_eq!(
+            link_problem_for(&S::Failed, H::Offline, false, Some(&refused)),
+            failed(false)
+        );
+        // A retry in flight keeps the panel, marked as trying.
+        assert_eq!(
+            link_problem_for(&S::Loading, H::Unknown, false, Some(&refused)),
+            failed(true)
+        );
+        // A link that dropped after a good load, with no error kept.
+        assert_eq!(
+            link_problem_for(&S::Idle, H::Reconnecting, false, None),
+            Some(LinkProblem::Failed {
+                kind: ConnectionErrorKind::Unknown,
+                detail: SharedString::default(),
+                retrying: false,
+            })
+        );
+        // The user's own disconnect is not a failure.
+        assert_eq!(
+            link_problem_for(&S::Idle, H::Offline, true, Some(&refused)),
+            Some(LinkProblem::Disconnected)
+        );
+    }
+
     /// Read-only refuses a typed write, a write-locked entry asks first, and
     /// only a connection that may write lets it through.
     #[test]

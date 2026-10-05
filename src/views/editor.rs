@@ -17,6 +17,7 @@
 use crate::helpers::MultiSearchAction;
 #[cfg(not(target_family = "wasm"))]
 use crate::views::ZedisPubsubEditor;
+// The link panel's Diagnose button opens the desktop's diagnostics window.
 use crate::{
     assets::CustomIconName,
     components::KeyTypeBadge,
@@ -31,18 +32,20 @@ use crate::{
         get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs, unix_ts, validate_ttl, with_hot_key,
     },
     states::{
-        DataFormat, KeyType, MAX_INLINE_VALUE_SIZE, ServerEvent, VALUE_PREVIEW_BYTES, ZedisGlobalStore,
-        ZedisServerState, dialog_button_props, escalate_dangerous_body, i18n_bitmap, i18n_common, i18n_copy,
-        i18n_editor, i18n_expire_at, i18n_geo_map, i18n_key_ops, i18n_shortcuts,
+        ConnectionErrorKind, DataFormat, KeyType, LinkProblem, MAX_INLINE_VALUE_SIZE, ServerEvent, VALUE_PREVIEW_BYTES,
+        ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_bitmap, i18n_common, i18n_copy, i18n_editor,
+        i18n_expire_at, i18n_geo_map, i18n_key_ops, i18n_shortcuts, i18n_status_bar,
     },
     views::{
         BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
         ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
         ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
-        ZedisZsetEditor, bitmap_eligible, export_to_file, json_invalid_message, key_op_title_key, looks_like_bitmap,
-        looks_like_hll, open_change_log_dialog, open_key_op_dialog,
+        ZedisZsetEditor, bitmap_eligible, confirm_delete_key, export_to_file, json_invalid_message, key_op_title_key,
+        looks_like_bitmap, looks_like_hll, open_change_log_dialog, open_key_op_dialog,
     },
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::{states::i18n_servers, views::open_connection_diagnostics};
 use bytes::Bytes;
 use gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -53,6 +56,7 @@ use gpui_kit::component::{
     label::Label,
     menu::DropdownMenu,
     notification::Notification,
+    spinner::Spinner,
     tooltip::Tooltip,
     v_flex,
 };
@@ -276,6 +280,13 @@ struct CopyRequest {
     conflict: ConflictMode,
 }
 
+/// Open the connection's entry for editing — the link panel's way to fix a
+/// wrong host or password without hunting for the card.
+fn edit_connection(server_id: &str, cx: &mut gpui::App) {
+    let store = cx.global::<ZedisGlobalStore>().clone();
+    store.update(cx, |state, cx| state.edit_server(server_id, cx));
+}
+
 impl ZedisEditor {
     /// Create a new editor instance with event subscriptions
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -364,6 +375,9 @@ impl ZedisEditor {
                     this.pending_save_conflict = Some((key.clone(), draft.clone()));
                     cx.notify();
                 }
+                // The link went down or came back: the empty state and the
+                // link panel trade places.
+                ServerEvent::ConnectionHealthChanged => cx.notify(),
                 ServerEvent::ServerInfoUpdated => {
                     // Read-only toggled — refresh the flag and re-render so the
                     // toolbar (Save / TTL disabled state, the size lock glyph)
@@ -586,22 +600,13 @@ impl ZedisEditor {
 
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-        let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
-        let message = escalate_dangerous_body(cx, &server_id, message);
-
-        ZedisDialog::new_alert(i18n_editor(cx, "delete_key_title"), message)
-            .danger()
-            .ok_text(i18n_common(cx, "delete"))
-            .cancel_text(i18n_common(cx, "cancel"))
-            .on_ok(move |_, _window, cx| {
-                let key = key.clone();
-                server_state.update(cx, move |state, cx| {
-                    state.delete_select_key(key, cx);
-                });
-                true
-            })
-            .open(window, cx);
+        let name = key.clone();
+        confirm_delete_key(&server_id, &name, window, cx, move |_window, cx| {
+            let key = key.clone();
+            server_state.update(cx, move |state, cx| {
+                state.delete_select_key(key, cx);
+            });
+        });
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.server_state.read(cx).key() else {

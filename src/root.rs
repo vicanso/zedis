@@ -1082,7 +1082,8 @@ impl Render for Zedis {
                         let kind = if all { DangerKind::FlushAll } else { DangerKind::FlushDb };
                         let line = if all { "FLUSHALL" } else { "FLUSHDB" };
                         let server_state = _this.active_content().read(cx).server_state();
-                        confirm_dangerous_command(&server, &kind, Some(line), window, cx, move |_window, cx| {
+                        let db = server_state.read(cx).db();
+                        confirm_dangerous_command(&server, db, &kind, Some(line), window, cx, move |_window, cx| {
                             server_state.update(cx, |state, cx| {
                                 state.flush_database(all, cx);
                             });

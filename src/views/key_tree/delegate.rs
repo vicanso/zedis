@@ -140,7 +140,7 @@ impl ListDelegate for KeyTreeDelegate {
             let loaded_count = entry.children_count;
             let label = entry.label.clone();
             return Some(
-                ListItem::new(ix).w_full().py_2().px_2().child(
+                ListItem::new(ix).w_full().py_1().px_2().child(
                     h_flex()
                         .w_full()
                         .gap_2()
@@ -360,7 +360,7 @@ impl ListDelegate for KeyTreeDelegate {
                         // Positioning context for the absolute dashed guides.
                         .relative()
                         .w_full()
-                        .py_2()
+                        .py_1()
                         .px_2()
                         .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                         // Extra right padding so the floating scrollbar (16px

@@ -15,7 +15,7 @@
 use super::{KvTableColumn, KvTableColumnType, select_offset};
 use crate::helpers::get_mono_font_family;
 use crate::states::{DataFormat, KeyType, KvElement, RedisValue, ZedisServerState, i18n_common};
-use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, Pixels, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -184,6 +184,23 @@ pub struct ZedisKvDelegate<T: ZedisKvFetcher> {
     selected_rows: HashSet<usize>,
 }
 
+/// A column's own paddings, inside the table's. The two leading columns hold
+/// a checkbox and a row number, not text to read, and are as narrow as those
+/// allow — every pixel they give up is the value column's.
+fn column_paddings(column_type: KvTableColumnType) -> Edges<Pixels> {
+    let (left, right) = match column_type {
+        KvTableColumnType::Select => (2., 2.),
+        KvTableColumnType::Index => (2., 8.),
+        KvTableColumnType::Value => (10., 10.),
+    };
+    Edges {
+        top: px(2.),
+        bottom: px(2.),
+        left: px(left),
+        right: px(right),
+    }
+}
+
 impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
     /// Creates a new delegate instance with columns configuration and data fetcher.
     ///
@@ -216,12 +233,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                         if let Some(align) = item.align {
                             col.align = align;
                         }
-                        col.paddings = Some(Edges {
-                            top: px(2.),
-                            bottom: px(2.),
-                            left: px(10.),
-                            right: px(10.),
-                        });
+                        col.paddings = Some(column_paddings(item.column_type));
                         col
                     })
             })
@@ -303,12 +315,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                         if let Some(align) = item.align {
                             col.align = align;
                         }
-                        col.paddings = Some(Edges {
-                            top: px(2.),
-                            bottom: px(2.),
-                            left: px(10.),
-                            right: px(10.),
-                        });
+                        col.paddings = Some(column_paddings(item.column_type));
                         col
                     })
             })

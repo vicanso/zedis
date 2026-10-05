@@ -99,6 +99,12 @@ impl KvTableColumn {
             ..Default::default()
         }
     }
+    /// Fix the column's width in pixels (a value under 1.0 is a share of the
+    /// table instead — see `ZedisKvTable::new_columns`).
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
     pub fn field_type(mut self, field_type: ZedisFormFieldType) -> Self {
         self.field_type = Some(field_type);
         self
@@ -121,8 +127,13 @@ impl KvTableColumn {
 pub const INDEX_COLUMN_HEADER: &str = "#";
 /// Header of the multi-select column. Blank on purpose — the header cell
 /// renders a "select every loaded row" checkbox, and a caption next to it
-/// would only compete with it inside a 44px column.
+/// would only compete with it inside a column that narrow.
 pub const SELECT_COLUMN_HEADER: &str = "";
+/// Width of the row-number column: six right-aligned digits — a collection
+/// pages in by the hundred thousand — and its paddings.
+const INDEX_COLUMN_WIDTH: f32 = 64.;
+/// Width of the multi-select column: the checkbox and a little air.
+const SELECT_COLUMN_WIDTH: f32 = 32.;
 
 /// The columns the table delegate sees: the caller's value columns with the
 /// row number in front, and the multi-select box in front of *that*.
@@ -139,7 +150,7 @@ pub fn with_leading_columns(mut columns: Vec<KvTableColumn>, selectable: bool) -
         KvTableColumn {
             column_type: KvTableColumnType::Index,
             name: INDEX_COLUMN_HEADER.to_string().into(),
-            width: Some(80.),
+            width: Some(INDEX_COLUMN_WIDTH),
             align: Some(TextAlign::Right),
             ..Default::default()
         },
@@ -150,7 +161,7 @@ pub fn with_leading_columns(mut columns: Vec<KvTableColumn>, selectable: bool) -
             KvTableColumn {
                 column_type: KvTableColumnType::Select,
                 name: SELECT_COLUMN_HEADER.to_string().into(),
-                width: Some(44.),
+                width: Some(SELECT_COLUMN_WIDTH),
                 align: Some(TextAlign::Center),
                 ..Default::default()
             },

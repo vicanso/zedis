@@ -26,6 +26,15 @@ impl ZedisAppState {
 
     /// Drop the active connection (Home click): clear the snapshot, announce
     /// the empty selection, and route to Home.
+    /// Open a server entry's form: the connections page, asked through the
+    /// route to bring the form up for `server_id` (`EDIT_SERVER_QUERY`). The
+    /// selection is kept — the workspace is still that server's.
+    pub fn edit_server(&mut self, server_id: &str, cx: &mut Context<Self>) {
+        let mut query = HashMap::new();
+        query.insert(EDIT_SERVER_QUERY.to_string(), server_id.to_string());
+        self.go_with_query(Route::Home, query, cx);
+    }
+
     pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
         self.selected_server = None;
         cx.emit(GlobalEvent::ServerSelected(SharedString::default(), 0));

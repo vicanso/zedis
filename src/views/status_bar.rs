@@ -69,6 +69,14 @@ fn format_size(dbsize: Option<u64>, scan_count: usize) -> SharedString {
     }
     .into()
 }
+/// The green of a healthy link — the latency figure and the "Connected"
+/// label. One value could not serve both themes: `#69b083` is 7.7:1 on the
+/// dark bar and 2.6:1 on the light one, so light takes a darker green
+/// (`#1a7f37`, 5.1:1 on white).
+#[inline]
+fn healthy_color(dark: bool) -> Hsla {
+    rgb(if dark { 0x69b083 } else { 0x1a7f37 }).into()
+}
 /// Formats the latency string and determines the color based on the delay.
 #[inline]
 fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (SharedString, Hsla) {
@@ -78,8 +86,8 @@ fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (S
     let ms = latency.as_millis();
     let theme = cx.theme();
     let color = match ms {
-        // Healthy latency uses the same green as the "Connected" dot (#69b083).
-        0..50 => rgb(0x69b083).into(),
+        // Healthy latency uses the same green as the "Connected" label.
+        0..50 => healthy_color(theme.is_dark()),
         50..500 => theme.yellow,
         _ => theme.red,
     };
@@ -1240,6 +1248,7 @@ impl ZedisStatusBar {
                                 let server_state = this.server_state.clone();
                                 confirm_dangerous_command(
                                     &server,
+                                    server_state.read(cx).db(),
                                     &DangerKind::WriteLocked,
                                     None,
                                     window,
@@ -1314,7 +1323,7 @@ impl ZedisStatusBar {
         // nothing is broken yet, so a red-flavoured "unlink" would over-alarm.
         let (health_color, health_icon, health_label) = match server_state.health {
             ConnectionHealth::Connected => (
-                rgb(0x69b083).into(),
+                healthy_color(cx.theme().is_dark()),
                 CustomIconName::Link,
                 i18n_status_bar(cx, "conn_connected"),
             ),

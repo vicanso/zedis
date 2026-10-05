@@ -404,23 +404,24 @@ fn build_table(
     cx: &mut gpui::App,
 ) -> ZedisTextTable {
     let content_width = content_area_width(window, cx);
-    // Cells are `[label ..flex_1..][copy button ..flex_none..]` and the copy
-    // button only appears on hover, taking ~28px out of the label's box — so
-    // text that fits at rest gets clipped the moment the pointer lands on the
-    // row. Both of these budget for it, on top of the 20px of side padding:
+    // Each fixed column is its content plus ~36px of side padding, and what
+    // they do not take is the arguments' — the column a slow command is read
+    // from, which at the old widths showed 16 characters of it:
     //   timestamp: "2026-07-14 22:31:05" — 19 mono chars
     //   client:    "192.168.1.10:53166" — sized for the address only. The
     //              client *name* is appended after it ("… (zedis:v0.5.5)") and
     //              is allowed to ellipsize: it repeats across every row of the
     //              same client, whereas the address is what tells them apart.
-    let timestamp_width = 240.;
-    let duration_width = 130.;
-    let command_width = 150.;
-    let client_width = 240.;
-    // Wide enough for "<event> +Ns" — event names cap around 24 chars
-    // (e.g. "active-defrag-cycle"). Fixed instead of stretchy so the
-    // chip stays compact next to client info.
-    let correlated_width = 170.;
+    // Duration and the event column are as wide as their *headers* need
+    // (the title, and for a sortable column its arrows).
+    let timestamp_width = 180.;
+    let duration_width = 112.;
+    let command_width = 110.;
+    let client_width = 200.;
+    // The chip is "<event> +Ns"; a long event name ("active-defrag-cycle")
+    // ellipsizes. Fixed instead of stretchy so the chip stays compact next
+    // to client info.
+    let correlated_width = 136.;
     // Subtract a small gutter (10 px) so the table doesn't overflow horizontally.
     // `args` is the flexible column; floor it so a narrow window scrolls the
     // table horizontally instead of collapsing the column to nothing.

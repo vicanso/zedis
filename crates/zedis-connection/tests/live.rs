@@ -2903,6 +2903,33 @@ fn standalone_acl_users_are_classified() {
     });
 }
 
+/// A port nobody listens on is an unreachable host, and stays one when the
+/// classifier is asked about TLS: the hint is for a link that was accepted
+/// and then dropped, and the app showed "TLS may be required" for a server
+/// that was simply not running.
+#[test]
+#[ignore]
+fn a_refused_connect_is_unreachable_not_a_tls_hint() {
+    smol::block_on(async {
+        // A port that was free a moment ago: bound, read, released.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+            listener.local_addr().expect("its address").port()
+        };
+        let id = register(server("it-refused", ("127.0.0.1".to_string(), port))).await;
+        let err = match get_connection_manager().get_client(&id, 0).await {
+            Ok(_) => panic!("nothing listens on {port}"),
+            Err(err) => err,
+        };
+        assert_eq!(err.connection_kind(), ConnectionErrorKind::Network, "{err}");
+        assert_eq!(
+            err.connection_kind_tls_aware(false),
+            ConnectionErrorKind::Network,
+            "{err}"
+        );
+    });
+}
+
 #[test]
 #[ignore]
 fn standalone_recovers_after_the_server_drops_the_link() {

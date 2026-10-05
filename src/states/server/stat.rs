@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::RedisServerStatus;
 use crate::connection::{
     ReplicationInfo, ServerDb, dbsize, forget_client, get_server, heartbeat_probe, master_infos, slow_logs,
 };
@@ -747,6 +748,11 @@ impl ZedisServerState {
             self.ping_failures = 0;
             self.heartbeat_retry_at = None;
             self.last_connection_error = ConnectionErrorKind::Unknown;
+            // A load that failed while the server answers beats (a denied
+            // command, say) is still failed: its reason stays until it loads.
+            if !matches!(self.server_status, RedisServerStatus::Failed) {
+                self.link_failure = None;
+            }
             ConnectionHealth::Connected
         } else {
             self.ping_failures = self.ping_failures.saturating_add(1);
@@ -1034,14 +1040,11 @@ impl ZedisServerState {
                         // Connection is invalid, remove cached client
                         forget_client(&ServerDb::new(server_id_clone.as_str(), db));
                         error!(error = %e, "Ping failed, client connection removed");
-                        // Remember *why* so the offline tooltip can name it. Set
-                        // before note_ping_result, which emits the health
-                        // transition the status bar reads. TLS-aware so a dropped
-                        // plaintext link points the user at the TLS toggle.
-                        let tls_enabled = get_server(&server_id_clone)
-                            .map(|s| s.tls.unwrap_or(false))
-                            .unwrap_or(false);
-                        this.last_connection_error = e.connection_kind_tls_aware(tls_enabled);
+                        // Remember *why* so the offline tooltip and the
+                        // editor's link panel can name it. Set before
+                        // note_ping_result, which emits the health transition
+                        // they read.
+                        this.note_link_failure(&e);
                         this.note_ping_result(false, cx);
                     }
                 }

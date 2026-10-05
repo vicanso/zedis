@@ -402,7 +402,8 @@ impl ZedisFunctionEditor {
         };
         let line = format!("{command} {fn_name}");
         let entity = cx.entity().downgrade();
-        confirm_dangerous_command(&server, &kind, Some(&line), window, cx, move |_, cx| {
+        let db = self.server_state.read(cx).db();
+        confirm_dangerous_command(&server, db, &kind, Some(&line), window, cx, move |_, cx| {
             let Some(this) = entity.upgrade() else { return };
             this.update(cx, |this, cx| this.start_fcall(fn_name.clone(), true, cx));
         });

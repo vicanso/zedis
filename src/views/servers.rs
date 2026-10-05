@@ -18,8 +18,8 @@ use crate::assets::CustomIconName;
 #[cfg(not(target_family = "wasm"))]
 use crate::connection::test_connection;
 use crate::connection::{
-    ImportError, RedisServer, TAG_ENV_LABELS, get_server_groups, get_servers, sentinel_master_names, tag_color_index,
-    writes_index,
+    ImportError, RedisServer, TAG_ENV_LABELS, get_server, get_server_groups, get_servers, sentinel_master_names,
+    tag_color_index, writes_index,
 };
 use crate::error::Error;
 use crate::helpers::{
@@ -27,8 +27,8 @@ use crate::helpers::{
     is_share_token, resolve_path, resolve_tag_chip, unix_ts,
 };
 use crate::states::{
-    GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props, escalate_dangerous_body,
-    get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
+    EDIT_SERVER_QUERY, GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props,
+    escalate_dangerous_body, get_session_option, i18n_common, i18n_servers, update_app_state_and_save,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::views::open_connection_diagnostics;
@@ -149,6 +149,21 @@ impl ServerSort {
 
 /// When each server was last connected to, from the session store. Absent
 /// for one never opened on this machine.
+/// The entry whose form the route's query asks the connections page to open:
+/// a blank one for `new` (the tray's New Connection), the named one for
+/// `EDIT_SERVER_QUERY` (the editor's link panel). `None` when it asks for
+/// neither, or names an entry that is gone.
+fn form_asked_for(query: Option<&HashMap<String, String>>) -> Option<RedisServer> {
+    let query = query?;
+    if let Some(server_id) = query.get(EDIT_SERVER_QUERY) {
+        return get_server(server_id).ok();
+    }
+    query.contains_key("new").then(|| RedisServer {
+        port: DEFAULT_REDIS_PORT,
+        ..Default::default()
+    })
+}
+
 fn last_connected_map(servers: &[RedisServer]) -> HashMap<String, i64> {
     servers
         .iter()
@@ -180,7 +195,9 @@ fn format_last_used(at: i64, locale: &str) -> String {
 ///
 /// Uses a responsive grid layout that adjusts columns based on viewport width.
 pub struct ZedisServers {
-    should_popup_new_server: bool,
+    /// The entry whose form a route asked for (`form_asked_for`), opened on
+    /// the next render — a dialog needs the window.
+    pending_server_form: Option<RedisServer>,
     /// Focus root for the page. Actions only travel the focus path, so the
     /// container has to hold focus for the `cmd-f` binding to reach the
     /// `EditorAction::Search` handler below (same pattern as the key tree).
@@ -241,31 +258,18 @@ impl ZedisServers {
                 // repaint went missing left the new connection invisible until
                 // the page was clicked or reloaded.
                 GlobalEvent::ServerListUpdated => cx.notify(),
-                GlobalEvent::RouteChanged(Route::Home)
-                    if state
-                        .read(cx)
-                        .get_route_query()
-                        .map(|query| query.contains_key("new"))
-                        .unwrap_or(false) =>
-                {
-                    this.should_popup_new_server = true;
-                    cx.notify();
+                GlobalEvent::RouteChanged(Route::Home) => {
+                    if let Some(server) = form_asked_for(state.read(cx).get_route_query()) {
+                        this.pending_server_form = Some(server);
+                        cx.notify();
+                    }
                 }
                 _ => {}
             }
         }));
-        if let Some(query) = global_state.read(cx).get_route_query()
-            && query.contains_key("new")
-        {
-            cx.defer_in(window, |this, window, cx| {
-                this.add_or_update_server_dialog(
-                    &RedisServer {
-                        port: DEFAULT_REDIS_PORT,
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                );
+        if let Some(server) = form_asked_for(global_state.read(cx).get_route_query()) {
+            cx.defer_in(window, move |this, window, cx| {
+                this.add_or_update_server_dialog(&server, window, cx);
             });
         }
 
@@ -294,7 +298,7 @@ impl ZedisServers {
         focus_handle.focus(window, cx);
 
         Self {
-            should_popup_new_server: false,
+            pending_server_form: None,
             focus_handle,
             search_state,
             _subscriptions: subscriptions,
@@ -635,15 +639,8 @@ impl Render for ZedisServers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = window.viewport_size().width;
 
-        if std::mem::take(&mut self.should_popup_new_server) {
-            self.add_or_update_server_dialog(
-                &RedisServer {
-                    port: DEFAULT_REDIS_PORT,
-                    ..Default::default()
-                },
-                window,
-                cx,
-            );
+        if let Some(server) = self.pending_server_form.take() {
+            self.add_or_update_server_dialog(&server, window, cx);
         }
 
         // First-run / empty Home: before any connection is configured, show a

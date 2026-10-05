@@ -554,8 +554,13 @@ impl TableDelegate for ZedisTextTable {
         if let Some(color) = style.color {
             label = label.text_color(color);
         }
+        // The fill under the hover buttons: the hovered row's own colour,
+        // made opaque so the text they sit on does not show through.
+        let actions_bg = cx.theme().background.blend(cx.theme().table_hover);
+        let actions_inset = column.paddings.map(|paddings| paddings.right).unwrap_or_default();
         h_flex()
             .size_full()
+            .relative()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .group(group_name.clone())
             .overflow_hidden()
@@ -566,13 +571,20 @@ impl TableDelegate for ZedisTextTable {
                 // Hover-only buttons: copy, plus the panel's own action. A
                 // flex row on purpose — a bare `div()` is block layout and
                 // stacks the two buttons vertically inside a one-line cell,
-                // clipping both.
+                // clipping both. Drawn over the end of the cell, not beside
+                // the label: reserving their width for the moment the
+                // pointer arrives cost every cell of every table ~32px of
+                // text, and cut "5.4h idle" in a column 130px wide.
                 h_flex()
                     .id(("text-td-actions", cell_id))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(actions_inset)
                     .gap_0p5()
+                    .bg(actions_bg)
                     .invisible()
                     .group_hover(group_name, |style| style.visible())
-                    .flex_none()
                     .on_click(|_, _, cx: &mut App| cx.stop_propagation())
                     .children(actions.into_iter().enumerate().map(|(ix, action)| {
                         let on_click = action.on_click.clone();

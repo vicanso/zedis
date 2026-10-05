@@ -32,7 +32,7 @@ use crate::{
     views::{bridge_danger, confirm_dangerous_command},
 };
 use chrono::Local;
-use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
@@ -906,7 +906,8 @@ impl ZedisTerminal {
             if let Some((line, kind)) = blocking {
                 let entity = cx.entity().downgrade();
                 let command_for_run = command.clone();
-                confirm_dangerous_command(&server, &kind, Some(&line), window, cx, move |_, cx| {
+                let db = self.current_db(cx);
+                confirm_dangerous_command(&server, db, &kind, Some(&line), window, cx, move |_, cx| {
                     let Some(this) = entity.upgrade() else { return };
                     this.update(cx, |this, cx| this.run_command_lines(command_for_run.clone(), true, cx));
                 });
@@ -914,6 +915,12 @@ impl ZedisTerminal {
             }
         }
         self.run_command_lines(command, false, cx);
+    }
+
+    /// The database this terminal is on: its own after a `SELECT`, else the
+    /// workspace's.
+    fn current_db(&self, cx: &App) -> usize {
+        self.terminal_db.unwrap_or_else(|| self.server_state.read(cx).db())
     }
 
     /// A write on a write-locked entry: the lock's own question (by name on
@@ -927,6 +934,7 @@ impl ZedisTerminal {
         let entity = cx.entity().downgrade();
         confirm_dangerous_command(
             &server,
+            self.current_db(cx),
             &DangerKind::WriteLocked,
             Some(&line),
             window,
@@ -981,7 +989,7 @@ impl ZedisTerminal {
                 state.version(),
                 description.server_type.as_str(),
                 description.modules,
-                self.terminal_db.unwrap_or(state.db()),
+                self.current_db(cx),
             );
 
             // A second `?` while one is pending replaces the task (its

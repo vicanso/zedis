@@ -36,7 +36,7 @@ use crate::{
         i18n_common, i18n_editor, i18n_features, i18n_key_tag, i18n_key_tree, i18n_timeseries, i18n_vector_set,
         key_tree_no_scan_body, save_session_option,
     },
-    views::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog},
+    views::{OnTagDialogDone, confirm_delete_key, open_batch_key_tag_dialog, open_key_tag_dialog},
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
