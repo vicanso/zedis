@@ -58,6 +58,12 @@ impl RedisClient {
     pub fn version(&self) -> String {
         self.version.to_string()
     }
+    /// The connect found `INFO` denied or missing: the version is unknown,
+    /// the heartbeat probes with `PING`, and there are no `INFO` texts to
+    /// fan out for.
+    pub fn info_unavailable(&self) -> bool {
+        self.info_unavailable
+    }
     /// Whether the server is a Valkey — what a flavor-dependent command
     /// shape (atomic slot migration) is chosen by.
     pub fn is_valkey(&self) -> bool {
@@ -971,7 +977,7 @@ impl RedisClient {
     /// fan-out, and saving one command in N+1 is not worth a weaker probe.
     /// Its cost is handled by beating less often instead.
     pub async fn heartbeat_probe(&self) -> Result<Option<String>> {
-        if self.master_nodes.len() == 1 && !self.is_cluster() {
+        if self.master_nodes.len() == 1 && !self.is_cluster() && !self.info_unavailable {
             let mut conn = self.connection.clone();
             let info: String = cmd("INFO").query_async(&mut conn).await?;
             return Ok(Some(info));

@@ -2903,6 +2903,65 @@ fn standalone_acl_users_are_classified() {
     });
 }
 
+/// An ACL user who may read but not run `INFO` is a working connection, not
+/// an offline one. `INFO` is `@slow @dangerous`, outside `+@read`, and the
+/// app asked it to connect (for the version) and on every beat (as the
+/// probe): the connect failed, the heartbeat failed, and a user who could
+/// read every key saw an empty tree under "Offline", retried for ever.
+#[test]
+#[ignore]
+fn standalone_user_without_info_connects_and_beats() {
+    smol::block_on(async {
+        let admin_id = register(server("it-noinfo-admin", standalone())).await;
+        let mut admin = conn(&admin_id, 0).await;
+        let user = unique("zedis_it_noinfo");
+        let key = unique("it:noinfo");
+        cmd("ACL")
+            .arg("SETUSER")
+            .arg(&user)
+            .arg("on")
+            .arg(">pw")
+            .arg("~*")
+            .arg("+@read")
+            .arg("+ping")
+            .arg("+select")
+            .arg("+hello")
+            .arg("+auth")
+            .arg("+client|setname")
+            .arg("+client|setinfo")
+            .arg("+scan")
+            .arg("+dbsize")
+            .exec_async(&mut admin)
+            .await
+            .expect("setuser");
+        cmd("SET").arg(&key).arg("v").exec_async(&mut admin).await.expect("set");
+
+        let mut limited = server(&unique("it-noinfo"), standalone());
+        limited.username = Some(user.clone());
+        limited.password = Some("pw".into());
+        let id = register(limited).await;
+        let at = ServerDb::new(&id, 0);
+
+        // It connects, with what it could not ask left unknown.
+        let summary = server_summary(&at).await.expect("connects without INFO");
+        assert!(summary.dbsize >= 1, "{summary:?}");
+        assert_eq!(summary.version, "0.0.0", "the version is INFO's to tell");
+        // The beat judges the link by PING, and says there is no INFO text.
+        assert_eq!(heartbeat_probe(&at).await.expect("the link answers"), None);
+        // And it reads: the type and TTL of a key, the key itself.
+        let (key_type, ttl) = key_type_and_ttl(&at, &key).await.expect("type + ttl");
+        assert_eq!((key_type.as_str(), ttl), ("string", -1));
+
+        cmd("DEL").arg(&key).exec_async(&mut admin).await.expect("del");
+        cmd("ACL")
+            .arg("DELUSER")
+            .arg(&user)
+            .exec_async(&mut admin)
+            .await
+            .expect("deluser");
+    });
+}
+
 /// A port nobody listens on is an unreachable host, and stays one when the
 /// classifier is asked about TLS: the hint is for a link that was accepted
 /// and then dropped, and the app showed "TLS may be required" for a server

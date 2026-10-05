@@ -25,11 +25,12 @@ use crate::{
     constants::STATUS_BAR_HEIGHT,
     helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing, resolve_tag_chip, with_hot_key},
     states::{
-        ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, ServerEvent, ServerTask,
-        ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState, get_session_option, i18n_acl,
-        i18n_common, i18n_config_editor, i18n_functions, i18n_hotkeys, i18n_key_tree, i18n_keyspace_notifications,
-        i18n_lua_scripts, i18n_monitor, i18n_persistence, i18n_search, i18n_server_info, i18n_server_load,
-        i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology, i18n_value_search, save_session_option,
+        ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, SOFT_WRAP_MAX_BYTES,
+        ServerEvent, ServerTask, ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState,
+        get_session_option, i18n_acl, i18n_common, i18n_config_editor, i18n_functions, i18n_hotkeys, i18n_key_tree,
+        i18n_keyspace_notifications, i18n_lua_scripts, i18n_monitor, i18n_persistence, i18n_search, i18n_server_info,
+        i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology, i18n_value_search,
+        save_session_option,
     },
     views::confirm_dangerous_command,
 };
@@ -1373,6 +1374,13 @@ impl ZedisStatusBar {
                 .first_unusable(view.required_commands())
                 .map(|(command, status)| command_status_label(cx, command, status))
         };
+        // The memory and clients chips show numbers that are `INFO`'s. For
+        // a user who may not run it they read "--", and the tooltip says why
+        // where it would have named the number.
+        let info_reason = features
+            .first_unusable(&[ServerCommand::Info])
+            .map(|(command, status)| command_status_label(cx, command, status));
+        let stat_hint = |key: &str| info_reason.clone().unwrap_or_else(|| i18n_status_bar(cx, key));
         let chip_blocks = [
             (ServerView::Metrics, block(ServerView::Metrics)),
             (ServerView::MemoryAnalysis, block(ServerView::MemoryAnalysis)),
@@ -1479,7 +1487,7 @@ impl ZedisStatusBar {
                         icon_color: status_text,
                         tooltip: SharedString::from(format!(
                             "{} · {}",
-                            i18n_status_bar(cx, "metric_memory_hint"),
+                            stat_hint("metric_memory_hint"),
                             i18n_status_bar(cx, "toggle_memory_analysis_tooltip")
                         )),
                         view: ServerView::MemoryAnalysis,
@@ -1493,7 +1501,7 @@ impl ZedisStatusBar {
                         icon_color: status_text,
                         tooltip: SharedString::from(format!(
                             "{} · {}",
-                            i18n_status_bar(cx, "clients_stat_tooltip"),
+                            stat_hint("clients_stat_tooltip"),
                             i18n_status_bar(cx, "toggle_clients_tooltip")
                         )),
                         view: ServerView::Clients,
@@ -1555,6 +1563,12 @@ impl ZedisStatusBar {
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
+        let wrap_fits = self
+            .server_state
+            .read(cx)
+            .value()
+            .and_then(|value| value.bytes_value())
+            .is_none_or(|bytes| bytes.soft_wrap_fits());
         // Custom variant (transparent bg, muted foreground) so the label + check
         // read in the same recessive status-bar color as everything else — a
         // plain `.ghost()` paints them at the brighter `secondary_foreground`.
@@ -1563,8 +1577,23 @@ impl ZedisStatusBar {
             .ghost()
             .text_color(status_text)
             .xsmall()
-            .when(server_state.soft_wrap, |this| this.icon(IconName::Check))
-            .tooltip(i18n_status_bar(cx, "soft_wrap_tooltip"))
+            // A value too large to wrap is shown unwrapped whatever the
+            // preference: the button says so instead of showing a tick for
+            // something that is not happening.
+            .when(server_state.soft_wrap && wrap_fits, |this| this.icon(IconName::Check))
+            .disabled(!wrap_fits)
+            .tooltip(if wrap_fits {
+                i18n_status_bar(cx, "soft_wrap_tooltip")
+            } else {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                t!(
+                    "status_bar.soft_wrap_capped_tooltip",
+                    size = humansize::format_size(SOFT_WRAP_MAX_BYTES, humansize::DECIMAL),
+                    locale = locale
+                )
+                .to_string()
+                .into()
+            })
             .label(i18n_status_bar(cx, "soft_wrap"))
             .on_click(cx.listener(|this, _, _window, cx| {
                 let soft_wrap = !this.state.server_state.soft_wrap;
@@ -1631,9 +1660,12 @@ impl ZedisStatusBar {
         )
     }
 
-    /// Soft Wrap only applies to the string/bytes value editor — hide it on
-    /// tool pages and when no string value is selected.
-    fn show_soft_wrap(&self, cx: &App) -> bool {
+    /// Soft Wrap, the format label and the Viewer picker belong to the
+    /// string/bytes value editor — hidden on tool pages and when no string
+    /// value is selected. (The last two used to stay behind on Metrics or
+    /// Config once a string had been opened, a control for a page that was
+    /// not on screen.)
+    fn show_editor_controls(&self, cx: &App) -> bool {
         if self.state.data_format.is_none() {
             return false;
         }
@@ -1712,10 +1744,10 @@ impl Render for ZedisStatusBar {
             .child(
                 ZedisDivider::new()
                     .child(self.render_telemetry(window, cx))
-                    .when(self.show_soft_wrap(cx), |this| {
+                    .when(self.show_editor_controls(cx), |this| {
                         this.child(self.render_editor_settings(window, cx))
                     })
-                    .when(self.state.data_format.is_some(), |this| {
+                    .when(self.show_editor_controls(cx), |this| {
                         this.child(
                             h_flex()
                                 .items_center()

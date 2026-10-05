@@ -26,7 +26,7 @@ use crate::{
         get_search_history_manager, recent_keys_scope,
     },
     helpers::{
-        EditorAction, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
+        EditorAction, TtlChipKind, TtlFilter, folder_prefixes, format_ttl_chip, get_mono_font_family, group_thousands,
         single_child_expanded_set, split_key_segments, theme_color_for_tag, ttl_chip_kind, ttl_secs,
         validate_long_string, with_hot_key,
     },

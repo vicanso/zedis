@@ -41,6 +41,20 @@ pub const MAX_INLINE_VALUE_SIZE: u64 = 5_000_000;
 /// an amount the editor draws without a stall. Decimal, like every size the
 /// app prints, so the button reads "256 kB" rather than "262.14 kB".
 pub const VALUE_PREVIEW_BYTES: usize = 256_000;
+/// The longest text the editor soft-wraps. gpui-kit's editor finds each
+/// visual row's break by shaping candidate prefixes of the line (about eight
+/// `layout_line` calls a row), for the whole text, on the UI thread, with
+/// every shaped prefix kept in the frame's layout cache: measured at about
+/// two seconds and 100 MB per megabyte, so a 22 MB string of 300,000 lines
+/// froze the window for 48 s and took the process to 2.4 GB. Unwrapped, the
+/// same value opens in under two seconds. Half a megabyte is about a second.
+pub const SOFT_WRAP_MAX_BYTES: usize = 512_000;
+
+/// Whether a text of `len` bytes is soft-wrapped — see [`SOFT_WRAP_MAX_BYTES`].
+pub fn soft_wrap_fits(len: usize) -> bool {
+    len <= SOFT_WRAP_MAX_BYTES
+}
+
 /// Hard cap on a module-type value fetched with `DUMP`. Unlike the native
 /// containers, which page with `HSCAN` / `LRANGE`, DUMP serializes the
 /// whole value on the server's main thread with no way to read part of
@@ -505,6 +519,11 @@ pub struct RedisBytesValue {
 }
 
 impl RedisBytesValue {
+    /// Whether the value is short enough to soft-wrap: its decoded text
+    /// where it has one, else its bytes.
+    pub fn soft_wrap_fits(&self) -> bool {
+        soft_wrap_fits(self.text.as_ref().map_or(self.bytes.len(), |text| text.len()))
+    }
     pub fn is_image(&self) -> bool {
         matches!(
             self.format,
@@ -1293,6 +1312,23 @@ mod tests {
         };
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// The cap is on what the editor shows: the decoded text where the
+    /// value has one, its bytes otherwise.
+    #[test]
+    fn a_large_text_is_not_soft_wrapped() {
+        assert!(soft_wrap_fits(SOFT_WRAP_MAX_BYTES));
+        assert!(!soft_wrap_fits(SOFT_WRAP_MAX_BYTES + 1));
+        let value = |bytes: usize, text: Option<usize>| RedisBytesValue {
+            bytes: Bytes::from(vec![b'x'; bytes]),
+            text: text.map(|len| "y".repeat(len).into()),
+            ..Default::default()
+        };
+        assert!(value(10, None).soft_wrap_fits());
+        assert!(!value(SOFT_WRAP_MAX_BYTES + 1, None).soft_wrap_fits());
+        assert!(!value(10, Some(SOFT_WRAP_MAX_BYTES + 1)).soft_wrap_fits());
+        assert!(value(SOFT_WRAP_MAX_BYTES + 1, Some(10)).soft_wrap_fits());
     }
 
     #[test]

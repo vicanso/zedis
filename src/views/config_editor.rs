@@ -798,13 +798,13 @@ impl ZedisConfigEditor {
         docs: &ConfigDocMap,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let fg = cx.theme().foreground;
         let primary = cx.theme().primary;
         let green = cx.theme().green;
         // Shared card surface, matching the server cards (Home).
         let card_bg = card_background(cx);
+        let hover_bg = cx.theme().table_hover;
         let radius = cx.theme().radius;
         let lrm = self.server_state.read(cx).supports(floors::MAXMEMORY_LRM);
         let kind = config_kind(&key, &value, lrm);
@@ -988,82 +988,77 @@ impl ZedisConfigEditor {
                     .font_family(font_family.clone())
                     .into_any_element()
             };
-            div()
-                .id(SharedString::from(format!("config-card-{key}")))
-                .flex_1()
+            // One row per parameter: its name, its value, and the help and
+            // edit buttons at the end. As a card it was 64px tall, and a
+            // screen held some twenty of the few hundred there are.
+            h_flex()
+                .id(SharedString::from(format!("config-row-{key}")))
+                .w_full()
                 .min_w_0()
-                .min_h(px(72.))
-                .p_3()
-                .border_1()
-                .border_color(border)
+                .h(px(CONFIG_ROW_HEIGHT))
+                .px_2()
+                .gap_3()
+                .items_center()
                 .rounded(radius)
-                .bg(card_bg)
-                .hover(|this| this.border_color(primary))
+                .hover(|this| this.bg(hover_bg))
+                .child(
+                    div().flex_none().w(px(CONFIG_NAME_WIDTH)).overflow_hidden().child(
+                        Label::new(key.clone())
+                            .text_sm()
+                            .text_ellipsis()
+                            .text_color(muted)
+                            .font_family(font_family.clone()),
+                    ),
+                )
+                .child(div().flex_1().min_w_0().overflow_hidden().child(value_el))
                 .child(
                     h_flex()
-                        .items_start()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div().min_w_0().overflow_hidden().child(
-                                Label::new(key.clone())
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .font_family(font_family.clone()),
-                            ),
-                        )
-                        .child(
-                            h_flex()
-                                .flex_none()
-                                .items_center()
-                                .gap_1()
-                                // Per-parameter help: a `?` that opens a
-                                // scrollable popover with the full official
-                                // redis.conf description; shown only when one
-                                // exists for this key.
-                                .when_some(doc, |this, doc| {
-                                    this.child(help_popover(SharedString::from(format!("config-help-{key}")), doc))
-                                })
-                                .when(can_write, |this| {
-                                    this.child(
-                                        Button::new(SharedString::from(format!("config-edit-{key}")))
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(Icon::new(CustomIconName::FilePenLine))
-                                            .tooltip(i18n_config_editor(cx, "edit_tooltip"))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.editing_key = Some(edit_key.clone());
-                                                let kind = config_kind(&edit_key, &edit_value, lrm);
-                                                match kind {
-                                                    ConfigKind::Enum(options) => {
-                                                        this.build_enum_select(options, &edit_value, window, cx)
-                                                    }
-                                                    ConfigKind::Bool => {
-                                                        this.editing_bool = edit_value.as_ref() == "yes"
-                                                    }
-                                                    // Focus the input so the user can type at once — and so the
-                                                    // Esc-to-cancel capture handler is on the focus path.
-                                                    ConfigKind::Number => this.number_state.update(cx, |state, cx| {
-                                                        state.set_value(edit_value.clone(), window, cx);
-                                                        state.focus(window, cx);
-                                                    }),
-                                                    ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
-                                                        state.set_value(edit_value.clone(), window, cx);
-                                                        state.focus(window, cx);
-                                                    }),
-                                                }
-                                                // Bool / enum have no text input to focus; focus the editor root
-                                                // so Esc still reaches the capture handler above.
-                                                if matches!(kind, ConfigKind::Bool | ConfigKind::Enum(_)) {
-                                                    this.focus_handle.focus(window, cx);
-                                                }
-                                                cx.notify();
-                                            })),
-                                    )
-                                }),
-                        ),
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        // Per-parameter help: a `?` that opens a
+                        // scrollable popover with the full official
+                        // redis.conf description; shown only when one
+                        // exists for this key.
+                        .when_some(doc, |this, doc| {
+                            this.child(help_popover(SharedString::from(format!("config-help-{key}")), doc))
+                        })
+                        .when(can_write, |this| {
+                            this.child(
+                                Button::new(SharedString::from(format!("config-edit-{key}")))
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(Icon::new(CustomIconName::FilePenLine))
+                                    .tooltip(i18n_config_editor(cx, "edit_tooltip"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.editing_key = Some(edit_key.clone());
+                                        let kind = config_kind(&edit_key, &edit_value, lrm);
+                                        match kind {
+                                            ConfigKind::Enum(options) => {
+                                                this.build_enum_select(options, &edit_value, window, cx)
+                                            }
+                                            ConfigKind::Bool => this.editing_bool = edit_value.as_ref() == "yes",
+                                            // Focus the input so the user can type at once — and so the
+                                            // Esc-to-cancel capture handler is on the focus path.
+                                            ConfigKind::Number => this.number_state.update(cx, |state, cx| {
+                                                state.set_value(edit_value.clone(), window, cx);
+                                                state.focus(window, cx);
+                                            }),
+                                            ConfigKind::Text => this.edit_state.update(cx, |state, cx| {
+                                                state.set_value(edit_value.clone(), window, cx);
+                                                state.focus(window, cx);
+                                            }),
+                                        }
+                                        // Bool / enum have no text input to focus; focus the editor root
+                                        // so Esc still reaches the capture handler above.
+                                        if matches!(kind, ConfigKind::Bool | ConfigKind::Enum(_)) {
+                                            this.focus_handle.focus(window, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
                 )
-                .child(div().mt_2().overflow_hidden().child(value_el))
                 .into_any_element()
         }
     }
@@ -1093,7 +1088,7 @@ impl ZedisConfigEditor {
 
         v_flex()
             .w_full()
-            .gap_3()
+            .gap_1()
             .child(
                 h_flex()
                     .items_center()
@@ -1119,12 +1114,18 @@ impl ZedisConfigEditor {
                             .child(Label::new(configs.len().to_string()).text_xs().text_color(muted)),
                     ),
             )
-            .child(div().grid().grid_cols(cols).items_start().gap_3().children(cards))
+            .child(div().grid().grid_cols(cols).items_start().gap_x_6().children(cards))
             .into_any_element()
     }
 }
 
 /// Inputs for [`ZedisConfigEditor::render_group`].
+/// Height of one parameter's row, and the width its name is given — the
+/// longest names ("client-output-buffer-limit") fit, and the values of a
+/// column line up.
+const CONFIG_ROW_HEIGHT: f32 = 28.;
+const CONFIG_NAME_WIDTH: f32 = 230.;
+
 struct ConfigGroupSection<'a> {
     label: SharedString,
     desc: SharedString,
@@ -1147,7 +1148,8 @@ impl Render for ZedisConfigEditor {
         // `stripe_bg` is still used by the cross-server diff view below.
         let stripe_bg = cx.theme().table_even;
 
-        // Responsive card-grid column count via the content-width proxy.
+        // Columns of rows, by the content-width proxy: a row wants its name
+        // and a readable stretch of value, so fewer columns than cards did.
         let cols: u16 = cx
             .global::<ZedisGlobalStore>()
             .read(cx)
@@ -1155,8 +1157,6 @@ impl Render for ZedisConfigEditor {
             .map(|w| {
                 let w = w.as_f32();
                 if w > 1200. {
-                    4
-                } else if w > 900. {
                     3
                 } else if w > 600. {
                     2
@@ -1396,7 +1396,7 @@ impl Render for ZedisConfigEditor {
             } else {
                 // View-scoped map: loaded in `new`, not on every scroll/repaint.
                 self.refresh_docs_if_locale_changed(cx);
-                let mut sections = v_flex().w_full().gap_6().px_4().py_3();
+                let mut sections = v_flex().w_full().gap_4().px_4().py_3();
                 for (i, group) in CONFIG_GROUPS.iter().enumerate() {
                     if buckets[i].is_empty() {
                         continue;

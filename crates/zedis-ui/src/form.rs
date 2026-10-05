@@ -119,6 +119,11 @@ pub struct ZedisFormField {
     /// trims — right for settings, names and numbers, wrong for a field
     /// whose text *is* data (a Redis value, a member, a hash field name).
     verbatim: bool,
+    /// Lay a `RadioGroup`'s options out one per line.
+    stacked: bool,
+    /// How many of the form's twelve columns the field takes; the whole row
+    /// when unset.
+    span: Option<u16>,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -196,6 +201,8 @@ impl ZedisFormField {
             fill: false,
             suffix_builder: None,
             verbatim: false,
+            stacked: false,
+            span: None,
         }
     }
 
@@ -264,6 +271,22 @@ impl ZedisFormField {
     /// Mark this field as read-only (renders the widget as disabled).
     pub fn readonly(mut self) -> Self {
         self.readonly = true;
+        self
+    }
+
+    /// Share a row: take `columns` of the form's twelve, so this field and
+    /// the next sit side by side — a host and its port, 9 and 3. Fields are
+    /// placed in order, and one that does not fit starts the next row.
+    pub fn span(mut self, columns: u16) -> Self {
+        self.span = Some(columns.clamp(1, FORM_COLUMNS));
+        self
+    }
+
+    /// Lay a `RadioGroup`'s options out one per line instead of in a row.
+    /// For options that are phrases: a row of those wraps, and four
+    /// exclusive choices broken over two lines read as two groups of two.
+    pub fn stacked(mut self) -> Self {
+        self.stacked = true;
         self
     }
 
@@ -1132,12 +1155,12 @@ impl Render for ZedisForm {
         let mut items: Vec<FormItem> = Vec::new();
         if let Some(title) = self.title.clone() {
             items.push(FormItem::field(
-                field().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)),
+                row().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)),
             ));
         }
         if let Some(description) = self.description.clone() {
             items.push(FormItem::field(
-                field().child(
+                row().child(
                     Label::new(description)
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
@@ -1167,10 +1190,15 @@ impl Render for ZedisForm {
             for tab in tabs {
                 tab_bar = tab_bar.child(Tab::new().label(tab.clone()));
             }
-            items.push(FormItem::field(field().child(tab_bar)));
+            items.push(FormItem::field(row().child(tab_bar)));
         }
 
-        let new_field = |item: &ZedisFormField| field().required(item.required).label(item.label.clone());
+        let new_field = |item: &ZedisFormField| {
+            field()
+                .col_span(item.span.unwrap_or(FORM_COLUMNS))
+                .required(item.required)
+                .label(item.label.clone())
+        };
 
         // Read the active tab index once to avoid repeated entity reads inside the loop.
         let active_tab_index = *self.tab_selected_index.read(cx);
@@ -1244,16 +1272,20 @@ impl Render for ZedisForm {
                     let form_entity = cx.entity().clone();
                     items.push(FormItem::field(
                         new_field(field).child(
-                            RadioGroup::horizontal(id)
-                                .children(field.options.clone().unwrap_or_default())
-                                .selected_index(Some(selected))
-                                .disabled(field_disabled)
-                                .on_click(move |index, _, cx| {
-                                    state.update(cx, |state, _| {
-                                        *state = *index;
-                                    });
-                                    form_entity.update(cx, |_, cx| cx.notify());
-                                }),
+                            if field.stacked {
+                                RadioGroup::vertical(id)
+                            } else {
+                                RadioGroup::horizontal(id)
+                            }
+                            .children(field.options.clone().unwrap_or_default())
+                            .selected_index(Some(selected))
+                            .disabled(field_disabled)
+                            .on_click(move |index, _, cx| {
+                                state.update(cx, |state, _| {
+                                    *state = *index;
+                                });
+                                form_entity.update(cx, |_, cx| cx.notify());
+                            }),
                         ),
                     ));
                 }
@@ -1264,7 +1296,7 @@ impl Render for ZedisForm {
         if show_add_fields {
             for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
                 items.push(FormItem::field(
-                    field().child(
+                    row().child(
                         h_flex()
                             .gap_2()
                             .child(Input::new(field_state).disabled(form_disabled))
@@ -1283,7 +1315,7 @@ impl Render for ZedisForm {
         }
         if show_add_fields {
             items.push(FormItem::field(
-                field().child(
+                row().child(
                     h_flex().justify_end().child(
                         Button::new("add-add-field")
                             .icon(IconName::Plus)
@@ -1307,7 +1339,7 @@ impl Render for ZedisForm {
                 .collect::<Vec<_>>()
                 .join("\n");
             items.push(FormItem::field(
-                field().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))),
+                row().child(Alert::error(alert_id, TextView::markdown(textview_id, error_text))),
             ));
         }
 
@@ -1317,7 +1349,7 @@ impl Render for ZedisForm {
         if !self.in_dialog
             && let Some(bar) = self.render_action_bar(window, cx)
         {
-            items.push(FormItem::field(field().child(bar)));
+            items.push(FormItem::field(row().child(bar)));
         }
 
         // Fill mode: a flex column the parent sizes, every field at its own
@@ -1333,11 +1365,11 @@ impl Render for ZedisForm {
                 }))
                 .into_any_element();
         }
-        let mut form_container = v_form().w_full().gap_2();
+        let mut form_container = v_form().columns(usize::from(FORM_COLUMNS)).w_full().gap_2();
         for item in items {
             form_container = match item {
                 FormItem::Field(field) => form_container.child(*field),
-                FormItem::Fill(element) => form_container.child(field().child(element)),
+                FormItem::Fill(element) => form_container.child(row().child(element)),
             };
         }
 
@@ -1351,6 +1383,16 @@ impl Render for ZedisForm {
             div().child(form_container).overflow_y_scrollbar().into_any_element()
         }
     }
+}
+
+/// The form's grid: a field takes the whole row unless it asks for a share
+/// of it ([`ZedisFormField::span`]).
+const FORM_COLUMNS: u16 = 12;
+
+/// A form item that takes the whole row — everything that is not a spanned
+/// field: the title, the tab bar, an error, the add-field rows.
+fn row() -> Field {
+    field().col_span(FORM_COLUMNS)
 }
 
 /// The least a fill field keeps when its parent is short.

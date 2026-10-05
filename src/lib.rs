@@ -30,9 +30,9 @@ use crate::states::{
     update_app_state_and_save_quiet,
 };
 use crate::views::open_about_window;
-use gpui::{App, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{App, WindowBounds, WindowOptions, prelude::*, px};
 #[cfg(not(target_family = "wasm"))]
-use gpui::{Bounds, Menu, MenuItem, OsAction};
+use gpui::{Bounds, Menu, MenuItem, OsAction, size};
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
@@ -78,9 +78,11 @@ pub mod window_setup;
 #[cfg(not(target_family = "wasm"))]
 use crate::dialogs::*;
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::{DiagnosticsAction, WindowAction};
+use crate::helpers::{DiagnosticsAction, EditorAction, WindowAction, ZoomAction};
 use crate::root::*;
 use crate::startup::*;
+#[cfg(not(target_family = "wasm"))]
+use crate::states::SettingsAction;
 use crate::window_setup::*;
 
 /// Everything `main` does. Lives here so the views and states above it
@@ -348,6 +350,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
         (store.theme_name(), store.theme())
     };
     apply_startup_theme(saved_theme_name.as_deref(), saved_mode, cx);
+    place_notifications(cx);
     cx.set_global(app_store);
     // From here on every exit path flushes the state on the way out; nothing
     // else needs to remember to.
@@ -385,6 +388,24 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
         MemuAction::About => {
             open_about_window(cx);
         }
+        MemuAction::NewConnection => {
+            let store = cx.global::<ZedisGlobalStore>().clone();
+            store.update(cx, |state, cx| state.new_server(cx));
+        }
+        // The app menu's standard trio. Menus are the Mac's; elsewhere the
+        // actions are never offered.
+        MemuAction::Hide => {
+            #[cfg(target_os = "macos")]
+            cx.hide();
+        }
+        MemuAction::HideOthers => {
+            #[cfg(target_os = "macos")]
+            cx.hide_other_apps();
+        }
+        MemuAction::ShowAll => {
+            #[cfg(target_os = "macos")]
+            cx.unhide_other_apps();
+        }
         MemuAction::Close => {
             // ⌘W / Ctrl+W mirrors the red close button: on macOS it hides
             // the app (see on_window_should_close); elsewhere it closes the
@@ -409,54 +430,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
         }
     });
     #[cfg(not(target_family = "wasm"))]
-    {
-        let mut menu_items = vec![MenuItem::action("About Zedis", MemuAction::About)];
-        // App Store builds update via the App Store — hide the manual check.
-        if !is_app_store_build() {
-            menu_items.push(MenuItem::action("Check for Updates", UpdateAction::Check));
-        }
-        menu_items.extend([
-            MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
-            MenuItem::action("Export Diagnostics…", DiagnosticsAction::Export),
-            MenuItem::action("Close Window", MemuAction::Close),
-            MenuItem::action("Quit", MemuAction::Quit),
-        ]);
-        cx.set_menus(vec![
-            Menu {
-                name: "Zedis".into(),
-                items: menu_items,
-                disabled: false,
-            },
-            // The standard Edit menu: macOS routes these to the focused text
-            // field through the OS actions, and the inputs' own bindings answer
-            // the shortcuts the menu shows.
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Undo", Undo, OsAction::Undo),
-                    MenuItem::os_action("Redo", Redo, OsAction::Redo),
-                    MenuItem::separator(),
-                    MenuItem::os_action("Cut", Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", Paste, OsAction::Paste),
-                    MenuItem::separator(),
-                    MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
-                ],
-                disabled: false,
-            },
-            Menu {
-                name: "Window".into(),
-                items: vec![
-                    MenuItem::action("Minimize", WindowAction::Minimize),
-                    MenuItem::action("Zoom", WindowAction::Zoom),
-                    MenuItem::action("Toggle Full Screen", WindowAction::ToggleFullscreen),
-                    MenuItem::separator(),
-                    MenuItem::action("Close Window", MemuAction::Close),
-                ],
-                disabled: false,
-            },
-        ]);
-    }
+    cx.set_menus(app_menus());
 
     #[cfg(not(target_family = "wasm"))]
     install_host_key_prompt(cx);
@@ -506,7 +480,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
                 // Linux too — Wayland can't reliably reveal a window that
                 // was never mapped.
                 show: cfg!(not(target_os = "macos")),
-                window_min_size: Some(size(px(600.), px(400.))),
+                window_min_size: Some(main_window_min_size()),
                 ..Default::default()
             }),
             |window, cx| {
@@ -728,6 +702,93 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
         Ok::<_, anyhow::Error>(())
     })
     .detach();
+}
+
+/// The native menu bar. Every item is an action that already has a handler
+/// and, where it has one, a shortcut from `HOT_KEYS` — the menu is where a
+/// Mac user looks for both, and it used to hold three menus without
+/// Settings…, File, View or Help.
+#[cfg(not(target_family = "wasm"))]
+fn app_menus() -> Vec<Menu> {
+    let mut app_items = vec![
+        MenuItem::action("About Zedis", MemuAction::About),
+        MenuItem::separator(),
+        MenuItem::action("Settings…", SettingsAction::Editor),
+        MenuItem::separator(),
+    ];
+    // App Store builds update via the App Store — hide the manual check.
+    if !is_app_store_build() {
+        app_items.push(MenuItem::action("Check for Updates…", UpdateAction::Check));
+        app_items.push(MenuItem::separator());
+    }
+    app_items.extend([
+        MenuItem::action("Hide Zedis", MemuAction::Hide),
+        MenuItem::action("Hide Others", MemuAction::HideOthers),
+        MenuItem::action("Show All", MemuAction::ShowAll),
+        MenuItem::separator(),
+        MenuItem::action("Quit Zedis", MemuAction::Quit),
+    ]);
+    let menu = |name: &'static str, items: Vec<MenuItem>| Menu {
+        name: name.into(),
+        items,
+        disabled: false,
+    };
+    vec![
+        menu("Zedis", app_items),
+        menu(
+            "File",
+            vec![
+                MenuItem::action("New Connection…", MemuAction::NewConnection),
+                MenuItem::action("New Key", EditorAction::Create),
+                MenuItem::separator(),
+                MenuItem::action("Close Window", MemuAction::Close),
+            ],
+        ),
+        // The standard Edit menu: macOS routes these to the focused text
+        // field through the OS actions, and the inputs' own bindings answer
+        // the shortcuts the menu shows.
+        menu(
+            "Edit",
+            vec![
+                MenuItem::os_action("Undo", Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, OsAction::Paste),
+                MenuItem::separator(),
+                MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            ],
+        ),
+        menu(
+            "View",
+            vec![
+                MenuItem::action("Command Palette", PaletteAction::Toggle),
+                MenuItem::action("Recent Keys", RecentKeysAction::Toggle),
+                MenuItem::action("Toggle Terminal", EditorAction::Cmd),
+                MenuItem::separator(),
+                MenuItem::action("Zoom In", ZoomAction::In),
+                MenuItem::action("Zoom Out", ZoomAction::Out),
+                MenuItem::action("Actual Size", ZoomAction::Reset),
+            ],
+        ),
+        menu(
+            "Window",
+            vec![
+                MenuItem::action("Minimize", WindowAction::Minimize),
+                MenuItem::action("Zoom", WindowAction::Zoom),
+                MenuItem::action("Toggle Full Screen", WindowAction::ToggleFullscreen),
+            ],
+        ),
+        menu(
+            "Help",
+            vec![
+                MenuItem::action("Keyboard Shortcuts", ShortcutsAction::Toggle),
+                MenuItem::action("Open Logs Folder", MemuAction::OpenLogs),
+                MenuItem::action("Export Diagnostics…", DiagnosticsAction::Export),
+            ],
+        ),
+    ]
 }
 
 #[cfg(test)]

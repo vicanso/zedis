@@ -828,7 +828,7 @@ impl Render for ZedisServers {
                         // edit + a "⋯" dropdown (export / delete) on the right.
                         // Built here so the ZedisCard call just drops it into the
                         // footer slot.
-                        let footer = {
+                        let (meta, card_actions) = {
                             let muted = cx.theme().muted_foreground;
                             // Last connected wins the slot; the edit stamp is the
                             // fallback for a server never opened here.
@@ -842,71 +842,61 @@ impl Render for ZedisServers {
                             let has_time = last_used_at.is_some() || !updated_at.is_empty();
                             let edit_server = update_server.clone();
                             let more_id = more_server_id.clone();
-                            h_flex()
-                                .id(("servers-card-footer", index))
-                                .w_full()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    h_flex()
-                                        .id(("servers-card-updated", index))
-                                        .items_center()
-                                        .gap_1()
-                                        .when(has_time, |this| {
-                                            this.child(Icon::new(CustomIconName::Clock3).xsmall().text_color(muted))
-                                                .child(Label::new(relative.clone()).text_xs().text_color(muted))
-                                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                                        }),
-                                )
-                                .child(
-                                    // Footer actions own their clicks so they
-                                    // don't bubble to the card's connect-on-click.
-                                    h_flex()
-                                        .id(("servers-card-footer-actions", index))
-                                        .items_center()
-                                        .gap_1()
-                                        .on_click(|_, _, cx| cx.stop_propagation())
-                                        .child(
-                                            Button::new(("servers-card-edit", index))
-                                                .ghost()
-                                                .xsmall()
-                                                .tooltip(update_tooltip.clone())
-                                                .icon(CustomIconName::FilePenLine)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.add_or_update_server_dialog(&edit_server, window, cx);
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new(("servers-card-more", index))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::Ellipsis)
-                                                .dropdown_menu_with_anchor(
-                                                    Anchor::TopRight,
-                                                    move |menu, _window, _cx| {
-                                                        let clone_id = more_id.clone();
-                                                        let exp_id = more_id.clone();
-                                                        let del_id = more_id.clone();
-                                                        menu.menu_element_with_icon(
-                                                            Icon::new(IconName::Copy),
-                                                            Box::new(ServersCardAction::Clone(clone_id)),
-                                                            |_, cx| Label::new(i18n_servers(cx, "clone_tooltip")),
-                                                        )
-                                                        .menu_element_with_icon(
-                                                            Icon::new(IconName::ExternalLink),
-                                                            Box::new(ServersCardAction::Export(exp_id)),
-                                                            |_, cx| Label::new(i18n_servers(cx, "export_tooltip")),
-                                                        )
-                                                        .menu_element_with_icon(
-                                                            Icon::new(CustomIconName::FileXCorner),
-                                                            Box::new(ServersCardAction::Delete(del_id)),
-                                                            |_, cx| Label::new(i18n_servers(cx, "remove_tooltip")),
-                                                        )
-                                                    },
-                                                ),
-                                        ),
-                                )
+                            // When it was last used (or edited), on the detail
+                            // row; the exact time in its tooltip.
+                            let meta = has_time.then(|| {
+                                div()
+                                    .id(("servers-card-updated", index))
+                                    .child(Label::new(relative.clone()).text_xs().text_color(muted))
+                                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            });
+                            (
+                                meta,
+                                // The card's own actions own their clicks so they
+                                // don't bubble to the card's connect-on-click.
+                                h_flex()
+                                    .id(("servers-card-footer-actions", index))
+                                    .items_center()
+                                    .gap_1()
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .child(
+                                        Button::new(("servers-card-edit", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip(update_tooltip.clone())
+                                            .icon(CustomIconName::FilePenLine)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.add_or_update_server_dialog(&edit_server, window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("servers-card-more", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Ellipsis)
+                                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+                                                let clone_id = more_id.clone();
+                                                let exp_id = more_id.clone();
+                                                let del_id = more_id.clone();
+                                                menu.menu_element_with_icon(
+                                                    Icon::new(IconName::Copy),
+                                                    Box::new(ServersCardAction::Clone(clone_id)),
+                                                    |_, cx| Label::new(i18n_servers(cx, "clone_tooltip")),
+                                                )
+                                                .menu_element_with_icon(
+                                                    Icon::new(IconName::ExternalLink),
+                                                    Box::new(ServersCardAction::Export(exp_id)),
+                                                    |_, cx| Label::new(i18n_servers(cx, "export_tooltip")),
+                                                )
+                                                .menu_element_with_icon(
+                                                    Icon::new(CustomIconName::FileXCorner),
+                                                    Box::new(ServersCardAction::Delete(del_id)),
+                                                    |_, cx| Label::new(i18n_servers(cx, "remove_tooltip")),
+                                                )
+                                            }),
+                                    ),
+                            )
                         };
 
                         let handle_select_server = cx.listener(move |_this, _, _, cx| {
@@ -930,7 +920,8 @@ impl Render for ZedisServers {
                                 this.description(description.to_string())
                             })
                             .when(!hover_actions.is_empty(), |this| this.hover_only_actions(hover_actions))
-                            .footer(footer)
+                            .when_some(meta, |this, meta| this.meta(meta))
+                            .trailing(card_actions)
                             .on_click(Box::new(handle_select_server))
                             .into_any_element()
                     })
@@ -948,7 +939,7 @@ impl Render for ZedisServers {
                     .gap_2()
                     .w_full()
                     .child(
-                        // pl_2 matches the `.m_2()` left margin every
+                        // px_1 matches the `.m_1()` margin every
                         // ZedisCard applies, so the group label lines
                         // up with the cards' left edge. Whole header
                         // row toggles collapse on click.
@@ -956,8 +947,8 @@ impl Render for ZedisServers {
                             .id(SharedString::from(format!("group-header-{group_key}")))
                             .items_center()
                             .gap_2()
-                            .pt_2()
-                            .px_2()
+                            .h(px(24.))
+                            .px_1()
                             .cursor_pointer()
                             .child(Icon::new(chevron).text_color(cx.theme().muted_foreground))
                             .child(Label::new(group_name).text_sm().text_color(cx.theme().muted_foreground))
@@ -983,7 +974,7 @@ impl Render for ZedisServers {
                             })),
                     )
                     .when(!is_collapsed, |this| {
-                        this.child(div().grid().grid_cols(cols).gap_1().w_full().children(cards))
+                        this.child(div().grid().grid_cols(cols).w_full().children(cards))
                     })
                     .into_any_element(),
             );
@@ -998,7 +989,7 @@ impl Render for ZedisServers {
             .items_center()
             .gap_3()
             .pt_1()
-            .px_2()
+            .px_1()
             .pb_3()
             // Full-width divider under the toolbar (design).
             .border_b_1()

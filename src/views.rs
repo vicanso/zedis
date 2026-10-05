@@ -144,7 +144,9 @@ pub use server_report_dialog::{ServerReport, open_server_report_dialog};
 pub use timeseries_explorer::ZedisTimeSeriesExplorer;
 // The charts every diagnostic panel draws, one module so the axes and the
 // tooltip read the same in all of them.
-pub(crate) use charts::{ChartParams, ChartSeries, make_bar_chart, make_line_chart, make_series_chart, value_range};
+pub(crate) use charts::{
+    ChartParams, ChartSeries, make_bar_chart, make_bounded_line_chart, make_line_chart, make_series_chart, value_range,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use compare_window::open_compare_window;
 pub use features_dialog::open_features_dialog;

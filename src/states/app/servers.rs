@@ -35,6 +35,14 @@ impl ZedisAppState {
         self.go_with_query(Route::Home, query, cx);
     }
 
+    /// Open a blank server form: the connections page, asked through the
+    /// route (`new`). The selection is kept, as for [`Self::edit_server`].
+    pub fn new_server(&mut self, cx: &mut Context<Self>) {
+        let mut query = HashMap::new();
+        query.insert("new".to_string(), "true".to_string());
+        self.go_with_query(Route::Home, query, cx);
+    }
+
     pub fn clear_selected_server(&mut self, cx: &mut Context<Self>) {
         self.selected_server = None;
         cx.emit(GlobalEvent::ServerSelected(SharedString::default(), 0));

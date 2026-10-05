@@ -39,6 +39,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    list::ListItem,
     notification::Notification,
     scroll::ScrollableElement,
     slider::{Slider, SliderEvent, SliderState, SliderValue},
@@ -98,7 +99,85 @@ fn build_font_options(
     (labels, values, Some(selected))
 }
 
+/// Width of the section list down the left of the window.
+const SECTION_NAV_WIDTH: f32 = 160.;
+
+/// The groups the settings are in, in the order the window lists them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum SettingsSection {
+    #[default]
+    Appearance,
+    DateTime,
+    KeyBehavior,
+    Tabs,
+    Redis,
+    Ai,
+    System,
+    LocalData,
+}
+
+impl SettingsSection {
+    /// The i18n key of its title (`settings.` section); its description is
+    /// the same key with `_desc`.
+    fn title_key(self) -> &'static str {
+        match self {
+            Self::Appearance => "section_appearance",
+            Self::DateTime => "section_datetime",
+            Self::KeyBehavior => "section_key_behavior",
+            Self::Tabs => "section_tabs",
+            Self::Redis => "section_redis",
+            Self::Ai => "section_ai",
+            Self::System => "section_system",
+            Self::LocalData => "section_local_data",
+        }
+    }
+}
+
+/// The rows of one section, picked out of the page's builder chain.
+///
+/// `render` still declares every section in one chain, top to bottom, as it
+/// did when the page was one long column: `.section(…)` starts a section,
+/// the `.child(…)` / `.when(…)` after it are its rows. This keeps the rows of
+/// the `active` one and drops the rest, and remembers which sections went by
+/// — on a target that leaves one out, the list on the left leaves it out too.
+struct SectionRows {
+    active: SettingsSection,
+    current: Option<SettingsSection>,
+    sections: Vec<SettingsSection>,
+    rows: Vec<AnyElement>,
+}
+
+impl SectionRows {
+    fn new(active: SettingsSection) -> Self {
+        Self {
+            active,
+            current: None,
+            sections: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    /// Start `section`: the rows that follow are its own.
+    fn section(mut self, cx: &Context<ZedisSettingEditor>, section: SettingsSection) -> Self {
+        self.current = Some(section);
+        self.sections.push(section);
+        self.child(ZedisSettingEditor::render_section_header(cx, section))
+    }
+}
+
+impl ParentElement for SectionRows {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        if self.current == Some(self.active) {
+            self.rows.extend(elements);
+        }
+    }
+}
+
+impl FluentBuilder for SectionRows {}
+
 pub struct ZedisSettingEditor {
+    /// The section whose settings are on screen.
+    section: SettingsSection,
     ui_font_select: Entity<ZedisSelect>,
     mono_font_select: Entity<ZedisSelect>,
     /// Index → value for each dropdown (index 0 = the "default" entry = `None`).
@@ -617,6 +696,7 @@ impl ZedisSettingEditor {
         );
 
         Self {
+            section: SettingsSection::default(),
             _subscriptions: subscriptions,
             ui_font_select,
             mono_font_select,
@@ -710,19 +790,57 @@ impl ZedisSettingEditor {
             .child(h_flex().w(px(200.)).flex_none().justify_end().child(input_element))
     }
 
-    fn render_section_header(cx: &Context<Self>, title_key: &str, desc_key: &str) -> impl IntoElement {
+    fn render_section_header(cx: &Context<Self>, section: SettingsSection) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let title_key = section.title_key();
         v_flex()
             .w_full()
             .gap_1()
-            .pt_8()
+            .pt_5()
             .pb_4()
             .child(
                 Label::new(i18n_settings(cx, title_key))
                     .text_sm()
                     .font_weight(FontWeight::BOLD),
             )
-            .child(Label::new(i18n_settings(cx, desc_key)).text_xs().text_color(muted))
+            .child(
+                Label::new(i18n_settings(cx, &format!("{title_key}_desc")))
+                    .text_xs()
+                    .text_color(muted),
+            )
+    }
+
+    /// The window: the sections down the left, the selected one's settings
+    /// on the right. All of them used to be one column five screens long.
+    fn render_sections(&self, page: SectionRows, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = page.active;
+        let nav = v_flex()
+            .flex_none()
+            .w(px(SECTION_NAV_WIDTH))
+            .h_full()
+            .p_2()
+            .gap_0p5()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .children(page.sections.iter().map(|&section| {
+                ListItem::new(section.title_key())
+                    .selected(section == active)
+                    .child(Label::new(i18n_settings(cx, section.title_key())).text_sm())
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.section = section;
+                        cx.notify();
+                    }))
+            }));
+        h_flex().size_full().items_start().child(nav).child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .px_6()
+                .pb_4()
+                .children(page.rows)
+                .overflow_y_scrollbar(),
+        )
     }
 }
 
@@ -737,265 +855,246 @@ impl Render for ZedisSettingEditor {
             window.set_rem_size(rem);
         }
 
-        v_flex().size_full().overflow_y_scrollbar().px_6().child(
-            v_flex()
-                .w_full()
-                .mx_auto()
-                // — Appearance —
-                .child(Self::render_section_header(
+        let page = SectionRows::new(self.section)
+            // — Appearance —
+            .section(cx, SettingsSection::Appearance)
+            .child(Self::render_setting_row(cx, "font_size", {
+                let muted = cx.theme().muted_foreground;
+                let rem = match self.font_size_slider.read(cx).value() {
+                    SliderValue::Single(v) | SliderValue::Range(v, _) => v,
+                };
+                // Fill the row's shared 200px control column (render_setting_row
+                // wraps every input in a `w(px(200.))` div). `min_w_0` lets the
+                // flex_1 slider shrink below its content width so the px readout
+                // beside it stays visible — the original overflow was flex_1
+                // with the default `min-width: auto`.
+                // gap_4 (1rem) leaves room for the thumb, which overhangs the
+                // track end by ~half its width (size_4) at the max; flex_none
+                // keeps the px readout from being squeezed.
+                h_flex()
+                    .w_full()
+                    .gap_4()
+                    .items_center()
+                    .child(Slider::new(&self.font_size_slider).flex_1().min_w_0())
+                    .child(
+                        Label::new(format!("{}px", rem as i32))
+                            .flex_none()
+                            .text_sm()
+                            .text_color(muted),
+                    )
+            }))
+            .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
+            .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
+            .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
+            // — Date & time —
+            .section(cx, SettingsSection::DateTime)
+            .child(Self::render_setting_row(cx, "time_zone", self.time_zone_select.clone()))
+            .child(Self::render_setting_row(
+                cx,
+                "date_format",
+                self.date_format_select.clone(),
+            ))
+            // — Key Behavior —
+            .section(cx, SettingsSection::KeyBehavior)
+            .child(Self::render_setting_row(
+                cx,
+                "max_key_tree_depth",
+                NumberInput::new(&self.max_key_tree_depth_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "key_scan_count",
+                Input::new(&self.key_scan_count_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "auto_expand_threshold",
+                Input::new(&self.auto_expand_threshold_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "show_key_tree_ttl",
+                Switch::new("show-key-tree-ttl")
+                    .checked(self.show_key_tree_ttl)
+                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                        this.show_key_tree_ttl = *checked;
+                        let enabled = *checked;
+                        update_app_state_and_save(cx, "save_show_key_tree_ttl", move |state, _| {
+                            state.set_show_key_tree_ttl(enabled);
+                        });
+                    })),
+            ))
+            .children(self.render_soft_delete_row(cx))
+            .child(Self::render_setting_row(
+                cx,
+                "max_truncate_length",
+                Input::new(&self.max_truncate_length_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "value_search_scan_cap",
+                Input::new(&self.value_search_scan_cap_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "value_search_time_budget",
+                Input::new(&self.value_search_time_budget_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "value_search_max_matches",
+                Input::new(&self.value_search_max_matches_state),
+            ))
+            // — Workspace Tabs —
+            .section(cx, SettingsSection::Tabs)
+            .child(Self::render_setting_row(
+                cx,
+                "sidebar_click_new_tab",
+                Switch::new("sidebar-click-new-tab")
+                    .checked(self.sidebar_click_new_tab)
+                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                        this.sidebar_click_new_tab = *checked;
+                        let enabled = *checked;
+                        update_app_state_and_save(cx, "save_sidebar_click_new_tab", move |state, _| {
+                            state.set_sidebar_click_new_tab(enabled);
+                        });
+                    })),
+            ))
+            // — Redis Connection —
+            .section(cx, SettingsSection::Redis)
+            .child(Self::render_setting_row(
+                cx,
+                "redis_connection_timeout",
+                Input::new(&self.redis_connection_timeout_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "redis_response_timeout",
+                Input::new(&self.redis_response_timeout_state),
+            ))
+            // — AI Analysis —
+            .section(cx, SettingsSection::Ai)
+            .child(Self::render_setting_row(
+                cx,
+                "ai_base_url",
+                Input::new(&self.ai_base_url_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "ai_api_key",
+                Input::new(&self.ai_api_key_state).mask_toggle(),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "ai_model",
+                Input::new(&self.ai_model_state),
+            ))
+            // — System —
+            .section(cx, SettingsSection::System)
+            .child(Self::render_setting_row(
+                cx,
+                "http_proxy",
+                Input::new(&self.http_proxy_state),
+            ))
+            .when(cfg!(not(target_os = "linux")), |this| {
+                this.child(Self::render_setting_row(
                     cx,
-                    "section_appearance",
-                    "section_appearance_desc",
-                ))
-                .child(Self::render_setting_row(cx, "font_size", {
-                    let muted = cx.theme().muted_foreground;
-                    let rem = match self.font_size_slider.read(cx).value() {
-                        SliderValue::Single(v) | SliderValue::Range(v, _) => v,
-                    };
-                    // Fill the row's shared 200px control column (render_setting_row
-                    // wraps every input in a `w(px(200.))` div). `min_w_0` lets the
-                    // flex_1 slider shrink below its content width so the px readout
-                    // beside it stays visible — the original overflow was flex_1
-                    // with the default `min-width: auto`.
-                    // gap_4 (1rem) leaves room for the thumb, which overhangs the
-                    // track end by ~half its width (size_4) at the max; flex_none
-                    // keeps the px readout from being squeezed.
-                    h_flex()
-                        .w_full()
-                        .gap_4()
-                        .items_center()
-                        .child(Slider::new(&self.font_size_slider).flex_1().min_w_0())
-                        .child(
-                            Label::new(format!("{}px", rem as i32))
-                                .flex_none()
-                                .text_sm()
-                                .text_color(muted),
-                        )
-                }))
-                .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
-                .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
-                .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
-                // — Date & time —
-                .child(Self::render_section_header(
-                    cx,
-                    "section_datetime",
-                    "section_datetime_desc",
-                ))
-                .child(Self::render_setting_row(cx, "time_zone", self.time_zone_select.clone()))
-                .child(Self::render_setting_row(
-                    cx,
-                    "date_format",
-                    self.date_format_select.clone(),
-                ))
-                // — Key Behavior —
-                .child(Self::render_section_header(
-                    cx,
-                    "section_key_behavior",
-                    "section_key_behavior_desc",
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "max_key_tree_depth",
-                    NumberInput::new(&self.max_key_tree_depth_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "key_scan_count",
-                    Input::new(&self.key_scan_count_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "auto_expand_threshold",
-                    Input::new(&self.auto_expand_threshold_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "show_key_tree_ttl",
-                    Switch::new("show-key-tree-ttl")
-                        .checked(self.show_key_tree_ttl)
+                    "tray_enabled",
+                    Switch::new("tray-enabled")
+                        .checked(self.tray_enabled)
                         .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                            this.show_key_tree_ttl = *checked;
+                            this.tray_enabled = *checked;
                             let enabled = *checked;
-                            update_app_state_and_save(cx, "save_show_key_tree_ttl", move |state, _| {
-                                state.set_show_key_tree_ttl(enabled);
+                            update_app_state_and_save(cx, "save_tray_enabled", move |state, _| {
+                                state.set_tray_enabled(enabled);
                             });
                         })),
                 ))
-                .children(self.render_soft_delete_row(cx))
-                .child(Self::render_setting_row(
+            })
+            // App Store builds update via the App Store — the toggle would
+            // control a check that `check_for_updates` refuses to run, so
+            // hide it alongside the menu entries.
+            .when(!is_app_store_build(), |this| {
+                this.child(Self::render_setting_row(
                     cx,
-                    "max_truncate_length",
-                    Input::new(&self.max_truncate_length_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "value_search_scan_cap",
-                    Input::new(&self.value_search_scan_cap_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "value_search_time_budget",
-                    Input::new(&self.value_search_time_budget_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "value_search_max_matches",
-                    Input::new(&self.value_search_max_matches_state),
-                ))
-                // — Workspace Tabs —
-                .child(Self::render_section_header(cx, "section_tabs", "section_tabs_desc"))
-                .child(Self::render_setting_row(
-                    cx,
-                    "sidebar_click_new_tab",
-                    Switch::new("sidebar-click-new-tab")
-                        .checked(self.sidebar_click_new_tab)
+                    "auto_update_check",
+                    Switch::new("auto-update-check")
+                        .checked(self.auto_update_check)
                         .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                            this.sidebar_click_new_tab = *checked;
+                            this.auto_update_check = *checked;
                             let enabled = *checked;
-                            update_app_state_and_save(cx, "save_sidebar_click_new_tab", move |state, _| {
-                                state.set_sidebar_click_new_tab(enabled);
+                            update_app_state_and_save(cx, "save_auto_update_check", move |state, _| {
+                                state.set_auto_update_check(enabled);
                             });
                         })),
                 ))
-                // — Redis Connection —
-                .child(Self::render_section_header(cx, "section_redis", "section_redis_desc"))
                 .child(Self::render_setting_row(
                     cx,
-                    "redis_connection_timeout",
-                    Input::new(&self.redis_connection_timeout_state),
+                    "update_prerelease",
+                    Switch::new("update-prerelease")
+                        .checked(self.update_prerelease)
+                        .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                            this.update_prerelease = *checked;
+                            let enabled = *checked;
+                            update_app_state_and_save(cx, "save_update_prerelease", move |state, _| {
+                                state.set_update_prerelease(enabled);
+                            });
+                        })),
                 ))
-                .child(Self::render_setting_row(
+            })
+            .child(Self::render_setting_row(
+                cx,
+                "config_dir",
+                Input::new(&self.config_dir_state).disabled(true),
+            ))
+            // Linux registers the scheme through the desktop entry and
+            // Windows through the installer; only macOS has a runtime
+            // hook (Launch Services) worth a button.
+            .when(cfg!(target_os = "macos"), |this| {
+                this.child(Self::render_setting_row(
                     cx,
-                    "redis_response_timeout",
-                    Input::new(&self.redis_response_timeout_state),
-                ))
-                // — AI Analysis —
-                .child(Self::render_section_header(cx, "section_ai", "section_ai_desc"))
-                .child(Self::render_setting_row(
-                    cx,
-                    "ai_base_url",
-                    Input::new(&self.ai_base_url_state),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "ai_api_key",
-                    Input::new(&self.ai_api_key_state).mask_toggle(),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "ai_model",
-                    Input::new(&self.ai_model_state),
-                ))
-                // — System —
-                .child(Self::render_section_header(cx, "section_system", "section_system_desc"))
-                .child(Self::render_setting_row(
-                    cx,
-                    "http_proxy",
-                    Input::new(&self.http_proxy_state),
-                ))
-                .when(cfg!(not(target_os = "linux")), |this| {
-                    this.child(Self::render_setting_row(
-                        cx,
-                        "tray_enabled",
-                        Switch::new("tray-enabled")
-                            .checked(self.tray_enabled)
-                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                                this.tray_enabled = *checked;
-                                let enabled = *checked;
-                                update_app_state_and_save(cx, "save_tray_enabled", move |state, _| {
-                                    state.set_tray_enabled(enabled);
-                                });
-                            })),
-                    ))
-                })
-                // App Store builds update via the App Store — the toggle would
-                // control a check that `check_for_updates` refuses to run, so
-                // hide it alongside the menu entries.
-                .when(!is_app_store_build(), |this| {
-                    this.child(Self::render_setting_row(
-                        cx,
-                        "auto_update_check",
-                        Switch::new("auto-update-check")
-                            .checked(self.auto_update_check)
-                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                                this.auto_update_check = *checked;
-                                let enabled = *checked;
-                                update_app_state_and_save(cx, "save_auto_update_check", move |state, _| {
-                                    state.set_auto_update_check(enabled);
-                                });
-                            })),
-                    ))
-                    .child(Self::render_setting_row(
-                        cx,
-                        "update_prerelease",
-                        Switch::new("update-prerelease")
-                            .checked(self.update_prerelease)
-                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                                this.update_prerelease = *checked;
-                                let enabled = *checked;
-                                update_app_state_and_save(cx, "save_update_prerelease", move |state, _| {
-                                    state.set_update_prerelease(enabled);
-                                });
-                            })),
-                    ))
-                })
-                .child(Self::render_setting_row(
-                    cx,
-                    "config_dir",
-                    Input::new(&self.config_dir_state).disabled(true),
-                ))
-                // Linux registers the scheme through the desktop entry and
-                // Windows through the installer; only macOS has a runtime
-                // hook (Launch Services) worth a button.
-                .when(cfg!(target_os = "macos"), |this| {
-                    this.child(Self::render_setting_row(
-                        cx,
-                        "url_scheme",
-                        Button::new("register-url-scheme")
-                            .small()
-                            .outline()
-                            .label(i18n_settings(cx, "url_scheme_button"))
-                            .on_click(cx.listener(|this, _, window, cx| this.register_url_scheme(window, cx))),
-                    ))
-                })
-                .child(Self::render_setting_row(
-                    cx,
-                    "keybindings_file",
-                    Button::new("edit-keybindings")
+                    "url_scheme",
+                    Button::new("register-url-scheme")
                         .small()
                         .outline()
-                        .label(i18n_settings(cx, "keybindings_edit"))
-                        .on_click(cx.listener(|_this, _, window, cx| Self::open_keybindings_file(window, cx))),
+                        .label(i18n_settings(cx, "url_scheme_button"))
+                        .on_click(cx.listener(|this, _, window, cx| this.register_url_scheme(window, cx))),
                 ))
-                // — Local data —
-                .child(Self::render_section_header(
+            })
+            .child(Self::render_setting_row(
+                cx,
+                "keybindings_file",
+                Button::new("edit-keybindings")
+                    .small()
+                    .outline()
+                    .label(i18n_settings(cx, "keybindings_edit"))
+                    .on_click(cx.listener(|_this, _, window, cx| Self::open_keybindings_file(window, cx))),
+            ))
+            // — Local data —
+            .section(cx, SettingsSection::LocalData)
+            // The backup is a file the user picks or is handed; a tab has
+            // neither a picker nor a Downloads folder (ADR 9).
+            .when(cfg!(not(target_family = "wasm")), |this| {
+                this.child(Self::render_setting_row(
                     cx,
-                    "section_local_data",
-                    "section_local_data_desc",
+                    "local_data_export",
+                    Button::new("export-local-data")
+                        .small()
+                        .outline()
+                        .label(i18n_settings(cx, "local_data_export_button"))
+                        .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
                 ))
-                // The backup is a file the user picks or is handed; a tab has
-                // neither a picker nor a Downloads folder (ADR 9).
-                .when(cfg!(not(target_family = "wasm")), |this| {
-                    this.child(Self::render_setting_row(
-                        cx,
-                        "local_data_export",
-                        Button::new("export-local-data")
-                            .small()
-                            .outline()
-                            .label(i18n_settings(cx, "local_data_export_button"))
-                            .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
-                    ))
-                    .child(Self::render_setting_row(
-                        cx,
-                        "local_data_import",
-                        Button::new("import-local-data")
-                            .small()
-                            .outline()
-                            .label(i18n_settings(cx, "local_data_import_button"))
-                            .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
-                    ))
-                }),
-        )
+                .child(Self::render_setting_row(
+                    cx,
+                    "local_data_import",
+                    Button::new("import-local-data")
+                        .small()
+                        .outline()
+                        .label(i18n_settings(cx, "local_data_import_button"))
+                        .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
+                ))
+            });
+        self.render_sections(page, cx)
     }
 }
 
@@ -1131,7 +1230,9 @@ pub fn open_settings_window(cx: &mut App) {
                 title: Some(title),
                 ..Default::default()
             }),
-            is_resizable: false,
+            // Resizable down to where a row still has its text and its
+            // control side by side.
+            window_min_size: Some(size(px(700.), px(480.))),
             focus: true,
             ..Default::default()
         },

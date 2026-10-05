@@ -56,8 +56,18 @@ async fn detect_server_type_over(conn: &mut RedisAsyncConn) -> Result<ServerType
         Err(e) => return Err(e.into()),
     }
 
-    // Check if Cluster mode is enabled via INFO command
-    let reply: Value = cmd("INFO").arg("cluster").query_async(conn).await?;
+    // Check if Cluster mode is enabled via INFO command. A user who may not
+    // run it (`INFO` is `@dangerous`, outside `+@read`) is read as standalone,
+    // like the denied `ROLE` above: failing the connect over it left a user
+    // who could read every key with nothing.
+    let reply: Value = match cmd("INFO").arg("cluster").query_async(conn).await {
+        Ok(reply) => reply,
+        Err(e) if is_ignorable_server_error(&e.to_string()) => {
+            info!("INFO unavailable, assuming standalone: {e}");
+            return Ok(ServerType::Standalone);
+        }
+        Err(e) => return Err(e.into()),
+    };
     if cluster_enabled(reply)? {
         Ok(ServerType::Cluster)
     } else {
@@ -642,6 +652,7 @@ impl ConnectionManager {
             sentinel_master_names,
             version: Version::new(0, 0, 0),
             is_valkey: false,
+            info_unavailable: false,
             connection,
             #[cfg(not(target_family = "wasm"))]
             client: rclient,
@@ -657,9 +668,22 @@ impl ConnectionManager {
             (false, None)
         };
 
-        (client.is_valkey, client.version) = match server_type {
-            ServerType::Cluster => {
-                let info: redis::Value = cmd("INFO").arg("server").query_async(&mut conn).await?;
+        // The version is `INFO`'s to tell. Where the user may not run it (or
+        // the server has none) the client is still a client: the version
+        // stays unknown — every floor reads as "not supported", the safe
+        // side — and the heartbeat is told to probe with `PING`.
+        let server_info = match cmd("INFO").arg("server").query_async::<redis::Value>(&mut conn).await {
+            Ok(info) => Some(info),
+            Err(e) if is_ignorable_server_error(&e.to_string()) => {
+                info!(server_id, "INFO unavailable, version unknown: {e}");
+                client.info_unavailable = true;
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
+        (client.is_valkey, client.version) = match (server_info, server_type) {
+            (None, _) => (false, Version::new(0, 0, 0)),
+            (Some(info), ServerType::Cluster) => {
                 let mut version = None;
                 let mut is_valkey = false;
                 if let redis::Value::Map(items) = info {
@@ -675,9 +699,11 @@ impl ConnectionManager {
                 }
                 (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
             }
-            _ => {
-                let info: InfoDict = cmd("INFO").arg("server").query_async(&mut conn).await?;
-                let (is_valkey, version) = get_version(info);
+            (Some(info), _) => {
+                // A reply that is not an INFO text names no version either.
+                let (is_valkey, version) = InfoDict::from_redis_value(info)
+                    .map(get_version)
+                    .unwrap_or((false, None));
                 (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
             }
         };

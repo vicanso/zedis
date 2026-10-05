@@ -14,9 +14,10 @@
 
 //! Window placement and theme application at launch and on change.
 
+use crate::constants::STATUS_BAR_HEIGHT;
 use crate::helpers::{apply_default_ui_font_size, reapply_fonts};
 use crate::states::ZedisAppState;
-use gpui::{App, Bounds, Pixels, WindowAppearance, px, size};
+use gpui::{Anchor, App, Bounds, Pixels, Size, WindowAppearance, px, size};
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
@@ -35,6 +36,25 @@ pub(crate) fn default_window_bounds(cx: &mut App) -> Bounds<Pixels> {
     Bounds::centered(None, window_size, cx)
 }
 
+/// Notifications stack from the bottom right, above the status bar. The
+/// library's default is the top right, which is where this app keeps what a
+/// notification is usually about: New / Import / Export on the connections
+/// page and the editor's key bar sat under the toast until it left. The
+/// setting lives on the theme global and survives a theme change, so once at
+/// startup is enough.
+pub(crate) fn place_notifications(cx: &mut App) {
+    let settings = &mut Theme::global_mut(cx).notification;
+    settings.placement = Anchor::BottomRight;
+    settings.margins.bottom = STATUS_BAR_HEIGHT + px(8.);
+}
+
+/// The smallest the main window goes. The sidebar and the key tree do not
+/// shrink, so below this the editor is what gives: at the old 600×400 it was
+/// 90px wide, and at 900 a hash showed two of its columns.
+pub(crate) fn main_window_min_size() -> Size<Pixels> {
+    size(px(960.), px(600.))
+}
+
 /// Resolve the bounds to open the window at, validating any saved placement
 /// against the *current* display layout (monitors may have been unplugged,
 /// resized, or rearranged since last run). Priority:
@@ -47,9 +67,10 @@ pub(crate) fn default_window_bounds(cx: &mut App) -> Bounds<Pixels> {
 /// stays reachable. The flag says whether the window was maximized there,
 /// so it can open maximized again over that rectangle.
 pub(crate) fn resolve_window_bounds(state: &ZedisAppState, cx: &mut App) -> (Bounds<Pixels>, bool) {
-    // Shrink to fit the display, then keep the origin (title bar) on-screen.
+    // Grow to the minimum (a size saved by a release that allowed less),
+    // shrink to fit the display, then keep the origin (title bar) on-screen.
     let clamp_to = |mut b: Bounds<Pixels>, screen: Bounds<Pixels>| -> Bounds<Pixels> {
-        b.size = b.size.min(&screen.size);
+        b.size = b.size.max(&main_window_min_size()).min(&screen.size);
         let max_x = screen.origin.x + screen.size.width - b.size.width;
         let max_y = screen.origin.y + screen.size.height - b.size.height;
         b.origin.x = b.origin.x.clamp(screen.origin.x, max_x);

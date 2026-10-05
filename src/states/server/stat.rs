@@ -936,6 +936,10 @@ impl ZedisServerState {
                     None
                 };
                 let (servers, list): (Vec<_>, Vec<String>) = master_infos(&at, probed_info).await?.into_iter().unzip();
+                // No texts at all: a user who may not run `INFO`. The probe's
+                // PING is then the whole beat — the link is up, and there are
+                // no metrics to record (a row of zeros is not a sample).
+                let has_info = !list.is_empty();
                 let infos: Vec<RedisInfo> = list.iter().map(|info| RedisInfo::parse(info)).collect();
                 // Cluster only: keep a per-master persistence row so the
                 // Persistence panel can show which node is still forking.
@@ -973,7 +977,7 @@ impl ZedisServerState {
                 info.node_zones = node_zones;
                 info.metrics.timestamp_ms = unix_ts_millis();
                 info.metrics.latency_ms = latency.as_millis() as u64;
-                Ok((info, slow_logs, dbsize))
+                Ok((info, has_info, slow_logs, dbsize))
             },
             move |this, result, cx| {
                 this.heartbeat_in_flight = false;
@@ -986,7 +990,7 @@ impl ZedisServerState {
                     return;
                 }
                 match result {
-                    Ok((info, slow_logs, dbsize)) => {
+                    Ok((info, has_info, slow_logs, dbsize)) => {
                         let loading = info.metrics.loading;
                         // Sentinel: the node we resolved as master now reports
                         // itself a replica — a failover happened underneath us.
@@ -1005,9 +1009,11 @@ impl ZedisServerState {
                                 this.emit_warning_notification(i18n_status_bar(cx, "conn_master_changed"), cx);
                             }
                         }
-                        METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
-                        #[cfg(not(target_family = "wasm"))]
-                        maybe_persist_metrics(&server_id_clone, info.metrics, cx);
+                        if has_info {
+                            METRICS_CACHE.add_metrics(&server_id_clone, info.metrics);
+                            #[cfg(not(target_family = "wasm"))]
+                            maybe_persist_metrics(&server_id_clone, info.metrics, cx);
+                        }
                         if refresh_dbsize {
                             // Attempted, whether or not it answered — a denied
                             // DBSIZE is asked again next minute, not next tick.

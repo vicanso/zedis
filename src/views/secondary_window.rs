@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::helpers::with_app_identity;
+use crate::helpers::{MemuAction, with_app_identity};
+#[cfg(target_os = "macos")]
+use gpui::WindowBounds;
 use gpui::{
-    AnyWindowHandle, App, AppContext, DisplayId, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Window,
-    WindowOptions, div, prelude::*,
+    AnyWindowHandle, App, AppContext, DisplayId, Entity, FocusHandle, Focusable, Global, KeyDownEvent, Pixels,
+    SharedString, Window, WindowOptions, div, prelude::*, px,
 };
-use gpui_kit::component::Root;
+use gpui_kit::component::{ActiveTheme, Root, StyledExt, h_flex, label::Label, v_flex};
 use std::{any::TypeId, collections::HashMap};
 
 /// The `DisplayId` of the monitor the main (active) window is currently on, or
@@ -30,6 +32,35 @@ pub fn active_window_display(cx: &mut App) -> Option<DisplayId> {
         .update(cx, |_, window, cx| window.display(cx).map(|d| d.id()))
         .ok()
         .flatten()
+}
+
+/// Height of the title strip a secondary window draws for itself.
+const TITLE_STRIP_HEIGHT: Pixels = px(28.);
+
+/// On macOS a secondary window draws its own title strip, in the app
+/// theme's colours: the system's title bar follows the *system* appearance,
+/// so with the app set to Light on a Dark system (or the reverse) Settings
+/// opened with a dark bar over a light page. The native bar is made
+/// transparent — it still drags, and keeps its traffic lights — the window
+/// grows by the strip so the content keeps its size, and the title comes
+/// back for [`SecondaryWindow`] to draw.
+#[cfg(target_os = "macos")]
+fn own_title_strip(mut options: WindowOptions) -> (WindowOptions, Option<SharedString>) {
+    let Some(titlebar) = options.titlebar.as_mut() else {
+        return (options, None);
+    };
+    titlebar.appears_transparent = true;
+    let title = titlebar.title.clone();
+    if let Some(WindowBounds::Windowed(bounds)) = options.window_bounds.as_mut() {
+        bounds.size.height += TITLE_STRIP_HEIGHT;
+    }
+    (options, title)
+}
+/// Elsewhere the system's title bar stays: Windows and the Linux desktops
+/// draw the window controls in it.
+#[cfg(not(target_os = "macos"))]
+fn own_title_strip(options: WindowOptions) -> (WindowOptions, Option<SharedString>) {
+    (options, None)
 }
 
 /// Global registry that tracks open secondary windows by their content type.
@@ -55,14 +86,21 @@ impl SecondaryWindowRegistry {
 /// in one place rather than repeated per-window.
 struct SecondaryWindow<V: Render + 'static> {
     focus_handle: FocusHandle,
+    /// The window's title, when this view draws the title strip itself
+    /// (macOS — see [`own_title_strip`]).
+    title: Option<SharedString>,
     content: Entity<V>,
 }
 
 impl<V: Render + 'static> SecondaryWindow<V> {
-    fn new(content: Entity<V>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(content: Entity<V>, title: Option<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        Self { focus_handle, content }
+        Self {
+            focus_handle,
+            title,
+            content,
+        }
     }
 }
 
@@ -74,7 +112,19 @@ impl<V: Render + 'static> Focusable for SecondaryWindow<V> {
 
 impl<V: Render + 'static> Render for SecondaryWindow<V> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let title_strip = self.title.clone().map(|title| {
+            h_flex()
+                .flex_none()
+                .w_full()
+                .h(TITLE_STRIP_HEIGHT)
+                .items_center()
+                .justify_center()
+                .bg(cx.theme().title_bar)
+                .border_b_1()
+                .border_color(cx.theme().title_bar_border)
+                .child(Label::new(title).text_sm().font_medium())
+        });
+        v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|_this, event: &KeyDownEvent, window, _cx| {
@@ -82,7 +132,16 @@ impl<V: Render + 'static> Render for SecondaryWindow<V> {
                     window.remove_window();
                 }
             }))
-            .child(self.content.clone())
+            // ⌘W / the Close Window menu item closes this window, and only
+            // it. Answered here, ahead of the app-wide handler: that one
+            // hides the whole app on macOS, which from Settings left the
+            // Settings window open and the main window gone.
+            .on_action(cx.listener(|_this, action: &MemuAction, window, cx| match action {
+                MemuAction::Close => window.remove_window(),
+                _ => cx.propagate(),
+            }))
+            .children(title_strip)
+            .child(div().flex_1().min_h_0().w_full().child(self.content.clone()))
     }
 }
 
@@ -114,10 +173,11 @@ where
     // Settings, …) group with the main window and don't show the generic
     // "Wayland (W)" icon on KDE (issue #106). Caller-supplied title wins.
     let options = with_app_identity(options);
+    let (options, title) = own_title_strip(options);
 
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
         let content = build(window, cx);
-        let wrapper = cx.new(|cx| SecondaryWindow::new(content, window, cx));
+        let wrapper = cx.new(|cx| SecondaryWindow::new(content, title, window, cx));
         cx.new(|cx| Root::new(wrapper, window, cx))
     }) {
         SecondaryWindowRegistry::get(cx).0.insert(type_id, handle.into());

@@ -1362,16 +1362,25 @@ impl gpui::Render for ZedisSlowlogEditor {
             .overflow_hidden()
             // Monospace cascades to the logged commands, durations and timestamps.
             .font_family(get_mono_font_family())
-            // Toolbar
+            // Toolbar. One row where it fits; where it does not, the
+            // actions drop to a second row instead of running off the edge
+            // (at 900px Export and Reset could not be reached).
             .child(
                 h_flex()
+                    .w_full()
+                    .flex_none()
                     .px_4()
-                    .h(px(40.))
+                    .py(px(6.))
+                    .min_h(px(40.))
+                    .gap_x_4()
+                    .gap_y_2()
+                    .flex_wrap()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .justify_between()
                     .child(
                         h_flex()
+                            .flex_none()
                             .gap_2()
                             .items_center()
                             .child(
@@ -1438,7 +1447,7 @@ impl gpui::Render for ZedisSlowlogEditor {
                                     .text_sm(),
                             ),
                     )
-                    .child(self.render_toolbar_actions(cx)),
+                    .child(div().flex_none().child(self.render_toolbar_actions(cx))),
             )
             // Body — slowlog table or latency panel depending on active tab.
             .child(

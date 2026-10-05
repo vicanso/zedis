@@ -16,10 +16,12 @@ use crate::assets::CustomIconName;
 use crate::connection::{ServerCommand, get_server};
 use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family, pacing};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
-use crate::states::{ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_metrics};
+use crate::states::{
+    ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width, i18n_common, i18n_metrics,
+};
 use crate::views::{
-    ChartParams, ChartSeries, ServerReport, export_to_file, make_bar_chart, make_line_chart, make_series_chart,
-    open_server_report_dialog,
+    ChartParams, ChartSeries, ServerReport, export_to_file, make_bounded_line_chart, make_line_chart,
+    make_series_chart, open_server_report_dialog,
 };
 use core::f64;
 use gpui::{
@@ -163,6 +165,8 @@ pub struct ZedisMetrics {
     range: MetricsRange,
     latest_metrics: Option<RedisMetrics>,
     metrics_chart_data: MetricsChartData,
+    /// Label every how-many-th sample on a chart's x axis. Worked out in
+    /// `render`, where the width of a chart is known ([`tick_margin_for`]).
     tick_margin: usize,
     heartbeat_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -178,7 +182,34 @@ pub(crate) fn format_timestamp_ms(ts_ms: i64) -> SharedString {
     format_timestamp_ms_as(ts_ms, TIME_FORMAT)
 }
 
-fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format: &str) -> (MetricsChartData, usize) {
+/// The floor a chart's maximum is given so an all-zero series still has an
+/// axis; at or under it the series is drawn on 0–1 (see `chart_params`).
+const FLAT_SERIES_MAX: f64 = 0.01;
+
+/// The width a chart on the metrics page has to draw its x axis in: the
+/// content area split into `columns`, less the page's and the card's
+/// paddings and the y axis' labels.
+fn chart_plot_width(content_width: f32, columns: u16) -> f32 {
+    const PAGE_PADDING: f32 = 16.;
+    const GRID_GAP: f32 = 8.;
+    const CARD_PADDING_AND_Y_AXIS: f32 = 88.;
+    let columns = f32::from(columns.max(1));
+    let card = (content_width - PAGE_PADDING - GRID_GAP * (columns - 1.)) / columns;
+    (card - CARD_PADDING_AND_Y_AXIS).max(0.)
+}
+
+/// Label every how-many-th of `samples` so the labels — `label_chars` wide,
+/// in the axis' small mono face — fit in `chart_width` with a gap between
+/// them. Scales with the UI font size, which the axis labels follow.
+fn tick_margin_for(samples: usize, label_chars: usize, chart_width: f32, font_px: f32) -> usize {
+    const CHAR_WIDTH: f32 = 6.;
+    const LABEL_GAP: f32 = 20.;
+    let label_width = (label_chars as f32 * CHAR_WIDTH + LABEL_GAP) * font_px / 14.;
+    let fits = (chart_width / label_width).floor().max(1.);
+    ((samples as f32 / fits).ceil() as usize).max(1)
+}
+
+fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format: &str) -> MetricsChartData {
     let mut prev_metrics = RedisMetrics::default();
     let n = history_metrics.len();
 
@@ -316,48 +347,40 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
         prev_metrics = *metrics;
     }
 
-    let mut tick_margin = n / 10;
-    if !tick_margin.is_multiple_of(10) {
-        tick_margin += 1;
+    MetricsChartData {
+        dates: Arc::new(dates),
+        cpu_sys: Arc::new(cpu_sys),
+        cpu_user: Arc::new(cpu_user),
+        max_cpu_percent,
+        min_cpu_percent,
+        memory: Arc::new(memory),
+        max_memory,
+        min_memory,
+        latency: Arc::new(latency),
+        min_latency_ms,
+        max_latency_ms,
+        connected_clients: Arc::new(connected_clients),
+        max_connected_clients,
+        min_connected_clients,
+        total_commands_processed: Arc::new(total_commands_processed),
+        max_total_commands_processed,
+        min_total_commands_processed,
+        input_kbps: Arc::new(input_kbps),
+        output_kbps: Arc::new(output_kbps),
+        max_net_kbps,
+        min_net_kbps,
+        blocked_clients: Arc::new(blocked_clients),
+        max_blocked_clients,
+        fragmentation: Arc::new(fragmentation),
+        max_fragmentation,
+        min_fragmentation,
+        key_hit_rate: Arc::new(key_hit_rate),
+        min_key_hit_rate,
+        max_key_hit_rate,
+        evicted_keys: Arc::new(evicted_keys),
+        max_evicted_keys,
+        min_evicted_keys,
     }
-
-    (
-        MetricsChartData {
-            dates: Arc::new(dates),
-            cpu_sys: Arc::new(cpu_sys),
-            cpu_user: Arc::new(cpu_user),
-            max_cpu_percent,
-            min_cpu_percent,
-            memory: Arc::new(memory),
-            max_memory,
-            min_memory,
-            latency: Arc::new(latency),
-            min_latency_ms,
-            max_latency_ms,
-            connected_clients: Arc::new(connected_clients),
-            max_connected_clients,
-            min_connected_clients,
-            total_commands_processed: Arc::new(total_commands_processed),
-            max_total_commands_processed,
-            min_total_commands_processed,
-            input_kbps: Arc::new(input_kbps),
-            output_kbps: Arc::new(output_kbps),
-            max_net_kbps,
-            min_net_kbps,
-            blocked_clients: Arc::new(blocked_clients),
-            max_blocked_clients,
-            fragmentation: Arc::new(fragmentation),
-            max_fragmentation,
-            min_fragmentation,
-            key_hit_rate: Arc::new(key_hit_rate),
-            min_key_hit_rate,
-            max_key_hit_rate,
-            evicted_keys: Arc::new(evicted_keys),
-            max_evicted_keys,
-            min_evicted_keys,
-        },
-        tick_margin.max(1),
-    )
 }
 
 impl ZedisMetrics {
@@ -366,7 +389,7 @@ impl ZedisMetrics {
         let title = Self::title_for(&server_state, cx);
         let metrics_history = get_metrics_cache().list_metrics(&server_id);
         let latest_metrics = metrics_history.last().copied();
-        let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
+        let metrics_chart_data = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
 
         let mut this = Self {
             title,
@@ -375,7 +398,7 @@ impl ZedisMetrics {
             range: MetricsRange::Live,
             latest_metrics,
             metrics_chart_data,
-            tick_margin,
+            tick_margin: 1,
             heartbeat_task: None,
             _subscriptions: vec![],
         };
@@ -409,9 +432,7 @@ impl ZedisMetrics {
         self.range = range;
         if range == MetricsRange::Live {
             let history = get_metrics_cache().list_metrics(&self.server_id);
-            let (data, tick_margin) = convert_metrics_to_chart_data(history, TIME_FORMAT);
-            self.metrics_chart_data = data;
-            self.tick_margin = tick_margin;
+            self.metrics_chart_data = convert_metrics_to_chart_data(history, TIME_FORMAT);
             cx.notify();
             return;
         }
@@ -427,9 +448,7 @@ impl ZedisMetrics {
                 if state.range != range {
                     return;
                 }
-                let (data, tick_margin) = convert_metrics_to_chart_data(history, range.time_format());
-                state.metrics_chart_data = data;
-                state.tick_margin = tick_margin;
+                state.metrics_chart_data = convert_metrics_to_chart_data(history, range.time_format());
                 cx.notify();
             });
         })
@@ -467,9 +486,7 @@ impl ZedisMetrics {
         // heartbeat in the Live window — a history window is a frozen
         // snapshot until re-selected.
         if self.range == MetricsRange::Live {
-            let (metrics_chart_data, tick_margin) = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
-            self.metrics_chart_data = metrics_chart_data;
-            self.tick_margin = tick_margin;
+            self.metrics_chart_data = convert_metrics_to_chart_data(metrics_history, TIME_FORMAT);
         }
         cx.notify();
     }
@@ -497,12 +514,22 @@ impl ZedisMetrics {
         y_max: f64,
         y_format: impl Fn(f64) -> String + 'static,
     ) -> ChartParams {
+        // A series that never left zero arrives with its floor for a maximum,
+        // and an axis from 0 to that reads "0" on every tick. It gets 0–1 and
+        // decimals instead (two: the ticks fall on quarters): a flat line on
+        // a scale, not five zeros.
+        let flat = y_max <= FLAT_SERIES_MAX;
+        let y_format: Box<dyn Fn(f64) -> String> = if flat {
+            Box::new(|value| format!("{value:.2}"))
+        } else {
+            Box::new(y_format)
+        };
         ChartParams {
             id: id.into(),
             y_min: 0.0,
             dates,
-            y_max,
-            y_format: Box::new(y_format),
+            y_max: if flat { 1.0 } else { y_max },
+            y_format,
             tick_margin: self.tick_margin,
         }
     }
@@ -826,12 +853,13 @@ impl ZedisMetrics {
         );
         let dates = self.metrics_chart_data.dates.clone();
         let values = self.metrics_chart_data.key_hit_rate.clone();
-        let max_val = self.metrics_chart_data.max_key_hit_rate.max(0.01);
-        let fill_color = cx.theme().chart_2;
-        let chart = make_bar_chart(
-            self.chart_params("metrics-hit-rate", dates, max_val, |v| format!("{:.0}%", v)),
+        // A line on a fixed 0–100% axis. As bars from zero, a rate that sat
+        // at 100% — the usual one — was a solid block that said nothing.
+        let stroke = cx.theme().chart_2;
+        let chart = make_bounded_line_chart(
+            self.chart_params("metrics-hit-rate", dates, 100.0, |v| format!("{:.0}%", v)),
             values,
-            fill_color,
+            stroke,
         );
         self.render_chart_card(cx, label, chart)
     }
@@ -865,6 +893,12 @@ impl Render for ZedisMetrics {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let window_width = window.viewport_size().width;
         let columns = if window_width > px(1200.) { 2 } else { 1 };
+        // As many x labels as a chart is wide enough for: a fixed ten ran
+        // into each other at the default size and overlapped when zoomed.
+        let dates = &self.metrics_chart_data.dates;
+        let label_chars = dates.iter().map(|date| date.chars().count()).max().unwrap_or(0);
+        let chart_width = chart_plot_width(content_area_width(window, cx).as_f32(), columns);
+        self.tick_margin = tick_margin_for(dates.len(), label_chars, chart_width, cx.theme().font_size.as_f32());
         if self.latest_metrics.is_none() {
             return ZedisSkeletonLoading::new()
                 .text(i18n_common(cx, "loading"))
@@ -1053,6 +1087,27 @@ fn memory_axis(min: f64, max: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The x labels are as many as the chart has room for, and fewer when
+    /// the font is larger — a fixed ten ran into each other.
+    #[test]
+    fn x_labels_are_thinned_to_what_the_chart_is_wide_enough_for() {
+        // Two columns in a 1280px window with the sidebar open.
+        let width = chart_plot_width(1100., 2);
+        assert!((440.0..460.0).contains(&width), "{width}");
+        // "22:13:20" — eight characters: six labels fit, so 60 samples are
+        // labelled every tenth.
+        assert_eq!(tick_margin_for(60, 8, width, 14.), 10);
+        // Three zoom steps up the labels are wider: fewer of them.
+        assert!(tick_margin_for(60, 8, width, 17.) > 10);
+        // One column: twice the room, twice the labels.
+        assert!(tick_margin_for(60, 8, chart_plot_width(1100., 1), 14.) < 10);
+        // Never zero — the chart would label nothing — however few samples
+        // or little room there is.
+        assert_eq!(tick_margin_for(3, 8, width, 14.), 1);
+        assert_eq!(tick_margin_for(0, 0, 0., 14.), 1);
+        assert_eq!(tick_margin_for(60, 8, 0., 14.), 60);
+    }
 
     #[test]
     fn the_memory_axis_frames_the_samples_instead_of_starting_at_zero() {

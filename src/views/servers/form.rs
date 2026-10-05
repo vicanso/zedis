@@ -18,6 +18,11 @@
 //! Split out of `servers.rs`; the methods are `ZedisServers`'s as before.
 
 use super::*;
+use crate::connection::{SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL};
+
+/// The server types a Sentinel's settings apply to: named outright, or Auto,
+/// which discovers one. Standalone and Cluster entries have no master name.
+const SENTINEL_CAPABLE_TYPES: [usize; 2] = [SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL];
 
 impl ZedisServers {
     pub(super) fn add_or_update_server_dialog(
@@ -67,11 +72,15 @@ impl ZedisServers {
                 .default_value(redis_server.host.clone())
                 .placeholder(i18n_common(cx, "host_placeholder"))
                 .tab_index(0)
+                // Host and port are one address: one row, the port a
+                // quarter of it.
+                .span(9)
                 .validate(validate_host)
                 .required(),
             ZedisFormField::new("port", i18n_common(cx, "port"))
                 .default_value(redis_server.port.to_string())
                 .placeholder(i18n_common(cx, "port_placeholder"))
+                .span(3)
                 .tab_index(0),
             ZedisFormField::new("username", i18n_common(cx, "username"))
                 .default_value(redis_server.username.clone().unwrap_or_default())
@@ -82,10 +91,26 @@ impl ZedisServers {
                 .placeholder(i18n_common(cx, "password_placeholder"))
                 .tab_index(0)
                 .mask(),
+            // tab advanced. The server type leads it, and the Sentinel
+            // settings follow the type: they are offered for Auto (which
+            // finds a Sentinel by itself) and Sentinel, and dropped for
+            // Standalone and Cluster, where a master name means nothing.
+            // They used to sit on the General tab of every entry.
+            ZedisFormField::new("server_type", i18n_servers(cx, "server_type"))
+                .default_value(redis_server.server_type.unwrap_or(0).to_string())
+                .options(
+                    server_type_list
+                        .split(" ")
+                        .map(|s| s.to_string().into())
+                        .collect::<Vec<SharedString>>(),
+                )
+                .tab_index(3)
+                .field_type(ZedisFormFieldType::RadioGroup),
             ZedisFormField::new("master_name", i18n_servers(cx, "master_name"))
                 .default_value(redis_server.master_name.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
-                .tab_index(0)
+                .visible_on("server_type", &SENTINEL_CAPABLE_TYPES)
+                .tab_index(3)
                 .suffix({
                     let candidates = candidates_for_suffix.clone();
                     let locale = fetch_locale.clone();
@@ -162,13 +187,15 @@ impl ZedisServers {
             ZedisFormField::new("sentinel_username", i18n_servers(cx, "sentinel_username"))
                 .default_value(redis_server.sentinel_username.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "sentinel_username_placeholder"))
+                .visible_on("server_type", &SENTINEL_CAPABLE_TYPES)
                 .visible_when_filled("master_name")
-                .tab_index(0),
+                .tab_index(3),
             ZedisFormField::new("sentinel_password", i18n_servers(cx, "sentinel_password"))
                 .default_value(redis_server.sentinel_password.clone().unwrap_or_default())
                 .placeholder(i18n_servers(cx, "sentinel_password_placeholder"))
+                .visible_on("server_type", &SENTINEL_CAPABLE_TYPES)
                 .visible_when_filled("master_name")
-                .tab_index(0)
+                .tab_index(3)
                 .mask(),
             ZedisFormField::new("description", i18n_common(cx, "description"))
                 .default_value(redis_server.description.clone().unwrap_or_default())
@@ -261,17 +288,8 @@ impl ZedisServers {
                 // is filled, and is dropped from submission when it is not.
                 .visible_when_filled("ssh_key")
                 .tab_index(2),
-            // tab advanced
-            ZedisFormField::new("server_type", i18n_servers(cx, "server_type"))
-                .default_value(redis_server.server_type.unwrap_or(0).to_string())
-                .options(
-                    server_type_list
-                        .split(" ")
-                        .map(|s| s.to_string().into())
-                        .collect::<Vec<SharedString>>(),
-                )
-                .tab_index(3)
-                .field_type(ZedisFormFieldType::RadioGroup),
+            // tab advanced (the server type and what follows it are defined
+            // above, next to each other)
             ZedisFormField::new("databases", i18n_servers(cx, "databases"))
                 .default_value(redis_server.databases.map(|n| n.to_string()).unwrap_or_default())
                 .placeholder(i18n_servers(cx, "databases_placeholder"))
@@ -332,6 +350,9 @@ impl ZedisServers {
                     i18n_servers(cx, "writes_locked"),
                     i18n_servers(cx, "writes_readonly"),
                 ])
+                // Four phrases: one per line, or they wrap into two rows
+                // that read as two separate choices.
+                .stacked()
                 .tab_index(4)
                 .field_type(ZedisFormFieldType::RadioGroup),
             ZedisFormField::new("require_confirm_writes", i18n_servers(cx, "require_confirm_writes"))
@@ -413,7 +434,8 @@ impl ZedisServers {
                 i18n_servers(cx, "tab_safety"),
                 i18n_servers(cx, "tab_keys"),
             ])
-            .confirm_label(i18n_common(cx, "confirm"))
+            // The button says what it does: add the entry, or save the edit.
+            .confirm_label(i18n_common(cx, if is_new { "add" } else { "save" }))
             .cancel_label(i18n_common(cx, "cancel"))
             .dialog_max_height(max_h)
             .foot_actions(move |_window, cx: &mut Context<zedis_ui::ZedisForm>| {

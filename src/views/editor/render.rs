@@ -29,7 +29,7 @@ pub(super) const FIND_HINTS: [&str; 4] = ["search", "command_palette", "recent_k
 pub(super) const ACT_HINTS: [&str; 4] = ["new_key", "reload_keys", "terminal", "keyboard_shortcuts"];
 
 /// Above this a "load anyway" is warned about in plainer words: the wait is
-/// tens of seconds, not a blink.
+/// seconds, not a blink, and the memory is the larger cost.
 const SLOW_LOAD_SIZE: u64 = 16_000_000;
 
 impl ZedisEditor {
@@ -191,7 +191,8 @@ impl ZedisEditor {
             .value()
             .is_some_and(|v| matches!(v.key_type(), KeyType::Module(_)));
         // Past `SLOW_LOAD_SIZE` "may briefly freeze" undersells it: a 22 MB
-        // string took the editor some twenty seconds.
+        // string is a couple of seconds and some twenty times its size in
+        // memory, even shown unwrapped (`SOFT_WRAP_MAX_BYTES`).
         let message_key = if is_module {
             "editor.module_value_too_large_message"
         } else if size > SLOW_LOAD_SIZE {
@@ -731,6 +732,10 @@ impl ZedisEditor {
     }
 
     pub(super) fn render_no_key_selected(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let show_guide = !cx
+            .global::<ZedisGlobalStore>()
+            .read(cx)
+            .hint_dismissed(HINT_EDITOR_GUIDE);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let fg = theme.foreground;
@@ -868,10 +873,33 @@ impl ZedisEditor {
                     .pb_3()
                     .gap_2p5()
                     .child(
-                        Label::new(i18n_shortcuts(cx, "title"))
-                            .text_xs()
-                            .font_medium()
-                            .text_color(muted),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                Label::new(i18n_shortcuts(cx, "title"))
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(muted),
+                            )
+                            // The card is for the first visits; after that it
+                            // is the same three lists every time no key is
+                            // open. Closing it is remembered (⌘/ still has
+                            // the shortcuts).
+                            .child(
+                                Button::new("empty-guide-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip(i18n_editor(cx, "hide_guide"))
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        update_app_state_and_save_quiet(cx, "dismiss_hint_editor_guide", |state, _| {
+                                            state.dismiss_hint(HINT_EDITOR_GUIDE)
+                                        });
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -963,7 +991,7 @@ impl ZedisEditor {
                     .text_center(),
             )
             .child(quick_actions)
-            .child(guide)
+            .when(show_guide, |this| this.child(guide))
     }
 }
 

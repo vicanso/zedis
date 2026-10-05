@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::keybinding_overrides;
+use crate::states::SettingsAction;
 use gpui::Action;
 use gpui::KeyBinding;
 // `input::Copy` and not an import of it: the name would shadow the trait.
@@ -36,6 +37,12 @@ pub enum MemuAction {
     /// Reveal the logs directory (`<config_dir>/logs/`) in the OS file manager,
     /// so users can grab logs for bug reports.
     OpenLogs,
+    /// File → New Connection…: the connections page with a blank form.
+    NewConnection,
+    /// The Mac app menu's Hide / Hide Others / Show All.
+    Hide,
+    HideOthers,
+    ShowAll,
 }
 
 /// Navigation. `Back` (bound to `escape`) mirrors the "back to editor"
@@ -509,6 +516,13 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-/",
         reference: Some((GROUP_GENERAL, "keyboard_shortcuts")),
         bind: |keystroke: &str| KeyBinding::new(keystroke, ShortcutsAction::Toggle, None),
+    },
+    // ⌘, — where every Mac app keeps its settings.
+    HotKey {
+        id: "settings",
+        default: "secondary-,",
+        reference: Some((GROUP_GENERAL, "settings")),
+        bind: |keystroke: &str| KeyBinding::new(keystroke, SettingsAction::Editor, None),
     },
     HotKey {
         id: "zoom_in",

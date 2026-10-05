@@ -14,31 +14,35 @@
 
 use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Icon, StyledExt, button::Button, h_flex, label::Label, list::ListItem, tooltip::Tooltip, v_flex,
+    ActiveTheme, Icon, Sizable, StyledExt, button::Button, h_flex, label::Label, list::ListItem, tooltip::Tooltip,
+    v_flex,
 };
 
 /// Type alias for the click handler closure.
 type ZedisCardOnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
+/// Side of the square the card's icon sits in.
+const ICON_BLOCK: f32 = 24.;
+
 /// Visual role of a card.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum CardVariant {
     /// A real data entity (a configured server). Solid border,
-    /// header-left layout, supports actions / hover-only actions /
-    /// footer.
+    /// two rows: name, tag and actions over address, time and
+    /// description.
     #[default]
     Entity,
     /// An action entry point (e.g. "Add New", "Import"). Dashed
     /// border + hover background change + center-aligned content so
     /// it reads as a placeholder/affordance rather than data. In this
-    /// variant `actions`, `hover_only_actions` and `footer` are not
+    /// variant `actions`, `hover_only_actions`, `meta` and `trailing` are not
     /// rendered — the whole card is the single click target.
     Action,
 }
 
 /// A customizable Card component used to display grouped content.
 ///
-/// It supports an icon, title, description, action buttons, a footer,
+/// It supports an icon, title, description, action buttons, a time stamp,
 /// and custom background styling. It wraps a `ListItem` to provide standard
 /// interactive behaviors.
 #[derive(IntoElement)]
@@ -74,8 +78,11 @@ pub struct ZedisCard {
     hover_only_actions: Option<Vec<Button>>,
     /// Handler for click events.
     on_click: Option<ZedisCardOnClick>,
-    /// Optional footer element.
-    footer: Option<AnyElement>,
+    /// An element after the subtitle on the detail row — a time stamp.
+    meta: Option<AnyElement>,
+    /// An element at the end of the title row that is always there — the
+    /// card's own buttons, which a hover must not be needed to find.
+    trailing: Option<AnyElement>,
     /// Custom background fill.
     bg: Option<Fill>,
     /// Visual role (entity vs action). See [`CardVariant`].
@@ -95,7 +102,8 @@ impl ZedisCard {
             actions: None,
             hover_only_actions: None,
             on_click: None,
-            footer: None,
+            meta: None,
+            trailing: None,
             bg: None,
             variant: CardVariant::default(),
         }
@@ -166,9 +174,15 @@ impl ZedisCard {
         self
     }
 
-    /// Sets a custom footer element at the bottom of the card.
-    pub fn footer(mut self, footer: impl IntoElement) -> Self {
-        self.footer = Some(footer.into_any_element());
+    /// Sets the element shown after the subtitle on the detail row.
+    pub fn meta(mut self, meta: impl IntoElement) -> Self {
+        self.meta = Some(meta.into_any_element());
+        self
+    }
+
+    /// Sets the always-visible element at the end of the title row.
+    pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
         self
     }
 
@@ -248,11 +262,19 @@ impl RenderOnce for ZedisCard {
         }
 
         let hover_only_actions = self.hover_only_actions;
-        // Construct the header row: Icon + Title + Spacer + Actions
-        let header = h_flex()
-            // Leading icon sits in a bordered, subtly-filled rounded square
-            // (design) so it reads as a distinct "avatar" rather than a loose
-            // glyph.
+        let muted = cx.theme().muted_foreground;
+        // Two rows. The first is what a card is found by — the name and its
+        // environment — with the actions at its end; the second is the
+        // detail, all on one line: address, when it was last used, and the
+        // description as far as it fits (whole in its tooltip). The card
+        // used to be four rows tall with a blank one where there was no
+        // description, and a screen showed four of them.
+        let title_row = h_flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            // Leading icon in a bordered, subtly-filled rounded square so it
+            // reads as an "avatar" rather than a loose glyph.
             .when_some(self.icon, |this, icon| {
                 this.child(
                     div()
@@ -260,177 +282,113 @@ impl RenderOnce for ZedisCard {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(36.))
+                        .size(px(ICON_BLOCK))
                         .rounded(cx.theme().radius)
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().muted)
-                        .child(icon),
+                        .child(icon.with_size(px(14.))),
                 )
             })
             .when_some(self.title, |this, title| {
-                let subtitle = self.subtitle.clone();
-                let subtitle_font = self.subtitle_font.clone();
-                let tag = self.tag.clone();
+                // The name sizes to its content yet truncates when long; the
+                // chip is `flex_none` so it always stays beside the name.
                 this.child(
-                    div().flex_1().overflow_hidden().child(
-                        v_flex()
-                            .ml_2()
-                            .child(
-                                // Name + tag chip share one row, hugging.
-                                // The name is flex_initial + min_w_0 so
-                                // it sizes to its content yet truncates
-                                // when long; the chip is flex_none so it
-                                // always stays right beside the name; a
-                                // trailing flex_1 spacer eats the slack
-                                // so the pair stays left-aligned and
-                                // adjacent even for short names.
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .w_full()
-                                    .child(
-                                        div().flex_initial().min_w_0().overflow_hidden().child(
-                                            Label::new(title)
-                                                .text_base()
-                                                .font_semibold()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis(),
-                                        ),
-                                    )
-                                    .when_some(tag, |row, (label, colors)| {
-                                        let (bg, fg) = colors.unwrap_or_else(|| {
-                                            let muted = cx.theme().muted_foreground;
-                                            (Hsla { a: 0.15, ..muted }, muted)
-                                        });
-                                        row.child(
-                                            div()
-                                                .flex_none()
-                                                .px_1p5()
-                                                .py_0p5()
-                                                .rounded_full()
-                                                .bg(bg)
-                                                .child(Label::new(label).text_xs().font_semibold().text_color(fg)),
-                                        )
-                                    })
-                                    .child(div().flex_1()),
-                            )
-                            .when_some(subtitle, |col, sub| {
-                                // Keep the full address for the tooltip before
-                                // it's moved into the (truncating) label, so a
-                                // clipped long host:port is still readable on
-                                // hover.
-                                let full = sub.clone();
-                                let mut label = Label::new(sub)
-                                    .text_xs()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_color(cx.theme().muted_foreground);
-                                if let Some(family) = subtitle_font {
-                                    label = label.font_family(family);
-                                }
-                                col.child(
-                                    div()
-                                        .id("zedis-card-subtitle")
-                                        .w_full()
-                                        .overflow_hidden()
-                                        .child(label)
-                                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx)),
-                                )
-                            }),
+                    div().flex_initial().min_w_0().overflow_hidden().child(
+                        Label::new(title)
+                            .text_sm()
+                            .font_semibold()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
                     ),
                 )
             })
-            // Hover-only actions render in their own wrapper so the
-            // invisibility toggle does not collapse layout — the
-            // wrapper keeps its width.
+            .when_some(self.tag, |row, (label, colors)| {
+                let (bg, fg) = colors.unwrap_or((Hsla { a: 0.15, ..muted }, muted));
+                row.child(
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .rounded_full()
+                        .bg(bg)
+                        .child(Label::new(label).text_xs().font_semibold().text_color(fg)),
+                )
+            })
+            .child(div().flex_1())
+            // Hover-only actions keep their box while invisible, so showing
+            // them does not move what is beside them.
             .when_some(hover_only_actions, |this, actions| {
                 this.child(
                     h_flex()
-                        .flex_shrink_0()
-                        .justify_end()
+                        .flex_none()
                         .invisible()
                         .group_hover(CARD_GROUP, |s| s.visible())
                         .children(actions),
                 )
             })
-            // Use flex_1 to push actions to the right
             .when_some(self.actions, |this, actions| {
-                this.child(h_flex().flex_shrink_0().justify_end().children(actions))
+                this.child(h_flex().flex_none().children(actions))
+            })
+            .when_some(self.trailing, |this, trailing| {
+                this.child(div().flex_none().child(trailing))
             });
 
-        // Wrap the ListItem in a thin div that owns the hover group.
-        // ListItem itself does not impl InteractiveElement, so we
-        // attach `.group(...)` to an outer wrapper. The hover-only
-        // actions above resolve their nearest ancestor with that
-        // group name — which is always this card's wrapper, never a
-        // sibling card.
-        // ListItem packs its children into a single gapless block, so
-        // compose header / description / footer into one v_flex with
-        // an explicit gap to get even vertical rhythm (otherwise the
-        // description ends up cramped against its neighbors).
-        let body = v_flex()
+        let separator = || Label::new("·").text_xs().text_color(muted).flex_none();
+        let subtitle_font = self.subtitle_font;
+        let has_subtitle = self.subtitle.is_some();
+        let has_meta = self.meta.is_some();
+        let detail_row = h_flex()
             .w_full()
-            // Floor every card at ~2 body lines so sparse cards (no description)
-            // still read as substantial blocks, matching the design.
-            .min_h(px(112.))
-            .gap_2()
-            .child(header)
-            // Always render the description slot — fall back to a
-            // non-breaking space so cards without a description still
-            // reserve one line of height. A real description is clamped
-            // to a single line (ellipsis + hover tooltip for the full
-            // text) so a long, wrapping description can't make its grid
-            // row taller than its neighbors. Together these keep every
-            // card the same height regardless of description length.
-            .child(match self.description {
-                Some(desc) => {
-                    let full = desc.clone();
+            .items_center()
+            .gap_1p5()
+            // Under the name, past the icon block.
+            .pl(px(ICON_BLOCK + 8.))
+            .when_some(self.subtitle, |row, subtitle| {
+                let mut label = Label::new(subtitle)
+                    .text_xs()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(muted);
+                if let Some(family) = subtitle_font {
+                    label = label.font_family(family);
+                }
+                row.child(div().flex_initial().min_w_0().overflow_hidden().child(label))
+            })
+            .when_some(self.meta, |row, meta| {
+                row.when(has_subtitle, |row| row.child(separator()))
+                    .child(div().flex_none().child(meta))
+            })
+            .when_some(self.description, |row, description| {
+                let full = description.clone();
+                row.when(has_subtitle || has_meta, |row| row.child(separator())).child(
                     div()
                         .id("zedis-card-description")
-                        .w_full()
+                        .flex_1()
+                        .min_w_0()
                         .overflow_hidden()
-                        .child(Label::new(desc).text_sm().whitespace_nowrap().text_ellipsis())
-                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                        .into_any_element()
-                }
-                None => Label::new(SharedString::from("\u{00A0}"))
-                    .text_sm()
-                    .whitespace_normal()
-                    .into_any_element(),
-            })
-            // Footer behind a dim hairline divider so metadata reads
-            // as a distinct region. No top margin — the v_flex gap
-            // already provides separation from the description.
-            .when_some(self.footer, |this, footer| {
-                // A flex spacer pushes the footer to the card's lower edge so
-                // the date stays pinned even when min_h leaves slack. pt_3
-                // matches the card's `.py_3()` bottom inset so the date sits
-                // with equal whitespace above (divider→text) and below.
-                this.child(div().flex_1())
-                    .child(div().pt_3().border_t_1().border_color(cx.theme().border).child(footer))
+                        .child(
+                            Label::new(description)
+                                .text_xs()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(muted),
+                        )
+                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx)),
+                )
             });
 
         let card = ListItem::new(self.id)
-            .m_2()
-            // Hand cursor so the whole card reads as clickable (it is —
-            // clicking the body connects/opens the server). ListItem
-            // already paints a `list_hover` background on hover; the
-            // pointer cursor completes the affordance.
+            .m_1()
             .cursor_pointer()
             .border(px(1.))
             .border_color(cx.theme().border)
-            // Slightly tighter vertical padding than horizontal so the
-            // space below the footer doesn't dwarf the internal gap_2
-            // rhythm (ListItem adds its own py_1 on top of this).
-            .px_4()
-            .py_3()
+            .p(px(10.))
             .rounded(cx.theme().radius)
             .when_some(self.bg, |this, bg| this.bg(bg))
             .when_some(self.on_click, |this, handler| {
                 this.on_click(move |event, window, cx| handler(event, window, cx))
             })
-            .child(body);
+            .child(v_flex().w_full().gap_1().child(title_row).child(detail_row));
 
         div().group(CARD_GROUP).child(card).into_any_element()
     }

@@ -176,6 +176,9 @@ const UPDATE_CHECK_INTERVAL: i64 = 2 * 24 * 60 * 60;
 /// its value is the server id (`ZedisAppState::edit_server`).
 pub const EDIT_SERVER_QUERY: &str = "edit";
 pub const HINT_WELCOME: &str = "welcome";
+/// The shortcut / tips card under the editor's "no key selected" screen,
+/// once its close button has been used.
+pub const HINT_EDITOR_GUIDE: &str = "editor_guide";
 pub const HINT_FIRST_CONNECT: &str = "first_connect";
 pub const HINT_TOPOLOGY: &str = "topology";
 pub const HINT_MEMORY_ANALYSIS: &str = "memory_analysis";

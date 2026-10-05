@@ -101,10 +101,21 @@ fn value_at(values: Arc<Vec<f64>>) -> impl Fn(&usize) -> f64 + 'static {
 
 /// One series as a line.
 pub(crate) fn make_line_chart(params: ChartParams, values: Arc<Vec<f64>>, stroke: Hsla) -> impl IntoElement {
+    line_chart(params, values, stroke, false)
+}
+
+/// One series as a line whose axis ends exactly at `y_max`: for a value with
+/// a hard ceiling — a percentage. A chart keeps a little room above its
+/// domain and labels it, which on a 0–100 axis reads "105%".
+pub(crate) fn make_bounded_line_chart(params: ChartParams, values: Arc<Vec<f64>>, stroke: Hsla) -> impl IntoElement {
+    line_chart(params, values, stroke, true)
+}
+
+fn line_chart(params: ChartParams, values: Arc<Vec<f64>>, stroke: Hsla, bounded: bool) -> impl IntoElement {
     let len = params.dates.len().min(values.len());
     let format: Rc<dyn Fn(f64) -> String> = Rc::from(params.y_format);
     let tooltip = format.clone();
-    LineChart::new(0..len)
+    let chart = LineChart::new(0..len)
         .id(params.id)
         .x(sample_at(&params.dates))
         .y(value_at(values))
@@ -113,7 +124,8 @@ pub(crate) fn make_line_chart(params: ChartParams, values: Arc<Vec<f64>>, stroke
         .y_domain(params.y_min, params.y_max)
         .y_axis(true)
         .y_tick_format(move |value| format(value))
-        .tooltip_value(move |_, value| tooltip(value).into())
+        .tooltip_value(move |_, value| tooltip(value).into());
+    if bounded { chart.y_padding(0., 0.) } else { chart }
 }
 
 /// Several series on one set of axes, each with its own colour and, when it

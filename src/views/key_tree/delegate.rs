@@ -241,24 +241,29 @@ impl ListDelegate for KeyTreeDelegate {
             .text_color(label_color)
             .text_ellipsis()
             .whitespace_nowrap();
-        // TTL text — rendered on every leaf row that has a known TTL value.
-        // `< 1h` ⇒ warm amber accent, everything else (comfortably live, or
-        // perm `-1` ∞) ⇒ muted gray. Missing (`-2`, race between SCAN and TTL)
-        // renders nothing. Gated by the user setting; when off the SCAN loop
-        // also skipped the TTL command (see `RedisClient::scan`).
+        // TTL text — rendered on a leaf row whose key expires. `< 1h` ⇒ warm
+        // amber accent, anything calmer ⇒ muted gray. A key without a TTL
+        // (`-1`) gets nothing: it used to get "∞", which put the same mark on
+        // every row of most databases and buried the few keys that do expire.
+        // Missing (`-2`, race between SCAN and TTL) renders nothing either.
+        // Gated by the user setting; when off the SCAN loop also skipped the
+        // TTL command (see `RedisClient::scan`).
         let show_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_chip: Option<(SharedString, Hsla)> = if is_folder || !show_ttl {
             None
         } else {
             entry.ttl_secs.and_then(|secs| {
                 // `ttl_chip_kind` is the "render a chip?" gate (None ⇒ the -2
-                // SCAN/TTL race ⇒ no chip); the colour below is keyed off the
-                // raw seconds so the warning window is exactly "< 1h".
-                ttl_chip_kind(secs)?;
+                // SCAN/TTL race, `Perm` ⇒ no expiry: no chip for either); the
+                // colour below is keyed off the raw seconds so the warning
+                // window is exactly "< 1h".
+                if matches!(ttl_chip_kind(secs)?, TtlChipKind::Perm) {
+                    return None;
+                }
                 let label = format_ttl_chip(secs)?;
                 // Three-tier TTL colour (design): seconds left (< 1m) ⇒ red
                 // (about to vanish), minutes left (< 1h) ⇒ warm amber (#cba26a),
-                // anything calmer (≥ 1h) or perm ∞ (secs == -1) ⇒ muted.
+                // anything calmer (≥ 1h) ⇒ muted.
                 let amber: Hsla = rgb(0xcba26a).into();
                 let color = if (0..60).contains(&secs) {
                     cx.theme().red

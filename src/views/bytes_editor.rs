@@ -17,7 +17,8 @@ use crate::helpers::{
     run_jsonpath,
 };
 use crate::states::{
-    DataFormat, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_editor,
+    DataFormat, MAX_INLINE_VALUE_SIZE, RedisBytesValue, ServerEvent, ViewMode, ZedisGlobalStore, ZedisServerState,
+    i18n_editor, soft_wrap_fits,
 };
 use bytes::Bytes;
 use gpui::{App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px, relative};
@@ -48,6 +49,8 @@ use zedis_core::json::{JsonSyntaxError, format_json, minify_json, numbers_surviv
 // Constants for editor configuration
 const DEFAULT_TAB_SIZE: usize = 2;
 const DEFAULT_LANGUAGE: &str = "json";
+/// The language of a value too large to highlight: no grammar, no tree.
+const PLAIN_LANGUAGE: &str = "text";
 const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
 const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
 const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
@@ -93,6 +96,13 @@ pub struct ZedisBytesEditor {
 
     /// Whether the soft wrap has been changed
     soft_wrap_changed: bool,
+    /// Whether the text in the editor is short enough to wrap
+    /// (`soft_wrap_fits`); a large one is shown unwrapped whatever
+    /// `soft_wrap` says.
+    wrap_fits: bool,
+    /// The editor is showing its text plain, not as `DEFAULT_LANGUAGE`: the
+    /// value is past the size a highlighted one is worth.
+    plain_text: bool,
 
     /// The data to display in the editor
     data: ByteEditorData,
@@ -484,6 +494,8 @@ impl ZedisBytesEditor {
             value_modified: false,
             soft_wrap,
             soft_wrap_changed: false,
+            wrap_fits: true,
+            plain_text: false,
             data: ByteEditorData::Text(SharedString::default()),
             hex_viewer_state: None,
             editor,
@@ -809,8 +821,9 @@ impl Render for ZedisBytesEditor {
     /// - Customizable font size
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.soft_wrap_changed {
+            let wrap = self.soft_wrap && self.wrap_fits;
             self.editor.update(cx, |this, cx| {
-                this.set_soft_wrap(self.soft_wrap, window, cx);
+                this.set_soft_wrap(wrap, window, cx);
             });
             self.soft_wrap_changed = false;
         }
@@ -869,8 +882,34 @@ impl Render for ZedisBytesEditor {
                 if self.should_update_editor {
                     self.should_update_editor = false;
                     let value = self.data.to_string().unwrap_or_default();
+                    // A large text is not wrapped, whatever the preference
+                    // (`SOFT_WRAP_MAX_BYTES`). The editor works the wrap out
+                    // when it next paints, from the text it then holds — so
+                    // the switch goes off *before* a large text arrives, and
+                    // back on only after a small one has replaced it.
+                    self.wrap_fits = soft_wrap_fits(value.len());
+                    let wrap = self.soft_wrap && self.wrap_fits;
+                    // Past the auto-load cap — a value only "load anyway"
+                    // brings in — the text is shown plain. Every value is
+                    // highlighted as JSON, and for 22 MB of anything else
+                    // the parser's error-recovery tree was 2.3 million nodes,
+                    // some 220 MB. Up to the cap a document keeps its colours
+                    // and its folding.
+                    let plain = value.len() as u64 > MAX_INLINE_VALUE_SIZE;
+                    let language =
+                        (plain != self.plain_text).then_some(if plain { PLAIN_LANGUAGE } else { DEFAULT_LANGUAGE });
+                    self.plain_text = plain;
                     self.editor.update(cx, move |this, cx| {
+                        if let Some(language) = language {
+                            this.set_highlighter(language, cx);
+                        }
+                        if !wrap {
+                            this.set_soft_wrap(false, window, cx);
+                        }
                         this.set_value(value, window, cx);
+                        if wrap {
+                            this.set_soft_wrap(true, window, cx);
+                        }
                     });
                 }
                 let editor = Editor::new(&self.editor)

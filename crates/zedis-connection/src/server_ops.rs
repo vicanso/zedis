@@ -79,6 +79,11 @@ pub async fn heartbeat_probe(at: &ServerDb) -> Result<Option<String>> {
 /// answer and nothing more is sent.
 pub async fn master_infos(at: &ServerDb, probed: Option<String>) -> Result<Vec<(RedisServer, String)>> {
     let client = at.client().await?;
+    // A user who may not run `INFO`: nothing to ask, and nothing answered —
+    // the caller's beat is the `PING` that `heartbeat_probe` sent.
+    if client.info_unavailable() {
+        return Ok(Vec::new());
+    }
     let (servers, infos): (_, Vec<String>) = match probed {
         Some(info) => (client.master_servers(), vec![info]),
         None => client.query_async_masters(vec![cmd("INFO")]).await?,

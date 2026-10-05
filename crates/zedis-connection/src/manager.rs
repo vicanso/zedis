@@ -623,6 +623,9 @@ pub struct RedisClient {
     sentinel_master_names: Vec<String>,
     version: Version,
     is_valkey: bool,
+    /// The connect found `INFO` denied or missing — see
+    /// [`RedisClient::info_unavailable`].
+    info_unavailable: bool,
     connection: RedisAsyncConn,
     /// What built `connection` — kept so a caller can open a *second*,
     /// uncached connection to the same server (`open_dedicated_connection`)
