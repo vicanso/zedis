@@ -981,6 +981,7 @@ impl ZedisServerState {
                 }
                 match result {
                     Ok((info, slow_logs, dbsize)) => {
+                        let loading = info.metrics.loading;
                         // Sentinel: the node we resolved as master now reports
                         // itself a replica — a failover happened underneath us.
                         // Drop the client so the next call re-asks the sentinel
@@ -1021,6 +1022,13 @@ impl ZedisServerState {
                         }
                         cx.emit(ServerEvent::ServerRedisInfoUpdated);
                         this.note_ping_result(true, cx);
+                        // Last, because it resets the state it runs on: the
+                        // load a refused or still-loading server failed. `INFO`
+                        // answers while the dataset loads and little else does,
+                        // so a beat that says so is not yet the time.
+                        if !loading {
+                            this.retry_failed_load(cx);
+                        }
                     }
                     Err(e) => {
                         // Connection is invalid, remove cached client

@@ -133,6 +133,7 @@ fetch the component's `.md` doc.
 | `Editor`      | `input::{Editor, EditorState}`                  | Stateful. Code editor, `tree-sitter` feature |
 | `NumberInput` | `input::{NumberInput, NumberInputEvent}`        | Stateful. Numeric with step                  |
 | `OtpInput`    | `input::OtpInput`                               | Stateful. One-time password                  |
+| `SpeechButton` | `speech::{SpeechButton, SpeechState}`          | Stateful. Dictation, `speech` feature        |
 | `Select`      | `select::{Select, SelectState}`                 | Stateful. Dropdown picker                    |
 | `Combobox`    | `combobox::{Combobox, ComboboxState}`           | Stateful. Searchable select                  |
 | `Checkbox`    | `checkbox::Checkbox`                            | Stateless. `on_click` receives `&bool`       |

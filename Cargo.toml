@@ -109,7 +109,7 @@ parking_lot = "0.12.5"
 pretty-hex = "0.4.2"
 regex = { workspace = true }
 rmp-serde = "1.3.1"
-rust-i18n = "4.2.3"
+rust-i18n = "4.2.4"
 ruzstd = "0.9.0"
 schemars = "1.2.2"
 semver = { workspace = true }
@@ -143,7 +143,7 @@ imbl = { workspace = true }
 # browser is "not linux", so this used to follow the build into the page
 # (ADR 9). The family gate is the outer one.
 [target.'cfg(all(not(target_family = "wasm"), not(target_os = "linux")))'.dependencies]
-tray-icon = "0.25.1"
+tray-icon = "0.26.0"
 # The desktop half of the application. Everything here is either unreachable
 # from a browser tab or has no wasm port at all, and keeping it out of the
 # shared list is what lets `zedis-gui` be compiled for `wasm32-unknown-unknown`
@@ -323,7 +323,7 @@ shlex = "2.0.1"
 smol = "2.0.2"
 snafu = "0.9.2"
 tempfile = "3.27.0"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "time", "io-util"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "macros", "time", "io-util"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = [
     "ring",
     "tls12",
@@ -335,7 +335,7 @@ url = "2.5.8"
 # `Uuid::now_v7`, and it only ever compiled because accesskit (via gpui)
 # happens to turn the feature on — so `cargo test -p zedis-connection`,
 # which drags in no GUI stack, failed to build on its own.
-uuid = { version = "1.26.1", features = ["v7"] }
+uuid = { version = "1.27.0", features = ["v7"] }
 # `std::time` for the browser too. `Instant::now()` and `SystemTime::now()`
 # panic on `wasm32-unknown-unknown` ("time not implemented on this platform"),
 # and on every other target this crate *is* std's own types, so a file that
@@ -350,26 +350,26 @@ webpki-roots = "1.0.9"
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.7" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.7", features = [
+gpui = { package = "gpui-pre", version = "0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.8", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.7" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.8" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.7" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.8" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
 # LanguageRegistry, pulling tree-sitter + tree-sitter-json only, not the
 # 30-parser `tree-sitter-languages` bundle; we register Lua ourselves.
-gpui-kit = { version = "0.7.0" }
+gpui-kit = { version = "0.7.1" }
 
 [build-dependencies]
 winres = "0.1.12"

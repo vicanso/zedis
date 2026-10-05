@@ -30,7 +30,7 @@ use crate::{
         open_score_filter_dialog,
     },
 };
-use gpui::{AnyElement, App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
@@ -190,6 +190,12 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     base_mode: KvTableMode,
     /// The row index that is being edited
     edit_row: Option<usize>,
+    /// Where focus goes when the entry panel closes. The panel's field held
+    /// it, and a focus on nothing has no path for a key binding to travel:
+    /// ⌘J after Cancel did nothing until something was clicked.
+    focus_handle: FocusHandle,
+    /// Whether the entry panel was open at the last render.
+    panel_was_open: bool,
     /// The original values of the row that is being edited
     original_values: IndexMap<SharedString, SharedString>,
     /// The element the open row's main value column holds, for the decoded
@@ -494,6 +500,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             key_changed: None,
             columns_dirty: false,
             edit_row: None,
+            focus_handle: cx.focus_handle(),
+            panel_was_open: false,
             values_should_fill: false,
             original_values: IndexMap::new(),
             edit_element: None,
@@ -1306,6 +1314,16 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_color = cx.theme().muted_foreground;
 
+        // The panel has just closed — by Cancel, Escape, a save, the row
+        // going away — and it held the focus: hand it to the table. Only
+        // then: a panel that closes because another key was opened must not
+        // pull the caret out of the key filter the user is typing in.
+        let panel_open = self.edit_row.is_some();
+        if self.panel_was_open && !panel_open && self.focus_handle.contains_focused(window, cx) {
+            self.focus_handle.focus(window, cx);
+        }
+        self.panel_was_open = panel_open;
+
         // Rebuild delegate columns when they changed (e.g., Stream with new fields)
         if std::mem::take(&mut self.columns_dirty) {
             let new_delegate_columns = Self::new_columns(self.columns.clone(), self.selectable(), window, cx);
@@ -1610,6 +1628,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         };
 
         h_flex()
+            .track_focus(&self.focus_handle)
             .h_full()
             .w_full()
             .child(body)

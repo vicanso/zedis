@@ -341,6 +341,20 @@ pub struct ZedisServerState {
     /// keeps the preview. Cleared on server switch.
     size_gate_preview: Option<SharedString>,
 
+    /// The last full load (`select`) failed for a reason the link explains —
+    /// refused, timed out, still loading its dataset — so the heartbeat runs
+    /// it again once the server answers ([`Self::retry_failed_load`]). A
+    /// server that was down when the app started used to come back as
+    /// "Connected" over an empty tree, with no version, no databases and no
+    /// node count, until the user reconnected by hand.
+    load_retry_pending: bool,
+    /// Automatic retries since the last load somebody asked for. Bounded
+    /// ([`MAX_LOAD_RETRIES`]): a load that keeps failing while the heartbeat
+    /// keeps succeeding must not be retried, and toasted, on every beat.
+    load_retries: u8,
+    /// The `select` now starting is one of those retries, not a new request.
+    load_retry_running: bool,
+
     // ===== Key scanning state =====
     /// Search keyword for filtering keys
     keyword: SharedString,
@@ -436,6 +450,23 @@ pub struct ZedisServerState {
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
+}
+
+/// How many times in a row the heartbeat runs a failed load again before it
+/// is left for the user's Reconnect.
+const MAX_LOAD_RETRIES: u8 = 3;
+
+/// Whether a load that failed this way is worth running again by itself once
+/// the server answers: the link was down, slow or tunnelled through something
+/// that was, or the server was not ready — loading, busy, without its master.
+/// A wrong password, a missing permission or a TLS mismatch is the same on the
+/// next attempt.
+fn heals_with_the_link(kind: ConnectionErrorKind) -> bool {
+    use ConnectionErrorKind as K;
+    matches!(
+        kind,
+        K::Network | K::Timeout | K::Tunnel | K::Loading | K::Busy | K::ClusterDown | K::MasterDown
+    )
 }
 
 impl ZedisServerState {
@@ -587,6 +618,7 @@ impl ZedisServerState {
         self.next_value_epoch();
         self.size_gate_bypassed = None;
         self.size_gate_preview = None;
+        self.load_retry_pending = false;
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
         self.type_filter = None;
@@ -1561,6 +1593,12 @@ impl ZedisServerState {
         let same_target = self.server_id == server_id && self.db == db;
         let retry_failed = same_target && matches!(self.server_status, RedisServerStatus::Failed);
         if !same_target || retry_failed {
+            // A load somebody asked for starts the count of automatic
+            // retries again; one the heartbeat started carries it on.
+            if !std::mem::take(&mut self.load_retry_running) {
+                self.load_retries = 0;
+            }
+            self.load_retry_pending = false;
             // The metrics history is the server's, whichever database is
             // open: a database switch or a retry keeps it (it used to empty
             // the charts), another server drops the last one's.
@@ -1659,6 +1697,7 @@ impl ZedisServerState {
                             supports_rejson,
                             supports_search,
                         }) => {
+                            this.load_retries = 0;
                             this.dbsize = Some(dbsize);
                             this.nodes = nodes;
                             this.nodes_description = Arc::new(nodes_description);
@@ -1718,7 +1757,11 @@ impl ZedisServerState {
                                 this.scan_keys(server_id, SharedString::default(), cx);
                             }
                         }
-                        Err(_) => {
+                        Err(error) => {
+                            // Worth another go by itself once the server
+                            // answers, when it is the link that failed it.
+                            this.load_retry_pending =
+                                this.load_retries < MAX_LOAD_RETRIES && heals_with_the_link(error.connection_kind());
                             // Connection / metadata load failed (e.g. network
                             // down). Mark Failed so a later re-select retries
                             // instead of being swallowed by select()'s
@@ -1735,6 +1778,35 @@ impl ZedisServerState {
                 cx,
             );
         }
+    }
+
+    /// Run the load again that the link failed, now that the heartbeat has
+    /// an answer from a server with its dataset in memory. Called on every
+    /// such beat; does nothing unless a load is owed.
+    pub(super) fn retry_failed_load(&mut self, cx: &mut Context<Self>) {
+        if !self.take_load_retry() {
+            return;
+        }
+        info!(
+            server_id = self.server_id.as_str(),
+            attempt = self.load_retries,
+            "the server answers: loading what the failed connect could not"
+        );
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        self.select(server_id, db, cx);
+    }
+
+    /// Whether a retry is owed, taking it: the load failed with the link, it
+    /// is still the failed one on screen, and nothing has retried it since.
+    fn take_load_retry(&mut self) -> bool {
+        if !self.load_retry_pending || !matches!(self.server_status, RedisServerStatus::Failed) {
+            return false;
+        }
+        self.load_retry_pending = false;
+        self.load_retries += 1;
+        self.load_retry_running = true;
+        true
     }
 
     /// Force a reconnect of the currently-selected server/db.
@@ -1890,6 +1962,43 @@ mod tests {
     /// Load more runs one round at a time. A press while a round is in flight
     /// adds nothing — it used to start a second paging chain over the same
     /// cursors — and a press the offline guard refuses leaves `scanning`
+    /// A load the link failed is owed one retry per failure, only while it is
+    /// still the failed load on screen, and not for ever.
+    #[gpui::test]
+    fn a_load_the_link_failed_is_retried_a_bounded_number_of_times(cx: &mut TestAppContext) {
+        use ConnectionErrorKind as K;
+        for kind in [
+            K::Network,
+            K::Timeout,
+            K::Loading,
+            K::Busy,
+            K::ClusterDown,
+            K::MasterDown,
+            K::Tunnel,
+        ] {
+            assert!(heals_with_the_link(kind), "{kind:?} passes by itself");
+        }
+        // Nothing the server coming back would change.
+        for kind in [K::Auth, K::Permission, K::Tls, K::ReadOnly, K::Unknown] {
+            assert!(!heals_with_the_link(kind), "{kind:?} needs the user");
+        }
+
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, _| {
+            assert!(!state.take_load_retry(), "nothing is owed");
+            // Owed, but a load has succeeded since: not the failed one any more.
+            state.load_retry_pending = true;
+            state.server_status = RedisServerStatus::Idle;
+            assert!(!state.take_load_retry());
+
+            state.server_status = RedisServerStatus::Failed;
+            assert!(state.take_load_retry());
+            assert_eq!(state.load_retries, 1);
+            assert!(state.load_retry_running, "the select that follows is a retry");
+            assert!(!state.take_load_retry(), "one retry per failure");
+        });
+    }
+
     /// down, since no round would come back to lower it and the tree's search
     /// waits on it.
     #[gpui::test]
