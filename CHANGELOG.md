@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.3](https://github.com/vicanso/zedis/compare/v0.12.2..v0.12.3) - 2026-10-06
+
+### ⛰️  Features
+
+- *(ui)* Give connection cards a third row and the kv tables 30px rows - ([a1427a2](https://github.com/vicanso/zedis/commit/a1427a27e524c3babe0a63d2970403864cb24530))
+
+### 🐛 Bug Fixes
+
+- *(ui)* Unique collapsed-rail labels, a quieter empty editor, compact TTL text, live timeout defaults, a scrollable shortcuts overlay, and Save as primary only when dirty - ([0744cc0](https://github.com/vicanso/zedis/commit/0744cc0fa877467e83d2184533eab0376e0b3ca3))
+
+### 📚 Documentation
+
+- Add an animated architecture diagram to the READMEs and the site - ([df7251d](https://github.com/vicanso/zedis/commit/df7251de8a249f02737bd4d5b887cb88ec70167a))
+
 ## [0.12.2](https://github.com/vicanso/zedis/compare/v0.12.1..v0.12.2) - 2026-10-06
 
 ### ⛰️  Features
