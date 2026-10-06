@@ -235,8 +235,9 @@ impl ZedisKvFetcher for ZedisZsetValues {
 
 define_kv_editor!(ZedisZsetEditor, ZedisZsetValues);
 
-/// Width of the Score column: a geo score is 16 digits, which 150px cut.
-const SCORE_WIDTH: f32 = 176.;
+/// Width of the Score column: a geo score is 16 digits, which need 196px
+/// at the table's 14px text beside the cell's paddings and copy button.
+const SCORE_WIDTH: f32 = 196.;
 
 impl ZedisZsetEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {

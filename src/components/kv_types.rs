@@ -129,9 +129,10 @@ pub const INDEX_COLUMN_HEADER: &str = "#";
 /// renders a "select every loaded row" checkbox, and a caption next to it
 /// would only compete with it inside a column that narrow.
 pub const SELECT_COLUMN_HEADER: &str = "";
-/// Width of the row-number column: six right-aligned digits — a collection
-/// pages in by the hundred thousand — and its paddings.
-const INDEX_COLUMN_WIDTH: f32 = 64.;
+/// Width of the row-number column: six right-aligned digits at the table's
+/// 14px text — a collection pages in by the hundred thousand — and its
+/// paddings.
+const INDEX_COLUMN_WIDTH: f32 = 72.;
 /// Width of the multi-select column: the checkbox and a little air.
 const SELECT_COLUMN_WIDTH: f32 = 32.;
 

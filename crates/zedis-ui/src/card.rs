@@ -28,8 +28,8 @@ const ICON_BLOCK: f32 = 24.;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum CardVariant {
     /// A real data entity (a configured server). Solid border,
-    /// two rows: name, tag and actions over address, time and
-    /// description.
+    /// three rows: name, tag and actions; the address; when it was
+    /// last used and the description.
     #[default]
     Entity,
     /// An action entry point (e.g. "Add New", "Import"). Dashed
@@ -78,7 +78,8 @@ pub struct ZedisCard {
     hover_only_actions: Option<Vec<Button>>,
     /// Handler for click events.
     on_click: Option<ZedisCardOnClick>,
-    /// An element after the subtitle on the detail row — a time stamp.
+    /// An element at the start of the last row, before the description —
+    /// a time stamp.
     meta: Option<AnyElement>,
     /// An element at the end of the title row that is always there — the
     /// card's own buttons, which a hover must not be needed to find.
@@ -174,7 +175,8 @@ impl ZedisCard {
         self
     }
 
-    /// Sets the element shown after the subtitle on the detail row.
+    /// Sets the element shown at the start of the last row, before the
+    /// description.
     pub fn meta(mut self, meta: impl IntoElement) -> Self {
         self.meta = Some(meta.into_any_element());
         self
@@ -263,12 +265,18 @@ impl RenderOnce for ZedisCard {
 
         let hover_only_actions = self.hover_only_actions;
         let muted = cx.theme().muted_foreground;
-        // Two rows. The first is what a card is found by — the name and its
-        // environment — with the actions at its end; the second is the
-        // detail, all on one line: address, when it was last used, and the
-        // description as far as it fits (whole in its tooltip). The card
-        // used to be four rows tall with a blank one where there was no
-        // description, and a screen showed four of them.
+        // Three rows. The first is what a card is found by — the name and its
+        // environment — with the actions at its end. The address has the
+        // second to itself, so a long host name is read whole. The third is
+        // when the entry was last used, then the description as far as it
+        // fits (whole in its tooltip).
+        //
+        // It has been four rows (a blank one wherever there was no
+        // description, and a screen showed four cards) and two (address,
+        // time and description on one line, which read as cramped and cut
+        // the host name of every cloud entry). Three keeps each row to one
+        // kind of thing, and the time stamp is what keeps the last from
+        // being blank.
         let title_row = h_flex()
             .w_full()
             .items_center()
@@ -333,34 +341,30 @@ impl RenderOnce for ZedisCard {
                 this.child(div().flex_none().child(trailing))
             });
 
-        let separator = || Label::new("·").text_xs().text_color(muted).flex_none();
         let subtitle_font = self.subtitle_font;
-        let has_subtitle = self.subtitle.is_some();
+        // A detail row starts under the name, past the icon block.
+        let detail_row = || h_flex().w_full().items_center().gap_1p5().pl(px(ICON_BLOCK + 8.));
+        let address_row = self.subtitle.map(|subtitle| {
+            let mut label = Label::new(subtitle)
+                .text_xs()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(muted);
+            if let Some(family) = subtitle_font {
+                label = label.font_family(family);
+            }
+            detail_row().child(div().flex_1().min_w_0().overflow_hidden().child(label))
+        });
         let has_meta = self.meta.is_some();
-        let detail_row = h_flex()
-            .w_full()
-            .items_center()
-            .gap_1p5()
-            // Under the name, past the icon block.
-            .pl(px(ICON_BLOCK + 8.))
-            .when_some(self.subtitle, |row, subtitle| {
-                let mut label = Label::new(subtitle)
-                    .text_xs()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(muted);
-                if let Some(family) = subtitle_font {
-                    label = label.font_family(family);
-                }
-                row.child(div().flex_initial().min_w_0().overflow_hidden().child(label))
-            })
-            .when_some(self.meta, |row, meta| {
-                row.when(has_subtitle, |row| row.child(separator()))
-                    .child(div().flex_none().child(meta))
-            })
+        let has_description = self.description.is_some();
+        let note_row = detail_row()
+            .when_some(self.meta, |row, meta| row.child(div().flex_none().child(meta)))
             .when_some(self.description, |row, description| {
                 let full = description.clone();
-                row.when(has_subtitle || has_meta, |row| row.child(separator())).child(
+                row.when(has_meta, |row| {
+                    row.child(Label::new("·").text_xs().text_color(muted).flex_none())
+                })
+                .child(
                     div()
                         .id("zedis-card-description")
                         .flex_1()
@@ -375,6 +379,11 @@ impl RenderOnce for ZedisCard {
                         )
                         .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx)),
                 )
+            })
+            // Neither a time nor a description: the row keeps its line, so
+            // every card in the grid is the same height.
+            .when(!has_meta && !has_description, |row| {
+                row.child(Label::new("\u{a0}").text_xs())
             });
 
         let card = ListItem::new(self.id)
@@ -388,7 +397,15 @@ impl RenderOnce for ZedisCard {
             .when_some(self.on_click, |this, handler| {
                 this.on_click(move |event, window, cx| handler(event, window, cx))
             })
-            .child(v_flex().w_full().gap_1().child(title_row).child(detail_row));
+            .child(
+                v_flex().w_full().gap_1().child(title_row).child(
+                    v_flex()
+                        .w_full()
+                        .gap_0p5()
+                        .when_some(address_row, |rows, row| rows.child(row))
+                        .child(note_row),
+                ),
+            );
 
         div().group(CARD_GROUP).child(card).into_any_element()
     }

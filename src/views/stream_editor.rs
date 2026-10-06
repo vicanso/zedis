@@ -43,9 +43,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use zedis_ui::{ZedisDialog, ZedisFormFieldType};
 
-/// Width of the Entry Id column: a whole id ("1722990000000-0", 15 mono
-/// characters) beside the cell's paddings and its hover copy button.
-const ENTRY_ID_WIDTH: f32 = 170.;
+/// Width of the Entry Id column: a whole id ("1722990000000-12", a
+/// millisecond stamp and a two-digit sequence at the table's 14px) beside
+/// the cell's paddings and its hover copy button. It was 170 while the table
+/// drew 12px text, and cut the last digits once it no longer did.
+const ENTRY_ID_WIDTH: f32 = 196.;
 
 /// The table's columns for a stream's fields: the entry id, then one column
 /// per field name. The id is fixed and wide enough to read whole — it is the

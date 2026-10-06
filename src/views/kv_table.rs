@@ -1381,10 +1381,11 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
             .child(
                 div().flex_1().w_full().child(
                     DataTable::new(&self.table_state)
-                        // The densest size (26px rows): this is a data grid,
-                        // and at the default 32 a 1280×800 window showed 19
-                        // rows of a hash that has 100,000.
-                        .xsmall()
+                        // One step under the default: 30px rows. This is a
+                        // data grid, and at 32 a 1280×800 window showed 19
+                        // rows of a hash that has 100,000 — but the densest
+                        // size (26px rows, 12px text) read as cramped.
+                        .small()
                         .stripe(true) // Alternating row colors for better readability
                         .bordered(false) // Table borders
                         .scrollbar_visible(true, true), // Show both scrollbars
