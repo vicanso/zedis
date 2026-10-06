@@ -419,8 +419,14 @@ opt-level = "s"
 # (decoding an image value when one is viewed, parsing/rasterizing an SVG icon
 # once before gpui caches it) or never (exr — pulled in by gpui's image
 # features but no EXR ever reaches Zedis), so `opt-level = "s"` shrinks .text
-# without touching any hot path. Rendering/shaping/network/proto crates
-# deliberately stay at the default opt-level.
+# without touching any hot path. Rendering and shaping crates, and whatever
+# sits on a data path (the Redis client and its parser, the async runtimes,
+# regex, serde_json, JSONPath, the value decompressors), deliberately stay at
+# the default opt-level.
+#
+# The app crate cannot join this list: an override on the root package makes
+# cargo link with `strip=debuginfo` instead of `strip=symbols`, and the
+# binary grows by its symbol table instead of shrinking.
 #
 # Image codecs:
 [profile.release.package.exr]
@@ -451,6 +457,84 @@ opt-level = "s"
 [profile.release.package.tiny-skia]
 opt-level = "s"
 [profile.release.package.svgtypes]
+opt-level = "s"
+#
+# The same for what runs once per connection, once per value viewed or once
+# at start-up — about 1.1 MB of a 34.5 MB binary (macOS arm64), with the
+# first frame, and a 32 MB value read over TLS and through an SSH tunnel,
+# measured the same before and after. A name that leaves Cargo.lock makes
+# cargo warn that the spec matched no package: delete its entry then.
+#
+# SSH tunnel: key exchange, host and user keys, key files — once per
+# connection. The transport ciphers are `ring`'s and stay as they are:
+[profile.release.package.russh]
+opt-level = "s"
+[profile.release.package.ssh-key]
+opt-level = "s"
+[profile.release.package.ssh-encoding]
+opt-level = "s"
+[profile.release.package.crypto-bigint]
+opt-level = "s"
+[profile.release.package.primeorder]
+opt-level = "s"
+[profile.release.package.elliptic-curve]
+opt-level = "s"
+[profile.release.package.ecdsa]
+opt-level = "s"
+[profile.release.package.curve25519-dalek]
+opt-level = "s"
+[profile.release.package.ml-kem]
+opt-level = "s"
+[profile.release.package.rsa]
+opt-level = "s"
+[profile.release.package.num-bigint]
+opt-level = "s"
+[profile.release.package.der]
+opt-level = "s"
+[profile.release.package.pkcs5]
+opt-level = "s"
+[profile.release.package.base64ct]
+opt-level = "s"
+[profile.release.package.data-encoding]
+opt-level = "s"
+# TLS handshake and certificate checks (records are encrypted by `ring`):
+[profile.release.package.rustls]
+opt-level = "s"
+[profile.release.package.rustls-webpki]
+opt-level = "s"
+[profile.release.package.rustls-pki-types]
+opt-level = "s"
+# Local storage (tags, favorites, histories, scripts):
+[profile.release.package.redb]
+opt-level = "s"
+[profile.release.package.zedis-db]
+opt-level = "s"
+# Protobuf viewer: the `.proto` compiler and the dynamic decoder, run when
+# a value is viewed:
+[profile.release.package.prost]
+opt-level = "s"
+[profile.release.package.prost-reflect]
+opt-level = "s"
+[profile.release.package.prost-types]
+opt-level = "s"
+[profile.release.package.protox]
+opt-level = "s"
+[profile.release.package.protox-parse]
+opt-level = "s"
+# Update check and AI requests:
+[profile.release.package.ureq]
+opt-level = "s"
+[profile.release.package.ureq-proto]
+opt-level = "s"
+[profile.release.package.http]
+opt-level = "s"
+# Config files, and a locale's table on its first lookup:
+[profile.release.package.toml]
+opt-level = "s"
+[profile.release.package.toml_parser]
+opt-level = "s"
+# Embedded assets, inflated once each:
+[profile.release.package.zstd-sys]
 opt-level = "s"
 
 [package.metadata.bundle]

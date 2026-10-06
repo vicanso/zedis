@@ -549,6 +549,38 @@ fn heals_with_the_link(kind: ConnectionErrorKind) -> bool {
     )
 }
 
+/// What a background task was launched against, for the stale-result guard
+/// and its log lines: everything about a task that does not depend on its
+/// types.
+///
+/// `spawn_with_arg` is compiled once per call site, because each passes its
+/// own closures. `begin_task`, `settle_task` and `log_completed` take this
+/// instead and are `#[inline(never)]`, so the offline check, the error
+/// reporting and the log lines exist once rather than in every instance —
+/// about 200 KiB of the release binary's code.
+struct TaskRun {
+    name: ServerTask,
+    arg: SharedString,
+    server_id: SharedString,
+    db: usize,
+    start: Instant,
+}
+
+impl TaskRun {
+    #[inline(never)]
+    fn log_completed(&self) {
+        if self.name != ServerTask::RefreshRedisInfo {
+            info!(
+                task = self.name.as_str(),
+                arg = self.arg.as_str(),
+                server_id = self.server_id.as_str(),
+                latency_ms = self.start.elapsed().as_millis(),
+                "Task completed"
+            );
+        }
+    }
+}
+
 impl ZedisServerState {
     /// Create a new server state instance
     pub fn new() -> Self {
@@ -851,6 +883,30 @@ impl ZedisServerState {
         T: Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        let Some(run) = self.begin_task(name, arg.into(), cx) else {
+            return;
+        };
+        cx.spawn(async move |handle, cx| {
+            // Run task in background executor (thread pool)
+            let task = cx.background_spawn(async move { task().await });
+            let result: Result<T> = task.await;
+
+            // Update state with result on main thread
+            handle.update(cx, move |this, cx| {
+                if !this.settle_task(&run, result.as_ref().err(), cx) {
+                    return;
+                }
+                callback(this, result, cx);
+                run.log_completed();
+            })
+        })
+        .detach();
+    }
+
+    /// What [`Self::spawn_with_arg`] does before the task runs, or `None`
+    /// when it must not run. Out of line — see [`TaskRun`].
+    #[inline(never)]
+    fn begin_task(&mut self, name: ServerTask, arg: SharedString, cx: &mut Context<Self>) -> Option<TaskRun> {
         // Manually disconnected: run no Redis query. Every op here calls
         // get_client, which silently re-establishes the link the user just
         // dropped (hence "offline but data still loads"). reconnect clears the
@@ -865,74 +921,63 @@ impl ZedisServerState {
                 cx.emit(ServerEvent::ServerInfoUpdated);
                 cx.notify();
             }
-            return;
+            return None;
         }
-        let arg = arg.into();
         cx.emit(ServerEvent::TaskStarted(name.clone()));
         debug!(name = name.as_str(), arg = arg.as_str(), "Spawning background task");
-        let server_id = self.server_id.clone();
-        let db = self.db;
-        let start = Instant::now();
-
-        cx.spawn(async move |handle, cx| {
-            // Run task in background executor (thread pool)
-            let task = cx.background_spawn(async move { task().await });
-            let result: Result<T> = task.await;
-
-            // Update state with result on main thread
-            handle.update(cx, move |this, cx| {
-                // Stale-result guard: the user may have switched server/db
-                // while this task was in flight. Every task here is scoped to
-                // the server+db that was current at launch, so applying its
-                // result now would inject the previous target's data into the
-                // freshly-reset state. The connection-level work already
-                // happened — we only skip the state-mutating callback.
-                let stale = this.server_id != server_id || this.db != db;
-                if let Err(e) = &result {
-                    error!(
-                        task = name.as_str(),
-                        arg = arg.as_str(),
-                        server_id = server_id.as_str(),
-                        error = %e,
-                        "Task failed"
-                    );
-                    // Surface a toast only for the still-active target, and
-                    // never for background info refreshes or the feature
-                    // probe itself. A `NOPERM` / `unknown command` reply goes
-                    // to the feature matrix first: the first one becomes a
-                    // "not available on this server" notice and degrades the
-                    // UI; repeats stay quiet.
-                    if !stale
-                        && !matches!(name, ServerTask::RefreshRedisInfo | ServerTask::ProbeFeatures)
-                        && !this.note_command_error(e, cx)
-                        && !this.note_link_error(e, cx)
-                    {
-                        this.add_error_message(name.as_str().to_string(), e.to_string(), cx);
-                    }
-                }
-                if stale {
-                    return;
-                }
-                if result.is_ok() && name != ServerTask::RefreshRedisInfo {
-                    // Some other task just reached the server, so the link
-                    // is up: let the next heartbeat tick PING right away
-                    // instead of sitting out its backoff.
-                    this.heartbeat_retry_at = None;
-                }
-                callback(this, result, cx);
-                let latency = start.elapsed();
-                if name != ServerTask::RefreshRedisInfo {
-                    info!(
-                        task = name.as_str(),
-                        arg = arg.as_str(),
-                        server_id = server_id.as_str(),
-                        latency_ms = latency.as_millis(),
-                        "Task completed"
-                    );
-                }
-            })
+        Some(TaskRun {
+            name,
+            arg,
+            server_id: self.server_id.clone(),
+            db: self.db,
+            start: Instant::now(),
         })
-        .detach();
+    }
+
+    /// Whether the task's callback should run: reports a failure and answers
+    /// `false` for a result that belongs to a target the user has left. Out
+    /// of line — see [`TaskRun`].
+    #[inline(never)]
+    fn settle_task(&mut self, run: &TaskRun, failure: Option<&Error>, cx: &mut Context<Self>) -> bool {
+        // Stale-result guard: the user may have switched server/db
+        // while this task was in flight. Every task here is scoped to
+        // the server+db that was current at launch, so applying its
+        // result now would inject the previous target's data into the
+        // freshly-reset state. The connection-level work already
+        // happened — we only skip the state-mutating callback.
+        let stale = self.server_id != run.server_id || self.db != run.db;
+        if let Some(e) = failure {
+            error!(
+                task = run.name.as_str(),
+                arg = run.arg.as_str(),
+                server_id = run.server_id.as_str(),
+                error = %e,
+                "Task failed"
+            );
+            // Surface a toast only for the still-active target, and
+            // never for background info refreshes or the feature
+            // probe itself. A `NOPERM` / `unknown command` reply goes
+            // to the feature matrix first: the first one becomes a
+            // "not available on this server" notice and degrades the
+            // UI; repeats stay quiet.
+            if !stale
+                && !matches!(run.name, ServerTask::RefreshRedisInfo | ServerTask::ProbeFeatures)
+                && !self.note_command_error(e, cx)
+                && !self.note_link_error(e, cx)
+            {
+                self.add_error_message(run.name.as_str().to_string(), e.to_string(), cx);
+            }
+        }
+        if stale {
+            return false;
+        }
+        if failure.is_none() && run.name != ServerTask::RefreshRedisInfo {
+            // Some other task just reached the server, so the link
+            // is up: let the next heartbeat tick PING right away
+            // instead of sitting out its backoff.
+            self.heartbeat_retry_at = None;
+        }
+        true
     }
 
     /// Start a new generation of the selected value — see `value_epoch`.
@@ -2198,6 +2243,61 @@ mod tests {
             state.scanning = true;
             state.scan_next(cx);
             assert_eq!(state.scan_times, 0, "a press during a round adds no batch");
+        });
+    }
+
+    /// A task's result belongs to the server and database it was started
+    /// against. Once the user has moved on its callback must not run — it
+    /// would write the previous target's data into the new one's state —
+    /// and its failure is not theirs to be told about either. A success for
+    /// the current target proves the link, so the heartbeat stops backing
+    /// off.
+    #[gpui::test]
+    fn a_task_result_is_applied_only_to_the_target_it_was_started_against(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.server_id = "one".into();
+            let run = state
+                .begin_task(ServerTask::DeleteKey, "key".into(), cx)
+                .expect("a connected state starts its tasks");
+
+            state.heartbeat_retry_at = Some(Instant::now());
+            assert!(state.settle_task(&run, None, cx));
+            assert!(state.heartbeat_retry_at.is_none(), "a reply means the link is up");
+
+            let failure = Error::Invalid {
+                message: "gone".to_string(),
+            };
+            state.db = 1;
+            assert!(!state.settle_task(&run, None, cx), "another database");
+            state.db = 0;
+            state.server_id = "two".into();
+            assert!(!state.settle_task(&run, Some(&failure), cx), "another server");
+            assert!(
+                state.error_messages.read().is_empty(),
+                "nor is its failure reported here"
+            );
+        });
+    }
+
+    /// A manually disconnected state starts nothing, and a load that had
+    /// already shown its skeleton is marked failed rather than left spinning
+    /// with no task to end it.
+    #[gpui::test]
+    fn no_task_starts_while_the_server_is_offline(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.manually_offline = true;
+            state.last_offline_notice = unix_ts();
+            state.server_status = RedisServerStatus::Loading;
+            state.scanning = true;
+            assert!(
+                state
+                    .begin_task(ServerTask::SelectServer, SharedString::default(), cx)
+                    .is_none()
+            );
+            assert_eq!(state.server_status, RedisServerStatus::Failed);
+            assert!(!state.scanning);
         });
     }
 }
