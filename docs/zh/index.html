@@ -306,6 +306,25 @@
         </div>
       </section>
 
+      <section id="architecture">
+        <div class="wrap">
+          <h2 class="section-title">桌面应用，或浏览器标签页</h2>
+          <p class="section-sub">
+            同一套界面代码，两种构建。桌面版直接连接 Redis；Web 版把同一份代码编译成 WebAssembly，由部署在服务器旁的
+            zedis-bridge 提供。
+          </p>
+          <figure class="arch">
+            <img
+              src="../images/architecture.svg"
+              width="960"
+              height="464"
+              loading="lazy"
+              alt="同一套 Zedis 界面代码有两种构建：原生桌面应用通过 RESP 直接连接 Redis；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，再由 bridge 以 RESP 连接 Redis。两条通路都支持单机、哨兵与集群部署的 Redis 和 Valkey。"
+            />
+          </figure>
+        </div>
+      </section>
+
       <section id="install">
         <div class="wrap">
           <h2 class="section-title">安装</h2>

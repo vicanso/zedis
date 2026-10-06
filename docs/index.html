@@ -338,6 +338,25 @@
         </div>
       </section>
 
+      <section id="architecture">
+        <div class="wrap">
+          <h2 class="section-title">Desktop app or browser tab</h2>
+          <p class="section-sub">
+            One UI codebase, built two ways. The desktop app talks to Redis directly; the web version is the same
+            code as WebAssembly, served by zedis-bridge next to your servers.
+          </p>
+          <figure class="arch">
+            <img
+              src="images/architecture.svg"
+              width="960"
+              height="464"
+              loading="lazy"
+              alt="One shared Zedis UI codebase, built two ways: the native desktop app talks RESP to Redis directly; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API and the bridge talks RESP to Redis. Both reach standalone, Sentinel and Cluster deployments of Redis and Valkey."
+            />
+          </figure>
+        </div>
+      </section>
+
       <section id="install">
         <div class="wrap">
           <h2 class="section-title">Install</h2>

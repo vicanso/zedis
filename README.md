@@ -184,6 +184,10 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn on a canvas. A browser cannot open a TCP socket, so a small HTTP server — `zedis-bridge` — serves the page and talks to Redis on the browser's behalf. Host it once next to your Redis servers and the whole team reaches them from a browser tab, with nothing to install. Redis passwords stay on the bridge, encrypted at rest; the browser never receives them.
 
+<p align="center">
+  <img src="docs/images/architecture.svg" width="100%" alt="One shared Zedis UI codebase, built two ways: the native desktop app talks RESP to Redis directly; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API and the bridge talks RESP to Redis. Both reach standalone, Sentinel and Cluster deployments of Redis and Valkey.">
+</p>
+
 > **Early preview.** The image is published for linux/amd64 and linux/arm64 (~26 MB): `:latest` and the release version for tagged releases, `:nightly` for the rolling build from `main`.
 
 ### Try it

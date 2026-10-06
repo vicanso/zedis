@@ -424,6 +424,20 @@ section.alt {
   font-size: 0.95rem;
 }
 
+/* —— Architecture diagram —— */
+
+/* Wider than a phone: the figure scrolls sideways rather than shrinking its
+   labels below what can be read. */
+.arch {
+  margin: 0;
+  overflow-x: auto;
+}
+
+.arch img {
+  width: 100%;
+  min-width: 640px;
+}
+
 /* —— Redis Insight migration strip (below the hero) —— */
 
 .migrate {
