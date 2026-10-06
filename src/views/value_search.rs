@@ -873,7 +873,7 @@ impl ZedisValueSearch {
                             .child(
                                 Button::new("vs-open")
                                     .small()
-                                    .primary()
+                                    .outline()
                                     .label(i18n_value_search(cx, "open"))
                                     .on_click(cx.listener(move |this, _, _w, cx| this.open_key(key_open.clone(), cx))),
                             ),
@@ -930,7 +930,7 @@ impl Render for ZedisValueSearch {
                 .on_click(cx.listener(|this, _, _w, cx| this.stop_search(cx)))
         } else {
             Button::new("vs-search")
-                .primary()
+                .outline()
                 .small()
                 .icon(IconName::Search)
                 .label(i18n_value_search(cx, "search"))

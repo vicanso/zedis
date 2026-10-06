@@ -599,8 +599,10 @@ fn import_error_message(cx: &gpui::App, err: &ImportError) -> SharedString {
 }
 
 /// Format a stored `updated_at` (`Local::now().to_string()`, so it begins with
-/// `YYYY-MM-DD`) as a localized relative time for the card footer — "Today" /
-/// "3d ago" / "2mo ago" / "1y ago". Falls back to the raw string if the date
+/// `YYYY-MM-DD`) as a localized relative time for the card — "Edited today" /
+/// "Edited 3d ago" / "Edited 2mo ago". With its verb, like "Used 3m ago"
+/// beside it: a bare "Today" did not say whether the entry was opened or
+/// changed. Falls back to the raw string if the date
 /// can't be parsed. Date-only granularity (no time-of-day) keeps it robust to
 /// the `T`-vs-space separator and avoids timezone parsing.
 fn format_updated_relative(updated_at: &str, locale: &str) -> String {
@@ -613,13 +615,13 @@ fn format_updated_relative(updated_at: &str, locale: &str) -> String {
     };
     let days = (Local::now().date_naive() - then).num_days().max(0);
     if days == 0 {
-        t!("servers.relative_today", locale = locale).to_string()
+        t!("servers.edited_today", locale = locale).to_string()
     } else if days < 30 {
-        t!("servers.relative_days", count = days as usize, locale = locale).to_string()
+        t!("servers.edited_days", count = days as usize, locale = locale).to_string()
     } else if days < 365 {
-        t!("servers.relative_months", count = (days / 30) as usize, locale = locale).to_string()
+        t!("servers.edited_months", count = (days / 30) as usize, locale = locale).to_string()
     } else {
-        t!("servers.relative_years", count = (days / 365) as usize, locale = locale).to_string()
+        t!("servers.edited_years", count = (days / 365) as usize, locale = locale).to_string()
     }
 }
 

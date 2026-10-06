@@ -488,7 +488,7 @@ impl ZedisBitmapEditor {
                     .child(
                         Button::new("bitfield-run")
                             .small()
-                            .primary()
+                            .outline()
                             .label(i18n_bitmap(cx, "run"))
                             .on_click(cx.listener(|this, _, _window, cx| this.run_bitfield(cx))),
                     ),

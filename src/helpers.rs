@@ -50,6 +50,8 @@ pub use action::*;
 pub use ai::{AiEndpoint, analyze_report, suggest_command};
 pub use app_identity::with_app_identity;
 pub use color::card_background;
+#[cfg(test)]
+pub use color::contrast_ratio;
 pub use common::*;
 pub use crash::{CrashContext, CrashReport, install_panic_hook, take_pending_crash};
 pub use datetime::*;

@@ -306,10 +306,6 @@ impl ZedisSidebar {
         // Icon accent (#6b95c4, same in both themes) for the selected server's
         // database icon / monogram.
         let accent_color: Hsla = rgb(0x6b95c4).into();
-        // The left bar marking the selected row uses the theme's primary (the
-        // same blue as primary buttons, set in `main.rs`) — a deliberately
-        // stronger accent than the icon's.
-        let selection_bar_color = cx.theme().primary;
         // Green status dot on the selected server's row (#69b083 — same green as
         // the status-bar "Connected" indicator).
         let connected_color: Hsla = rgb(0x69b083).into();
@@ -717,20 +713,9 @@ impl ZedisSidebar {
                         // A little breathing room between monograms in the
                         // collapsed rail (without reading as an over-spaced list).
                         .when(sidebar_collapsed, |this| this.my_1())
-                        .relative()
-                        // Left accent bar marks the selected server (design).
-                        .when(is_current, |this| {
-                            this.child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top(px(6.))
-                                    .bottom(px(6.))
-                                    .w(px(2.5))
-                                    .rounded_sm()
-                                    .bg(selection_bar_color),
-                            )
-                        })
+                        // The selected server is marked by its row's fill and its
+                        // icon's accent. It also wore a bar down its left edge,
+                        // a second mark for what the fill already said.
                         .child(item)
                         .tooltip({
                             let name = tooltip_text.clone();

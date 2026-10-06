@@ -876,7 +876,7 @@ impl ZedisPersistence {
                     .gap_2()
                     .items_center()
                     .child({
-                        let mut btn = Button::new(id).primary().small().label(button_label);
+                        let mut btn = Button::new(id).outline().small().label(button_label);
                         if disabled {
                             btn = btn.disabled(true);
                         } else {

@@ -33,3 +33,22 @@ pub fn card_background(cx: &App) -> Hsla {
         cx.theme().background.darken(CARD_DARKEN_LIGHT)
     }
 }
+
+/// WCAG 2.x contrast ratio of two opaque colors — what the tests that hold
+/// a text color to 4.5:1 on its ground measure with.
+#[cfg(test)]
+pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
+    let luminance = |color: Hsla| {
+        let gpui::Rgba { r, g, b, .. } = gpui::Rgba::from(color);
+        let linear = |c: f32| {
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}

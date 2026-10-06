@@ -140,7 +140,7 @@ impl ListDelegate for KeyTreeDelegate {
             let loaded_count = entry.children_count;
             let label = entry.label.clone();
             return Some(
-                ListItem::new(ix).w_full().py_1().px_2().child(
+                ListItem::new(ix).w_full().py_1p5().px_2().child(
                     h_flex()
                         .w_full()
                         .gap_2()
@@ -219,9 +219,6 @@ impl ListDelegate for KeyTreeDelegate {
         } else {
             Hsla::black().alpha(0.03)
         };
-        // Selection accent for the left bar — the theme's primary, same as the
-        // sidebar's selected-server bar.
-        let accent_color = cx.theme().primary;
 
         // Folders sit one brightness step below leaves; an *expanded* folder
         // steps back up to full foreground (with its open icon, see above) so
@@ -233,7 +230,7 @@ impl ListDelegate for KeyTreeDelegate {
         };
         // Row label — built up front so the builder chain below just drops it
         // in. No weight change on selection (a font-weight swap re-rasterizes
-        // the glyphs and reads as a flicker); the accent bar + fill mark it.
+        // the glyphs and reads as a flicker); the fill marks it.
         // `whitespace_nowrap` is what makes `text_ellipsis` actually truncate:
         // without it a long folder name wraps to a second line instead
         // (same pairing as the editor-header key name).
@@ -301,13 +298,11 @@ impl ListDelegate for KeyTreeDelegate {
         // left-edge bar) and the note (for hover tooltip) below, and
         // theming reads can't borrow `cx` across the chain.
         let tag_color = entry.tag.map(|c| theme_color_for_tag(c, cx));
-        // Left bar: the selection accent wins on the active row; otherwise it
-        // carries the tag colour (transparent when untagged → identical height).
-        let row_border = if is_selected_row {
-            accent_color
-        } else {
-            tag_color.unwrap_or(gpui::transparent_black())
-        };
+        // Left bar: the key's tag colour, transparent when untagged (so the
+        // row is the same width either way). The selected row is marked by
+        // its fill alone — it used to take this bar over in the accent
+        // colour, which hid the tag of the one key being looked at.
+        let row_border = tag_color.unwrap_or(gpui::transparent_black());
         let note = entry.note.clone();
         let has_note = !note.is_empty();
         let folder_tag_summary = entry.folder_tag_summary.clone();
@@ -365,16 +360,15 @@ impl ListDelegate for KeyTreeDelegate {
                         // Positioning context for the absolute dashed guides.
                         .relative()
                         .w_full()
-                        .py_1()
+                        .py_1p5()
                         .px_2()
                         .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                         // Extra right padding so the floating scrollbar (16px
                         // track) doesn't cover the right-aligned TTL / inline
                         // delete button.
                         .pr(px(14.))
-                        // 3px left bar carries the selection accent (or the tag
-                        // colour); transparent when neither, so row height never
-                        // jitters.
+                        // 3px left bar carries the tag colour; transparent when
+                        // untagged, so the row never shifts.
                         .border_l_3()
                         .border_color(row_border)
                         // Zebra: every second leaf under a folder gets a faint

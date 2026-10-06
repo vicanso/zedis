@@ -155,8 +155,11 @@ impl ZedisMemoryAnalysis {
                                 this.stop_analysis(cx);
                             }))
                     } else {
+                        // Outline, like every command that is not a form's
+                        // submit: with a filled primary on each tool page the
+                        // primary stopped meaning "this is the default".
                         Button::new("start-analysis")
-                            .primary()
+                            .outline()
                             .small()
                             .disabled(self.dbsize.is_none() || self.live_scan_block(cx).is_some())
                             .label(i18n_memory_analysis(cx, "start"))

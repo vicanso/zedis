@@ -465,7 +465,7 @@ impl ZedisVectorSetEditor {
                 Button::new("vector-set-search")
                     .label(i18n_vector_set(cx, "search"))
                     .small()
-                    .primary()
+                    .outline()
                     // `.loading()` renders its spinner in place of the icon, so a
                     // label-only button would just grey out (see CLAUDE.md).
                     .icon(Icon::new(IconName::Search))

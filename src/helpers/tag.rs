@@ -70,12 +70,17 @@ pub fn resolve_tag_chip(key: Option<&str>, dark: bool) -> Option<(Hsla, Hsla)> {
     // white text in both modes — so high-risk servers read as a strong
     // chip, not the pale tint the lower-risk tiers use. Destructive ops
     // escalate on these servers, so the badge weight matches the stakes.
+    //
+    // Every pair is at least 4.5:1, the label being 10–12px text (the test
+    // below holds a new one to it). The dark foregrounds used to be the
+    // mid tones of their hues, which on a dark ground of the same hue were
+    // 3.9–4.1:1.
     let (lbg, lfg, dbg, dfg): (u32, u32, u32, u32) = match canonical_tag_key(key)? {
-        "magenta" => (0xdb2777, 0xffffff, 0xdb2777, 0xffe4f0),
+        "magenta" => (0xbe185d, 0xffffff, 0xbe185d, 0xffffff),
         "purple" => (0xf3e8ff, 0x7e22ce, 0x3c225f, 0xb886fb),
-        "teal" => (0xf3f4f6, 0x4b5563, 0x374151, 0x9ca3af), // Dev — neutral light gray
-        "sky" => (0xeff6ff, 0x1d4ed8, 0x1e3a8a, 0x60a5fa),
-        _ => (0xf1f5f9, 0x475569, 0x334155, 0x94a3b8), // slate
+        "teal" => (0xf3f4f6, 0x4b5563, 0x374151, 0xd1d5db), // Dev — neutral light gray
+        "sky" => (0xeff6ff, 0x1d4ed8, 0x1e3a8a, 0x93c5fd),
+        _ => (0xf1f5f9, 0x475569, 0x334155, 0xcbd5e1), // slate
     };
     let (bg, fg) = if dark { (dbg, dfg) } else { (lbg, lfg) };
     Some((rgb(bg).into(), rgb(fg).into()))
@@ -96,5 +101,23 @@ pub fn theme_color_for_tag(color: TagColor, cx: &gpui::App) -> Hsla {
         TagColor::Green => theme.green,
         TagColor::Blue => theme.blue,
         TagColor::Purple => hsla(0.78, 0.55, 0.55, 1.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tag's label is small text on its own ground, in both themes.
+    #[test]
+    fn a_tag_chip_s_label_reads_on_its_ground() {
+        use crate::helpers::contrast_ratio;
+        for key in ["magenta", "purple", "teal", "sky", "slate"] {
+            for dark in [false, true] {
+                let (ground, label) = resolve_tag_chip(Some(key), dark).expect("a chip for every tier");
+                let ratio = contrast_ratio(ground, label);
+                assert!(ratio >= 4.5, "{key} (dark: {dark}) is {ratio:.2}:1");
+            }
+        }
     }
 }

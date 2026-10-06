@@ -27,15 +27,16 @@ use crate::{
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, SOFT_WRAP_MAX_BYTES,
         ServerEvent, ServerTask, ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState,
-        get_session_option, i18n_acl, i18n_common, i18n_config_editor, i18n_functions, i18n_hotkeys, i18n_key_tree,
-        i18n_keyspace_notifications, i18n_lua_scripts, i18n_monitor, i18n_persistence, i18n_search, i18n_server_info,
-        i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology, i18n_value_search,
-        save_session_option,
+        content_area_width, get_session_option, i18n_acl, i18n_common, i18n_config_editor, i18n_functions,
+        i18n_hotkeys, i18n_key_tree, i18n_keyspace_notifications, i18n_lua_scripts, i18n_monitor, i18n_persistence,
+        i18n_search, i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology,
+        i18n_value_search, save_session_option,
     },
     views::confirm_dangerous_command,
 };
 use gpui::{
-    Anchor, App, Entity, Hsla, Pixels, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px, rgb,
+    Anchor, App, Entity, Hsla, MouseButton, Pixels, SharedString, Subscription, Task, TextAlign, Window, div,
+    prelude::*, px, rgb,
 };
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{
@@ -270,7 +271,16 @@ struct MetricChip {
     /// Set when the destination panel can't work on this server: the chip is
     /// disabled and this replaces the tooltip.
     disabled_reason: Option<SharedString>,
+    /// What the number counts — "clients", "slow" — and the colour to say
+    /// it in, when the bar has room for it ([`ZedisStatusBar::shows_units`]).
+    unit: Option<(SharedString, Hsla)>,
 }
+
+/// The content width from which the bar names its counts ("0 / 2 clients"
+/// rather than "0 / 2" beside an icon), and the wider one it needs while the
+/// editor's own controls (Soft Wrap, the format, the Viewer) share the bar.
+const UNITS_MIN_WIDTH: f32 = 1020.;
+const UNITS_MIN_WIDTH_WITH_EDITOR: f32 = 1260.;
 
 #[derive(Default)]
 struct StatusBarServerState {
@@ -389,6 +399,10 @@ pub struct ZedisStatusBar {
 
     viewer_mode_state: Entity<SelectState<SearchableVec<SharedString>>>,
     db_state: Entity<SelectState<Vec<DbInfo>>>,
+    /// The database list is open — from the press on its trigger until the
+    /// select reports a choice or a dismissal. The trigger's tooltip is
+    /// held back meanwhile: it opened over the bottom rows of the list.
+    db_menu_open: bool,
     should_reset_viewer_mode: Option<bool>,
     should_reset_db: Option<bool>,
     should_rebuild_db_items: Option<usize>,
@@ -517,6 +531,9 @@ impl ZedisStatusBar {
             window,
             |view, _state, event: &SelectEvent<Vec<DbInfo>>, _window, cx| match event {
                 SelectEvent::Confirm(value) => {
+                    // A choice or a dismissal: either way the list is closed.
+                    view.db_menu_open = false;
+                    cx.notify();
                     let Some(db) = *value else {
                         return;
                     };
@@ -540,6 +557,7 @@ impl ZedisStatusBar {
             heartbeat_task: None,
             viewer_mode_state,
             db_state,
+            db_menu_open: false,
             should_reset_db: None,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
@@ -1067,7 +1085,10 @@ impl ZedisStatusBar {
         px(width)
     }
 
-    fn render_server_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_server_status(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let nodes_unit = self
+            .shows_units(window, cx)
+            .then(|| (i18n_status_bar(cx, "unit_nodes"), cx.theme().muted_foreground));
         let server_state = &self.state.server_state;
         let is_completed = server_state.scan_finished;
         // Read live, not from the snapshot: a scan round starts on this
@@ -1149,10 +1170,20 @@ impl ZedisStatusBar {
                         // dropdown shows bare counts with no unit, and on a
                         // multi-master setup they are sums across nodes.
                         let db_tooltip = i18n_status_bar(cx, "db_tooltip");
+                        let menu_open = self.db_menu_open;
                         this.child(
                             div()
                                 .id("zedis-status-bar-db-select")
-                                .tooltip(move |window, cx| Tooltip::new(db_tooltip.clone()).build(window, cx))
+                                .when(!menu_open, |this| {
+                                    this.tooltip(move |window, cx| Tooltip::new(db_tooltip.clone()).build(window, cx))
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _window, cx| {
+                                        this.db_menu_open = true;
+                                        cx.notify();
+                                    }),
+                                )
                                 .child(
                                     Select::new(&self.db_state)
                                         .small()
@@ -1302,8 +1333,12 @@ impl ZedisStatusBar {
                         div()
                             .child(
                                 h_flex()
+                                    .items_center()
                                     .child(Icon::new(CustomIconName::Network).text_color(status_text).mr_1())
-                                    .child(Label::new(server_state.nodes.clone()).text_color(status_text)),
+                                    .child(Label::new(server_state.nodes.clone()).text_color(status_text))
+                                    .when_some(nodes_unit, |this, (unit, color)| {
+                                        this.child(Label::new(unit).text_xs().text_color(color).ml_1())
+                                    }),
                             )
                             .id("zedis-servers")
                             .tooltip(move |window, cx| Tooltip::new(nodes_description.clone()).build(window, cx)),
@@ -1313,8 +1348,11 @@ impl ZedisStatusBar {
     /// Render the right-hand telemetry cluster: a "Connected" health indicator
     /// (with one-click reconnect when the link is down) followed by the live
     /// metric chips — latency / memory / clients / slow log.
-    fn render_telemetry(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_telemetry(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;
+        let shows_units = self.shows_units(window, cx);
+        let unit_color = cx.theme().muted_foreground;
+        let unit = |key: &str| shows_units.then(|| (i18n_status_bar(cx, key), unit_color));
         // Health icon + label. A chain link (connected) vs a broken one (link
         // down) carries the state in the *shape*, not just the color — a bare
         // colored dot was too easy to miss. Colors mirror the latency palette so
@@ -1467,6 +1505,7 @@ impl ZedisStatusBar {
                     .child(Self::metric_chip(MetricChip {
                         disabled_reason: chip_block(ServerView::Metrics),
                         id: "zedis-status-bar-server-metrics",
+                        unit: None,
                         icon: CustomIconName::Activity,
                         label: latency_text,
                         label_color: latency_color,
@@ -1481,6 +1520,7 @@ impl ZedisStatusBar {
                     .child(Self::metric_chip(MetricChip {
                         disabled_reason: chip_block(ServerView::MemoryAnalysis),
                         id: "zedis-status-bar-server-memory-analysis",
+                        unit: None,
                         icon: CustomIconName::MemoryStick,
                         label: server_state.used_memory.clone(),
                         label_color: status_text,
@@ -1495,6 +1535,7 @@ impl ZedisStatusBar {
                     .child(Self::metric_chip(MetricChip {
                         disabled_reason: chip_block(ServerView::Clients),
                         id: "zedis-status-bar-clients",
+                        unit: unit("unit_clients"),
                         icon: CustomIconName::AudioWaveform,
                         label: server_state.clients.clone(),
                         label_color: status_text,
@@ -1509,6 +1550,7 @@ impl ZedisStatusBar {
                     .child(Self::metric_chip(MetricChip {
                         disabled_reason: chip_block(ServerView::Slowlog),
                         id: "zedis-status-bar-server-slow-logs",
+                        unit: unit("unit_slow"),
                         icon: CustomIconName::Snail,
                         label: server_state.slow_log_tips.clone(),
                         label_color: status_text,
@@ -1539,6 +1581,7 @@ impl ZedisStatusBar {
             tooltip,
             view,
             disabled_reason,
+            unit,
         } = chip;
         // A disabled `Button` still shows its tooltip, so the reason the
         // panel is unavailable replaces the destination hint.
@@ -1553,6 +1596,9 @@ impl ZedisStatusBar {
             .icon(Icon::new(icon).mr_1().text_color(icon_color))
             .label(label)
             .text_color(label_color)
+            .when_some(unit, |this, (unit, color)| {
+                this.child(Label::new(unit).text_xs().text_color(color).ml_1())
+            })
             .disabled(disabled)
             .tooltip(tooltip)
             .on_click(move |_, _window, cx| {
@@ -1560,6 +1606,19 @@ impl ZedisStatusBar {
                     state.toggle_view(view, cx);
                 });
             })
+    }
+
+    /// Whether the bar is wide enough to say what its counts are. Three
+    /// bare "n / m" pairs beside three icons were only readable to someone
+    /// who already knew them; the words go away again where they would push
+    /// the rest of the bar out of the window.
+    fn shows_units(&self, window: &Window, cx: &App) -> bool {
+        let needed = if self.show_editor_controls(cx) {
+            UNITS_MIN_WIDTH_WITH_EDITOR
+        } else {
+            UNITS_MIN_WIDTH
+        };
+        content_area_width(window, cx).as_f32() >= needed
     }
     fn render_editor_settings(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = &self.state.server_state;

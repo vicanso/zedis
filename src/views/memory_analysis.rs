@@ -266,9 +266,14 @@ fn format_memory(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::FormatSizeOptions::default().decimal_places(2))
 }
 
+/// A key that never expires, in the tables and the exported report. Not
+/// "Perm": next to an ACL panel that reads as *permission*. (English, like
+/// the rest of the report's own words — the sampler has no locale.)
+const NO_TTL: &str = "No TTL";
+
 fn format_ttl(avg_secs: f64) -> String {
     if avg_secs < 0.0 {
-        return "Perm".to_string();
+        return NO_TTL.to_string();
     }
     format_duration(Duration::from_secs(avg_secs as u64))
 }
@@ -1457,8 +1462,8 @@ impl ZedisMemoryAnalysis {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisAccumulators, KeySample, PrefixRow, RecoKind, RecoSeverity, SingleKeyRow, TtlHistogram, TypeStats,
-        build_markdown_report, build_prefix_rows, build_recommendations, build_type_rows, format_memory,
+        AnalysisAccumulators, KeySample, NO_TTL, PrefixRow, RecoKind, RecoSeverity, SingleKeyRow, TtlHistogram,
+        TypeStats, build_markdown_report, build_prefix_rows, build_recommendations, build_type_rows, format_memory,
         format_thousands, md_cell,
     };
     use crate::connection::{HeatMetric, HeatProbe};
@@ -1472,7 +1477,7 @@ mod tests {
             memory_bytes: bytes,
             memory: format_memory(bytes).into(),
             key_type: key_type.to_string().into(),
-            ttl: "Perm".into(),
+            ttl: NO_TTL.into(),
             ttl_secs: -1,
             heat: HeatMetric::None,
             heat_display: "—".into(),
@@ -1489,7 +1494,7 @@ mod tests {
             memory_bytes,
             memory: format_memory(memory_bytes).into(),
             types: types.to_string().into(),
-            avg_ttl: "Perm".into(),
+            avg_ttl: NO_TTL.into(),
             avg_ttl_secs: -1.0,
             perm_count: 0,
             perm_display: "0".into(),

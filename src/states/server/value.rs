@@ -1295,24 +1295,7 @@ fn merge_patch_is_faithful(patch: &JsonValue, new: &JsonValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::Rgba;
-
-    /// WCAG 2.x contrast ratio of two opaque colors.
-    fn contrast(a: Hsla, b: Hsla) -> f32 {
-        let luminance = |color: Hsla| {
-            let Rgba { r, g, b, .. } = Rgba::from(color);
-            let linear = |c: f32| {
-                if c <= 0.03928 {
-                    c / 12.92
-                } else {
-                    ((c + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
-        };
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
+    use crate::helpers::contrast_ratio;
 
     /// The cap is on what the editor shows: the decoded text where the
     /// value has one, its bytes otherwise.
@@ -1351,8 +1334,8 @@ mod tests {
             KeyType::from("graphdata"),
         ];
         for key_type in types {
-            let light = contrast(key_type.color(false), light_row);
-            let dark = contrast(key_type.color(true), dark_row);
+            let light = contrast_ratio(key_type.color(false), light_row);
+            let dark = contrast_ratio(key_type.color(true), dark_row);
             assert!(light >= 4.5, "{key_type:?} is {light:.2}:1 on the light row");
             assert!(dark >= 4.5, "{key_type:?} is {dark:.2}:1 on the dark row");
         }

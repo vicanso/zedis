@@ -470,6 +470,10 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .map(|element| element.format())
             .filter(|format| *format != DataFormat::Text);
         let muted = cx.theme().muted_foreground;
+        // The format name is 12px text on a tinted ground: the muted colour
+        // itself was 3.7:1 there in light. The foreground at 70% is past 6:1
+        // in both themes and still quieter than the value beside it.
+        let chip_text = cx.theme().foreground.opacity(0.7);
         let group_name: SharedString = format!("td-{}-{}", row_ix, col_ix).into();
         let copied_message = i18n_common(cx, "copied_to_clipboard");
         base.group(group_name.clone())
@@ -482,7 +486,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                         .px_1()
                         .rounded_sm()
                         .bg(muted.opacity(0.18))
-                        .child(Label::new(format.as_str()).text_xs().text_color(muted)),
+                        .child(Label::new(format.as_str()).text_xs().text_color(chip_text)),
                 )
             })
             .child(
