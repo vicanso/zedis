@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.12.2](https://github.com/vicanso/zedis/compare/v0.12.1..v0.12.2) - 2026-10-06
+
+### ⛰️  Features
+
+- *(ui)* Drop selection bars, label status bar counts, raise tag and chip contrast, tidy button variants, ellipses and time labels, and relax key tree rows to 6pt - ([b66a985](https://github.com/vicanso/zedis/commit/b66a9851e6ff12a4f7fb46f21aa1cf02618b209b))
+- *(ui)* Compact connection cards and config rows, sectioned settings, native menus, bottom-right toasts, a soft-wrap cap for large values, and connections for users without INFO - ([fe7371e](https://github.com/vicanso/zedis/commit/fe7371eef657b1e7874e1ab5cf6e5e8e47fd3836))
+- *(ui)* Rework confirm dialogs, the editor's link-down and large-value states, key tree and table density, and per-theme badge colors - ([d45e054](https://github.com/vicanso/zedis/commit/d45e054a47004a108d106a2f8e4b44c862c95536))
+- Decode stream values, scan production in smaller pages, polish - ([d9bdb1a](https://github.com/vicanso/zedis/commit/d9bdb1a80ccc0399c6a38467d823205c044d6487))
+
+### 🐛 Bug Fixes
+
+- *(memory-analysis)* Wrap the toolbar and fix the doubled percent sign - ([1d87c9c](https://github.com/vicanso/zedis/commit/1d87c9ca2cd038fb8298a4ce4367741488b54a6b))
+- Put the terminal behind the write lock, give every confirm a Cancel, keep the brand primary on a pinned theme - ([8e36fb5](https://github.com/vicanso/zedis/commit/8e36fb55a655da72343f3743e70405186d2d96c1))
+- Open Settings from the palette and the tray; add the missing back buttons - ([ef627ff](https://github.com/vicanso/zedis/commit/ef627ff714d31de7665cd8def33f5f3df57f15ad))
+
+### Build
+
+- *(deps)* Bump gpui-kit to 0.7.1 (gpui-pre 0.3.8) - ([a47e33d](https://github.com/vicanso/zedis/commit/a47e33d518efe4bbc81235c891ec3c96f15eeed3))
+- *(deps)* Bump tray-icon from 0.25.1 to 0.26.0 ([#157](https://github.com/orhun/git-cliff/issues/157)) - ([569bb75](https://github.com/vicanso/zedis/commit/569bb758a6ed91fb84b1a11cb8c489a12580c3e8))
+- *(deps)* Bump rust-i18n ([#156](https://github.com/orhun/git-cliff/issues/156)) - ([a84a49a](https://github.com/vicanso/zedis/commit/a84a49aa3c79579d9a91f947f7a4f18507248ac2))
+- Size-optimize the cold SSH, TLS, storage, protobuf and HTTP crates, and split the server state's task helper - ([da29c25](https://github.com/vicanso/zedis/commit/da29c253f516e54f8531434b56558769eb956f88))
+
 ## [0.12.1](https://github.com/vicanso/zedis/compare/v0.12.0..v0.12.1) - 2026-09-30
 
 ### ⛰️  Features
