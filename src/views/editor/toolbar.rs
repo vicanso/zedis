@@ -155,7 +155,8 @@ impl ZedisEditor {
             btns.push(
                 Button::new("zedis-editor-save-key")
                     .disabled(self.readonly || !value_modified || should_show_loading)
-                    .primary()
+                    .when(value_modified, |this| this.primary())
+                    .when(!value_modified, |this| this.outline())
                     .label(i18n_common(cx, "save"))
                     .tooltip(tooltip)
                     .icon(CustomIconName::Save)

@@ -900,10 +900,13 @@ impl ZedisAppState {
         self.max_truncate_length = Some(max_truncate_length);
     }
     pub fn redis_connection_timeout(&self) -> String {
-        self.redis_connection_timeout.map(timeout_text).unwrap_or_default()
+        // `None` is the live default, not an empty field. The constant
+        // lives in `zedis-connection` but is native-only (wasm has no
+        // dialer), so the number is spelled here too.
+        timeout_text(self.redis_connection_timeout.unwrap_or(Duration::from_secs(10)))
     }
     pub fn redis_response_timeout(&self) -> String {
-        self.redis_response_timeout.map(timeout_text).unwrap_or_default()
+        timeout_text(self.redis_response_timeout.unwrap_or(Duration::from_secs(20)))
     }
     pub fn key_scan_count(&self) -> usize {
         self.key_scan_count.unwrap_or(DEFAULT_KEY_SCAN_COUNT)
@@ -1548,6 +1551,10 @@ mod upgrade_fixtures {
         let state: ZedisAppState = toml::from_str("").expect("empty file");
         assert_eq!(state.locale, None);
         assert_eq!(state.key_tree_width, Pixels::ZERO);
+        // Settings fields show the effective default, not a blank that
+        // looks unset while the dialer still uses 10s / 20s.
+        assert_eq!(state.redis_connection_timeout(), "10");
+        assert_eq!(state.redis_response_timeout(), "20");
     }
 
     #[test]

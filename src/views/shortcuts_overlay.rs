@@ -106,7 +106,7 @@ impl Render for ZedisShortcutsOverlay {
             .w_full()
             .gap_3()
             .p_3()
-            .max_h(px(420.))
+            .h(px(420.))
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle);
         for group in shortcut_reference() {

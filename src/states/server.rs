@@ -1166,10 +1166,10 @@ impl ZedisServerState {
                     // per failed click on top of it.
                     ConnectionHealth::Reconnecting | ConnectionHealth::Offline => return true,
                     ConnectionHealth::Connected => i18n_status_bar(cx, "conn_lost"),
-                    // The first connect: nothing on screen says why it did
-                    // not happen (a refused connection used to end in
-                    // silence), so the reason and the error both.
-                    ConnectionHealth::Unknown => format!("{}: {error}", i18n_status_bar(cx, kind.reason_key())).into(),
+                    // The empty editor already draws `link_problem()` with
+                    // host and error. A toast is window-global, so it would
+                    // follow the user onto every other tab.
+                    ConnectionHealth::Unknown => return true,
                 }
             }
             K::Timeout | K::Loading | K::Busy | K::ClusterDown => i18n_status_bar(cx, kind.reason_key()),

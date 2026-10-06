@@ -798,61 +798,19 @@ impl ZedisEditor {
                 .child(Label::new(text).text_xs().text_color(muted).whitespace_normal())
         };
 
-        // Quick actions: one click to the flows people reach for before
-        // they've picked a key. Labels reuse the shortcuts locale so
-        // wording matches the list below and the ⌘/ overlay.
-        let quick_actions = h_flex()
-            .mt_3()
-            .gap_2()
-            .flex_wrap()
-            .justify_center()
-            .child(
-                Button::new("empty-new-key")
-                    .outline()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label(i18n_shortcuts(cx, "new_key"))
-                    .when_some(hot_key_label("new_key"), |button, chord| button.tooltip(chord))
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state
-                            .update(cx, |state, cx| state.emit_editor_action(EditorAction::Create, cx));
-                    })),
-            )
-            .child(
-                Button::new("empty-search")
-                    .outline()
-                    .small()
-                    .icon(IconName::Search)
-                    .label(i18n_shortcuts(cx, "search"))
-                    .when_some(hot_key_label("search"), |button, chord| button.tooltip(chord))
-                    .on_click(cx.listener(|_this, _, window, cx| {
-                        window.dispatch_action(Box::new(EditorAction::Search), cx);
-                    })),
-            )
-            .child(
-                Button::new("empty-terminal")
-                    .outline()
-                    .small()
-                    .icon(IconName::SquareTerminal)
-                    .label(i18n_shortcuts(cx, "terminal"))
-                    .when_some(hot_key_label("terminal"), |button, chord| button.tooltip(chord))
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.server_state.update(cx, |state, cx| state.toggle_terminal(cx));
-                    })),
-            );
-        // Multi-database search is a desktop feature: in the browser the
-        // action has no handler, and a button that does nothing is worse
-        // than no button.
-        #[cfg(not(target_family = "wasm"))]
-        let quick_actions = quick_actions.child(
-            Button::new("empty-multi-search")
+        // The one action that is not already on the tree or a shortcut
+        // the guide lists: create a key. Search / terminal / multi-search
+        // live in the card below (and ⌘F / ⌘J / ⌘⇧F).
+        let quick_actions = h_flex().mt_3().justify_center().child(
+            Button::new("empty-new-key")
                 .outline()
                 .small()
-                .icon(IconName::Globe)
-                .label(i18n_shortcuts(cx, "multi_search"))
-                .when_some(hot_key_label("multi_search"), |button, chord| button.tooltip(chord))
-                .on_click(cx.listener(|_this, _, window, cx| {
-                    window.dispatch_action(Box::new(MultiSearchAction::Toggle), cx);
+                .icon(IconName::Plus)
+                .label(i18n_shortcuts(cx, "new_key"))
+                .when_some(hot_key_label("new_key"), |button, chord| button.tooltip(chord))
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.server_state
+                        .update(cx, |state, cx| state.emit_editor_action(EditorAction::Create, cx));
                 })),
         );
 
@@ -884,7 +842,7 @@ impl ZedisEditor {
                                     .text_color(muted),
                             )
                             // The card is for the first visits; after that it
-                            // is the same three lists every time no key is
+                            // is the same two lists every time no key is
                             // open. Closing it is remembered (⌘/ still has
                             // the shortcuts).
                             .child(
@@ -936,32 +894,6 @@ impl ZedisEditor {
                     .child(tip_row(
                         Icon::new(CustomIconName::SquareCheck),
                         i18n_editor(cx, "tree_tip_multi"),
-                    )),
-            )
-            .child(
-                v_flex()
-                    .px_4()
-                    .py_3()
-                    .gap_1p5()
-                    .border_t_1()
-                    .border_color(border)
-                    .child(
-                        Label::new(i18n_editor(cx, "status_bar_hints_title"))
-                            .text_xs()
-                            .font_medium()
-                            .text_color(muted),
-                    )
-                    .child(tip_row(
-                        Icon::new(IconName::Menu),
-                        i18n_editor(cx, "status_bar_hint_tools"),
-                    ))
-                    .child(tip_row(
-                        Icon::new(CustomIconName::Activity),
-                        i18n_editor(cx, "status_bar_hint_metrics"),
-                    ))
-                    .child(tip_row(
-                        Icon::new(CustomIconName::Link),
-                        i18n_editor(cx, "status_bar_hint_connection"),
                     )),
             );
 

@@ -40,6 +40,7 @@ pub mod json;
 pub mod jsonpath;
 pub mod key_segments;
 pub mod keysizes;
+pub mod monogram;
 pub mod rdb;
 pub mod replication;
 pub mod search_params;

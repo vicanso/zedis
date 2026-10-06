@@ -16,7 +16,7 @@ use crate::{
     assets::{Assets, CustomIconName},
     connection::get_servers,
     constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
-    helpers::{humanize_keystroke, is_quiet_tag, resolve_tag_chip, resolve_tag_color},
+    helpers::{humanize_keystroke, is_quiet_tag, resolve_tag_chip, resolve_tag_color, unique_monograms},
     states::{
         ConnectionHealth, GlobalEvent, Route, ZedisGlobalStore, i18n_servers, i18n_sidebar, update_app_state_and_save,
     },
@@ -454,6 +454,21 @@ impl ZedisSidebar {
             );
         }
 
+        // Collapsed rail: labels unique among every visible name, so a
+        // shared prefix (`aliyun-*`) does not collapse to the same two
+        // letters. Expanded rows show the full name, so they skip this.
+        let mut monograms = if sidebar_collapsed {
+            unique_monograms(
+                self.state
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.servers.iter().map(|entry| entry.name.as_ref())),
+            )
+            .into_iter()
+        } else {
+            Vec::new().into_iter()
+        };
+
         // --- Group sections ---
         for (section_idx, section) in self.state.sections.iter().enumerate() {
             let is_collapsed = collapsed_keys.contains(&section.key);
@@ -562,20 +577,12 @@ impl ZedisSidebar {
                 // Initials for the collapsed rail so servers stay tellable apart
                 // at a glance: two letters for Latin names ("upstash" → "UP"), but
                 // a single glyph for CJK so a wide character (缓 / 中) isn't cramped.
-                let monogram: SharedString = {
-                    let mut chars = name.chars().filter(|c| c.is_alphanumeric());
-                    match chars.next() {
-                        Some(first) if first.is_ascii() => {
-                            let mut s = first.to_ascii_uppercase().to_string();
-                            if let Some(second) = chars.next().filter(|c| c.is_ascii()) {
-                                s.push(second.to_ascii_uppercase());
-                            }
-                            s
-                        }
-                        Some(first) => first.to_string(),
-                        None => "?".to_string(),
-                    }
-                    .into()
+                // Assigned once for the whole rail (`unique_monograms`) so
+                // `aliyun-cluster` / `aliyun-tls` do not all read as `AL`.
+                let monogram: SharedString = if sidebar_collapsed {
+                    monograms.next().unwrap_or_else(|| "?".to_string()).into()
+                } else {
+                    SharedString::default()
                 };
 
                 let item_id = SharedString::from(format!("sidebar-srv-{}", entry.id));

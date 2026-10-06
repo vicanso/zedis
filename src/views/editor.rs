@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The empty state's multi-database search button is the desktop's.
-#[cfg(not(target_family = "wasm"))]
-use crate::helpers::MultiSearchAction;
 #[cfg(not(target_family = "wasm"))]
 use crate::views::ZedisPubsubEditor;
 // The link panel's Diagnose button opens the desktop's diagnostics window.
@@ -213,9 +210,24 @@ fn format_ttl_string(ttl: &str) -> String {
 /// What the TTL field opens with: the time left in a form the field reads
 /// back (`1h 30m 5s`), or nothing for a key without one. `chrono`'s own
 /// `Display` is ISO 8601 (`PT5405S`), which the field cannot parse.
+///
+/// Past a day, humantime spells months (`11months 18days 12hours…`) which
+/// this 120px field truncates to `11months 1`. Days and leftover hours
+/// (`353d 12h`) still parse and fit.
 fn ttl_field_text(ttl: Option<chrono::Duration>) -> SharedString {
     match ttl.and_then(|ttl| u64::try_from(ttl.num_seconds()).ok()) {
-        Some(secs) if secs > 0 => humantime::format_duration(Duration::from_secs(secs)).to_string().into(),
+        Some(secs) if secs > 0 && secs < 86_400 => {
+            humantime::format_duration(Duration::from_secs(secs)).to_string().into()
+        }
+        Some(secs) if secs > 0 => {
+            let days = secs / 86_400;
+            let hours = (secs % 86_400) / 3_600;
+            if hours == 0 {
+                format!("{days}d").into()
+            } else {
+                format!("{days}d {hours}h").into()
+            }
+        }
         _ => SharedString::default(),
     }
 }
@@ -926,6 +938,12 @@ mod tests {
         let text = ttl_field_text(Some(chrono::Duration::seconds(5405)));
         assert_eq!(text.as_ref(), "1h 30m 5s");
         assert_eq!(ttl_secs(&format_ttl_string(&text)), Some(5405));
+        // A year-scale TTL stays compact and parseable — humantime would
+        // open as `11months 18days…` and the field would clip it.
+        let long = 353 * 86_400 + 12 * 3_600;
+        let text = ttl_field_text(Some(chrono::Duration::seconds(long)));
+        assert_eq!(text.as_ref(), "353d 12h");
+        assert_eq!(ttl_secs(&format_ttl_string(&text)), Some(long as u64));
         // No TTL (-1), a missing key (-2) and none at all open empty.
         assert!(ttl_field_text(Some(chrono::Duration::seconds(-1))).is_empty());
         assert!(ttl_field_text(Some(chrono::Duration::seconds(-2))).is_empty());
