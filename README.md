@@ -3,7 +3,7 @@
 <h1 align="center">Zedis</h1>
 
 <p align="center">
-  <strong>The Redis GUI that opens your million-key database without the spinner — native, GPU-accelerated with Rust 🦀 and GPUI ⚡️</strong>
+  <strong>The Redis GUI that opens a million-key database without the spinner — native, GPU-accelerated, Rust 🦀 × GPUI ⚡️</strong>
 </p>
 
 <p align="center">
@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
+  <a href="#-features">Features</a> ·
   <a href="#-installation">Install</a> ·
-  <a href="#-features-at-a-glance">Features</a> ·
   <a href="#-web-version-self-hosted">Web version</a> ·
   <a href="./docs/FEATURES.md">Full feature tour</a> ·
   <a href="https://zedis.net">Website</a>
@@ -27,24 +27,59 @@
 
 ---
 
-## 🤔 Why Zedis?
+## ✨ Features
 
-Tired of Electron-based Redis clients that eat gigabytes of RAM to show one JSON string, freeze when a key has 100,000 elements, and turn compressed or binary values into garbled bytes? We were too.
+**Zedis** is a native Redis and Valkey GUI. [GPUI](https://zed.dev) — the engine behind the Zed editor — draws every frame on the GPU, and `SCAN` is virtual-scrolled, so a million keys stay at 60+ FPS on a small memory footprint.
 
-**Zedis** is a native app, drawn on the GPU by **GPUI** — the rendering engine behind the [Zed editor](https://zed.dev). It stays at 60+ FPS on a small memory footprint, even in a database with millions of keys.
+- 🧠 **Reads your values** — decompresses and decodes on its own: JSON, Protobuf, MessagePack, JWT, images and more, with a viewer for every Redis type and module.
+- 📊 **Observability in the same window** — live metrics, a memory analyzer, hot keys, slow log, `MONITOR` and cluster health.
+- 🔐 **Safe on production** — Prod connections start write-locked, a destructive command there asks for the server's name, secrets are encrypted per machine, and there is no telemetry.
+- 🌐 **Connects to what you actually run** — TLS, SSH, Cluster, Sentinel; Redis and Valkey as first-class; proxies and managed clouds grey out what they lack, with the reason.
+- ⌨️ **For people who live in Redis** — ⌘K, a redis-cli with completion, an AI command assistant, copy and diff across servers, and the same app in the browser.
 
-## ✨ Highlights
+Already on Redis Insight, ARDM or Tiny RDM? **Paste the export and every connection lands at once.**
 
-- 🦀 **Native, not Electron** — every pixel on the GPU and a virtual-scrolled `SCAN`: millions of keys, 60+ FPS, little RAM.
-- 🧠 **Understands your data** — decompresses and decodes by itself: JSON, Protobuf, MessagePack, JWT, images and more, with a viewer for every Redis type and module.
-- 📊 **Observability built in** — live metrics, a memory analyzer, hot keys, slow log, `MONITOR` and cluster health in one window.
-- 🔐 **Careful with production** — Prod connections start write-locked, a destructive command there asks for the server's name, secrets are encrypted per machine, and there is no telemetry.
-- 🌐 **Connects to anything** — TLS, SSH tunnels, Cluster and Sentinel; Redis and Valkey are both first-class; proxies and managed clouds grey out what they lack, with the reason, instead of failing.
-- ⌨️ **Built for power users** — ⌘K command palette, a redis-cli with completion, an AI command assistant, copy and diff across servers.
-- 🕸️ **In the browser too** — the same app as WebAssembly, self-hosted from one ~26 MB Docker image, with a read-only MCP door for AI assistants.
+📖 **[Every panel, viewer and shortcut →](./docs/FEATURES.md)**
 
-> ### 🔄 Already using Redis Insight?
-> **Paste its database export and every connection lands at once** — no re-entering hosts, ports, and passwords one by one. Exports from ARDM and Tiny RDM import the same way. Point Zedis at your real setup in about a minute, then judge the speed for yourself.
+## 📦 Installation
+
+### macOS
+
+```bash
+brew install --cask zedis
+```
+
+### Windows
+
+```bash
+scoop bucket add extras
+scoop install zedis
+```
+
+### Linux
+
+Arch Linux (AUR):
+
+```bash
+yay -S zedis-bin
+```
+
+Other distributions: `.deb`, `.rpm`, an AppImage and a plain tarball (x86_64 and aarch64) are attached to every [release](https://github.com/vicanso/zedis/releases/latest).
+
+<details>
+<summary><strong>Build from source with Cargo</strong></summary>
+
+Zedis depends on an unreleased (git) version of GPUI, which crates.io does not allow — so the crates.io build may lag behind. For the newest version use a package manager above, a [release download](https://github.com/vicanso/zedis/releases), or the `--git` command.
+
+```bash
+# From crates.io — may be an older version
+cargo install --locked zedis-gui
+
+# Latest: build straight from GitHub (resolves the git dependencies)
+cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
+```
+
+</details>
 
 ## 📸 Screenshots
 
@@ -86,69 +121,12 @@ Tired of Electron-based Redis clients that eat gigabytes of RAM to show one JSON
   </tr>
 </table>
 
-## 📦 Installation
-
-### macOS
-
-```bash
-brew install --cask zedis
-```
-
-### Windows
-
-```bash
-scoop bucket add extras
-scoop install zedis
-```
-
-The `.msi` and the `.exe` in the `.zip` are Authenticode-signed — see the [Code signing policy](#-code-signing-policy).
-
-### Linux
-
-Arch Linux (AUR):
-
-```bash
-yay -S zedis-bin
-```
-
-Other distributions: `.deb`, `.rpm`, an AppImage and a plain tarball (x86_64 and aarch64) are attached to every [release](https://github.com/vicanso/zedis/releases/latest).
-
-<details>
-<summary><strong>Build from source with Cargo</strong></summary>
-
-Zedis depends on an unreleased (git) version of GPUI, which crates.io does not allow — so the crates.io build may lag behind. For the newest version use a package manager above, a [release download](https://github.com/vicanso/zedis/releases), or the `--git` command.
-
-```bash
-# From crates.io — may be an older version
-cargo install --locked zedis-gui
-
-# Latest: build straight from GitHub (resolves the git dependencies)
-cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
-```
-
-</details>
-
-## 🧩 Features at a Glance
-
-| Area | What's inside |
-| --- | --- |
-| 🚀 **Native & fast** | GPU rendering · virtual-scrolled `SCAN` · macOS / Windows / Linux · light, dark and 6 bundled themes · 8 UI languages |
-| 🧠 **Smart data viewer** | LZ4 / Snappy / GZIP / ZSTD · JSON + JSONPath · Protobuf · MessagePack · Java / PHP / pickle · BSON · JWT · images · hex · your own script viewer |
-| 🗂️ **Types & modules** | Hash / List / Set / ZSet / Stream editors · Bitmap · HyperLogLog · Geo map · Vector Set (KNN) · JSON · Search · Time Series · Bloom family · Pub/Sub · Functions |
-| 📊 **Observability** | Live metrics with 7-day history · memory analyzer (live scan or offline RDB) with AI tips · hot keys · Slow Log ↔ Latency · `MONITOR` · value search · cluster reshard and rebalance · typed CONFIG editor |
-| 🔑 **Keys & data** | Namespace tree · tags, notes, favorites · field-level TTL · version history and diff · 24h recycle bin · import / export · copy and compare across servers |
-| 🔐 **Security & privacy** | Environment tags · write lock on Prod · escalated confirms · ACL editor · TLS & SSH · secrets encrypted with a per-machine key · local-only, no telemetry |
-| 🧭 **Any server** | Redis and Valkey · Cluster / Sentinel · proxies, managed clouds and Redis-compatible servers are probed after connect, and what they lack is greyed out with the reason |
-| ⌨️ **Productivity** | Workspace tabs · ⌘K palette · ⌘P recent keys · redis-cli with history and completion · AI command assistant · batch mode · Lua script library · custom keybindings |
-
-📖 **[Everything, in detail: the full feature tour →](./docs/FEATURES.md)**
-
 ## 🌐 Web version (self-hosted)
 
-The same app, compiled to WebAssembly: host it once next to your Redis servers and the whole team opens them from a browser tab, with nothing to install. A small server, `zedis-bridge`, serves the page and talks to Redis for the browser — Redis passwords stay on the bridge, encrypted at rest, and never reach the page.
+The same GUI, compiled to WebAssembly. Host it next to Redis; the team opens a tab. `zedis-bridge` serves the page and talks to Redis — passwords stay on the bridge, encrypted at rest, and never reach the browser.
 
 <p align="center">
-  <img src="docs/images/architecture.svg" width="100%" alt="Code-sharing diagram, not a deployment: the Zedis UI and the Redis layer are code compiled into more than one program, and neither runs as a service of its own. The desktop app is one native process holding both, and its UI calls the Redis layer in-process. In the web version the same UI runs as WebAssembly in a browser tab and calls zedis-bridge over an HTTP API; the bridge is a separate server process that turns those calls into Redis commands with the same Redis layer. The desktop app and the bridge each talk RESP to standalone, Sentinel and Cluster deployments of Redis and Valkey.">
+  <img src="docs/images/architecture.svg" width="100%" alt="The Zedis UI and the Redis layer are one codebase in two programs. The desktop app is a native process holding both. The web build runs that UI as WebAssembly in a tab and calls zedis-bridge over HTTP; the bridge turns those calls into Redis commands with the same layer. Both talk RESP to standalone, Sentinel and Cluster Redis and Valkey.">
 </p>
 
 ```bash
@@ -158,22 +136,21 @@ docker run -d --name zedis-web -p 7379:7379 \
   vicanso/zedis-web:latest --listen 0.0.0.0:7379 --insecure-cookie
 ```
 
-Open <http://localhost:7379> and sign in as `admin` / `change-me`. That command is a plain-http trial: past it, drop `--insecure-cookie` and put HTTPS in front.
+Open <http://localhost:7379> as `admin` / `change-me`. That command is a plain-http trial: drop `--insecure-cookie` and put HTTPS in front.
 
-- **Accounts and roles** — sign-in is required, an entry is private until it is shared, and an account can be read-only or limited to some servers.
-- **Your own SSO** — the bridge can take the identity from the header an authenticating reverse proxy writes.
-- **Production stays safe** — Prod entries are write-locked and open for 15 minutes at a time, and an audit log records logins, entry changes and every confirmed command.
-- **AI assistants (MCP)** — Claude Code, Cursor or any MCP client can read your Redis as a read-only account, every call audited.
+- **Accounts, roles, SSO** — sign-in is required; an entry is private until it is shared; an account can be read-only or limited to some servers; identity can come from a reverse-proxy header.
+- **Production stays locked** — Prod entries open for 15 minutes at a time; the audit log records logins, entry changes and every confirmed command.
+- **MCP** — Claude Code, Cursor or any MCP client reads Redis as a read-only account, every call audited.
 
-> **Early preview.** Published for linux/amd64 and linux/arm64 (~26 MB). Some desktop panels are not in the browser; the guide lists them.
+> **Early preview.** linux/amd64 and linux/arm64 (~26 MB). A few desktop panels are missing in the browser; the guide lists them.
 
-📖 **[Self-hosting guide: HTTPS, accounts, SSO, audit log, MCP →](./docs/WEB.md)**
+📖 **[Self-hosting: HTTPS, accounts, SSO, audit log, MCP →](./docs/WEB.md)**
 
 ## 🔀 Redis and Valkey
 
-Valkey is not a compatibility mode here. Every feature that depends on a server version has a floor of its own for each of the two, so a server is never sent a command it did not ship — and what only Valkey has (`COMMANDLOG`, atomic slot migration, multiple databases in cluster mode) has its panel or action. A copy between a Redis and a Valkey lands in both directions, even though their `DUMP` payloads do not. The live integration suite runs Redis 6.2 – 8 and Valkey 8.0 – 9.1 on every change.
+Valkey is first-class, not a compatibility mode. Each version-gated feature has its own Redis floor and Valkey floor, so a server is never sent a command it did not ship. What only Valkey has — `COMMANDLOG`, atomic slot migration, multiple databases in cluster — has a panel. Copy works both ways even though `DUMP` payloads do not. CI runs Redis 6.2–8 and Valkey 8.0–9.1 on every change.
 
-📖 **[The full compatibility matrix →](./docs/REDIS_VALKEY.md)**
+📖 **[Compatibility matrix →](./docs/REDIS_VALKEY.md)**
 
 ## 📚 Documentation
 
@@ -186,9 +163,7 @@ Valkey is not a compatibility mode here. Every feature that depends on a server 
 
 ## 🔏 Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-The Windows binaries attached to each release — `zedis-windows-*.msi` and the `zedis.exe` inside `zedis-windows-*.zip` — are Authenticode-signed with the SignPath Foundation certificate. What gets signed is exactly what GitHub Actions built from the tagged commit of this repository ([`publish.yml`](./.github/workflows/publish.yml)), and every release is approved by hand before it is signed. macOS builds are signed and notarized separately with the maintainer's Apple Developer ID.
+macOS builds are signed and notarized with the maintainer's Apple Developer ID.
 
 **Team**
 
@@ -210,9 +185,7 @@ Your Redis servers, SSH tunnels and the optional proxy connect only where you po
 
 ## 🤝 Contributing
 
-We want to make Zedis the ultimate Redis client, and we'd love your help! Whether it's adding new features, translating the UI, or fixing bugs, all contributions are welcome.
-
-Open an issue or a PR to get started. By submitting a PR, you agree to our lightweight [Contributor License Agreement (CLA)](./CLA.md).
+Issues and PRs are welcome — features, translations, bug fixes. Opening a PR means you agree to the [Contributor License Agreement (CLA)](./CLA.md).
 
 ## 📄 License
 

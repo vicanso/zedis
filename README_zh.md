@@ -3,7 +3,7 @@
 <h1 align="center">Zedis</h1>
 
 <p align="center">
-  <strong>能打开你那个百万级 key 的库而不转圈的 Redis 客户端 —— 原生、GPU 加速,由 Rust 🦀 和 GPUI ⚡️ 驱动</strong>
+  <strong>能打开你那个百万 key 库、还不转圈的 Redis GUI —— 原生 GPU 加速，由 Rust 🦀 与 GPUI ⚡️ 驱动</strong>
 </p>
 
 <p align="center">
@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
+  <a href="#-功能">功能</a> ·
   <a href="#-安装">安装</a> ·
-  <a href="#-功能一览">功能</a> ·
   <a href="#-web-版自托管">Web 版</a> ·
   <a href="./docs/FEATURES_zh.md">完整功能巡览</a> ·
   <a href="https://zedis.net/zh/">官网</a>
@@ -27,24 +27,59 @@
 
 ---
 
-## 🤔 为什么选择 Zedis？
+## ✨ 功能
 
-厌倦了那些为了显示一个 JSON 字符串就吃掉几 GB 内存、点开一个 10 万元素的键就卡死、把压缩和二进制 value 显示成乱码的 Electron Redis 客户端？我们也是。
+**Zedis** 是原生的 Redis / Valkey GUI。[GPUI](https://zed.dev)（Zed 编辑器的渲染引擎）在 GPU 上画每一帧，`SCAN` 结果虚拟滚动，百万 key 也能保持 60+ FPS 和很低的内存占用。
 
-**Zedis** 是原生应用，由 **GPUI**（[Zed 编辑器](https://zed.dev)背后的渲染引擎）在 GPU 上绘制。即使面对百万级 key 的数据库，也能保持 60+ FPS 和很低的内存占用。
-
-## ✨ 亮点
-
-- 🦀 **原生，而非 Electron** —— 每个像素都在 GPU 上绘制，`SCAN` 结果虚拟滚动：百万级 key、60+ FPS、内存占用很低。
 - 🧠 **看得懂你的数据** —— 自动解压、自动解码：JSON、Protobuf、MessagePack、JWT、图片等等，每种 Redis 类型和模块都有专用查看器。
-- 📊 **自带可观测性** —— 实时指标、内存分析、热点 key、慢日志、`MONITOR`、集群健康，都在一个窗口里。
-- 🔐 **对生产环境足够谨慎** —— Prod 连接默认锁写，在生产上执行破坏性命令要输入服务器名确认，密钥按机器加密，没有任何遥测。
-- 🌐 **什么都能连** —— TLS、SSH 隧道、Cluster、Sentinel；Redis 与 Valkey 同为一等公民；遇到代理或云托管，缺失的功能会灰显并说明原因，而不是报错。
-- ⌨️ **为重度用户而生** —— ⌘K 命令面板、带补全的 redis-cli、AI 命令助手、跨服务器复制与对比。
-- 🕸️ **浏览器里也能用** —— 同一套代码编译成 WebAssembly，一个约 26 MB 的 Docker 镜像即可自托管，并为 AI 助手留了一扇只读的 MCP 门。
+- 📊 **可观测性就在同一个窗口** —— 实时指标、内存分析、热点 key、慢日志、`MONITOR`、集群健康。
+- 🔐 **生产环境锁得住** —— Prod 连接默认锁写，破坏性命令要输入服务器名，密钥按机器加密，没有任何遥测。
+- 🌐 **连你真正在跑的东西** —— TLS、SSH、Cluster、Sentinel；Redis 与 Valkey 同为一等公民；代理和云托管缺什么会灰显并说明原因。
+- ⌨️ **给天天盯着 Redis 的人** —— ⌘K、带补全的 redis-cli、AI 命令助手、跨服务器复制与对比，同一套应用也能跑在浏览器里。
 
-> ### 🔄 已经在用 Redis Insight？
-> **粘贴它导出的数据库配置，所有连接一次迁入** —— 不用一个个重填地址、端口和密码。ARDM 和 Tiny RDM 的导出同样可以直接导入。花大约一分钟，就能拿你真实的连接试试 Zedis，快不快自己判断。
+已经在用 Redis Insight、ARDM 或 Tiny RDM？**粘贴导出文件，所有连接一次迁入。**
+
+📖 **[每个面板、查看器和快捷键 →](./docs/FEATURES_zh.md)**
+
+## 📦 安装
+
+### macOS
+
+```bash
+brew install --cask zedis
+```
+
+### Windows
+
+```bash
+scoop bucket add extras
+scoop install zedis
+```
+
+### Linux
+
+Arch Linux（AUR）：
+
+```bash
+yay -S zedis-bin
+```
+
+其他发行版：每个 [release](https://github.com/vicanso/zedis/releases/latest) 都附带 `.deb`、`.rpm`、AppImage 和普通 tarball（x86_64 与 aarch64）。
+
+<details>
+<summary><strong>用 Cargo 从源码编译</strong></summary>
+
+Zedis 依赖的是 GPUI 的未发布（git）版本，而 crates.io 不允许带 git 依赖发布，所以 crates.io 上的版本可能滞后。想用最新版，请用上面的包管理器、[下载发布版](https://github.com/vicanso/zedis/releases)，或使用下面的 `--git` 命令。
+
+```bash
+# 来自 crates.io —— 可能是较旧的版本
+cargo install --locked zedis-gui
+
+# 最新版：直接从 GitHub 源码编译（会解析 git 依赖）
+cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
+```
+
+</details>
 
 ## 📸 截图
 
@@ -84,69 +119,12 @@
   </tr>
 </table>
 
-## 📦 安装
-
-### macOS
-
-```bash
-brew install --cask zedis
-```
-
-### Windows
-
-```bash
-scoop bucket add extras
-scoop install zedis
-```
-
-`.msi` 以及 `.zip` 里的 `.exe` 都带 Authenticode 签名，详见[代码签名策略](#-代码签名策略code-signing-policy)。
-
-### Linux
-
-Arch Linux（AUR）：
-
-```bash
-yay -S zedis-bin
-```
-
-其他发行版：每个 [release](https://github.com/vicanso/zedis/releases/latest) 都附带 `.deb`、`.rpm`、AppImage 和普通 tarball（x86_64 与 aarch64）。
-
-<details>
-<summary><strong>用 Cargo 从源码编译</strong></summary>
-
-Zedis 依赖的是 GPUI 的未发布（git）版本，而 crates.io 不允许带 git 依赖发布，所以 crates.io 上的版本可能滞后。想用最新版，请用上面的包管理器、[下载发布版](https://github.com/vicanso/zedis/releases)，或使用下面的 `--git` 命令。
-
-```bash
-# 来自 crates.io —— 可能是较旧的版本
-cargo install --locked zedis-gui
-
-# 最新版：直接从 GitHub 源码编译（会解析 git 依赖）
-cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
-```
-
-</details>
-
-## 🧩 功能一览
-
-| 领域 | 包含内容 |
-| --- | --- |
-| 🚀 **原生 & 快** | GPU 渲染 · 虚拟滚动 `SCAN` · macOS / Windows / Linux · 浅色、深色与 6 套内置主题 · 8 种界面语言 |
-| 🧠 **智能数据查看器** | LZ4 / Snappy / GZIP / ZSTD · JSON + JSONPath · Protobuf · MessagePack · Java / PHP / pickle · BSON · JWT · 图片 · Hex · 自定义脚本查看器 |
-| 🗂️ **类型 & 模块** | Hash / List / Set / ZSet / Stream 编辑器 · 位图 · HyperLogLog · 地理地图 · 向量集（KNN）· JSON · 搜索 · 时间序列 · Bloom 系列 · Pub/Sub · Functions |
-| 📊 **可观测性** | 实时指标与 7 天历史 · 内存分析（在线扫描或离线 RDB）与 AI 建议 · 热点 key · 慢日志 ↔ Latency · `MONITOR` · 按值搜索 · 集群重分片与再平衡 · 带类型的 CONFIG 编辑器 |
-| 🔑 **Keys & 数据** | 命名空间树 · 标签、备注、收藏 · 字段级 TTL · 版本历史与 diff · 24 小时回收站 · 导入 / 导出 · 跨服务器复制与对比 |
-| 🔐 **安全 & 隐私** | 环境标签 · Prod 默认锁写 · 升级确认 · ACL 编辑 · TLS 与 SSH · 密钥用每机唯一密钥加密 · 纯本地、无遥测 |
-| 🧭 **各种服务端** | Redis 与 Valkey · Cluster / Sentinel · 代理、云托管与 Redis 兼容服务端在连接后自动探测，缺失的功能灰显并说明原因 |
-| ⌨️ **效率** | 工作区标签页 · ⌘K 面板 · ⌘P 最近打开的键 · 带历史与补全的 redis-cli · AI 命令助手 · Batch 模式 · Lua 脚本库 · 自定义快捷键 |
-
-📖 **[全部细节：完整功能巡览 →](./docs/FEATURES_zh.md)**
-
 ## 🌐 Web 版（自托管）
 
-同一套代码编译成 WebAssembly：在 Redis 旁边部署一次，整个团队打开浏览器标签页就能用，无需安装任何东西。一个很小的服务 `zedis-bridge` 负责提供页面，并代替浏览器与 Redis 通信 —— Redis 的密码只保存在 bridge 上（加密存储），不会发送给页面。
+同一套 GUI，编译成 WebAssembly。部署在 Redis 旁边，打开浏览器标签页就能用。`zedis-bridge` 提供页面并代替浏览器访问 Redis —— 密码只保存在 bridge 上（加密存储），不会到达页面。
 
 <p align="center">
-  <img src="docs/images/architecture.svg" width="100%" alt="代码复用示意图（不是部署图）：Zedis 的界面和 Redis 连接层是编译进多个程序的同一份代码，都不是独立运行的服务。桌面应用是一个原生进程，两者都在其中，界面在进程内直接调用连接层。Web 版里，同一套界面以 WebAssembly 形式运行在浏览器标签页中，通过 HTTP API 访问 zedis-bridge；bridge 是另一个服务进程，用同一套连接层把这些请求转换成 Redis 命令。桌面应用和 bridge 各自以 RESP 连接单机、哨兵与集群部署的 Redis 和 Valkey。">
+  <img src="docs/images/architecture.svg" width="100%" alt="Zedis 的界面和 Redis 连接层是同一份代码、两套程序。桌面应用是一个原生进程，两者都在其中。Web 版把同一套界面以 WebAssembly 跑在标签页里，通过 HTTP 访问 zedis-bridge；bridge 用同一套连接层把请求变成 Redis 命令。桌面应用和 bridge 都以 RESP 连接单机、哨兵与集群的 Redis 和 Valkey。">
 </p>
 
 ```bash
@@ -158,20 +136,19 @@ docker run -d --name zedis-web -p 7379:7379 \
 
 打开 <http://localhost:7379>，用 `admin` / `change-me` 登录。这条命令只适合纯 http 试用：正式使用请去掉 `--insecure-cookie`，并在前面加上 HTTPS。
 
-- **账号与角色** —— 必须登录；条目默认私有，勾选共享后才对他人可见；账号可以设为只读，或只能看到部分服务器。
-- **接入你自己的 SSO** —— bridge 可以采用认证反向代理写入请求头的身份。
-- **生产环境有保护** —— Prod 条目默认锁写，每次解锁 15 分钟；审计日志记录登录、条目变更和每条经确认的命令。
-- **AI 助手（MCP）** —— Claude Code、Cursor 或任何 MCP 客户端都能以只读账号读取你的 Redis，每次调用都留审计。
+- **账号、角色、SSO** —— 必须登录；条目默认私有；账号可以只读或只能看到部分服务器；身份可以来自反向代理写入的请求头。
+- **生产环境默认锁写** —— Prod 每次解锁 15 分钟；审计日志记录登录、条目变更和每条经确认的命令。
+- **MCP** —— Claude Code、Cursor 或任何 MCP 客户端以只读账号读 Redis，每次调用都留审计。
 
-> **早期预览。** 镜像已发布 linux/amd64 与 linux/arm64（约 26 MB）。部分桌面面板在浏览器里不可用，指南里有完整清单。
+> **早期预览。** linux/amd64 与 linux/arm64（约 26 MB）。部分桌面面板在浏览器里不可用，指南里有清单。
 
-📖 **[自托管指南：HTTPS、账号、SSO、审计日志、MCP →](./docs/WEB_zh.md)**
+📖 **[自托管：HTTPS、账号、SSO、审计日志、MCP →](./docs/WEB_zh.md)**
 
 ## 🔀 Redis 与 Valkey
 
-Valkey 在这里不是“兼容模式”。每个依赖服务器版本的功能都为两者分别设了门槛，所以服务器不会收到它没有实现的命令；Valkey 独有的功能（`COMMANDLOG`、原子槽迁移、集群模式下的多数据库）也都有对应的面板或操作。Redis 与 Valkey 之间的复制两个方向都能落地，即使它们的 `DUMP` 载荷互不相认。集成测试在每次改动时都会跑 Redis 6.2 – 8 和 Valkey 8.0 – 9.1。
+Valkey 在这里是一等公民，不是兼容模式。每个依赖版本的功能都为两者分别设了门槛，服务器不会收到它没有实现的命令。Valkey 独有的功能（`COMMANDLOG`、原子槽迁移、集群多数据库）都有对应面板。Redis 与 Valkey 之间的复制两个方向都能落地，即使 `DUMP` 载荷互不相认。每次改动都会跑 Redis 6.2–8 和 Valkey 8.0–9.1 的集成测试。
 
-📖 **[完整兼容矩阵 →](./docs/REDIS_VALKEY_zh.md)**
+📖 **[兼容矩阵 →](./docs/REDIS_VALKEY_zh.md)**
 
 ## 📚 文档
 
@@ -184,9 +161,7 @@ Valkey 在这里不是“兼容模式”。每个依赖服务器版本的功能�
 
 ## 🔏 代码签名策略（Code signing policy）
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-每个 release 附带的 Windows 二进制 —— `zedis-windows-*.msi`，以及 `zedis-windows-*.zip` 里的 `zedis.exe` —— 都使用 SignPath Foundation 的证书做了 Authenticode 签名。被签名的就是 GitHub Actions 从本仓库对应 tag 构建出的产物（[`publish.yml`](./.github/workflows/publish.yml)），每次发版都经人工审批后才签名。macOS 版本另行使用维护者的 Apple Developer ID 签名并公证。
+macOS 版本使用维护者的 Apple Developer ID 签名并公证。
 
 **团队**
 
@@ -208,9 +183,7 @@ Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 
 ## 🤝 参与贡献
 
-我们希望将 Zedis 打造成终极 Redis 客户端，非常欢迎你的参与！无论是新增功能、翻译界面还是修复 Bug，一切贡献都受到欢迎。
-
-欢迎提交 issue 或 PR 参与进来。提交 PR 即表示你同意我们的[贡献者许可协议（CLA）](./CLA.md)。
+欢迎提交 issue 或 PR —— 新功能、翻译、修 bug 都可以。提交 PR 即表示你同意[贡献者许可协议（CLA）](./CLA.md)。
 
 ## 📄 许可证
 

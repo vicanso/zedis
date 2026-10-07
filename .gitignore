@@ -44,3 +44,6 @@ zedis-web/www/wasm/
 zedis-web/www/assets/
 zedis-web/www/locales/
 zedis-web/www/fonts/JetBrainsMono-*.ttf
+
+# Impeccable design-hook config (local; not part of the product)
+.impeccable/
