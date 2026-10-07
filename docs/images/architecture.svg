@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="464" viewBox="0 0 960 464" role="img" aria-labelledby="zedis-architecture-title zedis-architecture-desc">
-  <title id="zedis-architecture-title">One Zedis codebase, on the desktop and in the browser</title>
-  <desc id="zedis-architecture-desc">Architecture diagram: the Zedis UI and the layer that connects to Redis are each one shared codebase; only what sits between them differs. The native desktop app calls the Redis layer in-process. In a browser tab the same UI runs as WebAssembly and calls zedis-bridge over an HTTP API; the bridge only turns those calls into Redis commands for the same layer. The layer talks RESP to standalone, Sentinel and Cluster deployments of Redis or Valkey.</desc>
+  <title id="zedis-architecture-title">The code Zedis shares between the desktop app and the web version</title>
+  <desc id="zedis-architecture-desc">Code-sharing diagram, not a deployment: the Zedis UI and the layer that connects to Redis are code written once and compiled into more than one program, and neither runs as a service of its own. The desktop app is one native process holding both, and its UI calls the Redis layer in-process. In the web version the same UI runs as WebAssembly in a browser tab and calls zedis-bridge over an HTTP API; the bridge is a separate server process that turns those calls into Redis commands with the same Redis layer. The desktop app and the bridge each talk RESP to Redis or Valkey — standalone, Sentinel or Cluster — on their own.</desc>
   <defs>
     <marker id="zedis-architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
       <polygon points="0 0, 8 3, 0 6" fill="#8b98a8"/>
@@ -10,70 +10,54 @@
       .name{font:600 16px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4}
       .hero{font:600 20px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4}
       .sub{font:400 12px 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;fill:#8b98a8}
-      .label,.eyebrow,.zone,.tag{font:500 12px 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;fill:#8b98a8;letter-spacing:.06em}
-      .eyebrow,.zone,.tag{letter-spacing:.14em}
+      .label,.eyebrow,.zone,.tag,.band{font:500 12px 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;fill:#8b98a8;letter-spacing:.06em}
+      .eyebrow,.zone,.tag,.band{letter-spacing:.14em}
       .tag{fill:#7aa8e8}
       .title{font:600 24px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4;letter-spacing:-.01em}
       .wire{fill:none;stroke:#8b98a8;stroke-width:1.5}
       .token path{fill:none;stroke-linecap:round}
       .tail{stroke:#4d8ff2;stroke-width:3}
       .head{stroke:#e3edff;stroke-width:5}
-      .flow-a1-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-a1-0 6s linear infinite}
-      .flow-a1-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-a1-1 6s linear infinite}
-      .flow-a1-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-a1-2 6s linear infinite}
-      .flow-a1-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-a1-3 6s linear infinite}
-      .flow-a2-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-a2-0 6s linear infinite}
-      .flow-a2-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-a2-1 6s linear infinite}
-      .flow-a2-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-a2-2 6s linear infinite}
-      .flow-a2-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-a2-3 6s linear infinite}
-      .flow-ra-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-ra-0 6s linear infinite}
-      .flow-ra-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-ra-1 6s linear infinite}
-      .flow-ra-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-ra-2 6s linear infinite}
-      .flow-ra-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-ra-3 6s linear infinite}
-      .flow-b1-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b1-0 6s linear infinite}
-      .flow-b1-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b1-1 6s linear infinite}
-      .flow-b1-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b1-2 6s linear infinite}
-      .flow-b1-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b1-3 6s linear infinite}
-      .flow-b2-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b2-0 6s linear infinite}
-      .flow-b2-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b2-1 6s linear infinite}
-      .flow-b2-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b2-2 6s linear infinite}
-      .flow-b2-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b2-3 6s linear infinite}
-      .flow-b3-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b3-0 6s linear infinite}
-      .flow-b3-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b3-1 6s linear infinite}
-      .flow-b3-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b3-2 6s linear infinite}
-      .flow-b3-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b3-3 6s linear infinite}
-      .flow-rb-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-rb-0 6s linear infinite}
-      .flow-rb-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-rb-1 6s linear infinite}
-      .flow-rb-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-rb-2 6s linear infinite}
-      .flow-rb-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-rb-3 6s linear infinite}
-      @keyframes flow-a1-0{0%{stroke-dashoffset:8px}13.3%,100%{stroke-dashoffset:-120px}}
-      @keyframes flow-a1-1{0%{stroke-dashoffset:88px}13.3%,100%{stroke-dashoffset:-40px}}
-      @keyframes flow-a1-2{0%{stroke-dashoffset:56px}13.3%,100%{stroke-dashoffset:-72px}}
-      @keyframes flow-a1-3{0%{stroke-dashoffset:28px}13.3%,100%{stroke-dashoffset:-100px}}
-      @keyframes flow-a2-0{0%,5.8%{stroke-dashoffset:8px}40.8%,100%{stroke-dashoffset:-328px}}
-      @keyframes flow-a2-1{0%,5.8%{stroke-dashoffset:88px}40.8%,100%{stroke-dashoffset:-248px}}
-      @keyframes flow-a2-2{0%,5.8%{stroke-dashoffset:56px}40.8%,100%{stroke-dashoffset:-280px}}
-      @keyframes flow-a2-3{0%,5.8%{stroke-dashoffset:28px}40.8%,100%{stroke-dashoffset:-308px}}
-      @keyframes flow-ra-0{0%,33.3%{stroke-dashoffset:8px}49.2%,100%{stroke-dashoffset:-136px}}
-      @keyframes flow-ra-1{0%,33.3%{stroke-dashoffset:88px}49.2%,100%{stroke-dashoffset:-56px}}
-      @keyframes flow-ra-2{0%,33.3%{stroke-dashoffset:56px}49.2%,100%{stroke-dashoffset:-88px}}
-      @keyframes flow-ra-3{0%,33.3%{stroke-dashoffset:28px}49.2%,100%{stroke-dashoffset:-116px}}
-      @keyframes flow-b1-0{0%,43.3%{stroke-dashoffset:8px}56.7%,100%{stroke-dashoffset:-120px}}
-      @keyframes flow-b1-1{0%,43.3%{stroke-dashoffset:88px}56.7%,100%{stroke-dashoffset:-40px}}
-      @keyframes flow-b1-2{0%,43.3%{stroke-dashoffset:56px}56.7%,100%{stroke-dashoffset:-72px}}
-      @keyframes flow-b1-3{0%,43.3%{stroke-dashoffset:28px}56.7%,100%{stroke-dashoffset:-100px}}
-      @keyframes flow-b2-0{0%,49.2%{stroke-dashoffset:8px}67.5%,100%{stroke-dashoffset:-168px}}
-      @keyframes flow-b2-1{0%,49.2%{stroke-dashoffset:88px}67.5%,100%{stroke-dashoffset:-88px}}
-      @keyframes flow-b2-2{0%,49.2%{stroke-dashoffset:56px}67.5%,100%{stroke-dashoffset:-120px}}
-      @keyframes flow-b2-3{0%,49.2%{stroke-dashoffset:28px}67.5%,100%{stroke-dashoffset:-148px}}
-      @keyframes flow-b3-0{0%,60%{stroke-dashoffset:8px}73.3%,100%{stroke-dashoffset:-120px}}
-      @keyframes flow-b3-1{0%,60%{stroke-dashoffset:88px}73.3%,100%{stroke-dashoffset:-40px}}
-      @keyframes flow-b3-2{0%,60%{stroke-dashoffset:56px}73.3%,100%{stroke-dashoffset:-72px}}
-      @keyframes flow-b3-3{0%,60%{stroke-dashoffset:28px}73.3%,100%{stroke-dashoffset:-100px}}
-      @keyframes flow-rb-0{0%,67.5%{stroke-dashoffset:8px}83.3%,100%{stroke-dashoffset:-136px}}
-      @keyframes flow-rb-1{0%,67.5%{stroke-dashoffset:88px}83.3%,100%{stroke-dashoffset:-56px}}
-      @keyframes flow-rb-2{0%,67.5%{stroke-dashoffset:56px}83.3%,100%{stroke-dashoffset:-88px}}
-      @keyframes flow-rb-3{0%,67.5%{stroke-dashoffset:28px}83.3%,100%{stroke-dashoffset:-116px}}
+      .flow-a-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-a-0 6.8s linear infinite}
+      .flow-a-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-a-1 6.8s linear infinite}
+      .flow-a-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-a-2 6.8s linear infinite}
+      .flow-a-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-a-3 6.8s linear infinite}
+      .flow-ra-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-ra-0 6.8s linear infinite}
+      .flow-ra-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-ra-1 6.8s linear infinite}
+      .flow-ra-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-ra-2 6.8s linear infinite}
+      .flow-ra-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-ra-3 6.8s linear infinite}
+      .flow-b1-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b1-0 6.8s linear infinite}
+      .flow-b1-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b1-1 6.8s linear infinite}
+      .flow-b1-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b1-2 6.8s linear infinite}
+      .flow-b1-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b1-3 6.8s linear infinite}
+      .flow-b2-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b2-0 6.8s linear infinite}
+      .flow-b2-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b2-1 6.8s linear infinite}
+      .flow-b2-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b2-2 6.8s linear infinite}
+      .flow-b2-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b2-3 6.8s linear infinite}
+      .flow-rb-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-rb-0 6.8s linear infinite}
+      .flow-rb-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-rb-1 6.8s linear infinite}
+      .flow-rb-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-rb-2 6.8s linear infinite}
+      .flow-rb-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-rb-3 6.8s linear infinite}
+      @keyframes flow-a-0{0%{stroke-dashoffset:8px}42.6%,100%{stroke-dashoffset:-460px}}
+      @keyframes flow-a-1{0%{stroke-dashoffset:88px}42.6%,100%{stroke-dashoffset:-380px}}
+      @keyframes flow-a-2{0%{stroke-dashoffset:56px}42.6%,100%{stroke-dashoffset:-412px}}
+      @keyframes flow-a-3{0%{stroke-dashoffset:28px}42.6%,100%{stroke-dashoffset:-440px}}
+      @keyframes flow-ra-0{0%,36%{stroke-dashoffset:8px}51.2%,100%{stroke-dashoffset:-160px}}
+      @keyframes flow-ra-1{0%,36%{stroke-dashoffset:88px}51.2%,100%{stroke-dashoffset:-80px}}
+      @keyframes flow-ra-2{0%,36%{stroke-dashoffset:56px}51.2%,100%{stroke-dashoffset:-112px}}
+      @keyframes flow-ra-3{0%,36%{stroke-dashoffset:28px}51.2%,100%{stroke-dashoffset:-140px}}
+      @keyframes flow-b1-0{0%,44.1%{stroke-dashoffset:8px}68.8%,100%{stroke-dashoffset:-256px}}
+      @keyframes flow-b1-1{0%,44.1%{stroke-dashoffset:88px}68.8%,100%{stroke-dashoffset:-176px}}
+      @keyframes flow-b1-2{0%,44.1%{stroke-dashoffset:56px}68.8%,100%{stroke-dashoffset:-208px}}
+      @keyframes flow-b1-3{0%,44.1%{stroke-dashoffset:28px}68.8%,100%{stroke-dashoffset:-236px}}
+      @keyframes flow-b2-0{0%,61.8%{stroke-dashoffset:8px}76.9%,100%{stroke-dashoffset:-164px}}
+      @keyframes flow-b2-1{0%,61.8%{stroke-dashoffset:88px}76.9%,100%{stroke-dashoffset:-84px}}
+      @keyframes flow-b2-2{0%,61.8%{stroke-dashoffset:56px}76.9%,100%{stroke-dashoffset:-116px}}
+      @keyframes flow-b2-3{0%,61.8%{stroke-dashoffset:28px}76.9%,100%{stroke-dashoffset:-144px}}
+      @keyframes flow-rb-0{0%,69.9%{stroke-dashoffset:8px}85%,100%{stroke-dashoffset:-160px}}
+      @keyframes flow-rb-1{0%,69.9%{stroke-dashoffset:88px}85%,100%{stroke-dashoffset:-80px}}
+      @keyframes flow-rb-2{0%,69.9%{stroke-dashoffset:56px}85%,100%{stroke-dashoffset:-112px}}
+      @keyframes flow-rb-3{0%,69.9%{stroke-dashoffset:28px}85%,100%{stroke-dashoffset:-140px}}
       @media (prefers-reduced-motion: reduce){.token{display:none}}
       @media print{.token{display:none}}
     </style>
@@ -83,103 +67,103 @@
   <rect x="0.5" y="0.5" width="959" height="463" rx="16" fill="#0c0f14" stroke="rgba(255,255,255,0.08)"/>
 
   <!-- Header -->
-  <text class="eyebrow" x="40" y="64">ARCHITECTURE</text>
-  <text class="title" x="40" y="100">One codebase, native or in the browser</text>
-  <text class="sub" x="40" y="416">zedis.net</text>
+  <text class="eyebrow" x="40" y="56">CODE SHARING</text>
+  <text class="title" x="40" y="92">Two ways to run Zedis, the same code in both</text>
 
-  <!-- Wires, then the tokens that travel along them, then the nodes on top -->
-  <g aria-label="Paths from the shared UI, through the desktop app or the browser and the bridge, into the shared Redis layer and on to Redis">
-      <path class="wire" d="M176,188 H208" marker-end="url(#zedis-architecture-arrow)"/>
-      <path class="wire" d="M336,188 H576" marker-end="url(#zedis-architecture-arrow)"/>
-      <rect x="408" y="164" width="96" height="16" rx="2" fill="#0c0f14"/>
-      <text class="label" x="456" y="176" text-anchor="middle">IN-PROCESS</text>
-      <path class="wire" d="M176,308 H208" marker-end="url(#zedis-architecture-arrow)"/>
-      <path class="wire" d="M336,308 H416" marker-end="url(#zedis-architecture-arrow)"/>
-      <rect x="340" y="284" width="72" height="16" rx="2" fill="#0c0f14"/>
-      <text class="label" x="376" y="296" text-anchor="middle">HTTP API</text>
-      <path class="wire" d="M544,308 H576" marker-end="url(#zedis-architecture-arrow)"/>
-      <path class="wire" d="M712,248 H760" marker-end="url(#zedis-architecture-arrow)"/>
-      <rect x="716" y="224" width="40" height="16" rx="2" fill="#0c0f14"/>
-      <text class="label" x="736" y="236" text-anchor="middle">RESP</text>
+  <!-- What runs: one dashed outline per process -->
+  <g>
+      <rect x="40" y="136" width="668" height="104" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="48" y="128" width="292" height="16" fill="#0c0f14"/>
+      <text class="band" x="56" y="140">DESKTOP APP · ONE NATIVE BINARY</text>
+      <rect x="40" y="256" width="276" height="104" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="48" y="352" width="240" height="16" fill="#0c0f14"/>
+      <text class="band" x="56" y="364">BROWSER TAB · WEBASSEMBLY</text>
+      <rect x="340" y="256" width="368" height="104" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="348" y="352" width="248" height="16" fill="#0c0f14"/>
+      <text class="band" x="356" y="364">ZEDIS-BRIDGE · HTTP SERVER</text>
+  </g>
+
+  <!-- Wires, then the tokens that travel along them, then the code on top -->
+  <g aria-label="A command's path: in-process inside the desktop app; over HTTP from the browser tab to zedis-bridge; and RESP from each of the two programs to Redis">
+      <path class="wire" d="M188,188 H560" marker-end="url(#zedis-architecture-arrow)"/>
+      <rect x="308" y="164" width="136" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="376" y="176" text-anchor="middle">IN-PROCESS CALL</text>
+      <path class="wire" d="M696,188 H768" marker-end="url(#zedis-architecture-arrow)"/>
+      <rect x="720" y="164" width="40" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="740" y="176" text-anchor="middle">RESP</text>
+      <path class="wire" d="M188,308 H356" marker-end="url(#zedis-architecture-arrow)"/>
+      <rect x="216" y="284" width="72" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="252" y="296" text-anchor="middle">HTTP API</text>
+      <path class="wire" d="M484,308 H560" marker-end="url(#zedis-architecture-arrow)"/>
+      <path class="wire" d="M696,308 H768" marker-end="url(#zedis-architecture-arrow)"/>
+      <rect x="720" y="284" width="40" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="740" y="296" text-anchor="middle">RESP</text>
   </g>
   <g>
       <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-a1-1" d="M176,188 H208" opacity="0.2"/>
-        <path class="tail flow-a1-2" d="M176,188 H208" opacity="0.45"/>
-        <path class="tail flow-a1-3" d="M176,188 H208" opacity="0.9"/>
-        <path class="head flow-a1-0" d="M176,188 H208"/>
+        <path class="tail flow-a-1" d="M188,188 H560" opacity="0.2"/>
+        <path class="tail flow-a-2" d="M188,188 H560" opacity="0.45"/>
+        <path class="tail flow-a-3" d="M188,188 H560" opacity="0.9"/>
+        <path class="head flow-a-0" d="M188,188 H560"/>
       </g>
       <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-a2-1" d="M336,188 H576" opacity="0.2"/>
-        <path class="tail flow-a2-2" d="M336,188 H576" opacity="0.45"/>
-        <path class="tail flow-a2-3" d="M336,188 H576" opacity="0.9"/>
-        <path class="head flow-a2-0" d="M336,188 H576"/>
+        <path class="tail flow-ra-1" d="M696,188 H768" opacity="0.2"/>
+        <path class="tail flow-ra-2" d="M696,188 H768" opacity="0.45"/>
+        <path class="tail flow-ra-3" d="M696,188 H768" opacity="0.9"/>
+        <path class="head flow-ra-0" d="M696,188 H768"/>
       </g>
       <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-ra-1" d="M712,248 H760" opacity="0.2"/>
-        <path class="tail flow-ra-2" d="M712,248 H760" opacity="0.45"/>
-        <path class="tail flow-ra-3" d="M712,248 H760" opacity="0.9"/>
-        <path class="head flow-ra-0" d="M712,248 H760"/>
+        <path class="tail flow-b1-1" d="M188,308 H356" opacity="0.2"/>
+        <path class="tail flow-b1-2" d="M188,308 H356" opacity="0.45"/>
+        <path class="tail flow-b1-3" d="M188,308 H356" opacity="0.9"/>
+        <path class="head flow-b1-0" d="M188,308 H356"/>
       </g>
       <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-b1-1" d="M176,308 H208" opacity="0.2"/>
-        <path class="tail flow-b1-2" d="M176,308 H208" opacity="0.45"/>
-        <path class="tail flow-b1-3" d="M176,308 H208" opacity="0.9"/>
-        <path class="head flow-b1-0" d="M176,308 H208"/>
+        <path class="tail flow-b2-1" d="M484,308 H560" opacity="0.2"/>
+        <path class="tail flow-b2-2" d="M484,308 H560" opacity="0.45"/>
+        <path class="tail flow-b2-3" d="M484,308 H560" opacity="0.9"/>
+        <path class="head flow-b2-0" d="M484,308 H560"/>
       </g>
       <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-b2-1" d="M336,308 H416" opacity="0.2"/>
-        <path class="tail flow-b2-2" d="M336,308 H416" opacity="0.45"/>
-        <path class="tail flow-b2-3" d="M336,308 H416" opacity="0.9"/>
-        <path class="head flow-b2-0" d="M336,308 H416"/>
-      </g>
-      <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-b3-1" d="M544,308 H576" opacity="0.2"/>
-        <path class="tail flow-b3-2" d="M544,308 H576" opacity="0.45"/>
-        <path class="tail flow-b3-3" d="M544,308 H576" opacity="0.9"/>
-        <path class="head flow-b3-0" d="M544,308 H576"/>
-      </g>
-      <g class="token" aria-hidden="true" focusable="false">
-        <path class="tail flow-rb-1" d="M712,248 H760" opacity="0.2"/>
-        <path class="tail flow-rb-2" d="M712,248 H760" opacity="0.45"/>
-        <path class="tail flow-rb-3" d="M712,248 H760" opacity="0.9"/>
-        <path class="head flow-rb-0" d="M712,248 H760"/>
+        <path class="tail flow-rb-1" d="M696,308 H768" opacity="0.2"/>
+        <path class="tail flow-rb-2" d="M696,308 H768" opacity="0.45"/>
+        <path class="tail flow-rb-3" d="M696,308 H768" opacity="0.9"/>
+        <path class="head flow-rb-0" d="M696,308 H768"/>
       </g>
   </g>
 
   <g>
-      <rect x="40" y="148" width="136" height="200" rx="8" fill="#0c0f14"/>
-      <rect x="40" y="148" width="136" height="200" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
-      <text class="tag" x="108" y="216" text-anchor="middle">SHARED</text>
-      <text class="hero" x="108" y="248" text-anchor="middle">Zedis UI</text>
-      <text class="sub" x="108" y="272" text-anchor="middle">one codebase</text>
-      <text class="sub" x="108" y="292" text-anchor="middle">Rust · GPUI</text>
-      <rect x="208" y="148" width="128" height="80" rx="8" fill="#0c0f14"/>
-      <rect x="208" y="148" width="128" height="80" rx="8" fill="#141a22" stroke="rgba(232,237,244,0.32)" stroke-width="1"/>
-      <text class="name" x="272" y="180" text-anchor="middle">Desktop app</text>
-      <text class="sub" x="272" y="204" text-anchor="middle">native binary</text>
-      <rect x="208" y="268" width="128" height="80" rx="8" fill="#0c0f14"/>
-      <rect x="208" y="268" width="128" height="80" rx="8" fill="#141a22" stroke="rgba(232,237,244,0.32)" stroke-width="1"/>
-      <text class="name" x="272" y="300" text-anchor="middle">Browser tab</text>
-      <text class="sub" x="272" y="324" text-anchor="middle">WebAssembly</text>
-      <rect x="416" y="268" width="128" height="80" rx="8" fill="#0c0f14"/>
-      <rect x="416" y="268" width="128" height="80" rx="8" fill="#141a22" stroke="rgba(232,237,244,0.32)" stroke-width="1"/>
-      <text class="name" x="480" y="300" text-anchor="middle">zedis-bridge</text>
-      <text class="sub" x="480" y="324" text-anchor="middle">HTTP → RESP</text>
-      <rect x="576" y="148" width="136" height="200" rx="8" fill="#0c0f14"/>
-      <rect x="576" y="148" width="136" height="200" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
-      <text class="tag" x="644" y="216" text-anchor="middle">SHARED</text>
-      <text class="hero" x="644" y="248" text-anchor="middle">Redis layer</text>
-      <text class="sub" x="644" y="272" text-anchor="middle">pooling · TLS</text>
-      <text class="sub" x="644" y="292" text-anchor="middle">SSH · cluster</text>
-      <rect x="760" y="148" width="160" height="200" rx="8" fill="#0c0f14"/>
-      <rect x="760" y="148" width="160" height="200" rx="8" fill="rgba(232,237,244,0.05)" stroke="rgba(139,152,168,0.55)" stroke-width="1"/>
-      <text class="zone" x="776" y="180">REDIS · VALKEY</text>
-      <circle cx="788" cy="224" r="6" fill="#8b98a8"/>
-      <text class="name" x="812" y="229">Standalone</text>
-      <path d="M780,272 L796,264 M780,272 L796,280" stroke="#8b98a8" stroke-width="1.2" fill="none"/><circle cx="780" cy="272" r="5" fill="#8b98a8"/><circle cx="796" cy="264" r="3.5" fill="#0c0f14" stroke="#8b98a8" stroke-width="1.2"/><circle cx="796" cy="280" r="3.5" fill="#0c0f14" stroke="#8b98a8" stroke-width="1.2"/>
-      <text class="name" x="812" y="277">Sentinel</text>
-      <path d="M788,311 L797,327 L779,327 Z" stroke="#8b98a8" stroke-width="1.2" fill="none"/><circle cx="788" cy="311" r="4" fill="#8b98a8"/><circle cx="797" cy="327" r="4" fill="#8b98a8"/><circle cx="779" cy="327" r="4" fill="#8b98a8"/>
-      <text class="name" x="812" y="325">Cluster</text>
+      <rect x="52" y="148" width="136" height="200" rx="8" fill="#0c0f14"/>
+      <rect x="52" y="148" width="136" height="200" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
+      <text class="tag" x="120" y="216" text-anchor="middle">SHARED CODE</text>
+      <text class="hero" x="120" y="248" text-anchor="middle">Zedis UI</text>
+      <text class="sub" x="120" y="272" text-anchor="middle">views · state</text>
+      <text class="sub" x="120" y="292" text-anchor="middle">Rust · GPUI</text>
+      <rect x="356" y="268" width="128" height="80" rx="8" fill="#0c0f14"/>
+      <rect x="356" y="268" width="128" height="80" rx="8" fill="#141a22" stroke="rgba(232,237,244,0.32)" stroke-width="1"/>
+      <text class="name" x="420" y="300" text-anchor="middle">HTTP → RESP</text>
+      <text class="sub" x="420" y="324" text-anchor="middle">accounts · audit</text>
+      <rect x="560" y="148" width="136" height="200" rx="8" fill="#0c0f14"/>
+      <rect x="560" y="148" width="136" height="200" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
+      <text class="tag" x="628" y="216" text-anchor="middle">SHARED CODE</text>
+      <text class="hero" x="628" y="248" text-anchor="middle">Redis layer</text>
+      <text class="sub" x="628" y="272" text-anchor="middle">pooling · TLS</text>
+      <text class="sub" x="628" y="292" text-anchor="middle">SSH · cluster</text>
+      <rect x="768" y="136" width="152" height="224" rx="8" fill="#0c0f14"/>
+      <rect x="768" y="136" width="152" height="224" rx="8" fill="rgba(232,237,244,0.05)" stroke="rgba(139,152,168,0.55)" stroke-width="1"/>
+      <text class="zone" x="780" y="164">REDIS · VALKEY</text>
+      <circle cx="796" cy="216" r="6" fill="#8b98a8"/>
+      <text class="name" x="820" y="221">Standalone</text>
+      <path d="M788,248 L804,240 M788,248 L804,256" stroke="#8b98a8" stroke-width="1.2" fill="none"/><circle cx="788" cy="248" r="5" fill="#8b98a8"/><circle cx="804" cy="240" r="3.5" fill="#0c0f14" stroke="#8b98a8" stroke-width="1.2"/><circle cx="804" cy="256" r="3.5" fill="#0c0f14" stroke="#8b98a8" stroke-width="1.2"/>
+      <text class="name" x="820" y="253">Sentinel</text>
+      <path d="M796,271 L805,287 L787,287 Z" stroke="#8b98a8" stroke-width="1.2" fill="none"/><circle cx="796" cy="271" r="4" fill="#8b98a8"/><circle cx="805" cy="287" r="4" fill="#8b98a8"/><circle cx="787" cy="287" r="4" fill="#8b98a8"/>
+      <text class="name" x="820" y="285">Cluster</text>
   </g>
+
+  <!-- Legend -->
+  <rect x="40" y="410" width="12" height="12" rx="2" fill="rgba(31,111,235,0.14)" stroke="#1f6feb"/>
+  <text class="label" x="60" y="420">THE SAME CODE, COMPILED INTO EACH</text>
+  <rect x="336" y="410" width="20" height="12" rx="3" fill="none" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+  <text class="label" x="364" y="420">ONE RUNNING PROCESS</text>
+  <text class="sub" x="920" y="420" text-anchor="end">zedis.net</text>
 </svg>

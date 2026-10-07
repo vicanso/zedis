@@ -5,7 +5,7 @@
 Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn on a canvas. A browser cannot open a TCP socket, so a small HTTP server — `zedis-bridge` — serves the page and talks to Redis on the browser's behalf. Host it once next to your Redis servers and the whole team reaches them from a browser tab, with nothing to install. Redis passwords stay on the bridge, encrypted at rest; the browser never receives them.
 
 <p align="center">
-  <img src="images/architecture.svg" width="100%" alt="The Zedis UI and the layer that connects to Redis are each one shared codebase; only the middle differs. The native desktop app calls the Redis layer in-process; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API, and the bridge only turns those calls into Redis commands for the same layer. The layer talks RESP to standalone, Sentinel and Cluster deployments of Redis and Valkey.">
+  <img src="images/architecture.svg" width="100%" alt="Code-sharing diagram, not a deployment: the Zedis UI and the Redis layer are code compiled into more than one program, and neither runs as a service of its own. The desktop app is one native process holding both, and its UI calls the Redis layer in-process. In the web version the same UI runs as WebAssembly in a browser tab and calls zedis-bridge over an HTTP API; the bridge is a separate server process that turns those calls into Redis commands with the same Redis layer. The desktop app and the bridge each talk RESP to standalone, Sentinel and Cluster deployments of Redis and Valkey.">
 </p>
 
 > **Early preview.** The image is published for linux/amd64 and linux/arm64 (~26 MB): `:latest` and the release version for tagged releases, `:nightly` for the rolling build from `main`.

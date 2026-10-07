@@ -146,7 +146,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 同一套代码编译成 WebAssembly：在 Redis 旁边部署一次，整个团队打开浏览器标签页就能用，无需安装任何东西。一个很小的服务 `zedis-bridge` 负责提供页面，并代替浏览器与 Redis 通信 —— Redis 的密码只保存在 bridge 上（加密存储），不会发送给页面。
 
 <p align="center">
-  <img src="docs/images/architecture.svg" width="100%" alt="Zedis 的界面和连接 Redis 的那一层各是一套共用代码，只有中间不同：原生桌面应用在进程内直接调用 Redis 连接层；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，bridge 只负责把这些请求转换成 Redis 命令，交给同一套连接层。连接层以 RESP 连接单机、哨兵与集群部署的 Redis 和 Valkey。">
+  <img src="docs/images/architecture.svg" width="100%" alt="代码复用示意图（不是部署图）：Zedis 的界面和 Redis 连接层是编译进多个程序的同一份代码，都不是独立运行的服务。桌面应用是一个原生进程，两者都在其中，界面在进程内直接调用连接层。Web 版里，同一套界面以 WebAssembly 形式运行在浏览器标签页中，通过 HTTP API 访问 zedis-bridge；bridge 是另一个服务进程，用同一套连接层把这些请求转换成 Redis 命令。桌面应用和 bridge 各自以 RESP 连接单机、哨兵与集群部署的 Redis 和 Valkey。">
 </p>
 
 ```bash

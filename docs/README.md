@@ -49,7 +49,7 @@ Until DNS propagates, the site still works at `https://vicanso.github.io/zedis/`
 | `zh/index.html` | Chinese landing |
 | `styles.css` | Shared styles |
 | `images/*.png` | Screenshot assets (local; no user-attachments CDN) |
-| `images/architecture.svg` | The animated diagram of what is shared (the UI, the layer that connects to Redis) and what differs between the desktop app and the browser, also shown in both READMEs. It is displayed through `<img>`, where scripts and web fonts do not load, so the motion is CSS inside the file and the type is the system's |
+| `images/architecture.svg` | The animated code-sharing diagram, also shown in both READMEs: the two blocks of shared code (the UI, the layer that connects to Redis) drawn inside dashed outlines of what runs as a process — the desktop app, the browser tab, zedis-bridge — so it is not read as a deployment with a connection service in it. It is displayed through `<img>`, where scripts and web fonts do not load, so the motion is CSS inside the file and the type is the system's |
 | `robots.txt` / `sitemap.xml` | Crawl hints for `zedis.net` |
 | `FEATURES.md` / `FEATURES_zh.md` | Full feature docs (linked from the site) |
 | `WEB.md` / `WEB_zh.md` | The web version's self-hosting guide: deployment, accounts, SSO, audit log, MCP, what the browser leaves out |
