@@ -18,6 +18,9 @@ use crate::states::Route;
 use crate::states::{GlobalEvent, RedisMetrics, ZedisAppState, ZedisGlobalStore, get_metrics_cache, i18n_tray};
 use crate::views::open_settings_window;
 use gpui::{App, BorrowAppContext, Context, Subscription};
+use image::RgbaImage;
+#[cfg(target_os = "macos")]
+use image::imageops::{self, FilterType};
 use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,12 +35,51 @@ const MENU_ID_NEW_CONNECTION: &str = "new_connection";
 const MENU_ID_PREFERENCES: &str = "preferences";
 const MENU_ID_SERVER_PREFIX: &str = "server:";
 
+/// The height `tray-icon` gives a status item's image on macOS, in points: a
+/// taller bitmap is scaled down to exactly this (22 since tray-icon 0.26; it
+/// was 18 before), and it is the whole height a menu bar item has.
+#[cfg(target_os = "macos")]
+const MENU_BAR_SLOT_PT: u32 = 22;
+/// The height the artwork is drawn at inside that slot, the rest being
+/// transparent margin. The app icon is a tile drawn to the edges of its
+/// canvas, so handed over as it is the tile stood the full 22pt and touched
+/// the bar top and bottom. At 16, where the glyphs beside it sit, a tile
+/// with a word on it read as too small; 18 is between the two, with two
+/// points of air on each side.
+#[cfg(target_os = "macos")]
+const MENU_BAR_ARTWORK_PT: u32 = 18;
+/// Pixels per point the image is drawn at: a Retina menu bar's, so nothing
+/// is scaled up there and a 1x display scales down.
+#[cfg(target_os = "macos")]
+const MENU_BAR_PIXELS_PER_PT: u32 = 2;
+
 fn load_icon() -> Icon {
     let icon_bytes = include_bytes!("../assets/icon.png");
     let img = image::load_from_memory(icon_bytes).expect("Failed to load tray icon");
-    let rgba = img.to_rgba8();
+    let rgba = fit_to_tray(img.to_rgba8());
     let (width, height) = rgba.dimensions();
     Icon::from_rgba(rgba.into_raw(), width, height).expect("Failed to create tray icon")
+}
+
+/// The menu bar's image: the icon scaled to [`MENU_BAR_ARTWORK_PT`] in the
+/// middle of a transparent [`MENU_BAR_SLOT_PT`] canvas, so the margin is
+/// even on all four sides.
+#[cfg(target_os = "macos")]
+fn fit_to_tray(icon: RgbaImage) -> RgbaImage {
+    let canvas = MENU_BAR_SLOT_PT * MENU_BAR_PIXELS_PER_PT;
+    let artwork = MENU_BAR_ARTWORK_PT * MENU_BAR_PIXELS_PER_PT;
+    let inset = i64::from((canvas - artwork) / 2);
+    let scaled = imageops::resize(&icon, artwork, artwork, FilterType::Lanczos3);
+    let mut image = RgbaImage::new(canvas, canvas);
+    imageops::replace(&mut image, &scaled, inset, inset);
+    image
+}
+
+/// Windows draws a tray icon edge to edge in a slot of its own and spaces
+/// the icons itself, so there the icon goes over whole.
+#[cfg(not(target_os = "macos"))]
+fn fit_to_tray(icon: RgbaImage) -> RgbaImage {
+    icon
 }
 
 /// Holds references to dynamic menu items so we can update text without rebuilding.
@@ -372,6 +414,34 @@ pub fn init_tray(cx: &mut App) {
         }
         Err(e) => {
             error!(error = %e, "Failed to create tray icon");
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    /// The menu bar gets a canvas as tall as its slot with the icon inset in
+    /// the middle: an image that reached the edges again would be the tile
+    /// that touched the bar top and bottom.
+    #[test]
+    fn the_menu_bar_image_insets_the_icon_evenly() {
+        let icon = RgbaImage::from_pixel(128, 128, Rgba([10, 20, 30, 255]));
+        let image = fit_to_tray(icon);
+
+        let canvas = MENU_BAR_SLOT_PT * MENU_BAR_PIXELS_PER_PT;
+        let inset = (MENU_BAR_SLOT_PT - MENU_BAR_ARTWORK_PT) * MENU_BAR_PIXELS_PER_PT / 2;
+        assert_eq!(image.dimensions(), (canvas, canvas));
+        assert!(inset > 0, "the artwork has to be smaller than its slot");
+        for (x, y, pixel) in image.enumerate_pixels() {
+            let inside = (inset..canvas - inset).contains(&x) && (inset..canvas - inset).contains(&y);
+            if inside {
+                assert!(pixel[3] > 250, "({x}, {y}) is part of the icon");
+            } else {
+                assert_eq!(pixel[3], 0, "({x}, {y}) is margin");
+            }
         }
     }
 }
