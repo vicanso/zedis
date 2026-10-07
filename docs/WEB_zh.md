@@ -5,7 +5,7 @@
 Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 canvas 渲染。浏览器无法直接建立 TCP 连接，所以由一个很小的 HTTP 服务 —— `zedis-bridge` —— 同时提供页面，并代替浏览器与 Redis 通信。在 Redis 旁边部署一次，整个团队打开浏览器就能用，无需安装任何东西。Redis 的密码只保存在 bridge 上（加密存储），不会发送给浏览器。
 
 <p align="center">
-  <img src="images/architecture.svg" width="100%" alt="同一套 Zedis 界面代码有两种构建：原生桌面应用通过 RESP 直接连接 Redis；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，再由 bridge 以 RESP 连接 Redis。两条通路都支持单机、哨兵与集群部署的 Redis 和 Valkey。">
+  <img src="images/architecture.svg" width="100%" alt="Zedis 的界面和连接 Redis 的那一层各是一套共用代码，只有中间不同：原生桌面应用在进程内直接调用 Redis 连接层；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，bridge 只负责把这些请求转换成 Redis 命令，交给同一套连接层。连接层以 RESP 连接单机、哨兵与集群部署的 Redis 和 Valkey。">
 </p>
 
 > **早期预览。** 镜像已发布 linux/amd64 与 linux/arm64 两个架构（约 26 MB）：正式发布对应 `:latest` 与版本号标签，`:nightly` 是跟随 `main` 的滚动构建。

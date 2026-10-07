@@ -342,8 +342,8 @@
         <div class="wrap">
           <h2 class="section-title">Desktop app or browser tab</h2>
           <p class="section-sub">
-            One UI codebase, built two ways. The desktop app talks to Redis directly; the web version is the same
-            code as WebAssembly, served by zedis-bridge next to your servers.
+            The UI and the Redis layer are one codebase. The desktop app links both; in the browser, zedis-bridge
+            only turns the page's HTTP calls into Redis commands.
           </p>
           <figure class="arch">
             <img
@@ -351,7 +351,7 @@
               width="960"
               height="464"
               loading="lazy"
-              alt="One shared Zedis UI codebase, built two ways: the native desktop app talks RESP to Redis directly; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API and the bridge talks RESP to Redis. Both reach standalone, Sentinel and Cluster deployments of Redis and Valkey."
+              alt="The Zedis UI and the layer that connects to Redis are each one shared codebase; only the middle differs. The native desktop app calls the Redis layer in-process; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API, and the bridge only turns those calls into Redis commands for the same layer. The layer talks RESP to standalone, Sentinel and Cluster deployments of Redis and Valkey."
             />
           </figure>
         </div>

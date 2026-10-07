@@ -148,7 +148,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 The same app, compiled to WebAssembly: host it once next to your Redis servers and the whole team opens them from a browser tab, with nothing to install. A small server, `zedis-bridge`, serves the page and talks to Redis for the browser — Redis passwords stay on the bridge, encrypted at rest, and never reach the page.
 
 <p align="center">
-  <img src="docs/images/architecture.svg" width="100%" alt="One shared Zedis UI codebase, built two ways: the native desktop app talks RESP to Redis directly; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API and the bridge talks RESP to Redis. Both reach standalone, Sentinel and Cluster deployments of Redis and Valkey.">
+  <img src="docs/images/architecture.svg" width="100%" alt="The Zedis UI and the layer that connects to Redis are each one shared codebase; only the middle differs. The native desktop app calls the Redis layer in-process; the WebAssembly build in a browser tab calls zedis-bridge over an HTTP API, and the bridge only turns those calls into Redis commands for the same layer. The layer talks RESP to standalone, Sentinel and Cluster deployments of Redis and Valkey.">
 </p>
 
 ```bash

@@ -310,8 +310,8 @@
         <div class="wrap">
           <h2 class="section-title">桌面应用，或浏览器标签页</h2>
           <p class="section-sub">
-            同一套界面代码，两种构建。桌面版直接连接 Redis；Web 版把同一份代码编译成 WebAssembly，由部署在服务器旁的
-            zedis-bridge 提供。
+            界面和 Redis 连接层是同一套代码。桌面版把两者编译在一起；浏览器里，zedis-bridge 只负责把页面的 HTTP
+            请求转换成 Redis 命令。
           </p>
           <figure class="arch">
             <img
@@ -319,7 +319,7 @@
               width="960"
               height="464"
               loading="lazy"
-              alt="同一套 Zedis 界面代码有两种构建：原生桌面应用通过 RESP 直接连接 Redis；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，再由 bridge 以 RESP 连接 Redis。两条通路都支持单机、哨兵与集群部署的 Redis 和 Valkey。"
+              alt="Zedis 的界面和连接 Redis 的那一层各是一套共用代码，只有中间不同：原生桌面应用在进程内直接调用 Redis 连接层；浏览器标签页里的 WebAssembly 版本通过 HTTP API 访问 zedis-bridge，bridge 只负责把这些请求转换成 Redis 命令，交给同一套连接层。连接层以 RESP 连接单机、哨兵与集群部署的 Redis 和 Valkey。"
             />
           </figure>
         </div>
