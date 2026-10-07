@@ -180,8 +180,10 @@ pub(crate) fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
 
 pub(crate) fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
     // The notes area scrolls, so this cap only guards layout work against a
-    // pathologically long release body.
-    const MAX_NOTES: usize = 5000;
+    // pathologically long text. It holds the notes of every release since
+    // the running one (up to ten of them, a few thousand characters each):
+    // at 5000 a build three versions behind was cut off inside the second.
+    const MAX_NOTES: usize = 20_000;
     let title = format!("{} {}", i18n_update(cx, "available_title"), info.version);
     let mut notes = info.notes.clone();
     if notes.chars().count() > MAX_NOTES {

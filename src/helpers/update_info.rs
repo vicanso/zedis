@@ -40,9 +40,10 @@ pub struct UpdateInfo {
     /// Release page to open in a browser — used as the changelog link and as the
     /// fallback "download" target when no verified asset is available.
     pub page_url: String,
-    /// Changelog markdown. The manifest only carries a release-page URL, so
-    /// this is filled by a best-effort extra GitHub API call (see
-    /// `fetch_release_notes`); empty when that call fails.
+    /// Changelog markdown: the notes of every release between the running
+    /// build and this one, newest first. The manifest only carries a
+    /// release-page URL, so this is filled by a best-effort extra API call
+    /// (see `fetch_release_notes`); empty when that call fails.
     pub notes: String,
     /// The installer for this `os`/`arch`. `None` when the manifest is absent or
     /// has no matching asset; the UI then falls back to opening `page_url`.

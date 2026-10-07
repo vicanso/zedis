@@ -90,6 +90,12 @@ const GITEE_RELEASES_PAGE: &str = "https://gitee.com/vicanso/zedis/releases";
 /// pre-releases and the rolling `nightly` build both live here and never in
 /// `/releases/latest`.
 const RELEASE_LIST_API: &str = "https://api.github.com/repos/vicanso/zedis/releases?per_page=15";
+/// The same list on the mirror, which answers oldest first unless asked.
+const GITEE_RELEASE_LIST_API: &str = "https://gitee.com/api/v5/repos/vicanso/zedis/releases?per_page=15&direction=desc";
+/// How many releases' notes one prompt carries, newest first. A build
+/// further behind than this is shown the latest ten: the prompt is a dialog,
+/// not a reader, and the release page has the rest.
+const MAX_NOTES_RELEASES: usize = 10;
 /// The rolling build publish.yml recreates on every push to main.
 const NIGHTLY_TAG: &str = "nightly";
 /// A nightly published this soon after our own build time is this very
@@ -277,11 +283,36 @@ fn fetch_from_manifest() -> Result<Option<UpdateInfo>> {
 }
 
 /// Best-effort changelog for the update prompt: latest.json only carries a
-/// release-page URL, so the markdown body takes one extra GitHub API call.
-/// Any failure (offline API, rate limit) degrades to an empty string — the
-/// prompt then shows version + link only, never an error. Runs at most once
-/// per discovered update, well inside the anonymous API quota.
+/// release-page URL, so the markdown takes one extra API call. Any failure
+/// (offline API, rate limit) degrades to an empty string — the prompt then
+/// shows version + link only, never an error. Runs at most once per
+/// discovered update, well inside the anonymous API quota.
+///
+/// The call asks for the release *list*, because an update is often more
+/// than one release away: a build three versions behind was shown the last
+/// one's notes alone, and learned nothing of the two it was also about to
+/// install. The single latest release is what is left when the list cannot
+/// be had.
 fn fetch_release_notes(version: &str) -> String {
+    let since_current = || -> Result<String> {
+        let (Ok(latest), Some(current)) = (Version::parse(version), current_version()) else {
+            return Ok(String::new());
+        };
+        let (text, _) = http_get_string_mirrored(RELEASE_LIST_API, GITEE_RELEASE_LIST_API)?;
+        let releases: Vec<GithubRelease> = serde_json::from_str(&text)?;
+        Ok(notes_between(&releases, &current, &latest, false))
+    };
+    match since_current() {
+        Ok(notes) if !notes.is_empty() => return notes,
+        Ok(_) => debug!("update check: the release list does not have this version yet"),
+        Err(e) => debug!(error = %e, "update check: release list unavailable for the notes"),
+    }
+    latest_release_notes(version)
+}
+
+/// The notes of the latest release alone — what the prompt showed before it
+/// read the list, and still shows when the list cannot be had.
+fn latest_release_notes(version: &str) -> String {
     let fetch = || -> Result<String> {
         // Both hosts name the same fields (`tag_name`, `body`), so one
         // deserializer serves either answer — Gitee omits what it has no
@@ -305,6 +336,62 @@ fn fetch_release_notes(version: &str) -> String {
     }
 }
 
+/// The running build's version, when it parses.
+fn current_version() -> Option<Version> {
+    Version::parse(CURRENT_VERSION).ok()
+}
+
+/// A release's version, read off its tag; the rolling `nightly` has none.
+fn release_version(release: &GithubRelease) -> Option<Version> {
+    Version::parse(release.tag_name.trim_start_matches('v').trim()).ok()
+}
+
+/// What changed between two versions: the notes of every tagged release
+/// newer than `current` and no newer than `latest`, newest first, as one
+/// markdown text. Drafts are never part of it, pre-releases only on the
+/// channel that installs them.
+///
+/// Empty when the list does not have `latest` itself — the list can lag a
+/// release that is still being published, and notes that stop one version
+/// short would pass for the whole changelog.
+fn notes_between(releases: &[GithubRelease], current: &Version, latest: &Version, include_prerelease: bool) -> String {
+    let mut found: Vec<(Version, &str)> = releases
+        .iter()
+        .filter(|release| !release.draft && (include_prerelease || !release.prerelease))
+        .filter_map(|release| {
+            let version = release_version(release)?;
+            (version > *current && version <= *latest).then_some((version, release.body.trim()))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    if found.first().is_none_or(|(version, _)| version != latest) {
+        return String::new();
+    }
+    found
+        .into_iter()
+        .take(MAX_NOTES_RELEASES)
+        .filter(|(_, body)| !body.is_empty())
+        .map(|(version, body)| titled_notes(&version, body))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// One release's notes under a heading that says which release they are.
+/// The release workflow's notes open with their own (`## [0.12.3](…) - date`)
+/// and are left as they are; anything else — a hand-written body — is given
+/// one, or several releases' notes would run together.
+fn titled_notes(version: &Version, body: &str) -> String {
+    let names_itself = body
+        .lines()
+        .next()
+        .is_some_and(|first| first.contains(&version.to_string()));
+    if names_itself {
+        body.to_string()
+    } else {
+        format!("## {version}\n\n{body}")
+    }
+}
+
 /// The pre-release channel: walk the release list newest-first and take the
 /// first non-draft entry that is newer than this build — a tagged release
 /// (stable or pre-release, by version) or the `nightly` (by publish time,
@@ -312,7 +399,16 @@ fn fetch_release_notes(version: &str) -> String {
 fn fetch_from_release_list() -> Result<Option<UpdateInfo>> {
     let text = http_get_string(RELEASE_LIST_API)?;
     let releases: Vec<GithubRelease> = serde_json::from_str(&text)?;
-    for release in releases.into_iter().filter(|r| !r.draft) {
+    let current = current_version();
+    // Every tagged release this build is behind, for the notes of whichever
+    // entry is offered: the list is already here, so it costs no request.
+    let notes_up_to = |latest: &Version| {
+        current
+            .as_ref()
+            .map(|current| notes_between(&releases, current, latest, true))
+            .unwrap_or_default()
+    };
+    for release in releases.iter().filter(|r| !r.draft) {
         let page_url = if release.html_url.trim().is_empty() {
             RELEASES_PAGE.to_string()
         } else {
@@ -323,11 +419,25 @@ fn fetch_from_release_list() -> Result<Option<UpdateInfo>> {
                 continue;
             }
             let published = release.published_at.get(..10).unwrap_or(NIGHTLY_TAG);
+            // The rolling build says only when it was built. It also carries
+            // every tagged release since this one, so their notes follow.
+            let tagged = releases
+                .iter()
+                .filter(|r| !r.draft)
+                .filter_map(release_version)
+                .max()
+                .map(|newest| notes_up_to(&newest))
+                .unwrap_or_default();
+            let notes = [release.body.trim(), tagged.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
             return Ok(Some(UpdateInfo {
                 version: format!("{NIGHTLY_TAG} {published}"),
                 current: current_version_label(),
                 page_url,
-                notes: release.body.trim().to_string(),
+                notes,
                 asset: pick_asset(&assets_from_api(&release.assets)),
             }));
         }
@@ -347,11 +457,19 @@ fn fetch_from_release_list() -> Result<Option<UpdateInfo>> {
             .and_then(|text| serde_json::from_str::<Manifest>(&text).ok())
             .and_then(|manifest| pick_asset(&manifest.assets))
             .or_else(|| pick_asset(&assets_from_api(&release.assets)));
+        let combined = release_version(release)
+            .map(|version| notes_up_to(&version))
+            .unwrap_or_default();
+        let notes = if combined.is_empty() {
+            release.body.trim().to_string()
+        } else {
+            combined
+        };
         return Ok(Some(UpdateInfo {
             version: latest,
             current: current_version_label(),
             page_url,
-            notes: release.body.trim().to_string(),
+            notes,
             asset,
         }));
     }
@@ -990,6 +1108,98 @@ mod tests {
         // Gitee lists no size; the download then takes its total from the
         // server's Content-Length instead of showing a wrong one.
         assert_eq!(assets[0].size, 0);
+    }
+
+    /// A release list as either host answers it, newest first: three
+    /// releases ahead of 0.12.0, the rolling build among them, a draft and
+    /// a pre-release of the next line.
+    fn release_list() -> Vec<GithubRelease> {
+        serde_json::from_str(
+            r###"[
+              {"tag_name": "v0.13.0-beta.1", "prerelease": true, "body": "## [0.13.0-beta.1] - 2026-10-08\n\n- beta"},
+              {"tag_name": "v0.12.4", "draft": true, "body": "## [0.12.4]\n\n- not out yet"},
+              {"tag_name": "v0.12.3", "body": "## [0.12.3](https://example.com) - 2026-10-06\r\n\r\n- third\r\n"},
+              {"tag_name": "nightly", "prerelease": true, "body": "This is a rolling build."},
+              {"tag_name": "v0.12.2", "body": "- second, written by hand"},
+              {"tag_name": "v0.12.1", "body": "## [0.12.1](https://example.com) - 2026-09-30\n\n- first"},
+              {"tag_name": "v0.12.0", "body": "## [0.12.0]\n\n- the running one"},
+              {"tag_name": "v0.11.1", "body": "## [0.11.1]\n\n- older"}
+            ]"###,
+        )
+        .expect("a release list")
+    }
+
+    fn version(text: &str) -> Version {
+        Version::parse(text).expect("a version")
+    }
+
+    /// An update several releases away shows what each of them changed,
+    /// newest first — not the last one's notes alone — and nothing of the
+    /// running version or of anything that is not a published release.
+    #[test]
+    fn the_notes_cover_every_release_since_the_running_one() {
+        let notes = notes_between(&release_list(), &version("0.12.0"), &version("0.12.3"), false);
+        let at = |needle: &str| {
+            notes
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} is missing from:\n{notes}"))
+        };
+        assert!(at("- third") < at("- second") && at("- second") < at("- first"));
+        for absent in ["the running one", "older", "rolling build", "not out yet", "beta"] {
+            assert!(!notes.contains(absent), "{absent} does not belong in:\n{notes}");
+        }
+        // The workflow's notes keep their own heading; a hand-written body
+        // is given one, or it would read as more of the release above it.
+        assert_eq!(notes.matches("## [0.12.3]").count(), 1);
+        assert!(notes.contains("## 0.12.2\n\n- second, written by hand"));
+        assert!(
+            !notes.contains("## 0.12.3\n"),
+            "no second heading over one that is there"
+        );
+
+        // One release behind is the notes it always showed.
+        let one = notes_between(&release_list(), &version("0.12.2"), &version("0.12.3"), false);
+        assert!(one.starts_with("## [0.12.3]") && !one.contains("second"));
+    }
+
+    /// Pre-releases are part of the notes only on the channel that installs
+    /// them, and a draft on neither.
+    #[test]
+    fn pre_releases_are_notes_on_their_own_channel_only() {
+        let list = release_list();
+        let current = version("0.12.2");
+        let stable = notes_between(&list, &current, &version("0.12.3"), false);
+        assert!(!stable.contains("beta"));
+        let beta = notes_between(&list, &current, &version("0.13.0-beta.1"), true);
+        assert!(beta.find("- beta").expect("the beta") < beta.find("- third").expect("0.12.3"));
+        assert!(!beta.contains("not out yet"));
+    }
+
+    /// A list that does not have the offered version yet says nothing: notes
+    /// that stop a release short would pass for the whole changelog. The
+    /// caller then asks for the latest release by itself.
+    #[test]
+    fn a_list_without_the_offered_version_gives_no_notes() {
+        let list = release_list();
+        assert!(notes_between(&list, &version("0.12.0"), &version("0.12.5"), false).is_empty());
+        assert!(notes_between(&list, &version("0.12.3"), &version("0.12.3"), false).is_empty());
+    }
+
+    /// A build far behind is shown the newest releases, not all of them.
+    #[test]
+    fn the_notes_stop_at_the_newest_ten_releases() {
+        let many: Vec<GithubRelease> = (1..=14)
+            .map(|patch| {
+                serde_json::from_str(&format!(
+                    r#"{{"tag_name": "v1.0.{patch}", "body": "- change {patch} of fourteen"}}"#
+                ))
+                .expect("a release")
+            })
+            .collect();
+        let notes = notes_between(&many, &version("1.0.0"), &version("1.0.14"), false);
+        assert_eq!(notes.matches("of fourteen").count(), MAX_NOTES_RELEASES);
+        assert!(notes.starts_with("## 1.0.14"));
+        assert!(notes.contains("- change 5 of fourteen") && !notes.contains("- change 4 of fourteen"));
     }
 
     #[test]
