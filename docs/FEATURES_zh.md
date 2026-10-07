@@ -2,7 +2,24 @@
 
 # Zedis —— 完整功能巡览
 
-Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页是详尽参考；概览见 [README](../README_zh.md)。
+Zedis 自动检测（`ViewMode::Auto`）并实时格式化你的数据。本页是详尽参考——先是完整的功能矩阵，再逐个领域展开。精简版见 [README](../README_zh.md)；Web 版的部署见[自托管指南](./WEB_zh.md)，Redis 与 Valkey 的差异见 [Redis 与 Valkey](./REDIS_VALKEY_zh.md)。
+
+---
+
+## 🧩 功能一览
+
+| 领域 | 包含内容 |
+| --- | --- |
+| 🚀 **原生 & 快** | GPU 渲染 · 虚拟滚动 `SCAN`，百万键 60+ FPS · macOS / Windows / Linux · 浅色 / 深色 / 跟随系统 + 6 套内置主题 · 界面与等宽字体可自选 |
+| 🧠 **智能数据查看器** | 自动解压(LZ4 / Snappy / GZIP / ZSTD)· JSON & RedisJSON + JSONPath · Protobuf · MessagePack · Java / PHP / pickle 序列化 · BSON · JWT · Base64 · URL 编码 · 时间戳 · 图片 · Hex · 自定义脚本——Hash / List / Set / ZSet 的元素同样适用，编辑的仍是存储的字节；Stream 的字段值也会解码显示 |
+| 🗂️ **类型 & 模块查看器** | 位图（`BITOP`）· HyperLogLog（`PFMERGE`）· 向量集(KNN)· 地理地图（`GEOADD` / `GEODIST`，半径 + 矩形搜索）· Bloom / Cuckoo / Count-Min / Top-K · 时间序列（`TS.ADD` / `TS.ALTER` / 聚合规则，以及基于 `TS.MRANGE` 的多序列浏览器）· Streams(实时跟踪、`XSETID`、消费者管理)· Pub/Sub(含分片)· RediSearch（索引大小、`FT.TAGVALS` 取值、`FT.SPELLCHECK` 拼写建议）· Functions |
+| 📊 **可观测性** | 实时指标 + 7 天历史（可导出 CSV）· `MEMORY DOCTOR` / `MEMORY STATS` 与 `LATENCY DOCTOR` 报告 · 内存分析（在线扫描或离线 RDB 文件）· 类型/编码占比 · 逐级下钻前缀 + AI 建议 · 慢日志 ↔ Latency（含 Valkey `COMMANDLOG` 大请求 / 大回复）· `MONITOR` · 按值搜索 · 集群健康、重分片 / 槽位修复 / 再平衡 · 主从复制（`REPLICAOF` / `FAILOVER`）· 持久化 & 键事件 · 带类型的 CONFIG 编辑器（含 `CONFIG REWRITE`） · 原始 INFO 浏览器 |
+| 🔑 **Keys & 数据** | 带 TTL chip 的命名空间树 · 分页加载的 Hash / List / Set / ZSet 编辑器（`HSCAN`/`SSCAN`/`ZSCAN`）· 多选批量删除 · 类型原生操作（`LTRIM` / `LPOP` / `ZINCRBY` / `ZPOPMIN` / `HINCRBY` / `INCRBY` / `APPEND` / `GETEX`）· ZSet 分数区间筛选（`ZRANGEBYSCORE`）· 标签 / 备注 / 收藏 · 重命名 · 字段级 TTL · 绝对到期时刻（`EXPIREAT`）· 键栏显示存储编码 / 空闲时间 · 版本历史 · 集合的会话变更记录与结构化 diff · 值编辑器查找替换 · JSON 树视图与路径级操作（`JSON.SET` / `JSON.DEL` / `JSON.NUMINCRBY` / `JSON.TOGGLE` / `JSON.ARRAPPEND` / `JSON.STRAPPEND` / `JSON.CLEAR`，普通字符串里的 JSON 在本地应用）· 保存前 JSON 校验、格式化与压缩 · 本地回收站(24h)· 文件导入导出 · 批量操作(Tools 导出、前缀过滤、二进制 / JSON / CSV)· 跨服务器复制 & 对比——单键或整个前缀：`DUMP`/`RESTORE` 直传批量复制，以及两库对比 |
+| 🔐 **安全 & 隐私** | 环境标签 + PROD 升级确认 · 只读锁 · Prod 默认锁写、每次解锁 15 分钟 · ACL 编辑（安全日志、DRYRUN 权限测试、`ACL GENPASS` 生成密码、aclfile 保存/载入）· TLS/SSL & SSH · 分阶段连接诊断 · 断线自愈并跟随 Sentinel/Cluster 故障转移 · 每机密钥加密 · 纯本地、无遥测 |
+| 🧭 **受限服务端** | 连接后自动探测能力：代理（Twemproxy / Codis / Envoy）、云托管（ElastiCache / Azure / Tair）和 Redis 兼容服务端（Valkey / Dragonfly / KeyDB / Kvrocks）上，依赖缺失命令的面板与按钮会灰显并*说明原因*（`CONFIG GET` 不支持、`SLOWLOG` 无权限）而不是报错 · 没有 `SCAN` 时键编辑器仍可按键名打开 · 完整命令矩阵在 工具 → 服务端能力 中查看 |
+| ⌨️ **效率** | 多连接工作区标签页 · ⌘K 面板 · ⌘P 最近打开的键 · ⌘⇧F 多数据库键搜索 · ⌘/ 快捷键速查 · 自定义快捷键（`keybindings.toml`）· ⌘+/− 缩放 · 单实例 + `redis://` 链接 · redis-cli 带补全、按服务器的历史与 `Ctrl+R` 反向搜索 · AI 命令助手（终端内 `?`）· 多行 Batch 模式 · Lua 脚本库 · 可关闭的更新检查（下载带校验和验证，可含预发布 / nightly）· 时区与日期格式 · 本地数据备份（标签、收藏、脚本）· 可选系统托盘（macOS / Windows）· 应用自身请求可走 HTTP / SOCKS5 代理 · 滚动文件日志 · 导出诊断包（日志、崩溃报告、脱敏配置、连接状态打成一个 zip） |
+
+> 🔐 **连接密钥存放位置：** 密码与 SSH 私钥用每台机器**唯一的随机密钥**加密 —— macOS 存 **钥匙串(Keychain)**、Windows 存 **凭据管理器**、**Linux** 存配置目录下 `0600` 权限的密钥文件(不依赖 Secret Service / D-Bus，headless 也能用)。密钥不离开本机，所以直接把配置文件拷到别的机器是解不开的 —— 跨机迁移请用带口令的导出功能。
 
 ---
 
@@ -195,7 +212,7 @@ Redis 无法索引值，故这种 `O(keyspace)` 搜索带护栏运行：必填 k
 ### 两者都是一等公民
 **每个版本门槛都有自己的 Valkey 下限，Valkey 独有的功能也都有对应面板。**
 
-Valkey 从 Redis 7.2.4 分叉，版本号走自己的节奏，所以为 Redis 写的版本判断会给 Valkey 发去它从没实现过的命令，或者扣下它早已支持的命令。Zedis 里每个依赖版本的功能都按两种服务端分别设门槛，Valkey 独有的功能也都有面板或操作：`COMMANDLOG` 大小日志、原子槽位迁移、集群模式多数据库、`SCRIPT SHOW`、可用区、`BGSAVE CANCEL` 以及服务端上报的客户端暂停。模块浏览器按 valkey-json、valkey-search、valkey-bloom 的实际能力工作，valkey-search 缺少的 `FT.*` 命令会标为不可用，而不是报错。会让服务端崩溃的设置不会发出：Redis 8.0–8.2.6 与 Valkey 8.0 在设置了 `CLIENT NO-TOUCH` 的客户端解除另一个客户端的阻塞时会崩溃，Zedis 在这些版本上不设这个标志。两者之间的复制会在 `RESTORE` 拒绝对方载荷时按类型重建 key（见*跨服务器工具*）。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8.0 / 9.0、`redis-stack` 与 `valkey-bundle`。完整的差异表（附两边各自的版本）见 README 的 [Redis 与 Valkey](../README_zh.md#-redis-与-valkey)。
+Valkey 从 Redis 7.2.4 分叉，版本号走自己的节奏，所以为 Redis 写的版本判断会给 Valkey 发去它从没实现过的命令，或者扣下它早已支持的命令。Zedis 里每个依赖版本的功能都按两种服务端分别设门槛，Valkey 独有的功能也都有面板或操作：`COMMANDLOG` 大小日志、原子槽位迁移、集群模式多数据库、`SCRIPT SHOW`、可用区、`BGSAVE CANCEL` 以及服务端上报的客户端暂停。模块浏览器按 valkey-json、valkey-search、valkey-bloom 的实际能力工作，valkey-search 缺少的 `FT.*` 命令会标为不可用，而不是报错。会让服务端崩溃的设置不会发出：Redis 8.0–8.2.6 与 Valkey 8.0 在设置了 `CLIENT NO-TOUCH` 的客户端解除另一个客户端的阻塞时会崩溃，Zedis 在这些版本上不设这个标志。两者之间的复制会在 `RESTORE` 拒绝对方载荷时按类型重建 key（见*跨服务器工具*）。集成测试在每次改动时跑 Redis 6.2 / 7.2 / 8.0、Valkey 8.0 / 9.0、`redis-stack` 与 `valkey-bundle`。完整的差异表（附两边各自的版本）见 [Redis 与 Valkey](./REDIS_VALKEY_zh.md)。
 
 ---
 
@@ -217,7 +234,7 @@ Valkey 从 Redis 7.2.4 分叉，版本号走自己的节奏，所以为 Redis �
 ### 浏览器标签页里的同一个应用
 **同一套代码编译成 WebAssembly，由一个小镜像托管 —— 部署一次，整个团队从标签页访问你的 Redis，无需安装任何东西。**
 
-浏览器开不了 TCP 连接，所以页面从不直连 Redis：一个小型 HTTP 服务 —— **`zedis-bridge`** —— 负责分发 WebAssembly 包，并代表浏览器转发 RESP 帧。转发就是协议的全部，因此为桌面端写的面板会随之直接出现在浏览器里，而不必等一个专属接口。镜像是 `vicanso/zedis-web`（linux/amd64 与 linux/arm64，约 26 MB）；它的 `/data` 卷保存服务器列表（密钥由同目录的 `master.key` 加密存储）与已登录会话，因此重启不会把任何人踢下线。当域名并非 Zedis 独占时，`ZEDIS_BRIDGE_BASE_PATH` 会把页面、静态文件与 API 一并挪到独立路径下，登录 Cookie 也限定在该路径，同域名下的其他应用收不到它。`docker run` 命令与反向代理示例见 README 的 [Web 版](../README_zh.md#-web-版自托管)。
+浏览器开不了 TCP 连接，所以页面从不直连 Redis：一个小型 HTTP 服务 —— **`zedis-bridge`** —— 负责分发 WebAssembly 包，并代表浏览器转发 RESP 帧。转发就是协议的全部，因此为桌面端写的面板会随之直接出现在浏览器里，而不必等一个专属接口。镜像是 `vicanso/zedis-web`（linux/amd64 与 linux/arm64，约 26 MB）；它的 `/data` 卷保存服务器列表（密钥由同目录的 `master.key` 加密存储）与已登录会话，因此重启不会把任何人踢下线。当域名并非 Zedis 独占时，`ZEDIS_BRIDGE_BASE_PATH` 会把页面、静态文件与 API 一并挪到独立路径下，登录 Cookie 也限定在该路径，同域名下的其他应用收不到它。`docker run` 命令与反向代理示例见[自托管指南](./WEB_zh.md)。
 
 ### 账号与归属
 **必须登录；条目在你共享之前都是私有的；Redis 密码永远不会下发到浏览器；审计日志可以记下谁做了什么。**
@@ -227,7 +244,7 @@ Valkey 从 Redis 7.2.4 分叉，版本号走自己的节奏，所以为 Redis �
 ### 让 AI 助手走同一扇门（MCP）
 **Claude Code、Cursor 或任何 MCP 客户端都能经由 bridge 读取你的 Redis —— 以只读账号，只能读。**
 
-`POST /v1/mcp` 是一个 Model Context Protocol 服务端，与页面共用同一套登录。助手像脚本一样用 HTTP Basic 登录，账号必须是只读的；完整权限的账号无论问什么都会被拒绝，能看到哪些条目由 users 文件的 `servers` 规则决定。六个工具按模型而不是终端的习惯设计——`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`。每条命令都过页面同一份只读白名单，工具还会额外拒绝会返回凭据的读（读密码的 `CONFIG GET`、`ACL LIST`），以及会改动或占住共享连接的命令（`SELECT`——工具直接接收 `db` 参数——`MULTI`、阻塞读、`SUBSCRIBE` 等）；脚本只能以 `_RO` 形式运行。回复会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，每次调用（包括读）都是审计日志里的一行。一行 `claude mcp add` 的接入方式见 README 的 [MCP](../README_zh.md#让-ai-助手走同一扇门mcp)。
+`POST /v1/mcp` 是一个 Model Context Protocol 服务端，与页面共用同一套登录。助手像脚本一样用 HTTP Basic 登录，账号必须是只读的；完整权限的账号无论问什么都会被拒绝，能看到哪些条目由 users 文件的 `servers` 规则决定。六个工具按模型而不是终端的习惯设计——`list_servers`、`scan_keys`（分页，集群的每个 master 都会扫到）、`inspect_key`（类型、TTL、内存、编码、长度和一段预览）、`server_info` 与 `slowlog`（按 master 解析好），以及兜底的 `read_command`。每条命令都过页面同一份只读白名单，工具还会额外拒绝会返回凭据的读（读密码的 `CONFIG GET`、`ACL LIST`），以及会改动或占住共享连接的命令（`SELECT`——工具直接接收 `db` 参数——`MULTI`、阻塞读、`SUBSCRIBE` 等）；脚本只能以 `_RO` 形式运行。回复会截断到能放进上下文的大小，每个账号每分钟最多 120 次调用，每次调用（包括读）都是审计日志里的一行。一行 `claude mcp add` 的接入方式见 README 的 [MCP](./WEB_zh.md#让-ai-助手走同一扇门mcp)。
 
 ### 浏览器里没有什么
 **凡是"一问一答"的都能用；流式面板和需要落盘的功能留在桌面端。**
