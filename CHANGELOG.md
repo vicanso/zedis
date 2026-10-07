@@ -18,6 +18,27 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Version 0.12.4 - ([41e8602](https://github.com/vicanso/zedis/commit/41e8602a527f3fba16ca50b014c39c386b60c0e3))
+- Version 0.12.3 - ([1ca1da6](https://github.com/vicanso/zedis/commit/1ca1da696506729cf96f68038c169d6329dbe5fa))
+
+## [0.12.4](https://github.com/vicanso/zedis/compare/v0.12.2..v0.12.4) - 2026-10-07
+
+### ⛰️  Features
+
+- *(ui)* Give connection cards a third row and the kv tables 30px rows - ([a1427a2](https://github.com/vicanso/zedis/commit/a1427a27e524c3babe0a63d2970403864cb24530))
+- *(updater)* Show the notes of every release since the running version in the update prompt - ([6535e64](https://github.com/vicanso/zedis/commit/6535e6457ac1f85a6e1eb094f3b3d4f72df47a78))
+
+### 🐛 Bug Fixes
+
+- *(tray)* Inset the menu bar icon so it is 18pt tall instead of filling the bar - ([105c2fd](https://github.com/vicanso/zedis/commit/105c2fd103ea7810bb686bd2d36f03e6f52b0b27))
+- *(ui)* Unique collapsed-rail labels, a quieter empty editor, compact TTL text, live timeout defaults, a scrollable shortcuts overlay, and Save as primary only when dirty - ([0744cc0](https://github.com/vicanso/zedis/commit/0744cc0fa877467e83d2184533eab0376e0b3ca3))
+
+### 📚 Documentation
+
+- Add an animated architecture diagram to the READMEs and the site - ([df7251d](https://github.com/vicanso/zedis/commit/df7251de8a249f02737bd4d5b887cb88ec70167a))
+
+### ⚙️ Miscellaneous Tasks
+
 - Version 0.12.3 - ([1ca1da6](https://github.com/vicanso/zedis/commit/1ca1da696506729cf96f68038c169d6329dbe5fa))
 
 ## [0.12.3](https://github.com/vicanso/zedis/compare/v0.12.2..v0.12.3) - 2026-10-06
