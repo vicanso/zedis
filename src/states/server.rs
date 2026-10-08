@@ -158,9 +158,14 @@ pub type LoadedKeys = OrdMap<SharedString, KeyType>;
 #[derive(Debug, Clone, Default)]
 pub struct ZedisServerState {
     redis_info: Option<RedisInfo>,
-    /// Last time the heartbeat refilled `dbsize` from INFO keyspace —
-    /// throttled to once a minute; the total needn't track every tick.
+    /// Last time `dbsize` was filled from `DBSIZE` — the heartbeat asks at
+    /// most once a minute; a user-driven add/delete asks at once.
     last_dbsize_refreshed_at: i64,
+    /// A user-driven `DBSIZE` is in flight (`refresh_dbsize_now`). A second
+    /// add/delete while it runs sets `dbsize_refresh_again` so the total is
+    /// asked again after this one lands, rather than applying a stale count.
+    dbsize_refresh_inflight: bool,
+    dbsize_refresh_again: bool,
     last_slow_logs_checked_at: i64,
     last_slow_log_count: usize,
     slow_logs: Vec<SlowLogEntry>,
@@ -569,7 +574,7 @@ struct TaskRun {
 impl TaskRun {
     #[inline(never)]
     fn log_completed(&self) {
-        if self.name != ServerTask::RefreshRedisInfo {
+        if !matches!(self.name, ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize) {
             info!(
                 task = self.name.as_str(),
                 arg = self.arg.as_str(),
@@ -739,6 +744,8 @@ impl ZedisServerState {
         self.reset_scan(cx);
         self.terminal = false;
         self.last_dbsize_refreshed_at = 0;
+        self.dbsize_refresh_inflight = false;
+        self.dbsize_refresh_again = false;
         self.last_slow_logs_checked_at = 0;
         self.last_slow_log_count = 0;
         self.slow_logs.clear();
@@ -961,7 +968,10 @@ impl ZedisServerState {
             // "not available on this server" notice and degrades the
             // UI; repeats stay quiet.
             if !stale
-                && !matches!(run.name, ServerTask::RefreshRedisInfo | ServerTask::ProbeFeatures)
+                && !matches!(
+                    run.name,
+                    ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize | ServerTask::ProbeFeatures
+                )
                 && !self.note_command_error(e, cx)
                 && !self.note_link_error(e, cx)
             {

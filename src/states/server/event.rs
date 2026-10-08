@@ -26,6 +26,10 @@ pub enum ServerTask {
     /// Refresh the Redis server info
     RefreshRedisInfo,
 
+    /// User-driven `DBSIZE` after an add/delete, so the status-bar total
+    /// does not wait out the heartbeat's minute.
+    RefreshDbsize,
+
     /// Auto refresh keys
     AutoRefresh,
 
@@ -230,6 +234,7 @@ impl ServerTask {
     pub fn as_str(&self) -> &'static str {
         match self {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
+            ServerTask::RefreshDbsize => "refresh_dbsize",
             ServerTask::AutoRefresh => "auto_refresh",
             ServerTask::SelectServer => "select_server",
             ServerTask::ReloadTopology => "reload_topology",

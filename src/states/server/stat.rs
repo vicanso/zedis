@@ -829,6 +829,58 @@ impl ZedisServerState {
         self.refresh_redis_info(cx);
     }
 
+    /// After a user-driven add/delete, ask `DBSIZE` now rather than wait out
+    /// the heartbeat's minute. A second request while one is in flight is
+    /// remembered and sent when the first lands, so add-then-delete does not
+    /// apply a stale total.
+    pub fn refresh_dbsize_now(&mut self, cx: &mut Context<Self>) {
+        if self.server_id.is_empty() || self.manually_offline {
+            return;
+        }
+        if !self.request_dbsize_refresh() {
+            return;
+        }
+        let at = self.at();
+        self.spawn(
+            ServerTask::RefreshDbsize,
+            move || async move { Ok(dbsize(&at).await?) },
+            move |this, result, cx| {
+                match result {
+                    Ok(n) => {
+                        this.dbsize = Some(n);
+                        this.last_dbsize_refreshed_at = unix_ts();
+                        cx.emit(ServerEvent::ServerRedisInfoUpdated);
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "DBSIZE unavailable after a keyspace change; keeping the last key total");
+                    }
+                }
+                if this.finish_dbsize_refresh() {
+                    this.refresh_dbsize_now(cx);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Start a user-driven `DBSIZE`, or remember that another one is owed
+    /// when one is already in flight. Returns whether the caller should spawn.
+    fn request_dbsize_refresh(&mut self) -> bool {
+        if self.dbsize_refresh_inflight {
+            self.dbsize_refresh_again = true;
+            return false;
+        }
+        self.dbsize_refresh_inflight = true;
+        true
+    }
+
+    /// Clear the in-flight flag; answers whether another `DBSIZE` is owed.
+    fn finish_dbsize_refresh(&mut self) -> bool {
+        self.dbsize_refresh_inflight = false;
+        std::mem::take(&mut self.dbsize_refresh_again)
+    }
+
     pub fn refresh_redis_info(&mut self, cx: &mut Context<Self>) {
         if self.server_id.is_empty() {
             return;
@@ -883,6 +935,9 @@ impl ZedisServerState {
         // made, so the total never changes its meaning between the connect
         // and a minute later.
         let refresh_dbsize = unix_ts() - self.last_dbsize_refreshed_at >= pacing::DBSIZE_REFRESH_SECS;
+        // Captured so a user-driven `DBSIZE` that lands while this beat is
+        // in flight is not overwritten by the beat's older total.
+        let dbsize_stamp = self.last_dbsize_refreshed_at;
         if last_slow_logs_checked_at == 0 {
             last_slow_logs_checked_at = unix_ts() - slow_logs_check_interval;
         }
@@ -1014,7 +1069,7 @@ impl ZedisServerState {
                             #[cfg(not(target_family = "wasm"))]
                             maybe_persist_metrics(&server_id_clone, info.metrics, cx);
                         }
-                        if refresh_dbsize {
+                        if refresh_dbsize && this.last_dbsize_refreshed_at == dbsize_stamp {
                             // Attempted, whether or not it answered — a denied
                             // DBSIZE is asked again next minute, not next tick.
                             this.last_dbsize_refreshed_at = unix_ts();
@@ -1290,5 +1345,15 @@ mod tests {
         // 0 misses is never asked for, but must not underflow below the interval.
         assert_eq!(secs, vec![2, 2, 4, 8, 16, 32, 60, 60]);
         assert_eq!(ZedisServerState::heartbeat_backoff(u32::MAX).as_secs(), 60);
+    }
+
+    #[test]
+    fn a_second_keyspace_change_asks_dbsize_again_after_the_first_lands() {
+        let mut state = ZedisServerState::new();
+        assert!(state.request_dbsize_refresh());
+        assert!(!state.request_dbsize_refresh());
+        assert!(state.finish_dbsize_refresh());
+        assert!(state.request_dbsize_refresh());
+        assert!(!state.finish_dbsize_refresh());
     }
 }

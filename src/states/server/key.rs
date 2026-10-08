@@ -1292,6 +1292,7 @@ impl ZedisServerState {
                 if let Ok(()) = result {
                     this.forget_loaded_key(&remove_key);
                     this.histories.forget(&remove_key);
+                    this.refresh_dbsize_now(cx);
                     // Drop from MRU so the dropdown doesn't offer a gone key.
                     let scope = recent_keys_scope(this.server_id.as_str(), this.db);
                     let mru_key = remove_key.to_string();
@@ -1345,6 +1346,7 @@ impl ZedisServerState {
                         this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
                         // Force refresh of the key tree view
                         this.key_tree_id = Uuid::now_v7().to_string().into();
+                        this.refresh_dbsize_now(cx);
                     }
                     // The walk stopped at its round limit: some keys may
                     // still be there. Scan the folder again rather than take
@@ -1352,6 +1354,7 @@ impl ZedisServerState {
                     Ok(false) => {
                         this.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
                         this.refresh_prefix(prefix.clone().into(), cx);
+                        this.refresh_dbsize_now(cx);
                     }
                     Err(_) => {}
                 }
@@ -1434,6 +1437,7 @@ impl ZedisServerState {
                     this.histories.retain_keys(|key| !remove_keys.contains(key));
                     // Force refresh of the key tree view
                     this.key_tree_id = Uuid::now_v7().to_string().into();
+                    this.refresh_dbsize_now(cx);
                 }
                 cx.emit(ServerEvent::KeyTreeUpdated);
                 cx.notify();
@@ -1775,6 +1779,7 @@ impl ZedisServerState {
                     // Rebuild the tree from `keys` so the new row actually
                     // appears (without this it stays hidden until a refresh).
                     cx.emit(ServerEvent::KeyTreeUpdated);
+                    this.refresh_dbsize_now(cx);
                 }
                 cx.notify();
             },
