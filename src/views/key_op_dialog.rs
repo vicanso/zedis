@@ -285,8 +285,13 @@ pub fn open_key_op_form(
             let Some(op) = view_ok.read(cx).key_op(cx) else {
                 return false;
             };
+            // Close this form before `on_op` runs. Destructive ops open a
+            // confirm, and `close_dialog` pops the top of the stack — so
+            // returning true after that push dismissed the confirm and the
+            // command never ran (RPOP / LPOP / LTRIM / ZPOP*).
+            window.close_dialog(cx);
             on_op(op, window, cx);
-            true
+            false
         })
         .open(window, cx);
 }
