@@ -826,6 +826,34 @@ impl RedisValue {
         matches!(self.status, RedisValueStatus::Loading)
     }
 
+    /// Placeholder while GET is in flight for a newly selected key: the
+    /// tree's type, no rows.
+    pub fn loading(key_type: KeyType) -> Self {
+        Self {
+            status: RedisValueStatus::Loading,
+            key_type,
+            ..Default::default()
+        }
+    }
+
+    /// What `select_key` parks until GET returns.
+    ///
+    /// A different key drops the previous payload so the editor cannot paint
+    /// it under the new name. The same key keeps its rows (a re-select).
+    pub fn for_select(same_key: bool, current: Option<Self>, tree_type: KeyType) -> Self {
+        if same_key && let Some(mut value) = current {
+            value.status = RedisValueStatus::Loading;
+            return value;
+        }
+        Self::loading(tree_type)
+    }
+
+    /// True while a newly selected key has no payload yet. A same-key reload
+    /// or pagination keeps its rows and is not this.
+    pub fn is_pending_first_load(&self) -> bool {
+        self.is_loading() && self.data.is_none()
+    }
+
     /// The probed size of a value that is being loaded past the size gate
     /// ("load anyway"), else `None` — an ordinary load does not know its
     /// size until it lands.
@@ -968,6 +996,46 @@ mod module_type_tests {
         // Missing keys and known types are untouched.
         assert_eq!(KeyType::from("none"), KeyType::Unknown);
         assert_eq!(KeyType::from("hash"), KeyType::Hash);
+    }
+}
+
+#[cfg(test)]
+mod select_placeholder_tests {
+    use super::*;
+
+    fn list_value() -> RedisValue {
+        RedisValue {
+            status: RedisValueStatus::Idle,
+            key_type: KeyType::List,
+            data: Some(RedisValueData::List(Arc::new(RedisListValue::default()))),
+            size: 12,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn switching_keys_drops_the_previous_payload() {
+        let next = RedisValue::for_select(false, Some(list_value()), KeyType::Set);
+        assert_eq!(next.key_type, KeyType::Set);
+        assert!(next.is_pending_first_load());
+        assert!(next.data.is_none());
+        assert_eq!(next.size, 0);
+    }
+
+    #[test]
+    fn reselecting_the_same_key_keeps_its_rows() {
+        let next = RedisValue::for_select(true, Some(list_value()), KeyType::List);
+        assert_eq!(next.key_type, KeyType::List);
+        assert!(next.is_busy());
+        assert!(next.data.is_some());
+        assert!(!next.is_pending_first_load());
+    }
+
+    #[test]
+    fn first_select_uses_the_tree_type() {
+        let next = RedisValue::for_select(false, None, KeyType::Hash);
+        assert_eq!(next.key_type, KeyType::Hash);
+        assert!(next.is_pending_first_load());
     }
 }
 

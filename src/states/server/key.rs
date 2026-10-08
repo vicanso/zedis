@@ -1240,6 +1240,7 @@ impl ZedisServerState {
 
     /// Selects a key and fetches its details (Type, TTL, Value).
     pub fn select_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        let same_key = self.key.as_ref() == Some(&key);
         self.next_value_epoch();
         self.key = Some(key.clone());
         if key.is_empty() {
@@ -1249,16 +1250,11 @@ impl ZedisServerState {
         // key used least recently, and one you keep returning to should stay.
         self.histories.touch(&key, unix_ts());
         self.terminal = false;
-        // only set loading status if the value exists for better performance
-        // prevent editor flickering
-        if let Some(value) = self.value.as_mut() {
-            value.status = RedisValueStatus::Loading;
-        } else {
-            self.value = Some(RedisValue {
-                status: RedisValueStatus::Loading,
-                ..Default::default()
-            });
-        }
+        // A different key drops the previous payload (type + rows) so the
+        // editor cannot paint them under this name. The tree already knows
+        // the type. Re-selecting the same key keeps its rows.
+        let tree_type = self.keys.get(&key).copied().unwrap_or(KeyType::Unknown);
+        self.value = Some(RedisValue::for_select(same_key, self.value.take(), tree_type));
         if !self.keys.contains_key(&key) {
             self.keys.insert(key.clone(), KeyType::Unknown);
         }

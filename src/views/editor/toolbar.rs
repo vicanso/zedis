@@ -65,6 +65,7 @@ impl ZedisEditor {
         };
 
         let mut is_busy = false;
+        let mut pending_first_load = false;
         let mut btns = vec![];
         let mut ttl = SharedString::default();
         let mut size = SharedString::default();
@@ -89,58 +90,63 @@ impl ZedisEditor {
         if let Some(value) = server_state.value() {
             is_busy = value.is_busy();
             key_type = value.key_type();
-
-            // Format TTL display
-            ttl = if let Some(ttl) = value.ttl() {
-                let seconds = ttl.num_seconds();
-                if seconds == -2 {
-                    i18n_common(cx, "expired")
-                } else if seconds < 0 {
-                    i18n_common(cx, "permanent")
+            pending_first_load = value.is_pending_first_load();
+            // Name and type come from the tree; size / TTL / encoding belong
+            // to the previous key and stay off until GET lands.
+            if !pending_first_load {
+                // Format TTL display
+                ttl = if let Some(ttl) = value.ttl() {
+                    let seconds = ttl.num_seconds();
+                    if seconds == -2 {
+                        i18n_common(cx, "expired")
+                    } else if seconds < 0 {
+                        i18n_common(cx, "permanent")
+                    } else {
+                        format_duration(Duration::from_secs(seconds as u64)).into()
+                    }
                 } else {
-                    format_duration(Duration::from_secs(seconds as u64)).into()
-                }
-            } else {
-                "--".into()
-            };
+                    "--".into()
+                };
 
-            encoding = value.encoding();
-            heat = value.heat();
-            expires_at = value
-                .expire_at
-                .filter(|at| *at > 0)
-                .and_then(format_unix_secs)
-                .map(SharedString::from);
+                encoding = value.encoding();
+                heat = value.heat();
+                expires_at = value
+                    .expire_at
+                    .filter(|at| *at > 0)
+                    .and_then(format_unix_secs)
+                    .map(SharedString::from);
 
-            size = format_size(value.size(), DECIMAL).into();
-            // The Bitmap toggle only makes sense for genuinely opaque binary —
-            // anything the format pipeline decoded (Protobuf, MessagePack,
-            // JSON, timestamps, compressed, images, text) keeps its own viewer,
-            // so we require the detected format to be the raw `Bytes` fallback.
-            // `infer` can't recognise Protobuf/MessagePack, so the byte
-            // heuristic alone would wrongly grab them.
-            preview = value.preview_of().is_some();
-            bitmap_candidate = value.key_type() == KeyType::String
-                && !preview
-                && value.bytes_value().is_some_and(|b| {
-                    matches!(b.format, DataFormat::Bytes)
-                        && !looks_like_hll(b.bytes.as_ref())
-                        && bitmap_eligible(b.bytes.as_ref())
-                });
-            bitmap_view = bitmap_candidate
-                && self
-                    .bitmap_override
-                    .unwrap_or_else(|| value.bytes_value().is_some_and(|b| looks_like_bitmap(b.bytes.as_ref())));
-            has_bytes_value = value.bytes_value().is_some();
+                size = format_size(value.size(), DECIMAL).into();
+                // The Bitmap toggle only makes sense for genuinely opaque binary —
+                // anything the format pipeline decoded (Protobuf, MessagePack,
+                // JSON, timestamps, compressed, images, text) keeps its own viewer,
+                // so we require the detected format to be the raw `Bytes` fallback.
+                // `infer` can't recognise Protobuf/MessagePack, so the byte
+                // heuristic alone would wrongly grab them.
+                preview = value.preview_of().is_some();
+                bitmap_candidate = value.key_type() == KeyType::String
+                    && !preview
+                    && value.bytes_value().is_some_and(|b| {
+                        matches!(b.format, DataFormat::Bytes)
+                            && !looks_like_hll(b.bytes.as_ref())
+                            && bitmap_eligible(b.bytes.as_ref())
+                    });
+                bitmap_view = bitmap_candidate
+                    && self
+                        .bitmap_override
+                        .unwrap_or_else(|| value.bytes_value().is_some_and(|b| looks_like_bitmap(b.bytes.as_ref())));
+                has_bytes_value = value.bytes_value().is_some();
+            }
         }
 
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
+        let actions_locked = pending_first_load || should_show_loading;
         let size_el = self.size_chip(size, cx);
         let object_el = object_chip(encoding, heat, cx);
 
         // Add save button for string editor if value is modified
-        if let Some(bytes_editor) = &self.bytes_editor {
+        if !pending_first_load && let Some(bytes_editor) = &self.bytes_editor {
             let state = bytes_editor.read(cx);
             let value_modified = state.is_value_modified();
             let readonly = state.is_readonly();
@@ -154,7 +160,7 @@ impl ZedisEditor {
 
             btns.push(
                 Button::new("zedis-editor-save-key")
-                    .disabled(self.readonly || !value_modified || should_show_loading)
+                    .disabled(self.readonly || !value_modified || actions_locked)
                     .when(value_modified, |this| this.primary())
                     .when(!value_modified, |this| this.outline())
                     .label(i18n_common(cx, "save"))
@@ -198,7 +204,7 @@ impl ZedisEditor {
                 let button = Button::new("zedis-editor-ttl-btn")
                     .outline()
                     .font_family(get_mono_font_family())
-                    .disabled(self.readonly || should_show_loading)
+                    .disabled(self.readonly || actions_locked)
                     .tooltip(ttl_tooltip)
                     .label(ttl.clone())
                     .icon(CustomIconName::Clock3)
@@ -251,7 +257,7 @@ impl ZedisEditor {
                 .button(
                     Button::new("zedis-editor-reload-now")
                         .ghost()
-                        .disabled(should_show_loading)
+                        .disabled(actions_locked)
                         .when(auto_refresh_interval_sec > 0, |this| {
                             this.label(format!("{}s", auto_refresh_interval_sec))
                         })
@@ -324,11 +330,12 @@ impl ZedisEditor {
         let delete_item = !self.readonly;
         // Diff submenu: editable string value with at least one saved
         // version to compare the live value against.
-        let diff_editable = self
-            .bytes_editor
-            .as_ref()
-            .map(|e| !e.read(cx).is_readonly())
-            .unwrap_or(false)
+        let diff_editable = !pending_first_load
+            && self
+                .bytes_editor
+                .as_ref()
+                .map(|e| !e.read(cx).is_readonly())
+                .unwrap_or(false)
             && !self.readonly;
         let diff_history: Vec<(i64, usize)> = if diff_editable {
             server_state
@@ -364,7 +371,7 @@ impl ZedisEditor {
             btns.push(
                 Button::new("zedis-editor-more")
                     .ghost()
-                    .disabled(should_show_loading)
+                    .disabled(actions_locked)
                     .tooltip(i18n_editor(cx, "more_actions"))
                     .icon(IconName::Ellipsis)
                     .dropdown_menu(move |menu, window, cx| {

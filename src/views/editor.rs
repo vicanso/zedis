@@ -64,7 +64,7 @@ use std::time::Duration;
 use tracing::{debug, info};
 use web_time::Instant;
 use zedis_core::json::check_json;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
 
 mod dialogs;
 mod render;
@@ -72,6 +72,12 @@ mod toolbar;
 
 // Constants
 const RECENTLY_SELECTED_THRESHOLD_MS: u64 = 300;
+
+/// A newly selected key with no payload yet: empty for the 300ms delay so a
+/// local GET does not flash grey bars, then the skeleton.
+fn pending_load_shows_skeleton(recently_selected: bool) -> bool {
+    !recently_selected
+}
 const TTL_INPUT_MAX_WIDTH: f32 = 120.0;
 /// Redis caps a string value at 512 MB; refuse to import anything bigger.
 const MAX_IMPORT_VALUE_BYTES: usize = 512 * 1024 * 1024;
@@ -169,6 +175,10 @@ pub struct ZedisEditor {
 
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
+    /// Fires once the 300ms loading delay has elapsed so the skeleton can
+    /// appear without waiting for GET. Dropped on `ValueLoaded` or the next
+    /// `KeySelected`.
+    loading_reveal_task: Option<Task<()>>,
 
     readonly: bool,
 
@@ -329,6 +339,7 @@ impl ZedisEditor {
             cx.subscribe(&server_state, |this, server_state, event, cx| match event {
                 ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
+                    this.schedule_loading_reveal(cx);
                     this.start_auto_refresh(None, cx);
                     // A new key re-decides Raw vs Bitmap via the heuristic,
                     // dropping any override the previous key carried.
@@ -339,6 +350,7 @@ impl ZedisEditor {
                     this.close_diff_session(cx);
                 }
                 ServerEvent::ValueLoaded => {
+                    this.loading_reveal_task = None;
                     // stream editor is different of each key, so we need to destroy it
                     this.stream_editor.take();
                     // Same for the time series editor — it snapshots the
@@ -477,6 +489,7 @@ impl ZedisEditor {
             should_enter_ttl_edit_mode: None,
             _subscriptions: subscriptions,
             selected_key_at: None,
+            loading_reveal_task: None,
             diff_session: None,
             diff_view: None,
         }
@@ -583,6 +596,19 @@ impl ZedisEditor {
         self.selected_key_at
             .map(|t| t.elapsed() < Duration::from_millis(RECENTLY_SELECTED_THRESHOLD_MS))
             .unwrap_or(false)
+    }
+
+    /// Notify after the 300ms delay so a still-pending first load can show
+    /// its skeleton. A faster GET drops this task on `ValueLoaded`.
+    fn schedule_loading_reveal(&mut self, cx: &mut Context<Self>) {
+        let delay = Duration::from_millis(RECENTLY_SELECTED_THRESHOLD_MS);
+        self.loading_reveal_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading_reveal_task.take();
+                cx.notify();
+            });
+        }));
     }
     /// Handle TTL update when user submits new value
     fn handle_update_ttl(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -964,6 +990,12 @@ mod tests {
         assert!(ttl_field_text(Some(chrono::Duration::seconds(-1))).is_empty());
         assert!(ttl_field_text(Some(chrono::Duration::seconds(-2))).is_empty());
         assert!(ttl_field_text(None).is_empty());
+    }
+
+    #[test]
+    fn pending_load_shows_skeleton_after_the_delay() {
+        assert!(!super::pending_load_shows_skeleton(true));
+        assert!(super::pending_load_shows_skeleton(false));
     }
 
     #[test]

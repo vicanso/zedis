@@ -143,6 +143,14 @@ impl ZedisEditor {
         card
     }
 
+    /// Shown when a newly selected key is still loading after the 300ms delay.
+    pub(super) fn render_value_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .p_5()
+            .child(ZedisSkeletonLoading::new().text(i18n_common(cx, "loading")))
+    }
+
     /// Shown while a value is loaded past the size gate: a spinner, the
     /// size on its way, and Cancel — back to the panel the load came from.
     pub(super) fn render_large_load(&mut self, size: u64, cx: &mut Context<Self>) -> impl IntoElement {
@@ -343,8 +351,13 @@ impl ZedisEditor {
             return self.render_large_load(size, cx).into_any_element();
         }
 
-        // Don't render anything if key type is unknown and still loading
-        if value.key_type == KeyType::Unknown && value.is_busy() {
+        // Switching keys: drop the previous editor immediately. Empty for
+        // 300ms so a local GET does not flash grey bars; then the skeleton.
+        if value.is_pending_first_load() {
+            self.reset_editors(value.key_type());
+            if pending_load_shows_skeleton(self.is_selected_key_recently()) {
+                return self.render_value_loading(cx).into_any_element();
+            }
             return div().into_any_element();
         }
 
