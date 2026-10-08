@@ -20,6 +20,7 @@ use crate::helpers::is_valid_proxy_setting;
 use crate::helpers::{export_local_data_json, import_local_data_file, write_local_data_file};
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
+    connection::{DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT},
     helpers::{
         DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_fonts,
         date_format_sample, ensure_keybindings_file, get_or_create_config_dir, is_app_store_build, parse_duration,
@@ -455,22 +456,39 @@ impl ZedisSettingEditor {
             }),
         );
 
-        subscriptions.push(Self::bind_blur_save(cx, &key_scan_count_state, window, |text, cx| {
-            let text = text.trim();
-            if text.is_empty() {
-                // Cleared input → reset to default (set_key_scan_count maps 0 → None).
-                update_app_state_and_save(cx, "save_key_scan_count", |state, _| {
-                    state.set_key_scan_count(0);
-                });
-            } else if let Ok(value) = text.parse::<usize>() {
-                // Clamp so a tiny/huge "Per Scan" can't break paging; down to 10
-                // so the first-page load can actually be small.
-                let value = value.clamp(10, 100_000);
-                update_app_state_and_save(cx, "save_key_scan_count", move |state, _| {
-                    state.set_key_scan_count(value);
-                });
-            }
-        }));
+        subscriptions.push(cx.subscribe_in(
+            &key_scan_count_state,
+            window,
+            |_view, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::Blur) {
+                    return;
+                }
+                let text = state.read(cx).value();
+                let text = text.trim();
+                // Range lives in the setter; write the clamped (or default)
+                // value back so the box matches what SCAN will use. Live
+                // validate stays parse-only: a min of 1000 would reject the
+                // prefixes of 1000 itself.
+                let shown = if text.is_empty() {
+                    update_app_state_and_save(cx, "save_key_scan_count", |state, _| {
+                        state.set_key_scan_count(0);
+                    });
+                    DEFAULT_KEY_SCAN_COUNT
+                } else if let Ok(parsed) = text.parse::<usize>() {
+                    let value = parsed.clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT);
+                    update_app_state_and_save(cx, "save_key_scan_count", move |state, _| {
+                        state.set_key_scan_count(value);
+                    });
+                    value
+                } else {
+                    return;
+                };
+                let shown = shown.to_string();
+                if state.read(cx).value().as_ref() != shown.as_str() {
+                    state.update(cx, |input, cx| input.set_value(shown, window, cx));
+                }
+            },
+        ));
 
         // Value-search guardrails. Cleared input → 0 → the setter stores
         // None and the default applies; range clamping lives in the

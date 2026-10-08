@@ -67,12 +67,18 @@ pub const TAG_COLOR_PRESETS: &[&str] = &["none", "teal", "purple", "magenta"];
 /// Keys asked for per `SCAN` when neither the entry nor Settings names a
 /// number.
 pub const DEFAULT_KEY_SCAN_COUNT: usize = 10_000;
+/// Floor for a typed SCAN count. Below this a page is too small to be worth
+/// the round trip; Settings and `resolve_key_scan_count` clamp to it.
+pub const MIN_KEY_SCAN_COUNT: usize = 1_000;
+/// Cap for a typed SCAN count so a typo cannot ask the server for the whole
+/// keyspace in one `COUNT`.
+pub const MAX_KEY_SCAN_COUNT: usize = 100_000;
 /// The same default on an entry tagged as production. `SCAN` holds the
 /// server's one command thread for the whole count: 10,000 measured 43–50 ms
 /// a call on a 100,000-key database — a pause for every other client, and a
 /// line in the slow log, each time the tree loads a page. A tenth of it keeps
 /// a page a few milliseconds; the tree makes up the difference in rounds.
-pub const PRODUCTION_KEY_SCAN_COUNT: usize = 1_000;
+pub const PRODUCTION_KEY_SCAN_COUNT: usize = MIN_KEY_SCAN_COUNT;
 
 fn tag_color_from_form_value(form_value: Option<&str>) -> Option<String> {
     let raw = form_value?.trim();
@@ -638,8 +644,8 @@ impl RedisServer {
 
     /// SCAN page size: the entry's own, else the one chosen in Settings
     /// (`global`, `None` while unset), else the default — the smaller one on
-    /// a production-tagged entry. Only the default differs by tag: a number
-    /// somebody typed is used as typed.
+    /// a production-tagged entry. Only the default differs by tag. Typed
+    /// values are clamped to `MIN_KEY_SCAN_COUNT..=MAX_KEY_SCAN_COUNT`.
     pub fn resolve_key_scan_count(&self, global: Option<usize>) -> usize {
         let default = if self.is_high_risk_tag() {
             PRODUCTION_KEY_SCAN_COUNT
@@ -650,7 +656,7 @@ impl RedisServer {
             .filter(|&n| n > 0)
             .or(global.filter(|&n| n > 0))
             .unwrap_or(default)
-            .clamp(10, 100_000)
+            .clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT)
     }
 
     /// Max tree depth; `global` is the Settings default when unset.
@@ -2102,6 +2108,20 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_scan_count_is_clamped() {
+        let mut s = sample_server();
+        s.key_scan_count = Some(5);
+        assert_eq!(s.resolve_key_scan_count(None), MIN_KEY_SCAN_COUNT);
+        s.key_scan_count = Some(500);
+        assert_eq!(s.resolve_key_scan_count(Some(2_000)), MIN_KEY_SCAN_COUNT);
+        s.key_scan_count = Some(1_000_000);
+        assert_eq!(s.resolve_key_scan_count(None), MAX_KEY_SCAN_COUNT);
+        s.key_scan_count = None;
+        assert_eq!(s.resolve_key_scan_count(Some(5)), MIN_KEY_SCAN_COUNT);
+        assert_eq!(s.resolve_key_scan_count(Some(1_000_000)), MAX_KEY_SCAN_COUNT);
+    }
+
+    #[test]
     fn key_behavior_overrides_fall_back_to_global() {
         let mut s = sample_server();
         // The sample is tagged production, so its default is that one.
@@ -2113,11 +2133,11 @@ mod tests {
         assert!(!s.resolve_show_key_tree_ttl(false));
         assert_eq!(s.show_key_tree_ttl_form_index(), 0);
 
-        s.key_scan_count = Some(500);
+        s.key_scan_count = Some(5_000);
         s.max_key_tree_depth = Some(3);
         s.auto_expand_threshold = Some(50);
         s.show_key_tree_ttl = Some(false);
-        assert_eq!(s.resolve_key_scan_count(Some(2_000)), 500);
+        assert_eq!(s.resolve_key_scan_count(Some(2_000)), 5_000);
         assert_eq!(s.resolve_max_key_tree_depth(5), 3);
         assert_eq!(s.resolve_auto_expand_threshold(100), 50);
         assert!(!s.resolve_show_key_tree_ttl(true));

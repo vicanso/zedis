@@ -17,10 +17,10 @@ use crate::connection::SentinelMaster;
 use crate::connection::error::Error as ConnectionError;
 use crate::connection::floors::{self, Floor};
 use crate::connection::{
-    AccessMode, Capability, CommandStatus, DEFAULT_KEY_SCAN_COUNT, PauseMode, RedisClientDescription, ServerCommand,
-    ServerDb, ServerFeatures, ServerSummary, SlowLogEntry, WRITE_UNLOCK_SECS, client_unpause, forget_client,
-    get_server, get_server_features, get_servers, invalidate_server_features, lock_writes, note_server_command_error,
-    probe_server_features, server_summary, unlock_writes,
+    AccessMode, Capability, CommandStatus, DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT, PauseMode,
+    RedisClientDescription, ServerCommand, ServerDb, ServerFeatures, ServerSummary, SlowLogEntry, WRITE_UNLOCK_SECS,
+    client_unpause, forget_client, get_server, get_server_features, get_servers, invalidate_server_features,
+    lock_writes, note_server_command_error, probe_server_features, server_summary, unlock_writes,
 };
 use crate::db::get_search_history_manager;
 use crate::error::{ConnectionErrorKind, Error};
@@ -1650,9 +1650,9 @@ impl ZedisServerState {
         }
     }
 
-    /// SCAN page size for the active connection (never zero).
+    /// SCAN page size for the active connection (never below the floor).
     pub fn key_scan_count(&self) -> usize {
-        self.key_scan_count.max(1)
+        self.key_scan_count.clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT)
     }
 
     /// Max key-tree nesting depth for the active connection.
@@ -1814,7 +1814,9 @@ impl ZedisServerState {
                 self.show_key_tree_ttl = server.resolve_show_key_tree_ttl(g_ttl);
             } else {
                 self.key_separator = ":".to_string();
-                self.key_scan_count = g_scan.unwrap_or(DEFAULT_KEY_SCAN_COUNT).max(1);
+                self.key_scan_count = g_scan
+                    .unwrap_or(DEFAULT_KEY_SCAN_COUNT)
+                    .clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT);
                 self.max_key_tree_depth = g_depth.max(1);
                 self.auto_expand_threshold = g_expand;
                 self.show_key_tree_ttl = g_ttl;

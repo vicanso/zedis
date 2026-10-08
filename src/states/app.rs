@@ -17,7 +17,10 @@ use crate::connection::ServerCommand;
 use crate::connection::{
     DEFAULT_CONNECTION_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, set_redis_connection_timeout, set_redis_response_timeout,
 };
-use crate::connection::{DEFAULT_KEY_SCAN_COUNT, RedisServer, ReplyFormat, get_server, get_servers, save_servers};
+use crate::connection::{
+    DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT, RedisServer, ReplyFormat, get_server, get_servers,
+    save_servers,
+};
 use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::error::Error;
 #[cfg(target_family = "wasm")]
@@ -909,7 +912,9 @@ impl ZedisAppState {
         timeout_text(self.redis_response_timeout.unwrap_or(Duration::from_secs(20)))
     }
     pub fn key_scan_count(&self) -> usize {
-        self.key_scan_count.unwrap_or(DEFAULT_KEY_SCAN_COUNT)
+        self.key_scan_count
+            .unwrap_or(DEFAULT_KEY_SCAN_COUNT)
+            .clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT)
     }
     /// The count chosen in Settings, `None` while it is left at its default
     /// — which is not one number: a production-tagged server has a smaller
@@ -976,12 +981,13 @@ impl ZedisAppState {
     }
     pub fn set_key_scan_count(&mut self, key_scan_count: usize) {
         // 0 means "reset to default" (cleared input) — store None so the
-        // getter's default applies.
+        // getter's default applies. Anything else is clamped so a typo
+        // cannot ask for a 5-key SCAN page or the whole keyspace.
         if key_scan_count == 0 {
             self.key_scan_count = None;
             return;
         }
-        self.key_scan_count = Some(key_scan_count);
+        self.key_scan_count = Some(key_scan_count.clamp(MIN_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT));
     }
     pub fn auto_expand_threshold(&self) -> usize {
         self.auto_expand_threshold.unwrap_or(100)
@@ -1582,6 +1588,24 @@ mod upgrade_fixtures {
     }
 
     #[test]
+    fn key_scan_count_clamps_and_resets() {
+        let mut state: ZedisAppState = toml::from_str("").expect("empty file");
+        assert_eq!(state.key_scan_count(), DEFAULT_KEY_SCAN_COUNT);
+        assert_eq!(state.key_scan_count_setting(), None);
+
+        state.set_key_scan_count(5);
+        assert_eq!(state.key_scan_count(), MIN_KEY_SCAN_COUNT);
+        state.set_key_scan_count(1_000_000);
+        assert_eq!(state.key_scan_count(), MAX_KEY_SCAN_COUNT);
+        state.set_key_scan_count(5_000);
+        assert_eq!(state.key_scan_count(), 5_000);
+
+        state.set_key_scan_count(0);
+        assert_eq!(state.key_scan_count(), DEFAULT_KEY_SCAN_COUNT);
+        assert_eq!(state.key_scan_count_setting(), None);
+    }
+
+    #[test]
     fn v0_4_0_preferences_survive() {
         let state = load(V0_4_0);
         // 0.4 stored the `Route` enum; its unit variant is the token the
@@ -1593,6 +1617,8 @@ mod upgrade_fixtures {
         assert_eq!(state.key_tree_width, px(280.));
         assert_eq!(state.max_key_tree_depth, Some(6));
         assert_eq!(state.key_scan_count, Some(500));
+        // The 0.4 file still holds 500; SCAN itself is clamped to the floor.
+        assert_eq!(state.key_scan_count(), MIN_KEY_SCAN_COUNT);
         assert_eq!(state.selected_server, Some(("srv-1".to_string(), 2)));
         assert_eq!(state.redis_connection_timeout, Some(Duration::from_secs(10)));
         assert_eq!(state.tray_enabled, Some(true));
