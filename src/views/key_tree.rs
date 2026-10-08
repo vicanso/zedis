@@ -264,6 +264,15 @@ pub struct ZedisKeyTree {
     _subscriptions: Vec<Subscription>,
 }
 
+/// Whether emptying the keyword box should start an unfiltered SCAN.
+///
+/// The loaded set is the last query's hits (`MATCH *keyword*`). Clearing after
+/// that query has to ask the server again; a draft never submitted leaves
+/// `scanned_keyword` empty and must not fire a SCAN.
+fn keyword_clear_starts_scan(input: &str, scanned_keyword: &str) -> bool {
+    input.is_empty() && !scanned_keyword.is_empty()
+}
+
 impl ZedisKeyTree {
     /// Put the caret in the keyword filter (`EditorAction::Search` / ⌘F).
     pub fn focus_search(&self, window: &mut Window, cx: &mut App) {
@@ -412,13 +421,23 @@ impl ZedisKeyTree {
         }
         let readonly = server_state_value.readonly();
 
-        // Subscribe to search input events (Enter key triggers filter)
-        subscriptions.push(cx.subscribe_in(&keyword_state, window, |view, _, event, _, cx| {
-            if let InputEvent::PressEnter { .. } = &event {
-                // Explicit search from the box → always a fresh query.
-                view.handle_filter(true, cx);
-            }
-        }));
+        // Enter always searches. × / Escape / delete-to-empty after a MATCH
+        // scan starts an unfiltered SCAN — the loaded set is those hits, so
+        // a local rebuild cannot restore the tree. Typing then backspacing a
+        // draft never submitted leaves `state.keyword` empty and does not.
+        subscriptions.push(
+            cx.subscribe_in(&keyword_state, window, |view, input, event, _, cx| match event {
+                InputEvent::PressEnter { .. } => {
+                    view.handle_filter(true, cx);
+                }
+                InputEvent::Change
+                    if keyword_clear_starts_scan(input.read(cx).value().as_ref(), view.state.keyword.as_ref()) =>
+                {
+                    view.handle_filter(true, cx);
+                }
+                _ => {}
+            }),
+        );
 
         info!(server_id, "Creating new key tree view");
 
@@ -1151,5 +1170,26 @@ impl ZedisKeyTree {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod keyword_clear_tests {
+    use super::keyword_clear_starts_scan;
+
+    #[test]
+    fn empty_after_a_match_scan_starts_one() {
+        assert!(keyword_clear_starts_scan("", "user"));
+    }
+
+    #[test]
+    fn already_unfiltered_does_not() {
+        assert!(!keyword_clear_starts_scan("", ""));
+    }
+
+    #[test]
+    fn leftover_text_does_not() {
+        assert!(!keyword_clear_starts_scan("u", "user"));
+        assert!(!keyword_clear_starts_scan("draft", ""));
     }
 }
