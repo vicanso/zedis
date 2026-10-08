@@ -30,6 +30,10 @@ pub enum ServerTask {
     /// does not wait out the heartbeat's minute.
     RefreshDbsize,
 
+    /// `MEMORY USAGE` after a collection write, so the key-bar size chip
+    /// matches the new payload without reloading the value.
+    RefreshValueSize,
+
     /// Auto refresh keys
     AutoRefresh,
 
@@ -235,6 +239,7 @@ impl ServerTask {
         match self {
             ServerTask::RefreshRedisInfo => "refresh_redis_info",
             ServerTask::RefreshDbsize => "refresh_dbsize",
+            ServerTask::RefreshValueSize => "refresh_value_size",
             ServerTask::AutoRefresh => "auto_refresh",
             ServerTask::SelectServer => "select_server",
             ServerTask::ReloadTopology => "reload_topology",

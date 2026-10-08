@@ -237,7 +237,10 @@ impl ZedisServerState {
                     value.status = RedisValueStatus::Idle;
                 }
                 match result {
-                    Ok(data) => on_success(this, data, cx),
+                    Ok(data) => {
+                        on_success(this, data, cx);
+                        this.refresh_value_size(cx);
+                    }
                     Err(e) => {
                         this.emit_error_notification(e.to_string().into(), cx);
                         this.reload_after_failed_write(cx);

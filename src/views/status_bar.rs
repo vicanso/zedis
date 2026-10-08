@@ -474,7 +474,10 @@ impl ZedisStatusBar {
                     // this handler — return early so it doesn't trigger
                     // an empty re-render. Other tasks clear any stale
                     // error chip.
-                    if matches!(*task, ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize) {
+                    if matches!(
+                        *task,
+                        ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize | ServerTask::RefreshValueSize
+                    ) {
                         return;
                     }
                     this.state.error = None;

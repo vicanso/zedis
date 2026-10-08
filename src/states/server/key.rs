@@ -1056,6 +1056,55 @@ impl ZedisServerState {
         );
     }
 
+    /// Re-read `MEMORY USAGE` for the selected key after a collection write.
+    /// The key-bar size chip is that number, taken once at load; member
+    /// counts already move locally. Does not flip `Updating` — the write
+    /// already finished.
+    pub(crate) fn refresh_value_size(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.key.clone() else {
+            return;
+        };
+        if key.is_empty() {
+            return;
+        }
+        let key_type = self
+            .value
+            .as_ref()
+            .map(|value| value.key_type().as_str().to_string())
+            .unwrap_or_default();
+        let epoch = self.value_epoch;
+        let at = self.at();
+        self.spawn(
+            ServerTask::RefreshValueSize,
+            move || async move { Ok(key_memory_usage(&at, key.as_str(), &key_type).await?) },
+            move |this, result, cx| {
+                if this.value_epoch != epoch {
+                    return;
+                }
+                let Ok(size) = result else {
+                    return;
+                };
+                let Some(value) = this.value.as_mut() else {
+                    return;
+                };
+                if !Self::apply_refreshed_memory_size(value, size) {
+                    return;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// True when the header size chip would change.
+    fn apply_refreshed_memory_size(value: &mut RedisValue, size: u64) -> bool {
+        if value.size == size {
+            return false;
+        }
+        value.size = size;
+        true
+    }
+
     /// Runs one type-native operation against the selected key, then
     /// reloads the value.
     ///
@@ -2027,5 +2076,22 @@ mod tree_ttl_tests {
         assert_eq!(state.key_ttls.get(&k), Some(&540));
         assert!(state.sync_tree_ttl(&k, -1), "timed → persist");
         assert_eq!(state.key_ttls.get(&k), Some(&-1));
+    }
+}
+
+#[cfg(test)]
+mod memory_size_tests {
+    use super::*;
+
+    #[test]
+    fn apply_refreshed_memory_size_only_when_it_changed() {
+        let mut value = RedisValue {
+            size: 128,
+            ..Default::default()
+        };
+        assert!(!ZedisServerState::apply_refreshed_memory_size(&mut value, 128));
+        assert_eq!(value.size, 128);
+        assert!(ZedisServerState::apply_refreshed_memory_size(&mut value, 160));
+        assert_eq!(value.size, 160);
     }
 }

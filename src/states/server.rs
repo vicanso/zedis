@@ -574,7 +574,10 @@ struct TaskRun {
 impl TaskRun {
     #[inline(never)]
     fn log_completed(&self) {
-        if !matches!(self.name, ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize) {
+        if !matches!(
+            self.name,
+            ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize | ServerTask::RefreshValueSize
+        ) {
             info!(
                 task = self.name.as_str(),
                 arg = self.arg.as_str(),
@@ -970,7 +973,10 @@ impl ZedisServerState {
             if !stale
                 && !matches!(
                     run.name,
-                    ServerTask::RefreshRedisInfo | ServerTask::RefreshDbsize | ServerTask::ProbeFeatures
+                    ServerTask::RefreshRedisInfo
+                        | ServerTask::RefreshDbsize
+                        | ServerTask::RefreshValueSize
+                        | ServerTask::ProbeFeatures
                 )
                 && !self.note_command_error(e, cx)
                 && !self.note_link_error(e, cx)

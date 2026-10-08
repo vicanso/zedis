@@ -119,6 +119,7 @@ impl ZedisServerState {
                 // update assumed, after a failure.
                 if result.is_ok() {
                     on_success(this, cx);
+                    this.refresh_value_size(cx);
                 } else {
                     this.reload_after_failed_write(cx);
                 }
