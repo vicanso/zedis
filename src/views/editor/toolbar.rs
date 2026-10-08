@@ -210,20 +210,32 @@ impl ZedisEditor {
                     button.into_any_element()
                 } else {
                     // Click keeps doing the common thing (a countdown); the
-                    // caret is where "expire at this instant" lives.
+                    // caret is where "expire at this instant" lives. Remove
+                    // TTL is only listed while there is one to drop.
+                    let has_expiry = expires_at.is_some();
                     DropdownButton::new("zedis-editor-ttl")
                         .button(button)
                         .dropdown_menu(move |menu, _, _cx| {
-                            menu.menu_element_with_icon(
-                                CustomIconName::Clock3,
-                                Box::new(EditorAction::EditTtlDuration),
-                                move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_duration")),
-                            )
-                            .menu_element_with_icon(
-                                IconName::Calendar,
-                                Box::new(EditorAction::EditTtlAbsolute),
-                                move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_absolute")),
-                            )
+                            let menu = menu
+                                .menu_element_with_icon(
+                                    CustomIconName::Clock3,
+                                    Box::new(EditorAction::EditTtlDuration),
+                                    move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_duration")),
+                                )
+                                .menu_element_with_icon(
+                                    IconName::Calendar,
+                                    Box::new(EditorAction::EditTtlAbsolute),
+                                    move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_absolute")),
+                                );
+                            if has_expiry {
+                                menu.separator().menu_element_with_icon(
+                                    CustomIconName::Clock3,
+                                    Box::new(EditorAction::PersistTtl),
+                                    move |_, cx| Label::new(i18n_editor(cx, "ttl_mode_persist")),
+                                )
+                            } else {
+                                menu
+                            }
                         })
                         .into_any_element()
                 }

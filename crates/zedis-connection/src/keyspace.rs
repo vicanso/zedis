@@ -363,6 +363,14 @@ pub async fn expire_key_at(at: &ServerDb, key: &str, unix_secs: i64) -> Result<(
         .await?)
 }
 
+/// `PERSIST key` — drop the expiry. Redis answers 1 if a TTL was removed,
+/// 0 if the key is missing or already persistent; both are success here,
+/// matching [`expire_key`]'s ignore of the integer reply. Folders and
+/// multi-select go through [`set_keys_ttl`] with `ttl_secs = None`.
+pub async fn persist_key(at: &ServerDb, key: &str) -> Result<()> {
+    Ok(cmd("PERSIST").arg(key).query_async(&mut at.connection().await?).await?)
+}
+
 /// Set (or, with `None`, remove) the TTL of each key; one answer per key, in
 /// order — `false` where `condition` (`NX` / `XX` / `GT` / `LT`) held it back
 /// or the key is gone.

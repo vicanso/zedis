@@ -29,8 +29,8 @@ use super::{
 use crate::connection::{
     ExpireCondition, KeyOp, KeyOpOutcome, ServerCommand, create_key, delete_key, delete_keys, delete_keys_matching,
     dump_key, expire_key, expire_key_at, floors, flush_all, flush_db, get_server_features, get_server_heat_probe,
-    key_memory_usage, key_object_meta, key_type_and_ttl, key_types, publish, rename_key, run_key_op, scan_page,
-    server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
+    key_memory_usage, key_object_meta, key_type_and_ttl, key_types, persist_key, publish, rename_key, run_key_op,
+    scan_page, server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
 };
 use crate::db::{
     TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
@@ -1596,6 +1596,53 @@ impl ZedisServerState {
                 Ok(at)
             },
             move |this, result, cx| {
+                // The value on screen now is another one's: its expiry and
+                // status are not this change's to restore.
+                if this.value_epoch != epoch {
+                    return;
+                }
+                if let Some(value) = this.value.as_mut() {
+                    if result.is_err() {
+                        value.expire_at = original_ttl;
+                    }
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Drops the selected key's expiry (`PERSIST`). The editor TTL dropdown
+    /// is the one-key path; folders and multi-select go through
+    /// [`Self::batch_set_ttl_keys`] with `ttl_secs = None`.
+    pub fn persist_key_ttl(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        let at = self.at();
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+        let original_ttl = value.expire_at;
+        let epoch = self.value_epoch;
+        // Same encoding the load path uses for `TTL -1` (no expiry).
+        value.expire_at = Some(-1);
+        cx.notify();
+        self.spawn_with_arg(
+            ServerTask::UpdateKeyTtl,
+            key.clone(),
+            {
+                let key = key.clone();
+                move || async move {
+                    persist_key(&at, key.as_str()).await?;
+                    Ok(())
+                }
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    Arc::make_mut(&mut this.key_ttls).insert(key.clone(), -1);
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                    cx.emit(ServerEvent::KeyTreeUpdated);
+                }
                 // The value on screen now is another one's: its expiry and
                 // status are not this change's to restore.
                 if this.value_epoch != epoch {

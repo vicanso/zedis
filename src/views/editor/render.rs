@@ -1014,6 +1014,9 @@ impl Render for ZedisEditor {
                 EditorAction::EditTtlAbsolute => {
                     this.open_expire_at_dialog(window, cx);
                 }
+                EditorAction::PersistTtl => {
+                    this.persist_current_key_ttl(cx);
+                }
                 EditorAction::FindReplace => {
                     if let Some(bytes_editor) = this.bytes_editor.clone() {
                         bytes_editor.update(cx, |editor, cx| editor.open_find_replace(window, cx));

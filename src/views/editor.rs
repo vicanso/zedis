@@ -417,6 +417,9 @@ impl ZedisEditor {
                         this.pending_rename_dialog = true;
                         cx.notify();
                     }
+                    EditorAction::PersistTtl => {
+                        this.persist_current_key_ttl(cx);
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -601,6 +604,19 @@ impl ZedisEditor {
 
         self.server_state.update(cx, move |state, cx| {
             state.update_key_ttl(key, ttl.into(), cx);
+        });
+        cx.notify();
+    }
+
+    /// Drop the selected key's expiry (`PERSIST`) from the TTL dropdown.
+    fn persist_current_key_ttl(&mut self, cx: &mut Context<Self>) {
+        let key = self.server_state.read(cx).key().unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        self.ttl_edit_mode = false;
+        self.server_state.update(cx, |state, cx| {
+            state.persist_key_ttl(key, cx);
         });
         cx.notify();
     }

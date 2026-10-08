@@ -197,6 +197,8 @@ pub enum EditorAction {
     EditTtlDuration,
     /// Open the TTL editor expecting an absolute instant (`EXPIREAT`).
     EditTtlAbsolute,
+    /// Drop the selected key's expiry (`PERSIST`).
+    PersistTtl,
     /// Open the value editor's search panel in replace mode.
     FindReplace,
     /// Open the session change log for the selected collection key.

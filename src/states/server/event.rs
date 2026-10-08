@@ -410,6 +410,7 @@ impl ZedisServerState {
             EditorAction::UpdateTtl | EditorAction::EditTtlDuration | EditorAction::EditTtlAbsolute => {
                 Capability::SetTtl
             }
+            EditorAction::PersistTtl => Capability::PersistTtl,
             EditorAction::ImportValue => Capability::ImportValue,
             EditorAction::Delete => Capability::DeleteKey,
             EditorAction::Rename => Capability::RenameKey,

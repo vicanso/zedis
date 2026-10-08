@@ -50,18 +50,18 @@ use zedis_connection::{
     latency_history, latency_latest, latency_monitor_threshold, latency_reset, list_len, list_push, list_range,
     list_set_if_unchanged, master_addrs, master_infos, maxmemory_policy, node_add_slots, node_cancel_slot_migrations,
     node_failover, node_load, node_replicate, node_slot_migrations, node_stabilize_slot, open_monitor_feeds,
-    open_single_connection, parse_readable_entries, pending_page, pf_add, pf_merge, plan_cluster_rebalance,
-    preview_key_conflicts, prob_info, prob_probe, probe_server_features, read_readable_chunk, remove_list_indexes,
-    rename_hash_field, rename_key, restore_key, restore_keys_chunk, run_key_op, run_script, save_servers, scan_page,
-    script_exists, script_load, script_sha1, sentinel_ckquorum, sentinel_flushconfig, sentinel_master_names,
-    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, server_summary, server_supports, set_add,
-    set_bit, set_card, set_keys_ttl, set_remove, set_replace_member, set_scan, set_ttl_matching, slow_logs,
-    snapshot_key, sniff_import_format, split_acl_rules, stream_ack, stream_add, stream_autoclaim, stream_claim,
-    stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim, string_get, string_prefix,
-    string_set, test_connection, ts_add, ts_alter, ts_create_rule, ts_delete_rule, ts_mrange, ts_window,
-    unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr, vset_sim, write_hash_field,
-    write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put, zset_range, zset_range_by_score,
-    zset_remove, zset_scan,
+    open_single_connection, parse_readable_entries, pending_page, persist_key, pf_add, pf_merge,
+    plan_cluster_rebalance, preview_key_conflicts, prob_info, prob_probe, probe_server_features, read_readable_chunk,
+    remove_list_indexes, rename_hash_field, rename_key, restore_key, restore_keys_chunk, run_key_op, run_script,
+    save_servers, scan_page, script_exists, script_load, script_sha1, sentinel_ckquorum, sentinel_flushconfig,
+    sentinel_master_names, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_set, server_summary,
+    server_supports, set_add, set_bit, set_card, set_keys_ttl, set_remove, set_replace_member, set_scan,
+    set_ttl_matching, slow_logs, snapshot_key, sniff_import_format, split_acl_rules, stream_ack, stream_add,
+    stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim,
+    string_get, string_prefix, string_set, test_connection, ts_add, ts_alter, ts_create_rule, ts_delete_rule,
+    ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr, vset_sim,
+    write_hash_field, write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put, zset_range,
+    zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_connection::{
     MonitorFeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, copy_key, copy_key_logically,
@@ -3456,6 +3456,12 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
             .await
             .expect("expireat");
         assert!((300..=600).contains(&key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("ttl").1));
+        persist_key(&at, &format!("{prefix}:s")).await.expect("persist");
+        assert_eq!(
+            key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("ttl").1,
+            -1,
+            "PERSIST drops the expiry"
+        );
         for n in 0..3 {
             create_key(&at, &format!("{prefix}:b{n}"), "SET", &["v".to_string()], None)
                 .await
