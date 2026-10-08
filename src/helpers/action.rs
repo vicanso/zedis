@@ -343,6 +343,16 @@ pub fn set_web_command_key(apple_keyboard: bool) {
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {
+    // A range in the ⌘/ overlay (`secondary-1 … secondary-8`) is two
+    // keystrokes. Treating it as one splits on the last `-` and prints
+    // "Ctrl+1 … CMD+8" on Linux.
+    if let Some((start, end)) = keystroke.split_once(" … ")
+        && !start.is_empty()
+        && !end.is_empty()
+    {
+        return format!("{} … {}", humanize_keystroke(start), humanize_keystroke(end));
+    }
+
     let mac = uses_command_key();
     let separator = if mac { "" } else { "+" };
     let mut display_text = String::new();
@@ -707,7 +717,7 @@ pub fn shortcut_reference() -> Vec<ShortcutGroup> {
         title_key: GROUP_NAVIGATION,
         items: vec![
             ("escape".to_string(), "back"),
-            ("cmd-1 … cmd-8".to_string(), "workspace_tab"),
+            ("secondary-1 … secondary-8".to_string(), "workspace_tab"),
         ],
     });
     groups
@@ -945,6 +955,13 @@ mod tests {
         }
         assert_eq!(keystroke_parts("-"), ["-"]);
         assert_eq!(keystroke_parts("secondary-shift--"), ["secondary", "shift", "-"]);
+        // Two chords joined by an ellipsis stay two chords, same modifier name.
+        if uses_command_key() {
+            assert_eq!(humanize_keystroke("secondary-1 … secondary-8"), "⌘1 … ⌘8");
+        } else {
+            assert_eq!(humanize_keystroke("secondary-1 … secondary-8"), "Ctrl+1 … Ctrl+8");
+            assert_eq!(humanize_keystroke("cmd-1 … cmd-8"), "Ctrl+1 … Ctrl+8");
+        }
     }
 
     #[test]
@@ -980,5 +997,25 @@ mod tests {
         let referenced = HOT_KEYS.iter().filter(|hot_key| hot_key.reference.is_some()).count();
         // + the two fixed navigation rows.
         assert_eq!(listed, referenced + 2);
+    }
+
+    #[test]
+    fn the_workspace_tab_range_uses_one_modifier_name() {
+        let groups = shortcut_reference();
+        let nav = groups
+            .iter()
+            .find(|group| group.title_key == GROUP_NAVIGATION)
+            .expect("navigation group");
+        let (keystroke, _) = nav
+            .items
+            .iter()
+            .find(|(_, key)| *key == "workspace_tab")
+            .expect("workspace tab row");
+        let drawn = humanize_keystroke(keystroke);
+        if uses_command_key() {
+            assert_eq!(drawn, "⌘1 … ⌘8");
+        } else {
+            assert_eq!(drawn, "Ctrl+1 … Ctrl+8");
+        }
     }
 }
