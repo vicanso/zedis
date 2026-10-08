@@ -21,12 +21,12 @@ use crate::helpers::{export_local_data_json, import_local_data_file, write_local
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{
-        DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, apply_fonts, date_format_sample, ensure_keybindings_file,
-        get_or_create_config_dir, is_app_store_build, parse_duration, set_datetime_prefs,
+        DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_fonts,
+        date_format_sample, ensure_keybindings_file, get_or_create_config_dir, is_app_store_build, parse_duration,
+        set_datetime_prefs,
     },
     states::{
-        ZedisGlobalStore, i18n_settings, save_ui_locale, update_app_state_and_save,
-        update_app_state_and_save_debounced, update_app_state_and_save_quiet,
+        ZedisGlobalStore, i18n_settings, save_ui_locale, update_app_state_and_save, update_app_state_and_save_quiet,
     },
 };
 #[cfg(not(target_family = "wasm"))]
@@ -44,7 +44,6 @@ use gpui_kit::component::{
     list::ListItem,
     notification::Notification,
     scroll::ScrollableElement,
-    slider::{Slider, SliderEvent, SliderState, SliderValue},
     switch::Switch,
     v_flex,
 };
@@ -103,6 +102,34 @@ fn build_font_options(
 
 /// Width of the section list down the left of the window.
 const SECTION_NAV_WIDTH: f32 = 160.;
+
+/// A typed value is applied only when it is already a whole number inside
+/// the range, so a partial `"2"` (on the way to `"20"`) is ignored.
+fn parse_font_rem_px(text: &str) -> Option<f32> {
+    let n: i32 = text.trim().parse().ok()?;
+    (UI_FONT_SIZE_MIN..=UI_FONT_SIZE_MAX)
+        .contains(&(n as f32))
+        .then_some(n as f32)
+}
+
+/// On blur: keep an in-range whole number, round a numeric out-of-range or
+/// fractional value, otherwise restore `fallback` (the last saved size).
+fn clamp_font_rem_px(text: &str, fallback: f32) -> f32 {
+    if let Some(px) = parse_font_rem_px(text) {
+        return px;
+    }
+    text.trim()
+        .parse::<f32>()
+        .ok()
+        .map(|n| n.round().clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX))
+        .unwrap_or(fallback)
+}
+
+fn persist_font_size(cx: &mut Context<ZedisSettingEditor>, px: f32) {
+    update_app_state_and_save(cx, "save_font_size", move |app, _| {
+        app.set_font_rem_px(Some(px));
+    });
+}
 
 /// The groups the settings are in, in the order the window lists them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -208,7 +235,7 @@ pub struct ZedisSettingEditor {
     sidebar_click_new_tab: bool,
     auto_update_check: bool,
     update_prerelease: bool,
-    font_size_slider: Entity<SliderState>,
+    font_size_state: Entity<InputState>,
     locale_select: Entity<ZedisSelect>,
     time_zone_select: Entity<ZedisSelect>,
     date_format_select: Entity<ZedisSelect>,
@@ -358,6 +385,15 @@ impl ZedisSettingEditor {
         // prefix-closed — "http:/" is invalid, so the second slash of
         // "http://" could never be typed. Validation happens on blur instead.
         let http_proxy_state = Self::create_input_state(window, cx, "http_proxy_placeholder", http_proxy, None);
+        let font_size_state = cx.new(|cx| {
+            let px = font_rem.clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX).round() as i32;
+            InputState::new(window, cx)
+                .placeholder(i18n_settings(cx, "font_size_placeholder"))
+                .default_value(px.to_string())
+                .step(1.0)
+                .min(UI_FONT_SIZE_MIN as f64)
+                .max(UI_FONT_SIZE_MAX as f64)
+        });
 
         let config_dir = get_or_create_config_dir().unwrap_or_else(|e| {
             warn!(error = %e, "config directory unavailable");
@@ -562,29 +598,29 @@ impl ZedisSettingEditor {
             }),
         );
 
-        // Continuous font size (rem px) via a slider, 12–22px. The state
-        // updates per change so reads stay live, but the disk write and the
-        // app-wide refresh are debounced until the thumb settles;
-        // `cx.notify()` re-renders the row so the px readout tracks the
-        // thumb live.
-        let font_size_slider = cx.new(|_| {
-            SliderState::new()
-                .min(12.0)
-                .max(20.0)
-                .step(1.0)
-                .default_value(font_rem.clamp(12.0, 20.0))
-        });
         subscriptions.push(cx.subscribe_in(
-            &font_size_slider,
+            &font_size_state,
             window,
-            |_view, _slider, event: &SliderEvent, _window, cx| {
-                if let SliderEvent::Change(SliderValue::Single(rem)) = event {
-                    let rem = *rem;
-                    update_app_state_and_save_debounced(cx, "save_font_size", move |state, _| {
-                        state.set_font_rem_px(Some(rem));
-                    });
-                    cx.notify();
+            |_view, state, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    if let Some(px) = parse_font_rem_px(state.read(cx).value().as_ref()) {
+                        persist_font_size(cx, px);
+                    }
                 }
+                InputEvent::Blur => {
+                    let fallback = cx
+                        .global::<ZedisGlobalStore>()
+                        .read(cx)
+                        .font_rem_px()
+                        .unwrap_or(DEFAULT_UI_FONT_SIZE);
+                    let px = clamp_font_rem_px(state.read(cx).value().as_ref(), fallback);
+                    let shown = (px as i32).to_string();
+                    if state.read(cx).value().as_ref() != shown.as_str() {
+                        state.update(cx, |input, cx| input.set_value(shown, window, cx));
+                    }
+                    persist_font_size(cx, px);
+                }
+                _ => {}
             },
         ));
 
@@ -726,7 +762,7 @@ impl ZedisSettingEditor {
             sidebar_click_new_tab,
             auto_update_check,
             update_prerelease,
-            font_size_slider,
+            font_size_state,
             locale_select,
             time_zone_select,
             date_format_select,
@@ -778,7 +814,7 @@ impl ZedisSettingEditor {
                 // `min_w_0` lets the text column shrink below its content
                 // width so a long description wraps instead of squeezing the
                 // control column out of the row (default flex `min-width:
-                // auto` — same overflow the font-size slider row hit).
+                // auto`).
                 v_flex()
                     .flex_1()
                     .min_w_0()
@@ -848,11 +884,6 @@ impl ZedisSettingEditor {
 
 impl Render for ZedisSettingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Apply the *persisted* font size, not the live slider value: this
-        // window scales by rem and the slider sets rem, so driving rem straight
-        // from the slider rescales the slider itself mid-drag — the thumb drifts
-        // and resizes (e.g. looked centred at 15px). The debounced store keeps
-        // the control stable while dragging.
         if let Some(rem) = cx.global::<ZedisGlobalStore>().read(cx).font_rem_px() {
             window.set_rem_size(rem);
         }
@@ -860,31 +891,11 @@ impl Render for ZedisSettingEditor {
         let page = SectionRows::new(self.section)
             // — Appearance —
             .section(cx, SettingsSection::Appearance)
-            .child(Self::render_setting_row(cx, "font_size", {
-                let muted = cx.theme().muted_foreground;
-                let rem = match self.font_size_slider.read(cx).value() {
-                    SliderValue::Single(v) | SliderValue::Range(v, _) => v,
-                };
-                // Fill the row's shared 200px control column (render_setting_row
-                // wraps every input in a `w(px(200.))` div). `min_w_0` lets the
-                // flex_1 slider shrink below its content width so the px readout
-                // beside it stays visible — the original overflow was flex_1
-                // with the default `min-width: auto`.
-                // gap_4 (1rem) leaves room for the thumb, which overhangs the
-                // track end by ~half its width (size_4) at the max; flex_none
-                // keeps the px readout from being squeezed.
-                h_flex()
-                    .w_full()
-                    .gap_4()
-                    .items_center()
-                    .child(Slider::new(&self.font_size_slider).flex_1().min_w_0())
-                    .child(
-                        Label::new(format!("{}px", rem as i32))
-                            .flex_none()
-                            .text_sm()
-                            .text_color(muted),
-                    )
-            }))
+            .child(Self::render_setting_row(
+                cx,
+                "font_size",
+                NumberInput::new(&self.font_size_state),
+            ))
             .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
             .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
             .child(Self::render_setting_row(cx, "lang", self.locale_select.clone()))
@@ -1259,4 +1270,31 @@ pub fn open_settings_window(cx: &mut App) {
         cx,
         |window, cx| cx.new(|cx| ZedisSettingEditor::new(window, cx)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_font_rem_px_accepts_whole_pixels_in_range() {
+        assert_eq!(parse_font_rem_px("14"), Some(14.0));
+        assert_eq!(parse_font_rem_px(" 12 "), Some(12.0));
+        assert_eq!(parse_font_rem_px("20"), Some(20.0));
+        assert_eq!(parse_font_rem_px("2"), None);
+        assert_eq!(parse_font_rem_px("21"), None);
+        assert_eq!(parse_font_rem_px("12.5"), None);
+        assert_eq!(parse_font_rem_px(""), None);
+        assert_eq!(parse_font_rem_px("abc"), None);
+    }
+
+    #[test]
+    fn clamp_font_rem_px_rounds_numeric_and_falls_back() {
+        assert_eq!(clamp_font_rem_px("14", 16.0), 14.0);
+        assert_eq!(clamp_font_rem_px("25", 16.0), 20.0);
+        assert_eq!(clamp_font_rem_px("11", 16.0), 12.0);
+        assert_eq!(clamp_font_rem_px("12.6", 16.0), 13.0);
+        assert_eq!(clamp_font_rem_px("", 16.0), 16.0);
+        assert_eq!(clamp_font_rem_px("abc", 16.0), 16.0);
+    }
 }

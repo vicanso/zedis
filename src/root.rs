@@ -25,8 +25,9 @@ use crate::dialogs::*;
 use crate::helpers::channel;
 use crate::helpers::pacing;
 use crate::helpers::{
-    ConfigRecovery, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction, WindowAction,
-    WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, humanize_keystroke, unix_ts_millis,
+    ConfigRecovery, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction, UI_FONT_SIZE_MAX,
+    UI_FONT_SIZE_MIN, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size, humanize_keystroke,
+    unix_ts_millis,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{CrashReport, UpdateInfo, get_or_create_config_dir, is_app_store_build};
@@ -77,10 +78,6 @@ use rust_i18n::t;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-
-/// The Settings slider's range, which ⌘+ / ⌘- step within.
-const UI_ZOOM_MIN_PX: f32 = 12.0;
-const UI_ZOOM_MAX_PX: f32 = 20.0;
 
 /// Upper bound on workspace tabs — each tab holds its own `ZedisServerState`
 /// (heartbeat, pooled connections, loaded keys), so the cap keeps a runaway
@@ -1216,9 +1213,9 @@ impl Render for Zedis {
             // app on macOS / closes the window elsewhere — the red-button
             // behavior. Handled here (not only globally) so the view's tab list
             // is in reach; ⌘W stays bound to the one `MemuAction::Close`.
-            // ⌘+ / ⌘- / ⌘0: the same UI font size the Settings slider sets,
-            // stepped by one pixel inside the slider's range; the store's
-            // value is applied to the theme on the next frame.
+            // ⌘+ / ⌘- / ⌘0: the same UI font size Settings drives, stepped
+            // by one pixel inside that range; the store's value is applied
+            // to the theme on the next frame.
             .on_action(cx.listener(|_this, e: &ZoomAction, _window, cx| {
                 let current = cx
                     .global::<ZedisGlobalStore>()
@@ -1230,7 +1227,7 @@ impl Render for Zedis {
                     ZoomAction::Out => current - 1.0,
                     ZoomAction::Reset => DEFAULT_UI_FONT_SIZE,
                 }
-                .clamp(UI_ZOOM_MIN_PX, UI_ZOOM_MAX_PX);
+                .clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX);
                 update_app_state_and_save(cx, "zoom", move |state, _| {
                     state.set_font_rem_px(Some(next));
                 });

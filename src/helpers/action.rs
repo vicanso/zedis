@@ -112,8 +112,8 @@ pub enum TerminalAction {
     Clear,
 }
 
-/// UI zoom (⌘+ / ⌘- / ⌘0): steps the UI font size the Settings slider also
-/// drives, so the two never disagree.
+/// UI zoom (⌘+ / ⌘- / ⌘0): steps the UI font size Settings also drives, so
+/// the two never disagree.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum ZoomAction {
     In,

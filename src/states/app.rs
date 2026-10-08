@@ -369,9 +369,9 @@ pub struct ZedisAppState {
     /// precedence over the `theme` mode; `None` falls back to Light/Dark/System.
     theme_name: Option<String>,
     font_size: Option<FontSize>,
-    /// Continuous UI font size (rem px) from the settings slider. Takes
-    /// precedence over the legacy `font_size` enum; `None` falls back to it,
-    /// then to gpui's 16px default. Additive so old configs migrate silently.
+    /// UI font size in rem px from Settings (and ⌘+/⌘−). Takes precedence
+    /// over the legacy `font_size` enum; `None` falls back to it, then to
+    /// gpui's 16px default. Additive so old configs migrate silently.
     font_rem_px: Option<f32>,
     /// User-chosen UI font family (all non-mono text). Empty/None ⇒ the OS
     /// system UI font. A single family name, never a comma-separated stack.
@@ -761,7 +761,7 @@ impl ZedisAppState {
         cx.notify();
         self.persist_nav(cx);
     }
-    /// Effective UI font size in rem px: the slider value if set, else the
+    /// Effective UI font size in rem px: the Settings value if set, else the
     /// legacy `font_size` enum's pixels, else `None` (falls through to
     /// `Theme::font_size`, which Zedis pins to [`crate::helpers::DEFAULT_UI_FONT_SIZE`]).
     pub fn font_rem_px(&self) -> Option<f32> {
@@ -773,8 +773,8 @@ impl ZedisAppState {
         // so the config stays clean and the rem falls back to
         // DEFAULT_UI_FONT_SIZE via the theme (gpui-component's `Root` sets the rem
         // base from `theme.font_size` each frame). Mirrors the max_key_tree_depth
-        // "0 ⇒ None" reset. Epsilon compare since the slider steps in whole px and
-        // clippy forbids `==` on f32.
+        // "0 ⇒ None" reset. Epsilon compare since the control steps in whole px
+        // and clippy forbids `==` on f32.
         self.font_rem_px = px.filter(|v| (*v - DEFAULT_UI_FONT_SIZE).abs() >= f32::EPSILON);
     }
     /// UI font family, `None` when unset or blank (falls back to system).

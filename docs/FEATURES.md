@@ -33,7 +33,7 @@ Virtual scrolling combined with `SCAN` iteration keeps the interface responsive 
 ### Cross-Platform & Appearance
 **Native on macOS, Windows, and Linux — Light / Dark / System plus six bundled colour themes, and 8 UI languages.**
 
-A truly native feel across all three desktop platforms. Beyond Light / Dark / Follow-system, the title-bar **Theme** menu carries six bundled palettes — **Ayu · Catppuccin · Flexoki · Gruvbox · Hybrid · Tokyo**. Settings adds a continuous **font-size slider** (12–20 px) and separate **UI** and **monospace** font pickers listing every installed family (the bundled **JetBrains Mono** is the mono default, so code and tables look identical on every platform). The interface itself ships in **8 languages** — English · 中文 · Русский · 日本語 · Português · Español · Deutsch · Français — switched from the title bar or Settings, applied live without a restart.
+A truly native feel across all three desktop platforms. Beyond Light / Dark / Follow-system, the title-bar **Theme** menu carries six bundled palettes — **Ayu · Catppuccin · Flexoki · Gruvbox · Hybrid · Tokyo**. Settings adds a **font size** (12–20 px) and separate **UI** and **monospace** font pickers listing every installed family (the bundled **JetBrains Mono** is the mono default, so code and tables look identical on every platform). The interface itself ships in **8 languages** — English · 中文 · Русский · 日本語 · Português · Español · Deutsch · Français — switched from the title bar or Settings, applied live without a restart.
 
 ---
 
@@ -268,7 +268,7 @@ An overlay that searches a key name across a chosen scope: every open tab's conn
 ### Command Palette & Shortcuts
 **⌘K fuzzy navigation, ⌘P recent keys, and a ⌘/ keyboard-shortcut reference.**
 
-**⌘K** fuzzy-searches servers, panels, and the active connection's loaded keys (arrows to move, Enter to run, Esc to dismiss). **⌘P** is the quick-open for the current connection's recently opened keys — the Zed / VS Code gesture, available from tool pages too. **⌘/** opens a read-only, grouped overlay of every hotkey with per-platform symbols: ⌘N new key, ⌘S save, ⌘R reload the tree, ⌘⇧R reload the value, ⌘T set TTL, ⌘⌫ delete, ⌘E rename, ⌘F filter, ⌘J terminal, ⌘1–8 workspace tabs, Esc to step back. **⌘+ / ⌘− / ⌘0** zoom the whole UI (the same font size the Settings slider drives). Every shortcut can be **remapped**: Settings → *Keyboard shortcuts* opens `keybindings.toml` in the config folder, one `id = "keystroke"` line per action, and the overlay shows your keys after a restart.
+**⌘K** fuzzy-searches servers, panels, and the active connection's loaded keys (arrows to move, Enter to run, Esc to dismiss). **⌘P** is the quick-open for the current connection's recently opened keys — the Zed / VS Code gesture, available from tool pages too. **⌘/** opens a read-only, grouped overlay of every hotkey with per-platform symbols: ⌘N new key, ⌘S save, ⌘R reload the tree, ⌘⇧R reload the value, ⌘T set TTL, ⌘⌫ delete, ⌘E rename, ⌘F filter, ⌘J terminal, ⌘1–8 workspace tabs, Esc to step back. **⌘+ / ⌘− / ⌘0** zoom the whole UI (the same font size Settings drives). Every shortcut can be **remapped**: Settings → *Keyboard shortcuts* opens `keybindings.toml` in the config folder, one `id = "keystroke"` line per action, and the overlay shows your keys after a restart.
 
 ### Integrated CLI & Workbench
 **redis-cli terminal with completion, text / table / JSON replies, a multi-line Batch mode, and an AI command assistant.**

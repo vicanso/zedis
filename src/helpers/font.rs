@@ -36,6 +36,10 @@ const DEFAULT_UI_FONT: &str = ".SystemUIFont";
 /// Theme from stock defaults and reset `font_size` to 16.
 pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 
+/// Inclusive rem range, in whole pixels. Settings and ⌘+/⌘− share this.
+pub const UI_FONT_SIZE_MIN: f32 = 12.0;
+pub const UI_FONT_SIZE_MAX: f32 = 20.0;
+
 /// Pin [`DEFAULT_UI_FONT_SIZE`] on the global theme after theme init or switch.
 pub fn apply_default_ui_font_size(cx: &mut App) {
     Theme::global_mut(cx).font_size = px(DEFAULT_UI_FONT_SIZE);
