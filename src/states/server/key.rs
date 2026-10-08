@@ -1002,8 +1002,9 @@ impl ZedisServerState {
                         if this.value.as_ref() == Some(&value) {
                             return;
                         }
+                        let mut tree_changed = false;
                         if !value.is_expired() {
-                            let need_refresh = if let Some(k) = this.keys.get_mut(&current_key) {
+                            tree_changed = if let Some(k) = this.keys.get_mut(&current_key) {
                                 if *k != value.key_type {
                                     *k = value.key_type();
                                     true
@@ -1011,13 +1012,16 @@ impl ZedisServerState {
                                     false
                                 }
                             } else {
-                                this.keys.insert(current_key, value.key_type());
+                                this.keys.insert(current_key.clone(), value.key_type());
                                 true
                             };
-                            if need_refresh {
-                                this.key_tree_id = Uuid::now_v7().to_string().into();
-                                cx.emit(ServerEvent::KeyTreeUpdated);
-                            }
+                        }
+                        if let Some(ttl_secs) = value.ttl_secs() {
+                            tree_changed |= this.sync_tree_ttl(&current_key, ttl_secs);
+                        }
+                        if tree_changed {
+                            this.key_tree_id = Uuid::now_v7().to_string().into();
+                            cx.emit(ServerEvent::KeyTreeUpdated);
                         }
                         this.next_value_epoch();
                         this.value = Some(value);
@@ -1509,6 +1513,31 @@ impl ZedisServerState {
             cx,
         );
     }
+    /// Write `ttl_secs` into the tree cache when TTL chips are on and the
+    /// chip would read differently — the same gate auto-refresh uses, so a
+    /// select that still paints `10m` does not rebuild the tree.
+    fn sync_tree_ttl(&mut self, key: &SharedString, ttl_secs: i64) -> bool {
+        if !self.show_key_tree_ttl {
+            return false;
+        }
+        let changed = self
+            .key_ttls
+            .get(key)
+            .is_none_or(|old| format_ttl_chip(*old) != format_ttl_chip(ttl_secs));
+        if !changed {
+            return false;
+        }
+        Arc::make_mut(&mut self.key_ttls).insert(key.clone(), ttl_secs);
+        true
+    }
+
+    fn apply_tree_ttl(&mut self, key: &SharedString, ttl_secs: i64, cx: &mut Context<Self>) {
+        if self.sync_tree_ttl(key, ttl_secs) {
+            self.key_tree_id = Uuid::now_v7().to_string().into();
+            cx.emit(ServerEvent::KeyTreeUpdated);
+        }
+    }
+
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         if ttl.is_empty() {
@@ -1535,6 +1564,7 @@ impl ZedisServerState {
             value.expire_at = Some(unix_ts() + new_ttl.as_secs() as i64);
         }
         cx.notify();
+        let tree_key = key.clone();
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             key.clone(),
@@ -1548,6 +1578,9 @@ impl ZedisServerState {
                 Ok(ttl)
             },
             move |this, result, cx| {
+                if result.is_ok() {
+                    this.apply_tree_ttl(&tree_key, new_ttl.as_secs() as i64, cx);
+                }
                 // The value on screen now is another one's: its expiry and
                 // status are not this change's to restore.
                 if this.value_epoch != epoch {
@@ -1584,6 +1617,7 @@ impl ZedisServerState {
         let epoch = self.value_epoch;
         value.expire_at = Some(at);
         cx.notify();
+        let tree_key = key.clone();
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
             key.clone(),
@@ -1592,6 +1626,14 @@ impl ZedisServerState {
                 Ok(at)
             },
             move |this, result, cx| {
+                if result.is_ok() {
+                    let ttl_secs = if at < 0 {
+                        at
+                    } else {
+                        at.saturating_sub(unix_ts()).max(0)
+                    };
+                    this.apply_tree_ttl(&tree_key, ttl_secs, cx);
+                }
                 // The value on screen now is another one's: its expiry and
                 // status are not this change's to restore.
                 if this.value_epoch != epoch {
@@ -1635,9 +1677,7 @@ impl ZedisServerState {
             },
             move |this, result, cx| {
                 if result.is_ok() {
-                    Arc::make_mut(&mut this.key_ttls).insert(key.clone(), -1);
-                    this.key_tree_id = Uuid::now_v7().to_string().into();
-                    cx.emit(ServerEvent::KeyTreeUpdated);
+                    this.apply_tree_ttl(&key, -1, cx);
                 }
                 // The value on screen now is another one's: its expiry and
                 // status are not this change's to restore.
@@ -1958,5 +1998,34 @@ mod auto_refresh_tests {
         assert_eq!(changed, vec![("a", 540), ("c", 30)]);
         let hidden = ZedisServerState::plan_auto_refresh(true, round, &loaded(&["a", "b", "c"]), None);
         assert!(hidden.ttls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tree_ttl_tests {
+    use super::*;
+
+    fn key(name: &str) -> SharedString {
+        SharedString::from(name)
+    }
+
+    /// Selecting a key writes the fresh TTL only when chips are on and the
+    /// label would change — 600s and 630s both read `10m`.
+    #[test]
+    fn sync_tree_ttl_writes_only_when_the_chip_changes() {
+        let mut state = ZedisServerState::default();
+        let k = key("session");
+        assert!(!state.sync_tree_ttl(&k, 30), "chips default off");
+        assert!(state.key_ttls.get(&k).is_none());
+
+        state.show_key_tree_ttl = true;
+        assert!(state.sync_tree_ttl(&k, 600), "first sample");
+        assert_eq!(state.key_ttls.get(&k), Some(&600));
+        assert!(!state.sync_tree_ttl(&k, 630), "same 10m chip");
+        assert_eq!(state.key_ttls.get(&k), Some(&600), "stale seconds stay");
+        assert!(state.sync_tree_ttl(&k, 540), "10m → 9m");
+        assert_eq!(state.key_ttls.get(&k), Some(&540));
+        assert!(state.sync_tree_ttl(&k, -1), "timed → persist");
+        assert_eq!(state.key_ttls.get(&k), Some(&-1));
     }
 }

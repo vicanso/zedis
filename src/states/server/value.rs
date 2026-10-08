@@ -937,6 +937,12 @@ impl RedisValue {
         Some(chrono::Duration::seconds(remaining))
     }
 
+    /// Remaining TTL in the encoding the key-tree cache uses (`-1` none,
+    /// `-2` gone, `>= 0` seconds left). `None` when expiry was never loaded.
+    pub fn ttl_secs(&self) -> Option<i64> {
+        Some(self.ttl()?.num_seconds())
+    }
+
     /// Returns the key type
     pub fn key_type(&self) -> KeyType {
         self.key_type
@@ -1036,6 +1042,34 @@ mod select_placeholder_tests {
         let next = RedisValue::for_select(false, None, KeyType::Hash);
         assert_eq!(next.key_type, KeyType::Hash);
         assert!(next.is_pending_first_load());
+    }
+
+    #[test]
+    fn ttl_secs_matches_the_tree_cache_encoding() {
+        assert_eq!(RedisValue::default().ttl_secs(), None);
+        assert_eq!(
+            RedisValue {
+                expire_at: Some(-1),
+                ..Default::default()
+            }
+            .ttl_secs(),
+            Some(-1)
+        );
+        assert_eq!(
+            RedisValue {
+                expire_at: Some(-2),
+                ..Default::default()
+            }
+            .ttl_secs(),
+            Some(-2)
+        );
+        let remaining = RedisValue {
+            expire_at: Some(Local::now().timestamp() + 90),
+            ..Default::default()
+        }
+        .ttl_secs()
+        .expect("a live expiry");
+        assert!((89..=90).contains(&remaining), "got {remaining}");
     }
 }
 
