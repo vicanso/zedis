@@ -13,9 +13,11 @@
 // limitations under the License.
 
 #[cfg(not(target_family = "wasm"))]
+use super::export::dirs_default_directory;
+#[cfg(not(target_family = "wasm"))]
 use crate::helpers::is_valid_proxy_setting;
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::{export_local_data_file, import_local_data_file};
+use crate::helpers::{export_local_data_json, import_local_data_file, write_local_data_file};
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     helpers::{
@@ -1082,7 +1084,7 @@ impl Render for ZedisSettingEditor {
                         .small()
                         .outline()
                         .label(i18n_settings(cx, "local_data_export_button"))
-                        .on_click(cx.listener(|_this, _, window, cx| Self::export_local_data(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.export_local_data(window, cx))),
                 ))
                 .child(Self::render_setting_row(
                     cx,
@@ -1145,30 +1147,48 @@ impl ZedisSettingEditor {
     }
 
     #[cfg(target_family = "wasm")]
-    fn export_local_data(_window: &mut Window, _cx: &mut App) {}
+    fn export_local_data(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     #[cfg(target_family = "wasm")]
     fn import_local_data(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     #[cfg(not(target_family = "wasm"))]
-    fn export_local_data(window: &mut Window, cx: &mut App) {
-        match export_local_data_file() {
-            Ok(path) => {
-                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-                let message = t!(
-                    "settings.local_data_exported",
-                    path = path.display().to_string(),
-                    locale = &locale
-                )
-                .to_string();
-                window.push_notification(Notification::success(message), cx);
-                cx.reveal_path(&path);
-            }
+    fn export_local_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, json) = match export_local_data_json() {
+            Ok(v) => v,
             Err(e) => {
                 error!(error = %e, "local data export failed");
                 Self::notify_error(window, cx, "settings.local_data_failed", &e.to_string());
+                return;
             }
-        }
+        };
+        let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = receiver.await else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move { write_local_data_file(&path, &json).map(|()| path) })
+                .await;
+            let _ = this.update_in(cx, |_this, window, cx| match result {
+                Ok(path) => {
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    let message = t!(
+                        "settings.local_data_exported",
+                        path = path.display().to_string(),
+                        locale = &locale
+                    )
+                    .to_string();
+                    window.push_notification(Notification::success(message), cx);
+                    cx.reveal_path(&path);
+                }
+                Err(e) => {
+                    error!(error = %e, "local data export failed");
+                    Self::notify_error(window, cx, "settings.local_data_failed", &e.to_string());
+                }
+            });
+        })
+        .detach();
     }
 
     /// Pick a backup file and merge it into the store. The picker is

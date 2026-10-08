@@ -60,7 +60,7 @@ pub use diagnostics::{DiagnosticsInput, export_diagnostics};
 pub use font::*;
 pub use keybindings::{ensure_keybindings_file, keybinding_overrides, load_keybinding_overrides};
 #[cfg(not(target_family = "wasm"))]
-pub use local_data::{export_local_data_file, import_local_data_file};
+pub use local_data::{export_local_data_json, import_local_data_file, write_local_data_file};
 #[cfg(not(target_family = "wasm"))]
 pub use logger::{init_logger, logs_dir};
 pub use platform::{PlatformInfo, platform_info};

@@ -21,11 +21,14 @@ use chrono::Local;
 use gpui::{App, Context, Entity, SharedString, prelude::*};
 use std::path::PathBuf;
 
-/// Where a save dialog opens: the platform's Downloads directory, else home,
-/// else wherever the process is. In a browser both lookups answer `None` and
+/// Where a save dialog opens: the platform's Downloads directory when that
+/// folder exists, else home, else wherever the process is. A configured
+/// Downloads path that is not on disk is skipped so the dialog does not
+/// open in a missing folder. In a browser both lookups answer `None` and
 /// the dialog itself is the platform's business.
 pub(crate) fn dirs_default_directory() -> PathBuf {
     get_download_dir()
+        .filter(|p| p.is_dir())
         .or_else(get_home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -39,7 +42,8 @@ pub(crate) fn dirs_default_directory() -> PathBuf {
 /// as its body and `success_title` as its title (matching
 /// `emit_success_notification`'s `(message, title)` order); on failure the
 /// message is `"<error_label>: <io error>"`. Cancelling the dialog is a
-/// no-op. Fire-and-forget: the task detaches and survives the call.
+/// no-op. Fire-and-forget: the task detaches and survives the call. The
+/// dialog opens in [`dirs_default_directory`].
 pub(crate) fn export_to_file<V: 'static>(
     cx: &mut Context<V>,
     server_state: Entity<ZedisServerState>,
@@ -66,7 +70,7 @@ pub(crate) fn export_to_file<V: 'static>(
 
 /// Like [`export_to_file`] but for views without a [`ZedisServerState`] (e.g.
 /// the server list): notifications are surfaced through the global store
-/// instead. Prompts for a save path (defaulting to `~/Downloads`), writes
+/// instead. Prompts for a save path (see [`dirs_default_directory`]), writes
 /// `bytes` off the UI thread, then emits a success / error notification.
 /// Cancelling the dialog is a no-op; fire-and-forget.
 pub(crate) fn export_to_file_global(

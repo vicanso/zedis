@@ -15,29 +15,30 @@
 //! Backup / restore of the local redb store (tags, favorites, script
 //! viewers, Lua scripts, proto bindings) as one JSON file — the Settings
 //! "Local data" section. The document itself is `zedis_db::backup`; this
-//! is only the file plumbing, laid out like the diagnostics bundle.
+//! is the file plumbing. Settings picks the path with a save dialog.
 
 use crate::error::Error;
 use chrono::Local;
-use std::io;
-use std::path::{Path, PathBuf};
-use zedis_core::fs::{get_download_dir, get_or_create_config_dir, write_file_atomic};
+use std::path::Path;
+use zedis_core::fs::write_file_atomic;
 use zedis_db::{ImportSummary, LocalDataBackup, export_local_data, import_local_data};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Writes `zedis-local-data-<stamp>.json` to Downloads (the config dir when
-/// there is none — App Store sandbox) and returns its path.
-pub fn export_local_data_file() -> Result<PathBuf> {
-    let dir = get_download_dir()
-        .or_else(|| get_or_create_config_dir().ok())
-        .ok_or_else(|| io::Error::other("no directory to write the backup to"))?;
+/// Builds the backup JSON and a suggested filename. Settings asks where to
+/// write it — a machine with no Downloads folder must not silently land the
+/// file in the config directory.
+pub fn export_local_data_json() -> Result<(String, Vec<u8>)> {
     let now = Local::now();
     let backup = export_local_data(env!("CARGO_PKG_VERSION"), now.timestamp())?;
     let json = serde_json::to_vec_pretty(&backup)?;
-    let path = dir.join(format!("zedis-local-data-{}.json", now.format("%Y%m%d-%H%M%S")));
-    write_file_atomic(&path, &json)?;
-    Ok(path)
+    let name = format!("zedis-local-data-{}.json", now.format("%Y%m%d-%H%M%S"));
+    Ok((name, json))
+}
+
+/// Writes a backup produced by [`export_local_data_json`].
+pub fn write_local_data_file(path: &Path, json: &[u8]) -> Result<()> {
+    Ok(write_file_atomic(path, json)?)
 }
 
 /// Reads a backup file and merges it into the store.
