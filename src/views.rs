@@ -175,6 +175,8 @@ pub use server_info::ZedisServerInfo;
 pub use server_load::ZedisServerLoad;
 pub use servers::ZedisServers;
 pub use set_editor::ZedisSetEditor;
+pub use setting_editor::open_settings;
+#[cfg(not(target_family = "wasm"))]
 pub use setting_editor::open_settings_window;
 pub use shortcuts_overlay::ZedisShortcutsOverlay;
 pub use sidebar::ZedisSidebar;

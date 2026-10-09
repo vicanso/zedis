@@ -18,16 +18,18 @@
 //! entry point goes with its feature: a button, a menu item or a palette row
 //! is not drawn where pressing it can do nothing. That rule was kept for the
 //! panels and broken everywhere smaller — a page had "Check for Updates",
-//! "Quit", a Settings item that opened no window and a dozen Export buttons
-//! that asked the platform for a save dialog it does not have, each of them
-//! silent when pressed.
+//! "Quit" and a dozen Export buttons that asked the platform for a save
+//! dialog it does not have, each of them silent when pressed.
 //!
 //! Each question here is one platform ability, asked by every entry point
 //! that needs it, so a feature that later gains a browser form (a download
 //! in place of a save dialog) changes one answer and not a dozen call sites.
 //! Panels are asked through `ServerView::in_this_build`. A whole desktop
 //! chore with a single entry point (the updater, the logs folder, the
-//! diagnostics bundle) is simply gated where it is drawn.
+//! diagnostics bundle, the About window) is simply gated where it is drawn.
+//! A second window is the one thing a page cannot have at all — the browser
+//! backend answers `open_window` with `AlreadyOpen` — so what the desktop
+//! shows in one is a dialog there (`views::open_settings`) or is left out.
 //!
 //! The desktop answers `true` to all of them, and a test holds it to that:
 //! nothing here may take a feature away from the app this is built from.
@@ -43,19 +45,6 @@ pub const fn has_file_dialogs() -> bool {
 }
 #[cfg(target_family = "wasm")]
 pub const fn has_file_dialogs() -> bool {
-    false
-}
-
-/// A second window: Settings and About.
-///
-/// A page is one canvas, and the browser backend refuses a second window
-/// (`AlreadyOpen`); `open_secondary_window` then has nothing to show.
-#[cfg(not(target_family = "wasm"))]
-pub const fn has_secondary_windows() -> bool {
-    true
-}
-#[cfg(target_family = "wasm")]
-pub const fn has_secondary_windows() -> bool {
     false
 }
 
@@ -98,7 +87,6 @@ mod tests {
     #[test]
     fn the_desktop_has_all_of_it() {
         assert!(has_file_dialogs());
-        assert!(has_secondary_windows());
         assert!(reads_clipboard_on_demand());
         assert!(has_pubsub());
     }

@@ -15,16 +15,17 @@
 #[cfg(not(target_family = "wasm"))]
 use super::export::dirs_default_directory;
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::is_valid_proxy_setting;
+use crate::helpers::{
+    ensure_keybindings_file, export_local_data_json, get_or_create_config_dir, import_local_data_file,
+    is_app_store_build, is_valid_proxy_setting, write_local_data_file,
+};
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::{export_local_data_json, import_local_data_file, write_local_data_file};
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     connection::{DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT},
     helpers::{
         DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_fonts,
-        date_format_sample, ensure_keybindings_file, get_or_create_config_dir, is_app_store_build, parse_duration,
-        set_datetime_prefs,
+        date_format_sample, parse_duration, set_datetime_prefs,
     },
     states::{
         ZedisGlobalStore, i18n_settings, save_ui_locale, update_app_state_and_save, update_app_state_and_save_quiet,
@@ -32,25 +33,43 @@ use crate::{
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui::PathPromptOptions;
-use gpui::{
-    AnyElement, App, Bounds, Entity, FontWeight, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    prelude::*, px, size,
-};
+#[cfg(target_family = "wasm")]
+use gpui::div;
+use gpui::{AnyElement, App, Entity, FocusHandle, FontWeight, Subscription, Window, prelude::*, px};
+#[cfg(not(target_family = "wasm"))]
+use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, size};
 use gpui_kit::component::{
-    ActiveTheme, Sizable, WindowExt,
-    button::Button,
-    h_flex,
+    ActiveTheme, WindowExt, h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     list::ListItem,
-    notification::Notification,
     scroll::ScrollableElement,
     switch::Switch,
     v_flex,
 };
+#[cfg(not(target_family = "wasm"))]
+use gpui_kit::component::{Sizable, button::Button, notification::Notification};
+#[cfg(not(target_family = "wasm"))]
 use rust_i18n::t;
+#[cfg(not(target_family = "wasm"))]
 use tracing::{error, warn};
+#[cfg(target_family = "wasm")]
+use zedis_ui::ZedisDialog;
 use zedis_ui::{ZedisSelect, ZedisSelectEvent};
+
+/// The Settings dialog of the browser build: as wide as the desktop's
+/// window plus the dialog's own padding, as tall as that window when the
+/// page has the room and never shorter than a few rows.
+#[cfg(target_family = "wasm")]
+const SETTINGS_DIALOG_WIDTH: f32 = 760.;
+#[cfg(target_family = "wasm")]
+const SETTINGS_DIALOG_MAX_HEIGHT: f32 = 520.;
+#[cfg(target_family = "wasm")]
+const SETTINGS_DIALOG_MIN_HEIGHT: f32 = 280.;
+/// What the dialog needs around its body: its title, its paddings and a
+/// margin to the page's edges.
+#[cfg(target_family = "wasm")]
+const SETTINGS_DIALOG_CHROME: f32 = 160.;
 
 /// Locale codes in display order, matching the items passed to locale_select.
 const LOCALES: &[(&str, &str)] = &[
@@ -205,9 +224,34 @@ impl ParentElement for SectionRows {
 
 impl FluentBuilder for SectionRows {}
 
+/// Where the settings are kept, for the System section's read-only row.
+#[cfg(not(target_family = "wasm"))]
+fn config_dir_text() -> String {
+    match get_or_create_config_dir() {
+        Ok(dir) => dir.to_string_lossy().to_string(),
+        Err(e) => {
+            warn!(error = %e, "config directory unavailable");
+            String::new()
+        }
+    }
+}
+
+/// A page keeps them in the browser's own storage: there is no directory to
+/// name, and no System section to name it in — asking for one only logged a
+/// warning every time Settings was opened.
+#[cfg(target_family = "wasm")]
+fn config_dir_text() -> String {
+    String::new()
+}
+
 pub struct ZedisSettingEditor {
     /// The section whose settings are on screen.
     section: SettingsSection,
+    /// Where the focus goes when the section changes. The field that held
+    /// it leaves with its section, and a focus on nothing has no path to
+    /// whatever contains this view: in the browser's dialog Escape then
+    /// closed nothing, having never reached the dialog.
+    focus_handle: FocusHandle,
     ui_font_select: Entity<ZedisSelect>,
     mono_font_select: Entity<ZedisSelect>,
     /// Index → value for each dropdown (index 0 = the "default" entry = `None`).
@@ -396,10 +440,7 @@ impl ZedisSettingEditor {
                 .max(UI_FONT_SIZE_MAX as f64)
         });
 
-        let config_dir = get_or_create_config_dir().unwrap_or_else(|e| {
-            warn!(error = %e, "config directory unavailable");
-            std::path::PathBuf::new()
-        });
+        let config_dir = config_dir_text();
 
         let mut subscriptions = Vec::new();
         subscriptions.push(Self::bind_blur_save(
@@ -569,8 +610,7 @@ impl ZedisSettingEditor {
             },
         ));
 
-        let config_dir_state =
-            cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
+        let config_dir_state = cx.new(|cx| InputState::new(window, cx).default_value(config_dir));
 
         // AI credentials have no visual output — persist without the
         // app-wide window refresh.
@@ -753,6 +793,7 @@ impl ZedisSettingEditor {
 
         Self {
             section: SettingsSection::default(),
+            focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
             ui_font_select,
             mono_font_select,
@@ -882,21 +923,27 @@ impl ZedisSettingEditor {
                 ListItem::new(section.title_key())
                     .selected(section == active)
                     .child(Label::new(i18n_settings(cx, section.title_key())).text_sm())
-                    .on_click(cx.listener(move |this, _, _window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.section = section;
+                        this.focus_handle.focus(window, cx);
                         cx.notify();
                     }))
             }));
-        h_flex().size_full().items_start().child(nav).child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .px_6()
-                .pb_4()
-                .children(page.rows)
-                .overflow_y_scrollbar(),
-        )
+        h_flex()
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .items_start()
+            .child(nav)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px_6()
+                    .pb_4()
+                    .children(page.rows)
+                    .overflow_y_scrollbar(),
+            )
     }
 }
 
@@ -990,7 +1037,15 @@ impl Render for ZedisSettingEditor {
                             state.set_sidebar_click_new_tab(enabled);
                         });
                     })),
-            ))
+            ));
+        // The four sections below are the installed application's: how it
+        // dials Redis (in the browser the bridge dials, with its own
+        // timeouts), the assistant's HTTP endpoint (the page has no HTTP
+        // client for it), the tray / updater / proxy / config directory, and
+        // the backup file. A page lists none of them — a section that is
+        // never started is not in the list on the left either.
+        #[cfg(not(target_family = "wasm"))]
+        let page = page
             // — Redis Connection —
             .section(cx, SettingsSection::Redis)
             .child(Self::render_setting_row(
@@ -1103,32 +1158,32 @@ impl Render for ZedisSettingEditor {
             ))
             // — Local data —
             .section(cx, SettingsSection::LocalData)
-            // The backup is a file the user picks or is handed; a tab has
-            // neither a picker nor a Downloads folder (ADR 9).
-            .when(cfg!(not(target_family = "wasm")), |this| {
-                this.child(Self::render_setting_row(
-                    cx,
-                    "local_data_export",
-                    Button::new("export-local-data")
-                        .small()
-                        .outline()
-                        .label(i18n_settings(cx, "local_data_export_button"))
-                        .on_click(cx.listener(|this, _, window, cx| this.export_local_data(window, cx))),
-                ))
-                .child(Self::render_setting_row(
-                    cx,
-                    "local_data_import",
-                    Button::new("import-local-data")
-                        .small()
-                        .outline()
-                        .label(i18n_settings(cx, "local_data_import_button"))
-                        .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
-                ))
-            });
+            .child(Self::render_setting_row(
+                cx,
+                "local_data_export",
+                Button::new("export-local-data")
+                    .small()
+                    .outline()
+                    .label(i18n_settings(cx, "local_data_export_button"))
+                    .on_click(cx.listener(|this, _, window, cx| this.export_local_data(window, cx))),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "local_data_import",
+                Button::new("import-local-data")
+                    .small()
+                    .outline()
+                    .label(i18n_settings(cx, "local_data_import_button"))
+                    .on_click(cx.listener(|this, _, window, cx| this.import_local_data(window, cx))),
+            ));
         self.render_sections(page, cx)
     }
 }
 
+/// What the desktop-only rows do: files, the OS default editor, Launch
+/// Services. None of it is in the browser build, where their sections are
+/// not listed (see `render`).
+#[cfg(not(target_family = "wasm"))]
 impl ZedisSettingEditor {
     fn notify_error(window: &mut Window, cx: &mut App, key: &str, error: &str) {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
@@ -1175,13 +1230,6 @@ impl ZedisSettingEditor {
         .detach();
     }
 
-    #[cfg(target_family = "wasm")]
-    fn export_local_data(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
-
-    #[cfg(target_family = "wasm")]
-    fn import_local_data(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
-
-    #[cfg(not(target_family = "wasm"))]
     fn export_local_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (name, json) = match export_local_data_json() {
             Ok(v) => v,
@@ -1223,7 +1271,6 @@ impl ZedisSettingEditor {
     /// Pick a backup file and merge it into the store. The picker is
     /// async; the merge itself is a few redb writes and runs on the
     /// foreground so the managers' caches stay coherent.
-    #[cfg(not(target_family = "wasm"))]
     fn import_local_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1267,6 +1314,41 @@ impl ZedisSettingEditor {
     }
 }
 
+/// Open Settings from the main window.
+///
+/// On the desktop it is a window of its own ([`open_settings_window`]).
+#[cfg(not(target_family = "wasm"))]
+pub fn open_settings(_window: &mut Window, cx: &mut App) {
+    open_settings_window(cx);
+}
+
+/// In the browser it is a dialog over the page: a tab is one canvas, the
+/// browser backend refuses a second window, and the Settings item used to
+/// open nothing at all there. Same view, minus the sections that are about
+/// the installed application (see `render`).
+#[cfg(target_family = "wasm")]
+pub fn open_settings(window: &mut Window, cx: &mut App) {
+    // One at a time: the shortcut still reaches here with a dialog up, and a
+    // second copy would stack on the first.
+    if window.has_active_dialog(cx) {
+        return;
+    }
+    // A dialog's body has to be given a height to scroll in; the page's own,
+    // less room for the dialog's title and margins, up to the window's size
+    // on the desktop.
+    let height = (window.viewport_size().height - px(SETTINGS_DIALOG_CHROME))
+        .min(px(SETTINGS_DIALOG_MAX_HEIGHT))
+        .max(px(SETTINGS_DIALOG_MIN_HEIGHT));
+    let view = cx.new(|cx| ZedisSettingEditor::new(window, cx));
+    ZedisDialog::new(i18n_settings(cx, "title"))
+        .w(px(SETTINGS_DIALOG_WIDTH))
+        .child(move || div().w_full().h(height).child(view.clone()))
+        .open(window, cx);
+}
+
+/// The Settings window of the desktop app (the tray opens it too, with no
+/// window of its own to open it from).
+#[cfg(not(target_family = "wasm"))]
 pub fn open_settings_window(cx: &mut App) {
     let window_size = size(px(700.), px(560.));
     let title = i18n_settings(cx, "title");

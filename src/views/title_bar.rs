@@ -20,13 +20,13 @@ use crate::assets::Assets;
 use crate::helpers::{DiagnosticsAction, MultiSearchAction, is_app_store_build};
 use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family};
 #[cfg(not(target_family = "wasm"))]
-use crate::states::{SettingsAction, i18n_shortcuts};
+use crate::states::i18n_shortcuts;
 use crate::{
     assets::CustomIconName,
     connection::{get_server, signed_in_to_bridge},
     states::{
-        GlobalEvent, LocaleAction, Route, SelectThemeAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
-        i18n_status_bar,
+        GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
+        i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{
@@ -226,12 +226,12 @@ impl ZedisTitleBar {
                 Box::new(ShortcutsAction::Toggle),
             )
             .separator();
-        // The application's own chores, none of which a page has: Settings
-        // and About are windows (a tab is one canvas and cannot open a
-        // second), the schema and viewer settings are desktop panels, and
-        // updates, the logs folder and the diagnostics bundle are about an
-        // installed program and its files. They used to be listed in the
-        // browser too, each of them silent when picked.
+        // The application's own chores, none of which a page has: the schema
+        // and viewer settings are desktop panels, About is a window (a tab
+        // is one canvas and cannot open a second), and updates, the logs
+        // folder and the diagnostics bundle are about an installed program
+        // and its files. They used to be listed in the browser too, each of
+        // them silent when picked.
         #[cfg(not(target_family = "wasm"))]
         let this = this
             // Settings: the configuration sub-views, grouped into one submenu
@@ -282,6 +282,16 @@ impl ZedisTitleBar {
                 i18n_sidebar(cx, "about"),
                 Icon::new(IconName::Info),
                 Box::new(MemuAction::About),
+            )
+            .separator();
+        // What a page keeps of all that is Settings itself, as a dialog over
+        // the page (`open_settings`) and so one item, not a submenu of three.
+        #[cfg(target_family = "wasm")]
+        let this = this
+            .menu_with_icon(
+                format!("{}…", i18n_sidebar(cx, "settings")),
+                Icon::new(IconName::Settings2),
+                Box::new(SettingsAction::Editor),
             )
             .separator();
         // The last item ends the session: the process, or — where this is a

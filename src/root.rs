@@ -55,7 +55,7 @@ use crate::views::{
 };
 use crate::views::{
     ZedisCommandPalette, ZedisContent, ZedisRecentKeysPalette, ZedisShortcutsOverlay, ZedisSidebar, ZedisTitleBar,
-    confirm_dangerous_command, open_features_dialog, open_settings_window, open_trash_dialog,
+    confirm_dangerous_command, open_features_dialog, open_settings, open_trash_dialog,
 };
 use crate::window_setup::*;
 use gpui::{
@@ -703,6 +703,28 @@ impl Zedis {
         self.save_window_placement(new_bounds, display, maximized, cx);
     }
 
+    /// Put the focus in the page before a dialog opens over it.
+    ///
+    /// The desktop's Settings is a window of its own: it takes the focus and
+    /// the main window keeps its own as it was, so there is nothing to do.
+    #[cfg(not(target_family = "wasm"))]
+    fn keep_focus_in_page(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    /// In the browser Settings is a dialog, and a dialog hands the focus
+    /// back to whatever held it when it opened. Opened from the title bar's
+    /// menu that is the menu's button — outside the element these action
+    /// handlers hang off — so once the dialog closed, ⌘, and every other
+    /// focus-routed shortcut did nothing until the page was clicked. A field
+    /// in the page that already holds the focus keeps it: that is where the
+    /// caret should come back to.
+    #[cfg(target_family = "wasm")]
+    fn keep_focus_in_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let content = self.active_content();
+        if !content.read(cx).contains_focused(window, cx) {
+            content.update(cx, |content, cx| content.reclaim_focus(window, cx));
+        }
+    }
+
     /// Toggle the command palette. Driven by a global (focus-
     /// independent) `PaletteAction` handler so `⌘K` works even when
     /// nothing is focused (e.g. right after the palette closed on ESC).
@@ -1026,8 +1048,11 @@ impl Render for Zedis {
 
                 save_ui_locale(cx, locale);
             }))
-            .on_action(cx.listener(move |_this, e: &SettingsAction, _window, cx| match e {
-                SettingsAction::Editor => open_settings_window(cx),
+            .on_action(cx.listener(move |this, e: &SettingsAction, window, cx| match e {
+                SettingsAction::Editor => {
+                    this.keep_focus_in_page(window, cx);
+                    open_settings(window, cx)
+                }
                 SettingsAction::Protos => {
                     cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                         store.update(cx, |state, cx| {

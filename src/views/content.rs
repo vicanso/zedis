@@ -31,7 +31,7 @@ use crate::{
 use crate::connection::{CommandStatus, ServerCommand};
 #[cfg(not(target_family = "wasm"))]
 use crate::views::{ZedisKeyspaceNotifications, ZedisMonitor, ZedisProtoEditor, ZedisScriptEditor, ZedisTopology};
-use gpui::{AnyView, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyView, App, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
@@ -371,6 +371,11 @@ impl ZedisContent {
             },
             _ => {}
         }
+    }
+
+    /// Whether the focus is somewhere in this content.
+    pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
     }
 
     /// Reclaim a focus path onto this content after a tab switch. The tab
