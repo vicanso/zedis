@@ -27,6 +27,10 @@ configuration's `description` (the exe) and the MSI's product name.
    nightly → none. With the repository variable `SIGNPATH_ORGANIZATION_ID`
    unset the build ships unsigned with a `::warning::` (the state before
    onboarding finishes); set without the `SIGNPATH_API_TOKEN` secret fails.
+   A tag is signed only when `SIGNPATH_RELEASE_SIGNING` is `true` as well —
+   the switch for the stretch between the dry run and the production
+   certificate (see *5. Switch release signing on*); until then a tag ships
+   unsigned with a `::warning::`, as it did before onboarding.
 3. `upload unsigned build for signing` uploads the two files as a GitHub
    Actions artifact. SignPath only signs artifacts: its GitHub App verifies
    that the artifact was produced by this run of this repository.
@@ -93,7 +97,19 @@ Settings switch.
 
 ### 3. Configure the SignPath organization (after approval)
 
-SignPath creates the organization and a user; then, on app.signpath.io:
+Approval is not the certificate. SignPath creates the organization
+(`Zedis [OSS]`) with a **self-signed test certificate** (`Test certificate
+2026`, purpose *Test signing*, subject and issuer both `Test certificate for
+'Zedis [OSS]'`) and nothing Windows trusts. The certificate issued to
+SignPath Foundation is ordered and imported only after they have reviewed a
+setup that signs — so everything below, and the dry run after it, is done on
+the test certificate first.
+
+Two e-mails arrive, in either order: the invitation to the organization, and
+a request to confirm the CI user's e-mail address. Create the SignPath
+account, accept the invitation with it, and only then confirm the CI user's
+address — the confirmation cannot be completed before the invitation is
+accepted. Then, on app.signpath.io:
 
 1. **GitHub App** — install [SignPath's GitHub App](https://github.com/apps/signpath)
    on `vicanso/zedis`. It is the source of the "built by this repository"
@@ -110,12 +126,18 @@ SignPath creates the organization and a user; then, on app.signpath.io:
    certificate, manual approval). The slugs must stay exactly those two.
    On `release-signing`, restrict the origin to this repository and to tag
    refs (`v*`) so a build from a branch cannot be release-signed.
-6. **API token** — create a CI user with the *Submitter* role on the project
-   and generate its API token. Store it as the repository secret
-   **`SIGNPATH_API_TOKEN`**.
+   The workflow names the *policies*, never a certificate: the test
+   certificate's own slug (`test_certificate_2026`) appears nowhere in this
+   repository. What has to hold is that `test-signing` uses it.
+6. **API token** — the CI user (the one whose address was confirmed above;
+   create one if the organization came without) needs the *Submitter* role
+   on both signing policies. Generate its API token and store it as the
+   repository secret **`SIGNPATH_API_TOKEN`** — the secret first.
 7. **Organization id** — from the organization's settings page (also the
    GUID in the app.signpath.io URL). Store it as the repository variable
-   **`SIGNPATH_ORGANIZATION_ID`**. Setting it turns signing on.
+   **`SIGNPATH_ORGANIZATION_ID`**, after the secret: the variable is what
+   turns signing on, and set without the secret it fails the build. It turns
+   on the dry run only; tags stay unsigned until step 5.
 
 ### 4. Dry run on the test certificate
 
@@ -133,6 +155,26 @@ Watch the `windows` jobs:
 
 The dry run signs the nightly-flavoured build from `main`; the signed files
 land on the *Development Build (Nightly)* release like any manual nightly.
+
+The nested path is the one thing in `artifact-configuration.xml` that only
+SignPath can confirm, and a dry run is half an hour. The quicker check: on
+the project, *Artifact Configurations* → *Add* → *Upload an artifact
+sample*, with a zip of a released `zedis.exe` and `zedis.msi` at its root.
+SignPath lists what it found inside the MSI; the path it shows for
+`zedis.exe` is the one the configuration must name.
+
+When the dry run has signed both architectures, write back to SignPath with
+the signing request links: that is what their review of the setup looks at
+before the production certificate is ordered.
+
+### 5. Switch release signing on
+
+Once SignPath has imported the production certificate and `release-signing`
+uses it, set the repository variable **`SIGNPATH_RELEASE_SIGNING`** to
+`true`. From the next tag on, the two `windows` jobs wait for an approval
+(see *Release day*). Not before: a tag signed against a policy with no
+certificate fails the Windows job, and the checksums, `latest.json` and the
+mirror all wait on it.
 
 ## Release day
 
@@ -153,6 +195,7 @@ a late approval delays the update manifest, not just the Windows assets.
 | Symptom | Cause / fix |
 | --- | --- |
 | `::warning::SIGNPATH_ORGANIZATION_ID is not set` on a tag build | the variable is missing (or the name drifted); the release shipped unsigned |
+| `::warning::SIGNPATH_RELEASE_SIGNING is not 'true'` on a tag build | expected until the production certificate is imported; afterwards the variable was never set (step 5) and the release shipped unsigned |
 | `SIGNPATH_API_TOKEN secret is missing` | variable set, secret not — add the token or unset the variable |
 | SignPath: artifact origin not trusted | GitHub App not installed on the repo, trusted build system not linked to the project, or the job ran outside GitHub-hosted runners |
 | SignPath: file `PFiles/zedis/zedis.exe` not found | MSI layout changed; use the path the verify step prints |

@@ -381,10 +381,20 @@ jobs:
         # Unset (SignPath onboarding not finished) ships an unsigned build with
         # a warning, so releases keep working before the application is
         # approved; set without the API-token secret is a misconfiguration.
+        #
+        # A tag signs only once SIGNPATH_RELEASE_SIGNING is `true` as well.
+        # SignPath hands a new organization a self-signed test certificate and
+        # imports the real one after it has reviewed a working setup, so for a
+        # while the organization id is set — the dry run needs it — and
+        # `release-signing` has no certificate behind it. A tag pushed in that
+        # window would fail this job, and with it the checksums, the update
+        # manifest and the mirror, which all wait for it. Until the switch is
+        # thrown a tag ships unsigned with a warning, as it did before.
         id: signpath
         shell: bash
         env:
           ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          RELEASE_SIGNING: ${{ vars.SIGNPATH_RELEASE_SIGNING }}
           HAS_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
           DISPATCH_POLICY: ${{ github.event.inputs.signpath_policy }}
         run: |
@@ -396,6 +406,10 @@ jobs:
           fi
           if [ -n "$policy" ] && [ -z "$ORGANIZATION_ID" ]; then
             echo "::warning::SIGNPATH_ORGANIZATION_ID is not set — shipping an unsigned Windows build"
+            policy=""
+          fi
+          if [ "$policy" = "release-signing" ] && [ "$RELEASE_SIGNING" != "true" ]; then
+            echo "::warning::SIGNPATH_RELEASE_SIGNING is not 'true' (the production certificate is not in place yet) — shipping an unsigned Windows build"
             policy=""
           fi
           if [ -n "$policy" ] && [ "$HAS_TOKEN" != "true" ]; then
