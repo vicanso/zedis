@@ -246,9 +246,10 @@ pub struct ZedisServerState {
     /// Query mode (All/Prefix/Exact) for key filtering
     query_mode: QueryMode,
     /// The key tree reads its keyword box as a regex. `SCAN` has no regex,
-    /// so this turns the server-side `MATCH` off and the tree filters what
-    /// comes back — a full walk of the keyspace, which is the price of a
-    /// regex and is why it is off by default.
+    /// so this turns the server-side `MATCH` off and every page of names is
+    /// narrowed on this side (`name_filter`) — a full walk of the keyspace,
+    /// which is the price of a regex and is why it is off by default. It
+    /// also takes the query mode's place: see `keyword_query_mode`.
     regex_keyword: bool,
     /// Optional filter to show only keys of one native type (`SCAN ... TYPE`).
     type_filter: Option<KeyType>,
@@ -744,6 +745,10 @@ impl ZedisServerState {
         // Cleared on server switch (but NOT in reset_scan, which a filter
         // change triggers and must preserve the just-set filter).
         self.type_filter = None;
+        // The key tree starts over with its regex toggle off on the same
+        // event; left on here, the next keyword was scanned as a regex under
+        // a box that said substring.
+        self.regex_keyword = false;
         self.reset_scan(cx);
         self.terminal = false;
         self.last_dbsize_refreshed_at = 0;
@@ -2261,6 +2266,50 @@ mod tests {
             state.scanning = true;
             state.scan_next(cx);
             assert_eq!(state.scan_times, 0, "a press during a round adds no batch");
+        });
+    }
+
+    /// A regex keyword is scanned, whichever query mode the box was left in
+    /// (#167). The mode used to decide first: Prefix sent the pattern as a
+    /// glob (`MATCH ^zedis:fn:session*`) and Exact looked it up as a key
+    /// name, and both answered "No keys found" for keys that were there.
+    /// Offline, so that the branch taken is what is under test, not a scan.
+    #[gpui::test]
+    fn a_regex_keyword_is_scanned_in_every_query_mode(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.manually_offline = true;
+            state.last_offline_notice = unix_ts();
+            let pattern = SharedString::from("^zedis:fn:session");
+
+            state.regex_keyword = true;
+            for mode in [QueryMode::All, QueryMode::Prefix, QueryMode::Exact] {
+                state.query_mode = mode;
+                state.handle_filter(pattern.clone(), false, cx);
+                assert_eq!(state.keyword(), pattern, "{mode:?}: what the tree is showing");
+                assert!(state.scanning_prefixes.is_empty(), "{mode:?}: not sent as a prefix");
+                assert!(state.key.is_none(), "{mode:?}: not looked up as a key name");
+            }
+
+            // Without the toggle the mode decides, as it always did.
+            state.regex_keyword = false;
+            state.query_mode = QueryMode::Prefix;
+            state.handle_filter(pattern.clone(), false, cx);
+            assert!(state.scanning_prefixes.contains(&pattern));
+        });
+    }
+
+    /// The regex toggle belongs to the server it was switched on for: the
+    /// key tree starts over with it off on a server switch, and a state that
+    /// kept it on scanned the next keyword as a regex under a box that said
+    /// substring.
+    #[gpui::test]
+    fn a_server_switch_turns_the_regex_keyword_off(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.regex_keyword = true;
+            state.reset(cx);
+            assert!(!state.regex_keyword());
         });
     }
 

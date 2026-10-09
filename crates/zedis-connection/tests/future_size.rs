@@ -46,7 +46,10 @@ fn an_operation_does_not_carry_its_connection_chain_on_the_stack() {
         ("key_type_and_ttl", size_of_val(&key_type_and_ttl(&at, "k"))),
         ("hash_scan", size_of_val(&hash_scan(&at, "k", None, 0, 10))),
         ("stream_info", size_of_val(&stream_info(&at, "k"))),
-        ("scan_page", size_of_val(&scan_page(&at, None, "*", 10, false, None))),
+        (
+            "scan_page",
+            size_of_val(&scan_page(&at, None, "*", 10, false, None, None)),
+        ),
         ("server_summary", size_of_val(&server_summary(&at))),
         // The node-addressed half dials per node, and a reshard opens
         // several in one loop.

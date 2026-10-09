@@ -46,6 +46,7 @@ use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
 use futures::future::join;
 use gpui::{SharedString, prelude::*};
+use regex::Regex;
 use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
@@ -211,8 +212,9 @@ impl ZedisServerState {
         // keys are already loaded (the effective offset into the overall scan),
         // plus the match pattern when a keyword filter is active.
         let offset = self.keys.len();
-        // A regex keyword has no glob to send, so the scan runs unfiltered
-        // and the tree filters what comes back.
+        // A regex keyword has no glob to send: the scan asks for every name
+        // and `name_filter` narrows each page as it arrives.
+        let name_filter = self.name_filter();
         let keyword = if self.regex_keyword() {
             SharedString::default()
         } else {
@@ -237,7 +239,7 @@ impl ZedisServerState {
                 // and keyword search; the accumulation target (`max`) stops the
                 // auto-paging loop after roughly one batch per master.
                 let count = key_scan_count as u64;
-                Ok(scan_page(&at, cursors, &pattern, count, with_ttl, type_arg).await?)
+                Ok(scan_page(&at, cursors, &pattern, count, with_ttl, type_arg, name_filter.as_ref()).await?)
             },
             move |this, result, cx| {
                 // Abandon a page from another scan session — a stale page
@@ -323,7 +325,8 @@ impl ZedisServerState {
     /// escaped to mean the same. Unescaped, `cache[v2]` asked the server for
     /// a character class, and `user:*:profile` for a wildcard whose matches
     /// the substring filter then threw away — an empty tree either way. A
-    /// regex keyword has no glob: it scans everything and the tree filters.
+    /// regex keyword has no glob: it scans everything and
+    /// [`Self::compile_name_filter`] narrows what comes back.
     fn keyword_scan_pattern(keyword: &str, prefix: bool, regex: bool) -> String {
         if keyword.is_empty() || regex {
             return "*".to_string();
@@ -334,6 +337,44 @@ impl ZedisServerState {
         } else {
             format!("*{escaped}*")
         }
+    }
+
+    /// The mode a keyword is searched in.
+    ///
+    /// A regex has one way to the server — scan every name and narrow them
+    /// here — whichever of the three modes the box was left in. Sent as a
+    /// prefix it is a glob (`MATCH ^user:\d+*`) that matches nothing, and
+    /// looked up exactly it is a key name nobody has: the tree said "No keys
+    /// found" for keys that were there, under a box that showed the regex
+    /// icon and no trace of the mode still deciding (#167).
+    fn resolve_query_mode(mode: QueryMode, regex: bool) -> QueryMode {
+        if regex { QueryMode::All } else { mode }
+    }
+
+    /// [`Self::resolve_query_mode`] for the box as it is now — what the
+    /// tree's own wording has to follow, too.
+    pub fn keyword_query_mode(&self) -> QueryMode {
+        Self::resolve_query_mode(self.query_mode, self.regex_keyword())
+    }
+
+    /// The regex a scan narrows the listed names by: the keyword, when the
+    /// box is read as one.
+    ///
+    /// Narrowed as the pages arrive rather than once they are loaded, so
+    /// that "enough keys loaded" counts matches. Counting every name the
+    /// server listed stopped the scan after one page of the keyspace, and a
+    /// match anywhere past it was "No keys found" under a menu item that
+    /// says the regex scans everything. A pattern that does not compile
+    /// narrows nothing — the tree reports it and keeps showing the keys.
+    fn compile_name_filter(keyword: &str, regex: bool) -> Option<Regex> {
+        if !regex || keyword.is_empty() {
+            return None;
+        }
+        Regex::new(keyword).ok()
+    }
+
+    fn name_filter(&self) -> Option<Regex> {
+        Self::compile_name_filter(&self.keyword, self.regex_keyword())
     }
 
     /// What an auto-refresh round changes in the loaded key set.
@@ -412,7 +453,8 @@ impl ZedisServerState {
         if self.is_background() {
             return;
         }
-        if self.query_mode == QueryMode::Exact {
+        let query_mode = self.keyword_query_mode();
+        if query_mode == QueryMode::Exact {
             self.select_key(keyword, cx);
             return;
         }
@@ -421,7 +463,8 @@ impl ZedisServerState {
         // as a glob matched nothing, so a round that walked the keyspace
         // emptied the tree; an unescaped prefix put `user1:…` in for
         // `user[1]:` and took the real `user[1]:…` keys out.
-        let pattern = Self::keyword_scan_pattern(&keyword, self.query_mode == QueryMode::Prefix, self.regex_keyword());
+        let pattern = Self::keyword_scan_pattern(&keyword, query_mode == QueryMode::Prefix, self.regex_keyword());
+        let name_filter = Self::compile_name_filter(&keyword, self.regex_keyword());
         let at = self.at();
         // Refresh roughly the keys currently shown, spread across cluster
         // masters (first_scan sends COUNT=count to *each* master), so
@@ -443,7 +486,18 @@ impl ZedisServerState {
         self.spawn_with_arg(
             ServerTask::AutoRefresh,
             pattern.clone(),
-            move || async move { Ok(scan_page(&at, None, &pattern, count as u64, with_ttl, type_arg).await?) },
+            move || async move {
+                Ok(scan_page(
+                    &at,
+                    None,
+                    &pattern,
+                    count as u64,
+                    with_ttl,
+                    type_arg,
+                    name_filter.as_ref(),
+                )
+                .await?)
+            },
             move |this, result, cx| {
                 // This refresh diffs against the live key set and *removes*
                 // keys missing from its result. If the active filter changed
@@ -516,7 +570,8 @@ impl ZedisServerState {
         );
     }
     /// Run the key tree's query: the keyword the user typed, under the
-    /// current [`QueryMode`].
+    /// current mode — [`Self::keyword_query_mode`], which a regex keyword
+    /// overrides.
     ///
     /// `refresh` says this asks the *same* question the tree is already
     /// showing (⌘R, the ⋯ menu's Reload), so the rows stay up while the scan
@@ -526,7 +581,7 @@ impl ZedisServerState {
     /// never reaches `extend_keys`, so nothing would ever take the old rows
     /// out.
     pub fn handle_filter(&mut self, keyword: SharedString, refresh: bool, cx: &mut Context<Self>) {
-        match self.query_mode {
+        match self.keyword_query_mode() {
             QueryMode::Prefix => {
                 self.begin_or_reset_scan(refresh, cx);
                 // Record what the tree is now showing. `scan_prefix` cannot do
@@ -695,12 +750,23 @@ impl ZedisServerState {
         let threshold = key_scan_count as usize * SCAN_PREFIX_FILL_PERCENT / 100;
         let task_at = self.at();
         let type_arg = self.type_filter.and_then(|t| t.scan_type_name());
+        // A folder opened under a regex keyword lists what the tree is
+        // showing: the names under it that the regex matches.
+        let name_filter = self.name_filter();
         self.spawn_with_arg(
             ServerTask::ScanPrefix,
             prefix.clone(),
             move || async move {
-                let (new_cursor, keys) =
-                    scan_page(&task_at, cursors, &pattern, key_scan_count, with_ttl, type_arg).await?;
+                let (new_cursor, keys) = scan_page(
+                    &task_at,
+                    cursors,
+                    &pattern,
+                    key_scan_count,
+                    with_ttl,
+                    type_arg,
+                    name_filter.as_ref(),
+                )
+                .await?;
                 let done = new_cursor.iter().sum::<u64>() == 0;
                 Ok((keys, new_cursor, done))
             },
@@ -1986,6 +2052,35 @@ mod auto_refresh_tests {
     }
 
     use super::*;
+
+    /// With the regex toggle on there is one way to search, whatever the
+    /// box's mode says (#167).
+    #[test]
+    fn a_regex_keyword_takes_the_place_of_the_query_mode() {
+        for mode in [QueryMode::All, QueryMode::Prefix, QueryMode::Exact] {
+            assert_eq!(
+                ZedisServerState::resolve_query_mode(mode, true),
+                QueryMode::All,
+                "{mode:?}"
+            );
+            assert_eq!(ZedisServerState::resolve_query_mode(mode, false), mode);
+        }
+    }
+
+    /// The pages of a regex scan are narrowed by the keyword itself, so the
+    /// scan's "enough loaded" counts matches and not every name listed.
+    #[test]
+    fn the_name_filter_is_the_keyword_read_as_a_regex() {
+        let filter = ZedisServerState::compile_name_filter("^zedis:fn:session", true).expect("it compiles");
+        assert!(filter.is_match("zedis:fn:session:1001"));
+        assert!(filter.is_match("zedis:fn:session:1003r"));
+        assert!(!filter.is_match("other:zedis:fn:session:1001"));
+        // A substring keyword is the server's `MATCH`, an empty box is no
+        // filter, and a half-typed pattern narrows nothing.
+        assert!(ZedisServerState::compile_name_filter("^zedis:fn:session", false).is_none());
+        assert!(ZedisServerState::compile_name_filter("", true).is_none());
+        assert!(ZedisServerState::compile_name_filter("user:(", true).is_none());
+    }
 
     fn loaded(keys: &[&str]) -> LoadedKeys {
         keys.iter()

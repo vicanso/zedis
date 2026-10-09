@@ -148,10 +148,10 @@ struct KeyTreeState {
     sort: KeySort,
     /// Flat mode: one row per key, no folders.
     flat_view: bool,
-    /// Read the keyword box as a regex over the loaded keys instead of a
-    /// substring. Mirrored onto the server state, which then scans without
-    /// `MATCH` — `SCAN` has no regex, so the filtering has to be local and
-    /// the scan has to be unfiltered for it to have anything to filter.
+    /// Read the keyword box as a regex instead of a substring. The server
+    /// state owns the switch (`regex_keyword`) and this mirrors it: it scans
+    /// without `MATCH` — `SCAN` has no regex — narrows each page of names by
+    /// the pattern, and searches that way whatever the query mode says.
     regex_mode: bool,
     /// Why the regex was ignored, when it would not compile. Shown under
     /// the keyword bar; the tree keeps showing everything rather than
@@ -420,6 +420,7 @@ impl ZedisKeyTree {
             refresh_interval_sec = option.refresh_interval_sec.unwrap_or_default();
         }
         let readonly = server_state_value.readonly();
+        let regex_mode = server_state_value.regex_keyword();
 
         // Enter always searches. × / Escape / delete-to-empty after a MATCH
         // scan starts an unfiltered SCAN — the loaded set is those hits, so
@@ -477,6 +478,7 @@ impl ZedisKeyTree {
             focus_handle,
             state: KeyTreeState {
                 query_mode,
+                regex_mode,
                 server_id: server_id.into(),
                 refresh_interval_sec,
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
@@ -701,6 +703,11 @@ impl ZedisKeyTree {
         );
 
         self.state.query_mode = server_state.query_mode();
+        // One switch, read from where the scan reads it: this view starts
+        // over on a server switch and the state does not always, and a box
+        // that said substring over a scan that ran as a regex is how a
+        // search comes back short with nothing on screen to say why.
+        self.state.regex_mode = server_state.regex_keyword();
 
         // Skip rebuild if tree ID hasn't changed (same keys)
         if !force_update && self.state.key_tree_id == key_tree_id {

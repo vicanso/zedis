@@ -4,6 +4,52 @@ How the Windows release binaries get their Authenticode signature, what lives
 where, and what to do on release day. The user-facing side is the *Code
 signing policy* section of the README; this file is the maintainer's side.
 
+## Where onboarding stands (2026-10-09)
+
+Delete this section once release signing is live. Nothing in it blocks an
+ordinary release: until step 5 below a tag ships an unsigned Windows build
+with a warning, as it always has.
+
+**Done**
+
+- SignPath accepted the project and created the organization `Zedis [OSS]`
+  with a self-signed test certificate, the project `zedis`, the policies
+  `test-signing` and `release-signing`, and the CI user `CI builds`.
+- GitHub: the secret `SIGNPATH_API_TOKEN` and the variable
+  `SIGNPATH_ORGANIZATION_ID` are set, and SignPath's GitHub App is installed
+  on this repository.
+- `artifact-configuration.xml` is saved as the project's default
+  configuration and checked against real files: a signing request submitted
+  by hand on `test-signing`, with the released v0.12.4 `zedis.exe` and
+  `zedis.msi` zipped at the root, was processed successfully.
+- `test-signing` lists `CI builds` (and the maintainer) as Submitters.
+
+**Waiting on SignPath** (support e-mailed on 2026-10-09)
+
+- The predefined *GitHub.com* trusted build system cannot be added from this
+  organization: its *Trusted Build Systems* page has no button to add one,
+  and *Link* on the project's *Trusted Build Systems* tab offers only
+  AppVeyor. Until GitHub.com is linked to the project, do not start the dry
+  run — a rejected request fails the Windows job of that nightly.
+- `release-signing` is shown as INVALID. Asked whether that is only the
+  production certificate that is not there yet.
+
+**Then, in this order**
+
+1. Link GitHub.com to the project (project → *Trusted Build Systems* →
+   *Link*) once SignPath has made it available.
+2. Dry run on the test certificate (*4. Dry run*).
+3. Send SignPath the two signing request links. They review the setup, then
+   order and import the production certificate.
+4. Check `release-signing`: valid, the production certificate assigned,
+   `CI builds` as Submitter, the maintainer as Approver, origin restricted
+   to this repository's `v*` tags.
+5. Set the repository variable `SIGNPATH_RELEASE_SIGNING` to `true`
+   (*5. Switch release signing on*).
+6. First signed release: approve both requests within 30 minutes
+   (*Release day*), then file the winget manifest that was waiting for a
+   signed installer.
+
 ## What is signed
 
 | Shipped file | Contents | Signature |
@@ -117,18 +163,28 @@ accepted. Then, on app.signpath.io:
 1. **GitHub App** — install [SignPath's GitHub App](https://github.com/apps/signpath)
    on `vicanso/zedis`. It is the source of the "built by this repository"
    verification; without it every request is rejected as untrusted.
-2. **Trusted build system** — organization settings → add the predefined
-   *GitHub.com* build system, then link it to the project.
+2. **Trusted build system** — add the predefined *GitHub.com* build system
+   to the organization (*Trusted Build Systems* in the side bar), then link
+   it on the project's *Trusted Build Systems* tab. That is what SignPath's
+   documentation says; in this organization neither place offered GitHub.com
+   and SignPath had to be asked (see *Where onboarding stands*).
 3. **Project** — slug **`zedis`** (the workflow hardcodes it), repository URL
    `https://github.com/vicanso/zedis`.
 4. **Artifact configuration** — paste `artifact-configuration.xml` from this
-   directory as the project's default configuration. Keep the file and the
+   directory as the project's default configuration (the project's
+   *Artifact Configurations* tab; it comes with one named `Initial version`
+   that signs a single exe and has to be replaced). *Edit* on that row
+   changes only the name, slug and description, and *Open XML* only shows
+   the XML. Saving validates it — that is where the subscription's rule
+   against `description` / `description-url` shows up. Keep the file and the
    pasted copy identical; the file is the reviewed one.
 5. **Signing policies** — the project comes with `test-signing` (self-signed
    test certificate, no approval) and `release-signing` (SignPath Foundation
    certificate, manual approval). The slugs must stay exactly those two.
    On `release-signing`, restrict the origin to this repository and to tag
    refs (`v*`) so a build from a branch cannot be release-signed.
+   `release-signing` is shown as INVALID until the production certificate
+   is assigned to it; do not make it valid with the test certificate.
    The workflow names the *policies*, never a certificate: the test
    certificate's own slug (`test_certificate_2026`) appears nowhere in this
    repository. What has to hold is that `test-signing` uses it.
@@ -160,11 +216,14 @@ The dry run signs the nightly-flavoured build from `main`; the signed files
 land on the *Development Build (Nightly)* release like any manual nightly.
 
 The nested path is the one thing in `artifact-configuration.xml` that only
-SignPath can confirm, and a dry run is half an hour. The quicker check: on
-the project, *Artifact Configurations* → *Add* → *Upload an artifact
-sample*, with a zip of a released `zedis.exe` and `zedis.msi` at its root.
-SignPath lists what it found inside the MSI; the path it shows for
-`zedis.exe` is the one the configuration must name.
+SignPath can confirm, and a dry run is half an hour. The quicker check, and
+the one to repeat whenever `wix/main.wxs` moves a file: on the project's
+*Artifact Configurations* tab, *Sign artifact* on the default
+configuration's row, policy `test-signing`, and upload a zip with a released
+`zedis.exe` and `zedis.msi` at its root — the layout the workflow uploads. A
+request that is processed has found every path the configuration names; a
+wrong one fails and names the path. (An interactive user can submit only
+while they are among the policy's Submitters.)
 
 When the dry run has signed both architectures, write back to SignPath with
 the signing request links: that is what their review of the setup looks at

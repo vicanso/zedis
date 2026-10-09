@@ -75,8 +75,9 @@ impl ZedisKeyTree {
         // No rows and nothing scanning. In Exact mode the lookup is the
         // selected value; otherwise a scan that has finished since the
         // server was selected found nothing (a failed connect finishes none,
-        // and says so elsewhere).
-        let text = if self.state.query_mode == QueryMode::Exact {
+        // and says so elsewhere). The mode is the one the query ran in: a
+        // regex keyword is scanned whatever the box was left on.
+        let text = if server_state.keyword_query_mode() == QueryMode::Exact {
             match server_state.value() {
                 Some(value) if value.is_expired() => i18n_key_tree(cx, "key_not_exists"),
                 _ => SharedString::default(),
@@ -299,6 +300,7 @@ impl ZedisKeyTree {
             });
         }
         let query_mode = self.state.query_mode;
+        let regex_mode = self.state.regex_mode;
         let type_filter = self.server_state.read(cx).type_filter();
         let module_types = self.server_state.read(cx).module_types_seen();
         let show_key_tree_ttl = self.server_state.read(cx).show_key_tree_ttl();
@@ -312,7 +314,7 @@ impl ZedisKeyTree {
         // Select icon based on query mode. In regex mode the mode no longer
         // reaches the server — the scan runs unfiltered — so the box says
         // "regex" instead of pretending to be one of the three.
-        let icon = if self.state.regex_mode {
+        let icon = if regex_mode {
             Icon::new(CustomIconName::Regex)
         } else {
             match query_mode {
@@ -415,21 +417,25 @@ impl ZedisKeyTree {
                     i18n_key_tree(cx, "query_mode"),
                     window,
                     cx,
-                    move |submenu, _window, _cx| {
-                        submenu
-                            .menu_element_with_check(query_mode == QueryMode::All, Box::new(QueryMode::All), |_, cx| {
-                                Label::new(i18n_key_tree(cx, "query_mode_all"))
-                            })
-                            .menu_element_with_check(
-                                query_mode == QueryMode::Prefix,
-                                Box::new(QueryMode::Prefix),
-                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_prefix")),
+                    move |submenu, _window, cx| {
+                        // A regex keyword takes the mode's place, so the
+                        // three are shown and cannot be picked while it is
+                        // on: choosing one changed nothing on screen and
+                        // decided, unseen, what the next search sent.
+                        [
+                            (QueryMode::All, "query_mode_all"),
+                            (QueryMode::Prefix, "query_mode_prefix"),
+                            (QueryMode::Exact, "query_mode_exact"),
+                        ]
+                        .into_iter()
+                        .fold(submenu, |submenu, (mode, label)| {
+                            submenu.menu_with_check_and_disabled(
+                                i18n_key_tree(cx, label),
+                                query_mode == mode,
+                                Box::new(mode),
+                                regex_mode,
                             )
-                            .menu_element_with_check(
-                                query_mode == QueryMode::Exact,
-                                Box::new(QueryMode::Exact),
-                                |_, cx| Label::new(i18n_key_tree(cx, "query_mode_exact")),
-                            )
+                        })
                     },
                 )
                 .submenu_with_icon(

@@ -1695,6 +1695,25 @@ impl RedisClient {
         with_ttl: bool,
         type_filter: Option<&str>,
     ) -> Result<(Vec<u64>, Vec<(String, String, i64)>)> {
+        self.scan_matching(cursors, pattern, count, with_ttl, type_filter, None)
+            .await
+    }
+    /// [`Self::scan`], keeping only the names `name_filter` matches.
+    ///
+    /// `SCAN` cannot be asked a regex: the server lists every name `MATCH`
+    /// lets through and the narrowing happens here — before the `TYPE` /
+    /// `TTL` pipeline, so a key the regex drops costs no command. The
+    /// cursors are the server's, so a round may come back with no rows and
+    /// more to scan, exactly as a sparse `MATCH` does.
+    pub async fn scan_matching(
+        &self,
+        cursors: Option<Vec<u64>>,
+        pattern: &str,
+        count: u64,
+        with_ttl: bool,
+        type_filter: Option<&str>,
+        name_filter: Option<&Regex>,
+    ) -> Result<(Vec<u64>, Vec<(String, String, i64)>)> {
         // Server-side TYPE filter on Redis 6.0+; the client-side `retain` below
         // covers older servers (the per-key TYPE is fetched regardless). TYPE
         // filters within each COUNT batch, so a sparse type just needs more
@@ -1704,7 +1723,12 @@ impl RedisClient {
         } else {
             None
         };
-        let (new_cursors, keys_per_node) = self.scan_nodes(cursors, pattern, count, server_type).await?;
+        let (new_cursors, mut keys_per_node) = self.scan_nodes(cursors, pattern, count, server_type).await?;
+        if let Some(regex) = name_filter {
+            for keys in &mut keys_per_node {
+                keys.retain(|key| regex.is_match(key));
+            }
+        }
 
         // Pipeline TYPE (+ optional TTL) per key in one RTT per master. A
         // server-side TYPE filter has already named every key's type, so

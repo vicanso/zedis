@@ -27,6 +27,7 @@ use crate::manager::{ExpireCondition, HeatMetric, HeatProbe};
 use crate::server_db::ServerDb;
 use futures::stream::{self, StreamExt};
 use redis::{cmd, pipe};
+use regex::Regex;
 use tracing::{debug, warn};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -57,6 +58,12 @@ const TYPE_CONCURRENCY: usize = 100;
 pub type ScanPage = (Vec<u64>, Vec<(String, String, i64)>);
 
 /// One round of the key tree's scan; `cursors` is `None` to start one.
+///
+/// `name_filter` is the keyword box read as a regex: the names `pattern`
+/// let through are narrowed by it here, since `SCAN` has no regex, and only
+/// the ones kept are asked their type and TTL. A round can therefore answer
+/// no rows and cursors that are not done — the caller pages on, as it does
+/// for a `MATCH` that is sparse.
 pub async fn scan_page(
     at: &ServerDb,
     cursors: Option<Vec<u64>>,
@@ -64,10 +71,11 @@ pub async fn scan_page(
     count: u64,
     with_ttl: bool,
     type_filter: Option<&str>,
+    name_filter: Option<&Regex>,
 ) -> Result<ScanPage> {
     at.client()
         .await?
-        .scan(cursors, pattern, count, with_ttl, type_filter)
+        .scan_matching(cursors, pattern, count, with_ttl, type_filter, name_filter)
         .await
 }
 

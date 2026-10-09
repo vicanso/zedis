@@ -23,6 +23,7 @@
 //! CI runs the full matrix in `.github/workflows/integration.yml`.
 
 use redis::{FromRedisValue, cmd};
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Once;
@@ -3401,21 +3402,21 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
         assert!(!encoding.is_empty(), "OBJECT ENCODING answers on a standalone");
 
         // The scan is what the key tree pages with.
-        let (cursors, rows) = scan_page(&at, None, &format!("{prefix}:*"), 100, true, None)
+        let (cursors, rows) = scan_page(&at, None, &format!("{prefix}:*"), 100, true, None, None)
             .await
             .expect("scan");
         assert_eq!(cursors.iter().sum::<u64>(), 0, "one round covered two keys");
         let mut names: Vec<&str> = rows.iter().map(|(key, _, _)| key.as_str()).collect();
         names.sort();
         assert_eq!(names, [format!("{prefix}:h"), format!("{prefix}:s")]);
-        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, false, Some("hash"))
+        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, false, Some("hash"), None)
             .await
             .expect("scan")
             .1;
         assert_eq!(typed.len(), 1, "the TYPE filter is the server's: {typed:?}");
         // Filtered with TTLs: the type comes from the filter, the TTL still
         // from the server (a hash with no expiry answers -1).
-        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, true, Some("hash"))
+        let typed = scan_page(&at, None, &format!("{prefix}:*"), 100, true, Some("hash"), None)
             .await
             .expect("scan")
             .1;
@@ -3423,6 +3424,28 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
             typed,
             [(format!("{prefix}:h"), "hash".to_string(), -1)],
             "type named by the filter, TTL asked of the server"
+        );
+        // The keyword box read as a regex. `SCAN` has none, so the names are
+        // narrowed on this side, and the type and TTL that come back belong
+        // to the key that was kept — they are asked after the narrowing.
+        let only_hash = Regex::new(&format!("^{}:h$", regex::escape(&prefix))).expect("regex");
+        let (cursors, kept) = scan_page(&at, None, &format!("{prefix}:*"), 100, true, None, Some(&only_hash))
+            .await
+            .expect("scan");
+        assert_eq!(cursors.iter().sum::<u64>(), 0, "the cursors are the server's");
+        assert_eq!(
+            kept,
+            [(format!("{prefix}:h"), "hash".to_string(), -1)],
+            "one name passes the regex, with its own type and TTL"
+        );
+        let no_such = Regex::new("^no-such-name$").expect("regex");
+        assert!(
+            scan_page(&at, None, &format!("{prefix}:*"), 100, true, None, Some(&no_such))
+                .await
+                .expect("scan")
+                .1
+                .is_empty(),
+            "a regex nothing matches keeps nothing"
         );
 
         // Renamed, with and without the overwrite the dialog offers.
@@ -3510,7 +3533,7 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
             "a small prefix is deleted in one walk"
         );
         assert!(
-            scan_page(&at, None, &format!("{prefix}:*"), 1000, false, None)
+            scan_page(&at, None, &format!("{prefix}:*"), 1000, false, None, None)
                 .await
                 .expect("scan")
                 .1
@@ -5625,6 +5648,41 @@ fn cluster_discovers_nodes_and_scans_every_master() {
             cursors = Some(next);
         }
         assert_eq!(found.len(), keys.len(), "every key on every master");
+        // The same walk narrowed by a regex. Each master's page loses
+        // different rows, and the TYPE / TTL pipeline is built per master
+        // from what is left: a row has to come back with its own key's
+        // answers, not its neighbour's.
+        cmd("EXPIRE")
+            .arg(&keys[4])
+            .arg(600)
+            .exec_async(&mut c)
+            .await
+            .expect("expire");
+        let even = Regex::new(&format!(r"^{}:\d*[02468]$", regex::escape(&prefix))).expect("regex");
+        let mut kept: Vec<(String, String, i64)> = Vec::new();
+        let mut cursors = None;
+        loop {
+            let (next, page) = client
+                .scan_matching(cursors, &format!("{prefix}:*"), 10, true, None, Some(&even))
+                .await
+                .expect("scan");
+            kept.extend(page);
+            if next.iter().sum::<u64>() == 0 {
+                break;
+            }
+            cursors = Some(next);
+        }
+        let names: HashSet<&str> = kept.iter().map(|(key, _, _)| key.as_str()).collect();
+        let expected: HashSet<&str> = keys.iter().step_by(2).map(String::as_str).collect();
+        assert_eq!(names, expected, "the even-numbered keys and no others");
+        for (key, kind, ttl) in &kept {
+            assert_eq!(kind, "string", "{key}");
+            if *key == keys[4] {
+                assert!((1..=600).contains(ttl), "{key} is the one that expires: {ttl}");
+            } else {
+                assert_eq!(*ttl, -1, "{key} has no expiry");
+            }
+        }
         let total = client.dbsize().await.expect("dbsize");
         assert!(total >= keys.len() as u64, "dbsize sums the masters: {total}");
         // The routed DBSIZE (redis-rs fans it out and sums) must agree with

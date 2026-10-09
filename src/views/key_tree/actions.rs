@@ -70,8 +70,9 @@ pub(super) enum KeyTreeAction {
     SetSort(SharedString),
     /// One row per key with its full name, instead of folders.
     ToggleFlatView,
-    /// Read the keyword box as a regex over the loaded keys. Turning it on
-    /// drops the server-side `MATCH`, so the scan reloads unfiltered.
+    /// Read the keyword box as a regex. Turning it on drops the server-side
+    /// `MATCH` and the query mode with it: the scan lists every name and
+    /// keeps the ones the pattern matches.
     ToggleRegexMode,
     /// Multi-select: open the batch tag colour dialog for the current
     /// selection (tag only — notes on each key are preserved).
@@ -277,8 +278,8 @@ impl Render for ZedisKeyTree {
                     let on = !this.state.regex_mode;
                     this.state.regex_mode = on;
                     // The server side has to agree: with a regex there is no
-                    // glob to send, so the scan runs unfiltered and the whole
-                    // filtering happens on what came back.
+                    // glob to send, so the scan asks for every name and
+                    // narrows the pages by the pattern as they come back.
                     this.server_state
                         .update(cx, |state, cx| state.set_regex_keyword(on, cx));
                     if this.state.keyword.is_empty() {
