@@ -16,8 +16,11 @@ Both architectures (x86_64, aarch64) go through the same steps as two
 independent signing requests. Nightly builds are not signed.
 
 The signer shown by Windows is **SignPath Foundation**, the certificate
-holder; the program name in the UAC prompt comes from the artifact
-configuration's `description` (the exe) and the MSI's product name.
+holder. The description inside the signature — what a UAC prompt shows as
+the program name — is not ours to choose: the open source subscription
+writes it itself, and its URL, and rejects an artifact configuration that
+sets `description` or `description-url` on `<authenticode-sign>`. The
+configuration therefore says only *what* to sign.
 
 ## The pipeline (`.github/workflows/publish.yml`, `windows` job)
 

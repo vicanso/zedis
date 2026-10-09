@@ -18,6 +18,13 @@
   of publish.yml prints that path from the signed MSI; if main.wxs ever
   moves the file, update it here.
 
+  No attributes on <authenticode-sign>: the open source subscription writes
+  the signature's description and its URL itself (a watermark it enforces)
+  and refuses a configuration that sets either — "The attribute
+  'description' / 'description-url' ... would override the
+  automatically-generated watermark enforced by your current subscription
+  type".
+
   This file is the reviewed copy. SignPath reads the one pasted into
   app.signpath.io -> project "zedis" -> Artifact configurations; keep the two
   identical (see README.md next to this file).
@@ -25,13 +32,13 @@
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <zip-file>
     <pe-file path="zedis.exe">
-      <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+      <authenticode-sign />
     </pe-file>
     <msi-file path="zedis.msi">
       <pe-file path="PFiles/zedis/zedis.exe">
-        <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+        <authenticode-sign />
       </pe-file>
-      <authenticode-sign description="Zedis" description-url="https://zedis.net" />
+      <authenticode-sign />
     </msi-file>
   </zip-file>
 </artifact-configuration>
