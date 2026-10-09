@@ -21,6 +21,7 @@
 //! spot scripts that keep getting flushed out of Redis's cache.
 //! Server cache status is probed via `SCRIPT EXISTS` / `SCRIPT LOAD`.
 
+use crate::helpers::reads_clipboard_on_demand;
 use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
@@ -945,14 +946,18 @@ impl ZedisLuaScriptLibrary {
                             .disabled(self.scripts.is_empty())
                             .on_click(cx.listener(|this, _, w, cx| this.export_to_clipboard(w, cx))),
                     )
-                    .child(
-                        Button::new("lua-import")
-                            .ghost()
-                            .small()
-                            .label(i18n_lua_scripts(cx, "import"))
-                            .tooltip(i18n_lua_scripts(cx, "import_tooltip"))
-                            .on_click(cx.listener(|this, _, w, cx| this.import_from_clipboard(w, cx))),
-                    )
+                    // Import reads the clipboard at the press, which a page
+                    // may not (`reads_clipboard_on_demand`).
+                    .when(reads_clipboard_on_demand(), |this| {
+                        this.child(
+                            Button::new("lua-import")
+                                .ghost()
+                                .small()
+                                .label(i18n_lua_scripts(cx, "import"))
+                                .tooltip(i18n_lua_scripts(cx, "import_tooltip"))
+                                .on_click(cx.listener(|this, _, w, cx| this.import_from_clipboard(w, cx))),
+                        )
+                    })
                     .when(can_run, |this| {
                         this.child(
                             Button::new("lua-flush")

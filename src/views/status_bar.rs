@@ -23,7 +23,9 @@ use crate::{
         WRITE_UNLOCK_SECS, get_server,
     },
     constants::STATUS_BAR_HEIGHT,
-    helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing, resolve_tag_chip, with_hot_key},
+    helpers::{
+        format_lag_bytes, get_mono_font_family, group_thousands, has_pubsub, pacing, resolve_tag_chip, with_hot_key,
+    },
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, SOFT_WRAP_MAX_BYTES,
         ServerEvent, ServerTask, ServerToolsAction, ServerView, ViewMode, ZedisGlobalStore, ZedisServerState,
@@ -789,14 +791,23 @@ impl ZedisStatusBar {
             })
         };
 
+        // A panel this build does not have is not listed
+        // (`ServerView::in_this_build`): the browser has no `MONITOR`, no
+        // keyspace events, no Pub/Sub and no Topology, and an entry that
+        // opened a page saying so was an entry to nothing.
         let observability: Vec<ToolEntry> = [
-            tool(
-                i18n_monitor(cx, "title"),
-                Icon::new(CustomIconName::Radar),
-                ServerToolsAction::Monitor,
-                ServerView::Monitor.required_commands(),
-                false,
-            ),
+            ServerView::Monitor
+                .in_this_build()
+                .then(|| {
+                    tool(
+                        i18n_monitor(cx, "title"),
+                        Icon::new(CustomIconName::Radar),
+                        ServerToolsAction::Monitor,
+                        ServerView::Monitor.required_commands(),
+                        false,
+                    )
+                })
+                .flatten(),
             tool(
                 i18n_server_load(cx, "title"),
                 Icon::new(CustomIconName::Zap),
@@ -814,13 +825,18 @@ impl ZedisStatusBar {
             ),
             // `notify-keyspace-events` may be empty: the panel offers a
             // one-click Enable. Its hard dependency is SUBSCRIBE.
-            tool(
-                i18n_keyspace_notifications(cx, "title"),
-                Icon::new(CustomIconName::AudioWaveform),
-                ServerToolsAction::KeyspaceNotifications,
-                ServerView::KeyspaceNotifications.required_commands(),
-                false,
-            ),
+            ServerView::KeyspaceNotifications
+                .in_this_build()
+                .then(|| {
+                    tool(
+                        i18n_keyspace_notifications(cx, "title"),
+                        Icon::new(CustomIconName::AudioWaveform),
+                        ServerToolsAction::KeyspaceNotifications,
+                        ServerView::KeyspaceNotifications.required_commands(),
+                        false,
+                    )
+                })
+                .flatten(),
             // RedisTimeSeries only.
             tool(
                 i18n_timeseries(cx, "explorer_title"),
@@ -831,13 +847,17 @@ impl ZedisStatusBar {
             ),
             // Pub/Sub is the editor suite's channel mode, mirrored here next
             // to its observability siblings.
-            tool(
-                i18n_key_tree(cx, "pubsub_mode"),
-                Icon::new(CustomIconName::Rss),
-                ServerToolsAction::PubsubMode,
-                &[],
-                false,
-            ),
+            has_pubsub()
+                .then(|| {
+                    tool(
+                        i18n_key_tree(cx, "pubsub_mode"),
+                        Icon::new(CustomIconName::Rss),
+                        ServerToolsAction::PubsubMode,
+                        &[],
+                        false,
+                    )
+                })
+                .flatten(),
             tool(
                 i18n_server_info(cx, "title"),
                 Icon::new(IconName::Info),
@@ -896,7 +916,10 @@ impl ZedisStatusBar {
         .flatten()
         .collect();
 
+        #[cfg(not(target_family = "wasm"))]
         let mut data: Vec<ToolEntry> = Vec::new();
+        #[cfg(target_family = "wasm")]
+        let data: Vec<ToolEntry> = Vec::new();
         // The local recycle bin — a dialog, and not in the browser, which
         // keeps no bin (`ZedisAppState::soft_delete`).
         #[cfg(not(target_family = "wasm"))]
@@ -907,6 +930,10 @@ impl ZedisStatusBar {
             &[],
             false,
         ));
+        // Import, export and compare each open a window of their own, over
+        // files or a second server: desktop features, like the bin above.
+        // With all four out, the browser's menu has no "Keys & Data" group.
+        #[cfg(not(target_family = "wasm"))]
         data.extend(
             [
                 // RESTORE: disabled, not hidden, on a read-only connection so
@@ -1057,7 +1084,7 @@ impl ZedisStatusBar {
         }
         // The page adapts to Cluster / Sentinel / Standalone; absent only
         // while the server type is unknown.
-        if *supports_topology {
+        if *supports_topology && ServerView::Topology.in_this_build() {
             menu = menu.menu_with_icon(
                 topology_label,
                 Icon::new(CustomIconName::Network),

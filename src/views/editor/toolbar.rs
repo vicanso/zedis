@@ -17,6 +17,7 @@
 //! Split out of `editor.rs`.
 
 use super::*;
+use crate::helpers::has_file_dialogs;
 
 /// The keystroke gpui-component binds to Replace in its input context, shown
 /// next to the menu entry so the shortcut can be learned from it.
@@ -319,9 +320,10 @@ impl ZedisEditor {
             _ => Vec::new(),
         };
         let bitmap_item = bitmap_candidate && !bitmap_view;
-        let export_item = has_bytes_value && !preview;
+        // Export and import are a file each way (`has_file_dialogs`).
+        let export_item = has_file_dialogs() && has_bytes_value && !preview;
         let diff_with_server_item = has_bytes_value && !preview;
-        let import_item = has_bytes_value && !preview && !self.readonly;
+        let import_item = has_file_dialogs() && has_bytes_value && !preview && !self.readonly;
         let rename_item = !self.readonly;
         // Cross-server copy reads the source and writes a (possibly
         // different, writable) target, so it stays available even when the

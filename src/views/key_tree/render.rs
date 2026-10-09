@@ -694,11 +694,14 @@ impl ZedisKeyTree {
                         submenu
                     },
                 )
-                .menu_element_with_icon(
-                    Icon::new(CustomIconName::Rss),
-                    Box::new(KeyTreeAction::ChangeChannelMode),
-                    move |_, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
-                )
+                // Not where the build has no Pub/Sub panel to switch to.
+                .when(has_pubsub(), |menu| {
+                    menu.menu_element_with_icon(
+                        Icon::new(CustomIconName::Rss),
+                        Box::new(KeyTreeAction::ChangeChannelMode),
+                        move |_, cx| Label::new(i18n_key_tree(cx, "pubsub_mode")),
+                    )
+                })
                 .separator()
                 // A check replaces the icon while the mode is on — the same
                 // shape the multi-select entry above uses, since the menu API

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::helpers::has_file_dialogs;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{AiEndpoint, suggest_command};
 use crate::{
@@ -1305,14 +1306,17 @@ impl Render for ZedisTerminal {
                             .tooltip(i18n_terminal(cx, "copy_output_tooltip"))
                             .on_click(cx.listener(|this, _, window, cx| this.copy_output(window, cx))),
                     )
-                    .child(
-                        Button::new("term-save-output")
-                            .label(i18n_terminal(cx, "save_output"))
-                            .ghost()
-                            .small()
-                            .tooltip(i18n_terminal(cx, "save_output_tooltip"))
-                            .on_click(cx.listener(|this, _, window, cx| this.save_output(window, cx))),
-                    )
+                    // A file in Downloads, revealed in the file manager.
+                    .when(has_file_dialogs(), |this| {
+                        this.child(
+                            Button::new("term-save-output")
+                                .label(i18n_terminal(cx, "save_output"))
+                                .ghost()
+                                .small()
+                                .tooltip(i18n_terminal(cx, "save_output_tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| this.save_output(window, cx))),
+                        )
+                    })
                     .child(
                         Button::new("term-clear-output")
                             .label("Clear")
@@ -1344,13 +1348,17 @@ impl Render for ZedisTerminal {
                             .appearance(false)
                             .bordered(false)
                             .context_menu(|menu, _window, _cx| {
-                                menu.menu("Copy", Box::new(Copy))
+                                let menu = menu
+                                    .menu("Copy", Box::new(Copy))
                                     .menu("Select All", Box::new(SelectAll))
                                     .separator()
-                                    .menu("Copy Output", Box::new(TerminalAction::CopyAll))
-                                    .menu("Save Output…", Box::new(TerminalAction::Save))
-                                    .separator()
-                                    .menu("Clear", Box::new(TerminalAction::Clear))
+                                    .menu("Copy Output", Box::new(TerminalAction::CopyAll));
+                                let menu = if has_file_dialogs() {
+                                    menu.menu("Save Output…", Box::new(TerminalAction::Save))
+                                } else {
+                                    menu
+                                };
+                                menu.separator().menu("Clear", Box::new(TerminalAction::Clear))
                             }),
                     ),
                 ),

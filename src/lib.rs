@@ -10,6 +10,7 @@
 // own entry in `zedis-web` and calls `launch` (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 use crate::connection::install_crypto_provider;
+use crate::connection::sign_out_of_bridge;
 use crate::connection::{get_server, get_servers};
 use crate::db::LuaScriptManager;
 #[cfg(not(target_family = "wasm"))]
@@ -26,8 +27,8 @@ use crate::helpers::{
     set_datetime_prefs, take_config_recoveries, with_app_identity,
 };
 use crate::states::{
-    HINT_WELCOME, Route, ServerView, ZedisAppState, ZedisGlobalStore, flush_app_state_on_quit,
-    update_app_state_and_save_quiet,
+    GlobalEvent, HINT_WELCOME, NotificationAction, Route, ServerView, ZedisAppState, ZedisGlobalStore,
+    flush_app_state_on_quit, update_app_state_and_save_quiet,
 };
 use crate::views::open_about_window;
 use gpui::{App, WindowBounds, WindowOptions, prelude::*, px};
@@ -416,6 +417,27 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
             if let Some(window) = cx.active_window() {
                 let _ = window.update(cx, |_, window, _cx| window.remove_window());
             }
+        }
+        MemuAction::SignOut => {
+            // The transport sends the page back to its sign-in form itself,
+            // so only a failure has anything left to say here: the login is
+            // still good, and a menu item that seemed to do nothing would
+            // leave the user thinking it was not.
+            cx.spawn(async move |cx| {
+                if let Err(e) = sign_out_of_bridge().await {
+                    error!(error = %e, "sign out failed");
+                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                        let locale = store.read(cx).locale().to_string();
+                        let message = rust_i18n::t!("sidebar.sign_out_failed", error = e.to_string(), locale = &locale);
+                        store.update(cx, |_state, cx| {
+                            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                                message.to_string().into(),
+                            )));
+                        });
+                    });
+                }
+            })
+            .detach();
         }
         MemuAction::OpenLogs => {
             #[cfg(not(target_family = "wasm"))]

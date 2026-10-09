@@ -19,6 +19,7 @@
 //! `FCALL_RO`. New library and Edit share the same Lua editor; the
 //! only difference is pre-fill and whether `REPLACE` defaults on.
 
+use crate::helpers::reads_clipboard_on_demand;
 use crate::views::{bridge_danger, confirm_dangerous_command, unavailable_chip};
 use crate::{
     assets::CustomIconName,
@@ -818,15 +819,19 @@ impl ZedisFunctionEditor {
                                 .disabled(self.submitting || self.libraries.is_empty())
                                 .on_click(cx.listener(|this, _, w, cx| this.dump_to_clipboard(w, cx))),
                         )
-                        .child(
-                            Button::new("functions-restore")
-                                .ghost()
-                                .small()
-                                .label(i18n_functions(cx, "restore"))
-                                .tooltip(i18n_functions(cx, "restore_tooltip"))
-                                .disabled(self.submitting)
-                                .on_click(cx.listener(|this, _, w, cx| this.restore_from_clipboard(w, cx))),
-                        )
+                        // Restore reads the clipboard at the press, which a
+                        // page may not (`reads_clipboard_on_demand`).
+                        .when(reads_clipboard_on_demand(), |this| {
+                            this.child(
+                                Button::new("functions-restore")
+                                    .ghost()
+                                    .small()
+                                    .label(i18n_functions(cx, "restore"))
+                                    .tooltip(i18n_functions(cx, "restore_tooltip"))
+                                    .disabled(self.submitting)
+                                    .on_click(cx.listener(|this, _, w, cx| this.restore_from_clipboard(w, cx))),
+                            )
+                        })
                         .child(
                             Button::new("functions-flush")
                                 .ghost()

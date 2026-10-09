@@ -36,6 +36,7 @@
 
 use crate::components::KeyTypeBadge;
 use crate::connection::{MatchLocation, ServerDb, ValueMatch, ValueSearchRound, scan_values_round, value_preview};
+use crate::helpers::has_file_dialogs;
 use crate::helpers::{build_csv, get_mono_font_family};
 use crate::states::{
     KeyType, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common,
@@ -944,7 +945,7 @@ impl Render for ZedisValueSearch {
             .child(div().w(px(220.)).child(Input::new(&self.prefix_input).small()))
             .child(div().flex_1().child(Input::new(&self.query_input).small()))
             .child(action)
-            .when(!self.matches.is_empty(), |this| {
+            .when(has_file_dialogs() && !self.matches.is_empty(), |this| {
                 this.child(
                     Button::new("vs-export-csv")
                         .outline()

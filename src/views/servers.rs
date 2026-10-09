@@ -24,7 +24,7 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{
     EditorAction, card_background, decrypt_share, format_duration_units, format_unix_secs, get_mono_font_family,
-    is_share_token, resolve_path, resolve_tag_chip, unix_ts,
+    has_file_dialogs, is_share_token, resolve_path, resolve_tag_chip, unix_ts,
 };
 use crate::states::{
     EDIT_SERVER_QUERY, GlobalEvent, NotificationAction, Route, ZedisGlobalStore, dialog_button_props,
@@ -501,7 +501,19 @@ impl Render for ImportServersBody {
                     }
                 }
             })
-            .child(Label::new(i18n_servers(cx, "import_hint")).text_xs())
+            // A page takes what is pasted; a path it cannot read and a file
+            // dropped on it never arrives, so its hint names neither.
+            .child(
+                Label::new(i18n_servers(
+                    cx,
+                    if has_file_dialogs() {
+                        "import_hint"
+                    } else {
+                        "import_hint_web"
+                    },
+                ))
+                .text_xs(),
+            )
             .child(Textarea::new(&self.json_state).appearance(true))
             .when(needs_pass, |this| {
                 this.child(

@@ -14,6 +14,7 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{ServerCommand, get_server};
+use crate::helpers::has_file_dialogs;
 use crate::helpers::{build_csv, format_unix_millis_with, get_mono_font_family, pacing};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{
@@ -970,14 +971,16 @@ impl Render for ZedisMetrics {
                                                 })),
                                         )
                                     })
-                                    .child(
-                                        Button::new("metrics-export-csv")
-                                            .ghost()
-                                            .small()
-                                            .icon(CustomIconName::Download)
-                                            .tooltip(i18n_metrics(cx, "export_tooltip"))
-                                            .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
-                                    )
+                                    .when(has_file_dialogs(), |this| {
+                                        this.child(
+                                            Button::new("metrics-export-csv")
+                                                .ghost()
+                                                .small()
+                                                .icon(CustomIconName::Download)
+                                                .tooltip(i18n_metrics(cx, "export_tooltip"))
+                                                .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
+                                        )
+                                    })
                                     .child(
                                         h_flex().gap_1().children(
                                             MetricsRange::ALL.into_iter().filter(|range| range.offered()).map(

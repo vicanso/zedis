@@ -26,6 +26,7 @@
 
 use crate::connection::{ServerDb, info_everything};
 use crate::error::Error;
+use crate::helpers::has_file_dialogs;
 use crate::helpers::{KvDelta, build_csv, get_mono_font_family, kv_diff, now_clock};
 use crate::states::{
     InfoSnapshot, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip,
@@ -497,17 +498,19 @@ impl ZedisServerInfo {
                                 this.take_snapshot(cx);
                             })),
                     )
-                    .child(
-                        Button::new("server-info-export")
-                            .outline()
-                            .small()
-                            .icon(Icon::new(CustomIconName::Download))
-                            .label(i18n_common(cx, "export"))
-                            .disabled(self.visible_count == 0)
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.export_csv(cx);
-                            })),
-                    )
+                    .when(has_file_dialogs(), |this| {
+                        this.child(
+                            Button::new("server-info-export")
+                                .outline()
+                                .small()
+                                .icon(Icon::new(CustomIconName::Download))
+                                .label(i18n_common(cx, "export"))
+                                .disabled(self.visible_count == 0)
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.export_csv(cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("server-info-refresh")
                             .outline()

@@ -43,6 +43,9 @@ pub enum MemuAction {
     Hide,
     HideOthers,
     ShowAll,
+    /// End the bridge login and return to its sign-in form — what the web
+    /// version's menu offers in the place of Quit, which a tab cannot do.
+    SignOut,
 }
 
 /// Navigation. `Back` (bound to `escape`) mirrors the "back to editor"
@@ -435,12 +438,12 @@ const fn listed_in_reference(_hot_key: &HotKey) -> bool {
     true
 }
 /// In the browser, not the ones that cannot work there: a feature the web
-/// build leaves out (multi-database search), and a chord the browser keeps
-/// for itself — listing ⌘N as "New key" teaches people to open a browser
-/// window.
+/// build leaves out (multi-database search; Settings, which is a window a
+/// page cannot open), and a chord the browser keeps for itself — listing ⌘N
+/// as "New key" teaches people to open a browser window.
 #[cfg(target_family = "wasm")]
 fn listed_in_reference(hot_key: &HotKey) -> bool {
-    hot_key.id != "multi_search" && !browser_keeps(hot_key.effective())
+    !matches!(hot_key.id, "multi_search" | "settings") && !browser_keeps(hot_key.effective())
 }
 
 /// A chord a page never receives: ⌘N ⌘T ⌘W ⌘Q on a Mac, the Ctrl forms

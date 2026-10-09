@@ -405,6 +405,11 @@ pub trait BridgeTransport: Send + Sync + 'static {
 
     /// Close it before it would have closed itself.
     fn lock_writes(&self, server_id: String) -> BoxFuture<'static, Result<(), BridgeError>>;
+
+    /// End this caller's login with the bridge and go back to where one is
+    /// asked for. The bridge forgets the login, not just the page: a cookie
+    /// dropped on one side alone would still be good until it lapsed.
+    fn sign_out(&self) -> BoxFuture<'static, Result<(), BridgeError>>;
 }
 
 /// The transport every bridge connection in this process uses.
@@ -428,6 +433,19 @@ pub fn set_bridge_transport(transport: Arc<dyn BridgeTransport>) {
 /// The installed transport, or `None` before [`set_bridge_transport`].
 pub fn bridge_transport() -> Option<Arc<dyn BridgeTransport>> {
     TRANSPORT.get().cloned()
+}
+
+/// Whether this process reaches Redis through a bridge it signed in to —
+/// which is to say, whether it is the page. The desktop dials Redis itself
+/// and has no login to end, so "Sign out" is drawn where this says so.
+pub fn signed_in_to_bridge() -> bool {
+    TRANSPORT.get().is_some()
+}
+
+/// End the bridge login ([`BridgeTransport::sign_out`]).
+pub async fn sign_out_of_bridge() -> Result<(), BridgeError> {
+    let transport = bridge_transport().ok_or_else(|| BridgeError::transport("no bridge transport"))?;
+    transport.sign_out().await
 }
 
 /// How the browser persists the server list.
@@ -858,6 +876,21 @@ mod tests {
         fn lock_writes(&self, _server_id: String) -> BoxFuture<'static, Result<(), BridgeError>> {
             Box::pin(async { Ok(()) })
         }
+
+        fn sign_out(&self) -> BoxFuture<'static, Result<(), BridgeError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// The desktop dials Redis itself: with no transport installed there is
+    /// no bridge login, so nothing offers "Sign out" and asking for one is
+    /// an error rather than a silent success. (No test in this crate
+    /// installs a transport process-wide — they hand theirs to `BridgeConn`.)
+    #[test]
+    fn without_a_bridge_there_is_no_login_to_end() {
+        assert!(!signed_in_to_bridge());
+        let err = smol::block_on(sign_out_of_bridge()).expect_err("nothing to sign out of");
+        assert_eq!(err.kind, BridgeErrorKind::Transport);
     }
 
     fn frames(frames: Vec<Vec<u8>>) -> Result<BridgeReply, BridgeError> {

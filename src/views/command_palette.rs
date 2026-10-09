@@ -19,7 +19,7 @@
 
 use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
-use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query};
+use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, has_pubsub, has_secondary_windows, prepare_fuzzy_query};
 use crate::states::{
     Route, ServerView, SettingsAction, ZedisGlobalStore, ZedisServerState, command_status_label, i18n_command_palette,
     i18n_shortcuts,
@@ -403,6 +403,11 @@ impl ZedisCommandPalette {
                 continue;
             }
             let Some(route) = route else { continue };
+            // A panel this build does not have is not a command here either
+            // (the browser has no `MONITOR`, keyspace events or Topology).
+            if route.server_view().is_some_and(|view| !view.in_this_build()) {
+                continue;
+            }
             // Don't offer to navigate to the page we're already on.
             if route == *current_route {
                 continue;
@@ -424,16 +429,19 @@ impl ZedisCommandPalette {
                 command: PaletteCommand::Route(route),
             });
         }
-        let settings_label = i18n_command_palette(cx, "cmd_settings");
-        items.push(PaletteItem {
-            label: settings_label.clone(),
-            hint: gpui::SharedString::default(),
-            search: settings_label.to_string(),
-            prescore: None,
-            command: PaletteCommand::OpenSettings,
-        });
+        // Settings is a window of its own, which a page cannot open.
+        if has_secondary_windows() {
+            let settings_label = i18n_command_palette(cx, "cmd_settings");
+            items.push(PaletteItem {
+                label: settings_label.clone(),
+                hint: gpui::SharedString::default(),
+                search: settings_label.to_string(),
+                prescore: None,
+                command: PaletteCommand::OpenSettings,
+            });
+        }
         // Pub/Sub mode only makes sense against a connection.
-        if conn.is_some() {
+        if conn.is_some() && has_pubsub() {
             let label = i18n_command_palette(cx, "cmd_pubsub");
             items.push(PaletteItem {
                 label: label.clone(),

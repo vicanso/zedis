@@ -447,8 +447,9 @@ impl ListDelegate for KeyTreeDelegate {
                                     move |_, cx| Label::new(i18n_key_tree(cx, "delete_key_tooltip")),
                                 );
                             }
-                            // Export is a Redis read + local write — always OK.
-                            if Capability::ExportKeys.allowed(readonly) {
+                            // Export is a Redis read + local write — always OK
+                            // where there is a local file to write.
+                            if has_file_dialogs() && Capability::ExportKeys.allowed(readonly) {
                                 if multi_selection_count > 0 {
                                     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
                                     let text = t!(

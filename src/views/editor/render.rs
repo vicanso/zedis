@@ -17,6 +17,7 @@
 //! `Render` impl. Split out of `editor.rs`.
 
 use super::*;
+use crate::helpers::has_file_dialogs;
 
 /// The no-key screen's shortcut list, by hot key id — only actions that work
 /// with nothing selected (key-bound ones like save / TTL / rename / delete
@@ -899,14 +900,33 @@ impl ZedisEditor {
                         Icon::new(IconName::FolderOpen),
                         i18n_editor(cx, "tree_tip_select"),
                     ))
-                    .child(tip_row(Icon::new(IconName::Menu), i18n_editor(cx, "tree_tip_context")))
+                    // The two tips that mention export have a wording without
+                    // it for the build that has none (`has_file_dialogs`).
+                    .child(tip_row(
+                        Icon::new(IconName::Menu),
+                        i18n_editor(
+                            cx,
+                            if has_file_dialogs() {
+                                "tree_tip_context"
+                            } else {
+                                "tree_tip_context_web"
+                            },
+                        ),
+                    ))
                     .child(tip_row(
                         Icon::new(IconName::Settings2),
                         i18n_editor(cx, "tree_tip_filters"),
                     ))
                     .child(tip_row(
                         Icon::new(CustomIconName::SquareCheck),
-                        i18n_editor(cx, "tree_tip_multi"),
+                        i18n_editor(
+                            cx,
+                            if has_file_dialogs() {
+                                "tree_tip_multi"
+                            } else {
+                                "tree_tip_multi_web"
+                            },
+                        ),
                     )),
             );
 

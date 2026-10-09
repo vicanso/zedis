@@ -164,6 +164,27 @@ impl ServerView {
         }
     }
 
+    /// Whether this build has the panel.
+    ///
+    /// The desktop has all of them. The browser build leaves out the two
+    /// that hold a connection the server pushes on — `MONITOR` and the
+    /// keyspace-event subscription, for which the bridge has no request —
+    /// and Topology (ADR 9). An entry point goes with its feature, so the
+    /// tools menu and the ⌘K palette ask this before they list a panel; a
+    /// route that names one anyway (a link, a restored tab) is answered by
+    /// `ZedisUnsupportedPanel`.
+    #[cfg(not(target_family = "wasm"))]
+    pub const fn in_this_build(self) -> bool {
+        true
+    }
+    #[cfg(target_family = "wasm")]
+    pub const fn in_this_build(self) -> bool {
+        !matches!(
+            self,
+            ServerView::Monitor | ServerView::KeyspaceNotifications | ServerView::Topology
+        )
+    }
+
     /// Parse a connection-scoped view name (expects an already-lowercased str).
     pub fn from_name(s: &str) -> Option<ServerView> {
         Some(match s {
@@ -188,5 +209,41 @@ impl ServerView {
             "timeseriesexplorer" => ServerView::TimeSeriesExplorer,
             _ => return None,
         })
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+
+    /// `in_this_build` is about what the browser lacks: the desktop has
+    /// every panel, and a name written in a saved route still means it.
+    #[test]
+    fn the_desktop_has_every_panel() {
+        for name in [
+            "editor",
+            "metrics",
+            "slowlog",
+            "memoryanalysis",
+            "clients",
+            "monitor",
+            "config",
+            "acl",
+            "search",
+            "functions",
+            "luascripts",
+            "persistence",
+            "keyspacenotifications",
+            "topology",
+            "serverload",
+            "hotkeys",
+            "valuesearch",
+            "serverinfo",
+            "timeseriesexplorer",
+        ] {
+            let view = ServerView::from_name(name).expect(name);
+            assert_eq!(view.as_str(), name);
+            assert!(view.in_this_build(), "{name}");
+        }
     }
 }

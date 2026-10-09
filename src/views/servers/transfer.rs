@@ -19,6 +19,54 @@
 
 use super::*;
 
+/// The export dialogs' main button. It saves a file where the build can put
+/// one in the user's hands; in a page it copies, which is the whole export
+/// there — and the body's own Copy button, now the same thing twice, is left
+/// out. "Save to file" in a browser asked for a save panel the platform does
+/// not have and then did nothing.
+fn export_ok_label(cx: &App) -> SharedString {
+    if has_file_dialogs() {
+        i18n_servers(cx, "export_save_file")
+    } else {
+        i18n_servers(cx, "export_copy_clipboard")
+    }
+}
+
+/// What that button does with the payload.
+fn deliver_export(payload: String, name: &str, labels: &ExportLabels, window: &mut Window, cx: &mut App) {
+    if has_file_dialogs() {
+        // A file (default ~/Downloads, timestamped).
+        export_to_file_global(
+            cx,
+            payload.into_bytes(),
+            name,
+            labels.saved.clone(),
+            labels.save_failed.clone(),
+        );
+    } else {
+        cx.write_to_clipboard(ClipboardItem::new_string(payload));
+        window.push_notification(Notification::success(labels.copied.clone()), cx);
+    }
+}
+
+/// The notices [`deliver_export`] can end in, resolved where there is a `cx`
+/// to resolve them with.
+struct ExportLabels {
+    saved: SharedString,
+    save_failed: SharedString,
+    copied: SharedString,
+}
+
+impl ExportLabels {
+    fn new(cx: &App) -> Self {
+        Self {
+            saved: i18n_common(cx, "json_exported"),
+            save_failed: i18n_common(cx, "json_export_failed"),
+            copied: i18n_servers(cx, "export_copied"),
+        }
+    }
+}
+
 impl ZedisServers {
     /// Show the JSON export for a single server config. Defaults to
     /// "stripped" mode where credential fields (passwords, SSH key,
@@ -43,8 +91,8 @@ impl ZedisServers {
         let warning_color = cx.theme().yellow;
         let copied_label = i18n_servers(cx, "export_copied");
         let copy_label = i18n_servers(cx, "export_copy_clipboard");
-        let save_success = i18n_common(cx, "json_exported");
-        let save_error = i18n_common(cx, "json_export_failed");
+        let labels = ExportLabels::new(cx);
+        let ok_label = export_ok_label(cx);
         let suggested_name = export_filename(&server.name);
 
         let body_json = json_state.clone();
@@ -54,11 +102,11 @@ impl ZedisServers {
 
         ZedisDialog::new(i18n_servers(cx, "export_title"))
             .w(px(620.))
-            .ok_text(i18n_servers(cx, "export_save_file"))
+            .ok_text(ok_label.clone())
             .cancel_text(i18n_common(cx, "cancel"))
             .button_props(
                 dialog_button_props(cx)
-                    .ok_text(i18n_servers(cx, "export_save_file"))
+                    .ok_text(ok_label)
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || {
@@ -102,23 +150,22 @@ impl ZedisServers {
                     .gap_3()
                     .w_full()
                     .child(Label::new(hint.clone()).text_xs())
-                    .child(h_flex().gap_2().child(toggle_btn).child(copy_btn))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(toggle_btn)
+                            .when(has_file_dialogs(), |this| this.child(copy_btn)),
+                    )
                     .when(include_on, |this| {
                         this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
                     })
                     .child(Textarea::new(&body_json).appearance(true))
             })
-            .on_ok(move |_, _window, cx| {
-                // Save the displayed JSON to a file (default ~/Downloads,
-                // timestamped). Copy to clipboard is the secondary body action.
+            .on_ok(move |_, window, cx| {
+                // The displayed JSON, to a file — or, in a page, to the
+                // clipboard (`deliver_export`).
                 let value = submit_json.read(cx).value().to_string();
-                export_to_file_global(
-                    cx,
-                    value.into_bytes(),
-                    &suggested_name,
-                    save_success.clone(),
-                    save_error.clone(),
-                );
+                deliver_export(value, &suggested_name, &labels, window, cx);
                 true
             })
             .open(window, cx);
@@ -133,16 +180,16 @@ impl ZedisServers {
         let view_ok = view.clone();
         let view_child = view.clone();
         let select_none_label = i18n_servers(cx, "export_select_none");
-        let save_success = i18n_common(cx, "json_exported");
-        let save_error = i18n_common(cx, "json_export_failed");
+        let labels = ExportLabels::new(cx);
+        let ok_label = export_ok_label(cx);
 
         ZedisDialog::new(i18n_servers(cx, "export_servers_title"))
             .w(px(560.))
-            .ok_text(i18n_servers(cx, "export_save_file"))
+            .ok_text(ok_label.clone())
             .cancel_text(i18n_common(cx, "cancel"))
             .button_props(
                 dialog_button_props(cx)
-                    .ok_text(i18n_servers(cx, "export_save_file"))
+                    .ok_text(ok_label)
                     .cancel_text(i18n_common(cx, "cancel")),
             )
             .child(move || view_child.clone())
@@ -154,16 +201,8 @@ impl ZedisServers {
                     window.push_notification(Notification::warning(select_none_label.clone()), cx);
                     return false;
                 };
-                // Save to a file (default ~/Downloads, timestamped). Copy to
-                // clipboard is the body action.
                 let name = export_filename("servers");
-                export_to_file_global(
-                    cx,
-                    payload.into_bytes(),
-                    &name,
-                    save_success.clone(),
-                    save_error.clone(),
-                );
+                deliver_export(payload, &name, &labels, window, cx);
                 true
             })
             .open(window, cx);

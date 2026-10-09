@@ -28,6 +28,7 @@ use crate::connection::{
     script_show,
 };
 use crate::error::Error;
+use crate::helpers::has_file_dialogs;
 use crate::helpers::{SlowlogAction, build_csv, djb2_hash, format_unix_secs, get_mono_font_family, pacing};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
@@ -1583,8 +1584,9 @@ impl ZedisSlowlogEditor {
                     )
                 })
                 // Export the currently-filtered rows (CSV / JSON). Only
-                // shown when there is at least one row to export.
-                .when(self.row_count > 0, |this| {
+                // shown when there is at least one row to export, and a
+                // file to export it to.
+                .when(has_file_dialogs() && self.row_count > 0, |this| {
                     this.child(
                         Button::new("slowlog-export")
                             .outline()

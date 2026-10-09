@@ -12,24 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The multi-database search entry is the desktop's (the browser build has no
-// handler for it), and it is the only user of these two.
 #[cfg(target_family = "wasm")]
 use crate::assets::Assets;
+// What only the desktop's menu lists: multi-database search, and the
+// application's own chores below it (settings, updates, logs, diagnostics).
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::MultiSearchAction;
-use crate::helpers::{
-    DiagnosticsAction, MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
-    is_app_store_build,
-};
+use crate::helpers::{DiagnosticsAction, MultiSearchAction, is_app_store_build};
+use crate::helpers::{MemuAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family};
 #[cfg(not(target_family = "wasm"))]
-use crate::states::i18n_shortcuts;
+use crate::states::{SettingsAction, i18n_shortcuts};
 use crate::{
     assets::CustomIconName,
-    connection::get_server,
+    connection::{get_server, signed_in_to_bridge},
     states::{
-        GlobalEvent, LocaleAction, Route, SelectThemeAction, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_sidebar, i18n_status_bar,
+        GlobalEvent, LocaleAction, Route, SelectThemeAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
+        i18n_status_bar,
     },
 };
 use gpui::{
@@ -222,67 +219,87 @@ impl ZedisTitleBar {
             Icon::new(IconName::Search),
             Box::new(MultiSearchAction::Toggle),
         );
-        this.menu_with_icon(
-            i18n_sidebar(cx, "keyboard_shortcuts"),
-            Icon::new(CustomIconName::Keyboard),
-            Box::new(ShortcutsAction::Toggle),
-        )
-        .separator()
-        // Settings: the configuration sub-views, grouped into one submenu so
-        // the top-level menu stays short.
-        .submenu_with_icon(
-            Some(Icon::new(IconName::Settings2)),
-            i18n_sidebar(cx, "settings"),
-            window,
-            cx,
-            |submenu, _window, _cx| {
-                submenu
-                    .menu_element_with_icon(
-                        Icon::new(CustomIconName::SwatchBook),
-                        Box::new(SettingsAction::Protos),
-                        move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
-                    )
-                    .menu_element_with_icon(
-                        Icon::new(CustomIconName::Binary),
-                        Box::new(SettingsAction::Scripts),
-                        move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
-                    )
-                    .menu_element_with_icon(
-                        Icon::new(IconName::Settings2),
-                        Box::new(SettingsAction::Editor),
-                        move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
-                    )
-            },
-        )
-        // App Store builds update via the App Store — hide the manual check.
-        .when(!is_app_store_build(), |this| {
-            this.menu_with_icon(
-                i18n_sidebar(cx, "check_updates"),
-                Icon::new(CustomIconName::RefreshCw),
-                Box::new(UpdateAction::Check),
+        let this = this
+            .menu_with_icon(
+                i18n_sidebar(cx, "keyboard_shortcuts"),
+                Icon::new(CustomIconName::Keyboard),
+                Box::new(ShortcutsAction::Toggle),
             )
-        })
-        .menu_with_icon(
-            i18n_sidebar(cx, "open_logs"),
-            Icon::new(CustomIconName::HardDrive),
-            Box::new(MemuAction::OpenLogs),
-        )
-        .menu_with_icon(
-            i18n_sidebar(cx, "export_diagnostics"),
-            Icon::new(CustomIconName::Download),
-            Box::new(DiagnosticsAction::Export),
-        )
-        .menu_with_icon(
-            i18n_sidebar(cx, "about"),
-            Icon::new(IconName::Info),
-            Box::new(MemuAction::About),
-        )
-        .separator()
-        .menu_with_icon(
-            i18n_sidebar(cx, "quit"),
-            Icon::new(CustomIconName::Power),
-            Box::new(MemuAction::Quit),
-        )
+            .separator();
+        // The application's own chores, none of which a page has: Settings
+        // and About are windows (a tab is one canvas and cannot open a
+        // second), the schema and viewer settings are desktop panels, and
+        // updates, the logs folder and the diagnostics bundle are about an
+        // installed program and its files. They used to be listed in the
+        // browser too, each of them silent when picked.
+        #[cfg(not(target_family = "wasm"))]
+        let this = this
+            // Settings: the configuration sub-views, grouped into one submenu
+            // so the top-level menu stays short.
+            .submenu_with_icon(
+                Some(Icon::new(IconName::Settings2)),
+                i18n_sidebar(cx, "settings"),
+                window,
+                cx,
+                |submenu, _window, _cx| {
+                    submenu
+                        .menu_element_with_icon(
+                            Icon::new(CustomIconName::SwatchBook),
+                            Box::new(SettingsAction::Protos),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "proto_settings")),
+                        )
+                        .menu_element_with_icon(
+                            Icon::new(CustomIconName::Binary),
+                            Box::new(SettingsAction::Scripts),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "script_settings")),
+                        )
+                        .menu_element_with_icon(
+                            Icon::new(IconName::Settings2),
+                            Box::new(SettingsAction::Editor),
+                            move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+                        )
+                },
+            )
+            // App Store builds update via the App Store — hide the manual check.
+            .when(!is_app_store_build(), |this| {
+                this.menu_with_icon(
+                    i18n_sidebar(cx, "check_updates"),
+                    Icon::new(CustomIconName::RefreshCw),
+                    Box::new(UpdateAction::Check),
+                )
+            })
+            .menu_with_icon(
+                i18n_sidebar(cx, "open_logs"),
+                Icon::new(CustomIconName::HardDrive),
+                Box::new(MemuAction::OpenLogs),
+            )
+            .menu_with_icon(
+                i18n_sidebar(cx, "export_diagnostics"),
+                Icon::new(CustomIconName::Download),
+                Box::new(DiagnosticsAction::Export),
+            )
+            .menu_with_icon(
+                i18n_sidebar(cx, "about"),
+                Icon::new(IconName::Info),
+                Box::new(MemuAction::About),
+            )
+            .separator();
+        // The last item ends the session: the process, or — where this is a
+        // page signed in to a bridge — the login. A tab cannot quit, and
+        // until this was here it could not sign out either.
+        if signed_in_to_bridge() {
+            this.menu_with_icon(
+                i18n_sidebar(cx, "sign_out"),
+                Icon::new(CustomIconName::Power),
+                Box::new(MemuAction::SignOut),
+            )
+        } else {
+            this.menu_with_icon(
+                i18n_sidebar(cx, "quit"),
+                Icon::new(CustomIconName::Power),
+                Box::new(MemuAction::Quit),
+            )
+        }
     }
 }
 

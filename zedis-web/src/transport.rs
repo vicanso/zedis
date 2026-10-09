@@ -341,6 +341,25 @@ impl BridgeTransport for HttpBridgeTransport {
         })
     }
 
+    /// `POST /v1/logout`, then the page's own way back to the sign-in form.
+    ///
+    /// The bridge answers `204` whether or not it knew the login, and clears
+    /// the cookie either way — the cookie is `HttpOnly`, so nothing here
+    /// could have. Anything else leaves the login standing, and saying so is
+    /// better than a reload that comes back signed in.
+    fn sign_out(&self) -> BoxFuture<'static, Result<(), BridgeError>> {
+        let client = self.client.clone();
+        let url = format!("{}/v1/logout", self.base_url);
+        Box::pin(async move {
+            let (status, bytes) = Self::post(client, url, String::new()).await?;
+            if status != 204 && status != 200 {
+                return Err(failure(status, &bytes));
+            }
+            sign_in_again();
+            Ok(())
+        })
+    }
+
     fn close_session(&self, session: String) -> BoxFuture<'static, Result<(), BridgeError>> {
         let client = self.client.clone();
         let url = format!("{}/v1/session/{session}", self.base_url);
@@ -545,6 +564,36 @@ mod tests {
             }
         });
         (HttpBridgeTransport::new(client, "http://bridge:7379/"), seen)
+    }
+
+    /// Signing out is the bridge's `POST /v1/logout`: the login is forgotten
+    /// on the server, not just dropped by the page. Any other answer leaves
+    /// it standing, and is an error rather than a reload that would come
+    /// back signed in.
+    #[test]
+    fn signing_out_posts_to_the_logout_route_and_fails_when_the_bridge_does() {
+        let asked = Arc::new(Mutex::new(None));
+        let captured = asked.clone();
+        let client = FakeHttpClient::create(move |req| {
+            let captured = captured.clone();
+            async move {
+                *captured.lock().expect("lock") = Some((req.method().to_string(), req.uri().to_string()));
+                Ok(gpui::http_client::http::Response::builder()
+                    .status(204)
+                    .body(AsyncBody::empty())?)
+            }
+        });
+        let transport = HttpBridgeTransport::new(client, "http://bridge:7379/zedis/");
+        futures::executor::block_on(transport.sign_out()).expect("signed out");
+        assert_eq!(
+            asked.lock().expect("lock").clone(),
+            Some(("POST".to_string(), "http://bridge:7379/zedis/v1/logout".to_string())),
+            "under the bridge's base path, like every other route"
+        );
+
+        let (transport, _) = transport_answering(502, r#"{"error":"bad gateway"}"#);
+        let err = futures::executor::block_on(transport.sign_out()).expect_err("the login is still there");
+        assert_eq!(err.kind, BridgeErrorKind::Upstream);
     }
 
     #[test]
