@@ -13,32 +13,62 @@
 // limitations under the License.
 
 //! The capability matrix dialog: every probed command with its verdict on
-//! the connected server, opened from the status bar's "Limited" badge. The
-//! list is a snapshot of the matrix at open time; "Re-probe" discards the
-//! cache, runs the probe again and closes the dialog (the badge updates when
-//! `FeaturesProbed` fires).
+//! the connected server, opened from the tools menu's "Server capabilities…
+//! · N limited" entry. The list is a snapshot of the matrix at open time;
+//! "Re-probe" discards the cache, runs the probe again and closes the dialog
+//! (the menu's count updates when `FeaturesProbed` fires).
+//!
+//! The rows are in the order of their verdict, the limited ones first, and
+//! the count the menu showed is repeated above them. They used to be in the
+//! matrix's own order, which opens on a screenful of commands every server
+//! has: an entry that said "15 limited" led to a list that showed none of
+//! them without scrolling, and read as a count that was wrong (#174).
 
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::helpers::get_mono_font_family;
-use crate::states::{ZedisServerState, i18n_common, i18n_features};
+use crate::states::{ZedisGlobalStore, ZedisServerState, i18n_common, i18n_features};
 use gpui::{App, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, WindowExt, button::Button, h_flex, label::Label, scroll::ScrollableElement, v_flex,
 };
+use rust_i18n::t;
 use zedis_ui::ZedisDialog;
+
+/// Where a verdict goes in the list: what the user came to see first. A
+/// denied command is one they can do something about, a missing one is the
+/// server's, and the available ones — most of the matrix on any server — are
+/// what is left to scroll through.
+fn verdict_rank(status: CommandStatus) -> u8 {
+    match status {
+        CommandStatus::Denied => 0,
+        CommandStatus::Missing => 1,
+        CommandStatus::Unknown => 2,
+        CommandStatus::Available => 3,
+    }
+}
 
 pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut App) {
     let features = server_state.read(cx).features();
     let intro = i18n_features(cx, "dialog_intro");
     let flavor: SharedString = format!("{}: {}", i18n_features(cx, "flavor"), features.flavor.label()).into();
     let not_probed = (!features.probed).then(|| i18n_features(cx, "not_probed"));
-    let rows: Vec<(SharedString, SharedString, CommandStatus)> = ServerCommand::ALL
+    let mut rows: Vec<(SharedString, SharedString, CommandStatus)> = ServerCommand::ALL
         .iter()
         .map(|c| {
             let status = features.status(*c);
             (c.label().into(), i18n_features(cx, status.i18n_key()), status)
         })
         .collect();
+    // Stable: within a verdict the matrix's own order is kept.
+    rows.sort_by_key(|(_, _, status)| verdict_rank(*status));
+    // The same number, in the same words, as the menu entry that opened this.
+    let limited = features.unusable().len();
+    let limited_label: Option<SharedString> = (limited > 0).then(|| {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        t!("status_bar.capabilities_limited", count = limited, locale = &locale)
+            .to_string()
+            .into()
+    });
     let theme = cx.theme();
     let (muted, green, red, yellow) = (theme.muted_foreground, theme.green, theme.red, theme.yellow);
     let mono = get_mono_font_family();
@@ -60,6 +90,9 @@ pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut
                     h_flex()
                         .gap_3()
                         .child(Label::new(flavor.clone()).text_xs().text_color(muted))
+                        .when_some(limited_label.clone(), |this, text| {
+                            this.child(Label::new(text).text_xs().text_color(yellow))
+                        })
                         .when_some(not_probed.clone(), |this, text| {
                             this.child(Label::new(text).text_xs().text_color(yellow))
                         }),
@@ -110,4 +143,29 @@ pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut
         })
         .ok_text(i18n_common(cx, "confirm"))
         .open(window, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The limited commands lead the list, in the matrix's own order within
+    /// each verdict — they are what the menu's count sent the user to see.
+    #[test]
+    fn limited_commands_are_listed_before_the_available_ones() {
+        let mut rows = [
+            ("INFO", CommandStatus::Available),
+            ("HOTKEYS GET", CommandStatus::Missing),
+            ("SCAN", CommandStatus::Available),
+            ("CONFIG GET", CommandStatus::Denied),
+            ("TS.ADD", CommandStatus::Missing),
+            ("ACL LOG", CommandStatus::Unknown),
+        ];
+        rows.sort_by_key(|(_, status)| verdict_rank(*status));
+        let names: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            ["CONFIG GET", "HOTKEYS GET", "TS.ADD", "ACL LOG", "INFO", "SCAN"]
+        );
+    }
 }
