@@ -127,6 +127,11 @@ pub struct ZedisValueSearch {
     stop_reason: Option<StopReason>,
     error: Option<SharedString>,
     task: Option<Task<()>>,
+    /// The server and database the search on screen ran in. The panel is
+    /// kept while the route is elsewhere (`ServerView::survives_navigation`),
+    /// so this is what says whose hits they are when the connection under
+    /// it changes.
+    searched: Option<(String, usize)>,
 
     /// Monotonic revision of `matches` (bumped on clear and on every result
     /// round) — the filter cache below keys on it instead of comparing
@@ -186,11 +191,20 @@ impl ZedisValueSearch {
         // A database switch is a `ServerSelected` too: the hits name keys of
         // the database they were found in, and a preview or an Open would
         // read the same name in the new one — and a running scan would keep
-        // reading the old one.
-        subscriptions.push(cx.subscribe(&server_state, |this, _s, event: &ServerEvent, cx| {
-            if matches!(event, ServerEvent::ServerSelected(_)) {
+        // reading the old one. A reconnect is one as well, and after it the
+        // hits are still this database's: only another target clears them.
+        subscriptions.push(cx.subscribe(&server_state, |this, state, event: &ServerEvent, cx| {
+            if !matches!(event, ServerEvent::ServerSelected(_)) {
+                return;
+            }
+            let now = {
+                let state = state.read(cx);
+                (state.server_id().to_string(), state.db())
+            };
+            if this.searched.as_ref().is_some_and(|searched| *searched != now) {
                 this.task = None;
                 this.clear_results();
+                this.searched = None;
                 cx.notify();
             }
         }));
@@ -209,6 +223,7 @@ impl ZedisValueSearch {
             stop_reason: None,
             error: None,
             task: None,
+            searched: None,
             matches_rev: 0,
             filtered_cache: Vec::new(),
             filtered_signature: None,
@@ -253,6 +268,7 @@ impl ZedisValueSearch {
         // ("Redis config not found"). By search time the connection is ready.
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
+        self.searched = Some((server_id.clone(), db));
         // Snapshot the tunable guardrails at search start — a mid-search
         // settings change applies to the next search, not this one.
         let (scan_cap, time_budget_secs, max_matches) = {
@@ -392,6 +408,12 @@ impl ZedisValueSearch {
         self.selected_location = Some(location);
         self.preview = Some(Preview::Loading);
         cx.notify();
+        self.load_preview(key, cx);
+    }
+
+    /// Read `key`'s value into the preview pane, leaving what the pane
+    /// shows in place until the answer is in.
+    fn load_preview(&mut self, key: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
         self.preview_task = Some(cx.spawn(async move |this, cx| {
@@ -408,6 +430,21 @@ impl ZedisValueSearch {
                 cx.notify();
             });
         }));
+    }
+
+    /// The route is back on this panel after having been elsewhere.
+    ///
+    /// With nothing found it is a form again, and the caret goes where a
+    /// new panel puts it; with hits on screen it stays out of the fields,
+    /// since the list is what was come back for. The value in the preview
+    /// was read before the route left and "Open" leads to that key's
+    /// editor, so it is read again rather than shown as it was.
+    pub fn shown_again(&mut self, cx: &mut Context<Self>) {
+        self.should_focus = self.matches.is_empty() && !self.running;
+        if let Some(key) = self.selected.clone() {
+            self.load_preview(key, cx);
+        }
+        cx.notify();
     }
 
     /// Optional jump from the preview: select the key and switch to the editor.

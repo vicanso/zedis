@@ -130,11 +130,30 @@ impl ZedisContent {
         // a tool route drops its panel (and any large scan buffers) — and
         // the ones whose content is a result the user ran, which is not
         // something to throw away for having looked elsewhere
-        // (`ServerView::survives_navigation`).
+        // (`ServerView::survives_navigation`). A placeholder is nobody's
+        // result: it goes with the route like any other, or it would stay
+        // "unavailable" after the command it waited for had come.
         let current_tool = route.server_view();
-        self.tool_views
-            .retain(|view, _| Some(*view) == current_tool || (route.is_server() && view.survives_navigation()));
+        let placeholders = &self.placeholders;
+        self.tool_views.retain(|view, _| {
+            Some(*view) == current_tool
+                || (route.is_server() && view.survives_navigation() && !placeholders.contains(view))
+        });
         self.placeholders.retain(|view| Some(*view) == current_tool);
+    }
+
+    /// The route is back on a panel that was kept while it was away. Such a
+    /// panel is not built again, so what a new one does on its first render
+    /// has to be asked for.
+    fn revisit_kept_panel(&mut self, cx: &mut Context<Self>) {
+        if self.current_route.server_view() != Some(ServerView::ValueSearch) {
+            return;
+        }
+        if let Some(view) = self.tool_views.get(&ServerView::ValueSearch).cloned()
+            && let Ok(panel) = view.downcast::<ZedisValueSearch>()
+        {
+            panel.update(cx, |panel, cx| panel.shown_again(cx));
+        }
     }
 
     /// The feature matrix changed: drop every cached panel whose
@@ -212,6 +231,7 @@ impl ZedisContent {
                     }
                     this.current_route = route.clone();
                     this.clear_views();
+                    this.revisit_kept_panel(cx);
                     // clear_views drops the previously focused view, so the
                     // window is left with no focus target — global
                     // keybindings (e.g. Esc → back on tool pages) wouldn't
@@ -379,6 +399,13 @@ impl ZedisContent {
     /// Whether the focus is somewhere in this content.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
         self.focus_handle.contains_focused(window, cx)
+    }
+
+    /// The page's own container. It is in the tree on every route and
+    /// carries the workspace's key context, which makes it the handle an
+    /// overlay that closes hands the focus on to (the ⌘K / ⌘P palettes).
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
     }
 
     /// Reclaim a focus path onto this content after a tab switch. The tab

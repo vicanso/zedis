@@ -121,8 +121,12 @@ pub struct ZedisCommandPalette {
     pending_focus: bool,
     /// Focus that was live when the palette opened; handed back on close.
     prev_focus: Option<FocusHandle>,
+    /// The active tab's page: a handle that is in the tree on every route,
+    /// and so where the focus goes when there is nothing to hand it back to.
+    page_focus: FocusHandle,
     /// Set on close; the next (closed) render restores `prev_focus` — or
-    /// blurs when there is none. Deferred because `toggle` has no `Window`.
+    /// hands on to the page when there is none ([`Self::hand_focus_on`]).
+    /// Deferred because `toggle` has no `Window`.
     pending_restore: bool,
     /// Scroll handle for the results list. The list overflows the
     /// fixed-height panel, so keyboard navigation calls
@@ -143,7 +147,12 @@ pub struct ZedisCommandPalette {
 }
 
 impl ZedisCommandPalette {
-    pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        server_state: gpui::Entity<ZedisServerState>,
+        page_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let query = cx.new(|cx| {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder(i18n_command_palette(cx, "search_placeholder"))
@@ -157,6 +166,7 @@ impl ZedisCommandPalette {
             focus_handle: cx.focus_handle(),
             pending_focus: false,
             prev_focus: None,
+            page_focus,
             pending_restore: false,
             scroll_handle: ScrollHandle::new(),
             cached_items: Vec::new(),
@@ -165,10 +175,12 @@ impl ZedisCommandPalette {
         }
     }
 
-    /// Rebind to another tab's server state (the root swaps this on
-    /// workspace-tab switch so the palette searches the active tab's keys).
-    pub fn set_server_state(&mut self, server_state: gpui::Entity<ZedisServerState>) {
+    /// Rebind to another tab (the root swaps this on workspace-tab switch):
+    /// its server state, so the palette searches the active tab's keys, and
+    /// its page, so a command leaves the focus in the tab it ran in.
+    pub fn bind_to_tab(&mut self, server_state: gpui::Entity<ZedisServerState>, page_focus: FocusHandle) {
         self.server_state = server_state;
+        self.page_focus = page_focus;
     }
 
     /// Open the palette (or close it if already open). `render`
@@ -203,14 +215,32 @@ impl ZedisCommandPalette {
     }
 
     /// Close after executing a command: the route may just have changed,
-    /// so the pre-open focus target could be gone — blur instead of
-    /// restoring. Critical either way: when open we focus the search
-    /// input, and the closed render drops that element; leaving focus
-    /// orphaned on a handle no longer in the tree kills every
-    /// focus-routed keyboard action.
+    /// so the pre-open focus target could be gone — the focus goes on to
+    /// the page instead of back ([`Self::hand_focus_on`]). Critical either
+    /// way: when open we focus the search input, and the closed render
+    /// drops that element; leaving focus orphaned on a handle no longer in
+    /// the tree kills every focus-routed keyboard action.
     fn close(&mut self, cx: &mut Context<Self>) {
         self.prev_focus = None;
         self.dismiss(cx);
+    }
+
+    /// The closed render's half of a close: give the focus back to what had
+    /// it, or on to the page.
+    ///
+    /// On to the page only while the palette still holds it. The page is
+    /// rendered before the palette, and the one a command went to has by
+    /// now put the focus where it wants it — a new panel in its first
+    /// field. This used to blur without looking, after the page had its
+    /// turn, so every "Go to …" ended with nothing focused: the field was
+    /// not ready to type into and Esc, ⌘J and the rest went nowhere until
+    /// something was clicked.
+    fn hand_focus_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.prev_focus.take() {
+            Some(prev) => prev.focus(window, cx),
+            None if self.focus_handle.contains_focused(window, cx) => self.page_focus.focus(window, cx),
+            None => {}
+        }
     }
 
     /// Close and hand focus back to whatever had it before the palette
@@ -551,13 +581,10 @@ impl Focusable for ZedisCommandPalette {
 impl Render for ZedisCommandPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
-            // Zero-footprint when closed; hand back (or drop) the focus the
+            // Zero-footprint when closed; hand back (or on) the focus the
             // palette took, deferred here from the window-less close paths.
             if take(&mut self.pending_restore) {
-                match self.prev_focus.take() {
-                    Some(prev) => prev.focus(window, cx),
-                    None => window.blur(cx),
-                }
+                self.hand_focus_on(window, cx);
             }
             return div().into_any_element();
         }

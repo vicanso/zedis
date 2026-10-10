@@ -38,14 +38,23 @@ pub struct ZedisRecentKeysPalette {
     pending_focus: bool,
     /// Focus that was live when the palette opened; handed back on close.
     prev_focus: Option<FocusHandle>,
+    /// The active tab's page, where the focus goes when there is nothing
+    /// to hand it back to (same contract as the command palette).
+    page_focus: FocusHandle,
     /// Set on close; the next (closed) render restores `prev_focus` — or
-    /// blurs when there is none. Deferred because `toggle` has no `Window`.
+    /// hands on to the page when there is none ([`Self::hand_focus_on`]).
+    /// Deferred because `toggle` has no `Window`.
     pending_restore: bool,
     scroll_handle: ScrollHandle,
 }
 
 impl ZedisRecentKeysPalette {
-    pub fn new(server_state: gpui::Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        server_state: gpui::Entity<ZedisServerState>,
+        page_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let query = cx.new(|cx| {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder(i18n_recent_keys_palette(cx, "search_placeholder"))
@@ -60,15 +69,18 @@ impl ZedisRecentKeysPalette {
             focus_handle: cx.focus_handle(),
             pending_focus: false,
             prev_focus: None,
+            page_focus,
             pending_restore: false,
             scroll_handle: ScrollHandle::new(),
         }
     }
 
-    /// Rebind to another tab's server state (the root swaps this on
-    /// workspace-tab switch so the palette lists the active tab's keys).
-    pub fn set_server_state(&mut self, server_state: gpui::Entity<ZedisServerState>) {
+    /// Rebind to another tab (the root swaps this on workspace-tab switch):
+    /// its server state, so the palette lists the active tab's keys, and
+    /// its page, so a jump leaves the focus in the tab it was made in.
+    pub fn bind_to_tab(&mut self, server_state: gpui::Entity<ZedisServerState>, page_focus: FocusHandle) {
         self.server_state = server_state;
+        self.page_focus = page_focus;
     }
 
     /// Open (or close if already open). Input reset/focus is deferred to
@@ -102,12 +114,26 @@ impl ZedisRecentKeysPalette {
         cx.notify();
     }
 
-    /// Close after jumping to a key: the route just changed, so the
-    /// pre-open focus target may be gone — blur instead of restoring
-    /// (an orphaned focus handle would kill keyboard dispatch entirely).
+    /// Close after jumping to a key: the route may just have changed, so
+    /// the pre-open focus target may be gone — the focus goes on to the
+    /// page instead of back (an orphaned focus handle would kill keyboard
+    /// dispatch entirely).
     fn close(&mut self, cx: &mut Context<Self>) {
         self.prev_focus = None;
         self.dismiss(cx);
+    }
+
+    /// The closed render's half of a close: give the focus back to what had
+    /// it, or on to the page — and on to the page only while the palette
+    /// still holds it, since the page is rendered first and has by now put
+    /// the focus where the editor it opened wants it. A blur here, after
+    /// that, left every jump with nothing focused.
+    fn hand_focus_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.prev_focus.take() {
+            Some(prev) => prev.focus(window, cx),
+            None if self.focus_handle.contains_focused(window, cx) => self.page_focus.focus(window, cx),
+            None => {}
+        }
     }
 
     /// Close and hand focus back to whatever had it before the palette
@@ -153,10 +179,7 @@ impl Render for ZedisRecentKeysPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             if take(&mut self.pending_restore) {
-                match self.prev_focus.take() {
-                    Some(prev) => prev.focus(window, cx),
-                    None => window.blur(cx),
-                }
+                self.hand_focus_on(window, cx);
             }
             return div().into_any_element();
         }

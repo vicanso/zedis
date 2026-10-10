@@ -171,10 +171,12 @@ impl ServerView {
     /// what the server says now, and a fresh one is a re-read. A memory
     /// analysis is not — it is something the user ran, minutes of `SCAN` and
     /// `MEMORY USAGE` on a large keyspace, and it was gone the moment they
-    /// opened one of the keys it had found (#175). The panel resets itself
-    /// when the server or database under it changes.
+    /// opened one of the keys it had found (#175). A value search is the
+    /// same thing in small: a scan of the keyspace whose hits each lead to
+    /// the editor, and opening the first one threw the rest away. Such a
+    /// panel resets itself when the server or database under it changes.
     pub const fn survives_navigation(self) -> bool {
-        matches!(self, ServerView::MemoryAnalysis)
+        matches!(self, ServerView::MemoryAnalysis | ServerView::ValueSearch)
     }
 
     /// Whether this build has the panel.
@@ -259,7 +261,8 @@ mod tests {
             assert!(view.in_this_build(), "{name}");
             // A result the user ran is kept across navigation; a panel that
             // only shows what the server says now is rebuilt.
-            assert_eq!(view.survives_navigation(), name == "memoryanalysis", "{name}");
+            let ran_by_the_user = matches!(name, "memoryanalysis" | "valuesearch");
+            assert_eq!(view.survives_navigation(), ran_by_the_user, "{name}");
         }
     }
 }

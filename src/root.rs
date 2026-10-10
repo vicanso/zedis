@@ -243,9 +243,13 @@ impl Zedis {
         }
         // The palette fuzzy-searches the active connection's loaded keys, so
         // hand it the active tab's shared ServerState entity.
-        let server_state = tabs[active_tab].content.read(cx).server_state();
-        let command_palette = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), window, cx));
-        let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, window, cx));
+        let (server_state, page_focus) = {
+            let content = tabs[active_tab].content.read(cx);
+            (content.server_state(), content.focus_handle())
+        };
+        let command_palette =
+            cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), page_focus.clone(), window, cx));
+        let recent_keys_palette = cx.new(|cx| ZedisRecentKeysPalette::new(server_state, page_focus, window, cx));
         #[cfg(not(target_family = "wasm"))]
         let desktop = DesktopOnly::new(window, cx);
         let shortcuts_overlay = cx.new(ZedisShortcutsOverlay::new);
@@ -540,14 +544,19 @@ impl Zedis {
         cx.notify();
     }
 
-    /// Point the ⌘K / ⌘P palettes at the active tab's server state so they
-    /// search the right connection's keys after a tab switch.
+    /// Point the ⌘K / ⌘P palettes at the active tab — its server state, so
+    /// they search the right connection's keys after a tab switch, and its
+    /// page, which is where they leave the focus.
     fn rebind_palettes(&mut self, cx: &mut Context<Self>) {
-        let server_state = self.tabs[self.active_tab].content.read(cx).server_state();
-        self.command_palette
-            .update(cx, |palette, _| palette.set_server_state(server_state.clone()));
+        let (server_state, page_focus) = {
+            let content = self.tabs[self.active_tab].content.read(cx);
+            (content.server_state(), content.focus_handle())
+        };
+        self.command_palette.update(cx, |palette, _| {
+            palette.bind_to_tab(server_state.clone(), page_focus.clone());
+        });
         self.recent_keys_palette
-            .update(cx, |palette, _| palette.set_server_state(server_state));
+            .update(cx, |palette, _| palette.bind_to_tab(server_state, page_focus));
     }
 
     /// Project the active tab's connection into the global store so the
