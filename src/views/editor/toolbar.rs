@@ -28,6 +28,30 @@ const REPLACE_KEYSTROKE: &str = "ctrl-h";
 use crate::connection::{Capability, ServerCommand};
 use gpui::{AnyElement, App};
 
+/// How much of a key's name the bar shows before the facts beside it (size,
+/// encoding, heat) are given any room, in characters. A key is known by its
+/// name, and the name used to be what a narrow bar took from first: at the
+/// Linux default window `zedis:fn:gamma` read "ze…" next to a complete
+/// "72 B  embstr · idle 0s" (#178). Past this many the name is long anyway
+/// — it is whole in its tooltip — and the facts come first again. Sixteen
+/// is what leaves a short string's chips all on the line at the default
+/// window; a longer name there keeps the size and gives up the encoding.
+const KEY_NAME_PRIORITY_CHARS: f32 = 16.;
+/// The advance of the bundled mono face, in em.
+const MONO_ADVANCE_EM: f32 = 0.6;
+/// The one line of the name-and-facts strip that is drawn. What does not fit
+/// on it wraps to a second line, and that one is clipped.
+const KEY_FACTS_LINE_HEIGHT: f32 = 28.;
+
+/// The width a key's name is owed before the chips beside it get any: its
+/// own, up to [`KEY_NAME_PRIORITY_CHARS`]. An estimate — the mono advance,
+/// two columns for a character outside ASCII — which is all it needs to be:
+/// it decides which chips fit on the line, never how the name is drawn.
+fn key_name_priority_width(name: &str, font_size: f32) -> f32 {
+    let columns: f32 = name.chars().map(|c| if c.is_ascii() { 1. } else { 2. }).sum();
+    columns.min(KEY_NAME_PRIORITY_CHARS) * font_size * MONO_ADVANCE_EM
+}
+
 impl ZedisEditor {
     /// Render the key information bar with actions (copy, save, TTL, delete)
     /// The value's size, rendered just after the key name (per the design):
@@ -177,15 +201,24 @@ impl ZedisEditor {
         // Add TTL button (or input field when in edit mode)
         if !ttl.is_empty() {
             let ttl_btn = if self.ttl_edit_mode {
-                // Show input field with confirmation button
-                Input::new(&self.ttl_input_state)
-                    .max_w(px(TTL_INPUT_MAX_WIDTH))
-                    .suffix(
-                        Button::new("zedis-editor-ttl-update-btn")
-                            .icon(Icon::new(IconName::Check))
-                            .on_click(cx.listener(move |this, _event, window, cx| {
-                                this.handle_update_ttl(window, cx);
-                            })),
+                // Show input field with confirmation button. The field is
+                // too narrow for a sentence — "1h 30m, or seconds" was cut
+                // at "or" in every locale — so its placeholder is the
+                // example alone and the sentence is what hovering it says.
+                let hint = i18n_editor(cx, "ttl_duration_hint");
+                div()
+                    .id("zedis-editor-ttl-field")
+                    .flex_none()
+                    .w(px(TTL_INPUT_MAX_WIDTH))
+                    .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                    .child(
+                        Input::new(&self.ttl_input_state).suffix(
+                            Button::new("zedis-editor-ttl-update-btn")
+                                .icon(Icon::new(IconName::Check))
+                                .on_click(cx.listener(move |this, _event, window, cx| {
+                                    this.handle_update_ttl(window, cx);
+                                })),
+                        ),
                     )
                     .into_any_element()
             } else {
@@ -570,6 +603,8 @@ impl ZedisEditor {
             i18n_editor(cx, "add_favorite_tooltip")
         };
         let favorite_key = key.clone();
+        let line = px(KEY_FACTS_LINE_HEIGHT);
+        let name_width = key_name_priority_width(key.as_ref(), cx.theme().font_size.as_f32());
         h_flex()
             .px_2()
             .h(EDITOR_KEY_BAR_HEIGHT)
@@ -627,31 +662,60 @@ impl ZedisEditor {
             )
             .child(KeyTypeBadge::new(key_type).into_any_element())
             .child(
-                // Key name. Its width comes from `flex_1` — it grows into whatever
-                // the fixed elements leave — and *not* from its content: a
-                // content-sized box here resolved to ~zero, collapsing the key to a
-                // bare "…" while the row still had room to spare. Growing also makes
-                // it the element that absorbs a narrow window, which is what
-                // `min_w_0` + ellipsis are for. The full name is on hover, since a
-                // long key is truncated by design.
-                div()
-                    .id("zedis-editor-key-name")
+                // The key's name and the facts about it, on one line that
+                // takes what the buttons leave. It wraps, and only its first
+                // line is drawn: a chip that does not fit beside the name
+                // goes to the second line whole and is clipped there, so a
+                // narrow bar loses the heat and encoding, then the size, and
+                // only then starts on the name — never half a chip.
+                h_flex()
                     .flex_1()
                     .min_w_0()
+                    .h(line)
+                    .flex_wrap()
+                    .content_start()
                     .overflow_hidden()
+                    .gap_x_2()
                     .child(
-                        Label::new(key.clone())
-                            // Monospace so the key reads like the identifier it is.
-                            // Bold felt too heavy and Menlo ships no lighter emphasis
-                            // face (only Regular/Bold), so we keep the regular weight.
-                            .font_family(get_mono_font_family())
-                            .text_ellipsis()
-                            .whitespace_nowrap(),
+                        // Key name. It asks for its own width up to the
+                        // priority length and grows into what is left, which
+                        // keeps the chips against the buttons as before. Its
+                        // width must not come from its content alone: a
+                        // content-sized box here resolved to ~zero, collapsing
+                        // the key to a bare "…" while the row still had room
+                        // to spare. The full name is on hover, since a long
+                        // key is truncated by design.
+                        h_flex()
+                            .id("zedis-editor-key-name")
+                            .h(line)
+                            .flex_grow_1()
+                            .flex_shrink_1()
+                            .flex_basis(px(name_width))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(
+                                // A block of the item's width, so the label
+                                // is cut with an ellipsis: as a flex child it
+                                // kept its own width and was clipped bare.
+                                div().flex_1().min_w_0().overflow_hidden().child(
+                                    Label::new(key.clone())
+                                        // Monospace so the key reads like the identifier it is.
+                                        // Bold felt too heavy and Menlo ships no lighter emphasis
+                                        // face (only Regular/Bold), so we keep the regular weight.
+                                        .font_family(get_mono_font_family())
+                                        .text_ellipsis()
+                                        .whitespace_nowrap(),
+                                ),
+                            )
+                            .tooltip(move |window, cx| Tooltip::new(key.clone()).build(window, cx)),
                     )
-                    .tooltip(move |window, cx| Tooltip::new(key.clone()).build(window, cx)),
+                    .children(
+                        size_el
+                            .into_iter()
+                            .chain(object_el)
+                            .map(|chip| h_flex().h(line).flex_none().child(chip)),
+                    ),
             )
-            .children(size_el)
-            .children(object_el)
             .children(btns)
     }
 }
@@ -717,4 +781,26 @@ fn object_chip(encoding: Option<SharedString>, heat: HeatMetric, cx: &App) -> Op
             .children(parts)
             .into_any_element()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name is owed its own width and no more than the priority length:
+    /// a short one leaves the line to the chips, a long one stops asking
+    /// where it would be cut anyway.
+    #[test]
+    fn a_key_name_is_owed_its_own_width_up_to_the_priority_length() {
+        let font_size = 10.;
+        // 6 columns of 0.6 em.
+        assert_eq!(key_name_priority_width("key003", font_size), 36.);
+        // 14 columns: the name the Linux default window drew as "ze…".
+        assert_eq!(key_name_priority_width("zedis:fn:gamma", font_size), 84.);
+        let capped = KEY_NAME_PRIORITY_CHARS * font_size * MONO_ADVANCE_EM;
+        assert_eq!(key_name_priority_width(&"k".repeat(200), font_size), capped);
+        // A wide character takes two columns of the mono face.
+        assert_eq!(key_name_priority_width("用户", font_size), 24.);
+        assert_eq!(key_name_priority_width("", font_size), 0.);
+    }
 }

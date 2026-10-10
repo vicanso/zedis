@@ -79,6 +79,10 @@ fn pending_load_shows_skeleton(recently_selected: bool) -> bool {
     !recently_selected
 }
 const TTL_INPUT_MAX_WIDTH: f32 = 120.0;
+/// What the empty TTL field shows: a duration as it is typed, in every
+/// locale. The sentence around it (`ttl_duration_hint`) does not fit
+/// a field this wide and is the field's tooltip instead.
+const TTL_DURATION_EXAMPLE: &str = "1h 30m";
 /// Redis caps a string value at 512 MB; refuse to import anything bigger.
 const MAX_IMPORT_VALUE_BYTES: usize = 512 * 1024 * 1024;
 
@@ -799,7 +803,7 @@ impl ZedisEditor {
             return;
         }
         let value = ttl_field_text(value.ttl());
-        let placeholder = i18n_editor(cx, "ttl_duration_placeholder");
+        let placeholder = TTL_DURATION_EXAMPLE;
         self.ttl_edit_mode = true;
         self.ttl_input_state.update(cx, move |state, cx| {
             state.set_placeholder(placeholder, window, cx);
