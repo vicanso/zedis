@@ -33,8 +33,8 @@ use crate::connection::{
     scan_page, server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
 };
 use crate::db::{
-    TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_recent_keys_manager,
-    insert_trash_entry, purge_trash, recent_keys_scope,
+    TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TRASH_RETENTION_MS, TrashEntry, get_favorites_manager,
+    get_key_metadata_manager, get_recent_keys_manager, insert_trash_entry, purge_trash, recent_keys_scope,
 };
 use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar};
 use crate::{
@@ -53,6 +53,36 @@ use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
 use zedis_core::change_log::ChangeEntry;
+
+/// What a value's `expire_at` reads after `EXPIRE` (`Some` seconds from
+/// `now`) or `PERSIST` (`None`): the instant, or the load path's `-1` for no
+/// expiry.
+fn expire_at_after(ttl_secs: Option<u64>, now: i64) -> i64 {
+    match ttl_secs {
+        Some(secs) => now.saturating_add(i64::try_from(secs).unwrap_or(i64::MAX)),
+        None => -1,
+    }
+}
+
+/// The records this app keeps under a key's *name* follow the key to its
+/// new one: the recent-keys entry, the favorite, the tag and note. Only the
+/// edit history did, so a renamed key was still listed under a name that
+/// opened nothing, and its star and colour stayed behind with it (#188).
+/// What is moved is what the old name had — a key with no favorite or tag
+/// takes none, and leaves the new name's alone. Never an error: these are
+/// conveniences, and the rename itself has already happened.
+fn move_local_records(server_id: &str, db: usize, old: &str, new: &str) {
+    let scope = recent_keys_scope(server_id, db);
+    if let Err(e) = get_recent_keys_manager().rename_record(&scope, old, new) {
+        warn!(error = %e, "recent keys did not follow the rename");
+    }
+    if let Err(e) = get_favorites_manager().rename_record(server_id, old, new) {
+        warn!(error = %e, "the favorite did not follow the rename");
+    }
+    if let Err(e) = get_key_metadata_manager().rename(server_id, old, new) {
+        warn!(error = %e, "the tag and note did not follow the rename");
+    }
+}
 
 /// A key the recycle bin put back: where, and with what expiry.
 #[derive(Debug, Clone, PartialEq)]
@@ -1607,10 +1637,20 @@ impl ZedisServerState {
         let key_type = self.keys.get(&old).copied();
         let old_done = old.clone();
         let new_done = new.clone();
+        let (server_id, db) = (self.server_id.clone(), self.db);
         self.spawn_with_arg(
             ServerTask::RenameKey,
             new.clone(),
-            move || async move { Ok(rename_key(&at, old.as_str(), new.as_str(), overwrite).await?) },
+            move || async move {
+                let renamed = rename_key(&at, old.as_str(), new.as_str(), overwrite).await?;
+                // Here rather than in the callback: off the UI thread, and
+                // done before the tree is rebuilt and the key re-selected,
+                // both of which read these records.
+                if renamed {
+                    move_local_records(server_id.as_str(), db, old.as_str(), new.as_str());
+                }
+                Ok(renamed)
+            },
             move |this, result, cx| {
                 match result {
                     Ok(true) => {
@@ -1864,11 +1904,16 @@ impl ZedisServerState {
                     let new_ttl = ttl_secs.map(|s| s as i64).unwrap_or(-1);
                     let key_ttls = Arc::make_mut(&mut this.key_ttls);
                     let mut changed = 0usize;
+                    let mut includes_open_key = false;
                     for (key, done) in affected.iter().zip(&applied) {
                         if *done {
                             key_ttls.insert(key.clone(), new_ttl);
                             changed += 1;
+                            includes_open_key |= this.key.as_ref() == Some(key);
                         }
+                    }
+                    if includes_open_key {
+                        this.follow_batch_ttl(ttl_secs);
                     }
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     this.notify_batch_ttl_outcome(condition, changed, affected.len().saturating_sub(changed), cx);
@@ -1906,6 +1951,9 @@ impl ZedisServerState {
                             *v = new_ttl;
                         }
                     }
+                    if this.key.as_ref().is_some_and(|key| changed_set.contains(key.as_ref())) {
+                        this.follow_batch_ttl(ttl_secs);
+                    }
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     this.notify_batch_ttl_outcome(condition, changed.len(), skipped, cx);
                 }
@@ -1914,6 +1962,17 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+
+    /// The open key's header follows a batch TTL change that included it.
+    /// The batch writes the tree's chips; the header reads the loaded
+    /// value, which it left alone — so a key set to expire in fifteen
+    /// minutes from the tree went on saying "No TTL" on the right until it
+    /// was opened again (#185).
+    fn follow_batch_ttl(&mut self, ttl_secs: Option<u64>) {
+        if let Some(value) = self.value.as_mut() {
+            value.expire_at = Some(expire_at_after(ttl_secs, unix_ts()));
+        }
     }
 
     /// One toast per batch TTL run that used a condition — the server's
@@ -2266,6 +2325,16 @@ mod tree_ttl_tests {
 
     /// Selecting a key writes the fresh TTL only when chips are on and the
     /// label would change — 600s and 630s both read `10m`.
+    /// What the open key's header is given after a batch TTL change: the
+    /// instant an `EXPIRE` lands on, and the load path's "no expiry" after a
+    /// `PERSIST`.
+    #[test]
+    fn a_batch_ttl_change_reads_like_a_fresh_load() {
+        assert_eq!(expire_at_after(Some(900), 1_000), 1_900);
+        assert_eq!(expire_at_after(None, 1_000), -1);
+        assert_eq!(expire_at_after(Some(u64::MAX), 1_000), i64::MAX);
+    }
+
     #[test]
     fn sync_tree_ttl_writes_only_when_the_chip_changes() {
         let mut state = ZedisServerState::default();

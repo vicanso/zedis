@@ -264,6 +264,24 @@ impl KeyMetadataManager {
         self.set_many(server_id, updates)
     }
 
+    /// Move `old`'s record to `new` — the tag and the note of a key that
+    /// was renamed go with it instead of staying under a name nothing has.
+    /// Whatever `new` carried is replaced: after the rename there is one
+    /// key, and it is the one that was annotated. Answers whether there was
+    /// a record to move; when there was none, nothing is written and `new`
+    /// keeps its own.
+    pub fn rename(&self, server_id: &str, old: &str, new: &str) -> Result<bool> {
+        if old == new || !self.records(server_id)?.contains_key(old) {
+            return Ok(false);
+        }
+        self.persist_envelope(server_id, |entries| {
+            if let Some(metadata) = entries.remove(old) {
+                entries.insert(new.to_string(), metadata);
+            }
+        })?;
+        Ok(true)
+    }
+
     /// Delete a single key's record. No-op if there was nothing
     /// recorded — callers can always invoke this defensively.
     pub fn clear(&self, server_id: &str, key: &str) -> Result<()> {
@@ -404,6 +422,37 @@ mod tests {
             m.clear("km-rt", "user:1").expect("clear");
             assert_eq!(m.get("km-rt", "user:1").expect("get"), None);
             assert!(m.records("km-rt").expect("records").is_empty());
+        }
+
+        #[test]
+        fn a_renamed_key_takes_its_annotation_with_it() {
+            let m = manager();
+            m.set("km-rename", "user:1", tagged(TagColor::Red, "hot key"))
+                .expect("set");
+            m.set("km-rename", "user:2", tagged(TagColor::Blue, "other"))
+                .expect("set");
+
+            assert!(m.rename("km-rename", "user:1", "user:one").expect("rename"));
+            assert_eq!(m.get("km-rename", "user:1").expect("get"), None);
+            assert_eq!(
+                m.get("km-rename", "user:one").expect("get"),
+                Some(tagged(TagColor::Red, "hot key"))
+            );
+
+            // A key with no record takes nothing and leaves the target's own.
+            assert!(!m.rename("km-rename", "user:3", "user:2").expect("rename"));
+            assert_eq!(
+                m.get("km-rename", "user:2").expect("get"),
+                Some(tagged(TagColor::Blue, "other"))
+            );
+
+            // Renamed over an annotated key: the record that moved replaces it.
+            assert!(m.rename("km-rename", "user:one", "user:2").expect("rename"));
+            assert_eq!(
+                m.get("km-rename", "user:2").expect("get"),
+                Some(tagged(TagColor::Red, "hot key"))
+            );
+            assert_eq!(m.records("km-rename").expect("records").len(), 1);
         }
 
         #[test]

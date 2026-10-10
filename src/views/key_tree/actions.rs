@@ -414,8 +414,10 @@ impl Render for ZedisKeyTree {
                         return;
                     }
                     let server_state = this.server_state.clone();
+                    // The shared buttons say "Delete", and this deletes
+                    // nothing: the button is named for the PERSIST it sends.
                     ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
-                        .button_props(dialog_button_props(cx))
+                        .button_props(dialog_button_props(cx).ok_text(i18n_key_tree(cx, "persist_title")))
                         .on_ok(move |_, _, cx| {
                             server_state.update(cx, |state, cx| state.batch_set_ttl_keys(keys.clone(), None, None, cx));
                             true
@@ -425,8 +427,10 @@ impl Render for ZedisKeyTree {
                 KeyTreeAction::PersistFolder(id) => {
                     let id = id.clone();
                     let server_state = this.server_state.clone();
+                    // The shared buttons say "Delete", and this deletes
+                    // nothing: the button is named for the PERSIST it sends.
                     ZedisDialog::new_alert(i18n_key_tree(cx, "persist_title"), i18n_key_tree(cx, "persist_prompt"))
-                        .button_props(dialog_button_props(cx))
+                        .button_props(dialog_button_props(cx).ok_text(i18n_key_tree(cx, "persist_title")))
                         .on_ok(move |_, _, cx| {
                             server_state.update(cx, |state, cx| state.batch_set_ttl_folder(id.clone(), None, None, cx));
                             true

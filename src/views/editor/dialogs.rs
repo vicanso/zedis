@@ -81,8 +81,13 @@ impl ZedisEditor {
         let server_state = self.server_state.clone();
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
         let message = t!("editor.rename_overwrite_prompt", key = new.as_ref(), locale = locale).to_string();
+        // The key under the new name is gone once this goes ahead, so it is
+        // a danger confirm — Return answers Cancel — and the button says
+        // "Overwrite", where the shared default said "Delete" (#186).
         ZedisDialog::new_alert(i18n_editor(cx, "rename_overwrite_title"), message)
-            .button_props(dialog_button_props(cx))
+            .danger()
+            .ok_text(i18n_editor(cx, "save_conflict_overwrite"))
+            .cancel_text(i18n_common(cx, "cancel"))
             .on_ok(move |_, window, cx| {
                 let (old, new) = (old.clone(), new.clone());
                 server_state.update(cx, move |state, cx| {

@@ -109,6 +109,20 @@ pub fn project_stream_entries(entries: Vec<StreamEntry>) -> Vec<RedisStreamEntry
         .collect()
 }
 
+/// Where an entry `XADD` has just made goes in the loaded list. It is the
+/// stream's newest — the server refuses an id below the top one — so
+/// newest-first puts it at the front, which is always loaded, and
+/// oldest-first at the end, which is only there once every page is. It used
+/// to be appended whatever the order, and the order a stream opens in is
+/// newest-first: the new entry sat at the bottom until a reload (#180).
+fn place_new_entry(values: &mut Vec<RedisStreamEntry>, entry: RedisStreamEntry, reverse: bool, done: bool) {
+    if reverse {
+        values.insert(0, entry);
+    } else if done {
+        values.push(entry);
+    }
+}
+
 /// A page of entries, oldest-first (`XRANGE`) or newest-first (`XREVRANGE`).
 async fn get_redis_stream_value(
     at: &ServerDb,
@@ -375,9 +389,12 @@ impl ZedisServerState {
                 if let Some(RedisValueData::Stream(stream_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                     let stream = Arc::make_mut(stream_data);
                     stream.size += 1;
-                    if stream.done {
-                        stream.values.push((id.into(), values_clone));
-                    }
+                    place_new_entry(
+                        &mut stream.values,
+                        (id.into(), values_clone),
+                        stream.reverse,
+                        stream.done,
+                    );
                 }
                 cx.emit(ServerEvent::ValueUpdated);
             },
@@ -775,6 +792,27 @@ impl ZedisServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new entry is the newest: first where the newest is first, last
+    /// where it is last — and not drawn at all where the last page has not
+    /// been loaded yet, since that is where it belongs.
+    #[test]
+    fn a_new_entry_goes_where_the_order_puts_it() {
+        let entry = |id: &str| -> RedisStreamEntry { (id.into(), vec![("n".into(), "1".into())]) };
+        let ids = |values: &[RedisStreamEntry]| values.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>();
+
+        let mut newest_first = vec![entry("3-0"), entry("2-0")];
+        place_new_entry(&mut newest_first, entry("4-0"), true, false);
+        assert_eq!(ids(&newest_first), ["4-0", "3-0", "2-0"]);
+
+        let mut oldest_first = vec![entry("2-0"), entry("3-0")];
+        place_new_entry(&mut oldest_first, entry("4-0"), false, true);
+        assert_eq!(ids(&oldest_first), ["2-0", "3-0", "4-0"]);
+
+        let mut more_to_load = vec![entry("2-0"), entry("3-0")];
+        place_new_entry(&mut more_to_load, entry("9-0"), false, false);
+        assert_eq!(ids(&more_to_load), ["2-0", "3-0"]);
+    }
 
     /// What the stream table shows for a value: text as stored, a MessagePack
     /// payload decoded, opaque bytes as hex — never a run of U+FFFD.

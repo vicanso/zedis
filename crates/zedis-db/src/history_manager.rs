@@ -190,6 +190,44 @@ impl HistoryManager {
         Ok(present)
     }
 
+    /// Point the entry `old` at `new`, where it stands — a renamed key keeps
+    /// its place among the favorites instead of leaving a name that opens
+    /// nothing. Answers whether `old` was listed; when it was not, nothing
+    /// is written. If `new` is listed already, `old` is dropped, so a name
+    /// is never in the list twice.
+    pub fn rename_record(&self, server_id: &str, old: &str, new: &str) -> Result<bool> {
+        let (old, new) = (self.entry(old), self.entry(new));
+        if old.is_empty() || new.is_empty() || old == new {
+            return Ok(false);
+        }
+        // Decided on the read path first: most renamed keys are in neither
+        // list, and that should not cost a write transaction.
+        if !self.records(server_id)?.iter().any(|x| x.as_str() == old) {
+            return Ok(false);
+        }
+        let db = get_database()?;
+        let write_txn = db.begin_write()?;
+        let renamed = {
+            let mut table = write_txn.open_table(self.definition)?;
+            let mut history = if let Some(history) = self.history_cache.get(server_id) {
+                history.clone()
+            } else if let Some(v) = table.get(server_id)? {
+                serde_json::from_str(v.value())?
+            } else {
+                Vec::new()
+            };
+            let renamed = rename_entry(&mut history, old, new);
+            if renamed {
+                self.history_cache.insert(server_id.to_string(), history.clone());
+                let json_val = serde_json::to_string(&history)?;
+                table.insert(server_id, json_val.as_str())?;
+            }
+            renamed
+        };
+        write_txn.commit()?;
+        Ok(renamed)
+    }
+
     pub fn clear_history(&self, server_id: &str) -> Result<()> {
         self.history_cache.remove(server_id);
         let db = get_database()?;
@@ -201,6 +239,20 @@ impl HistoryManager {
         write_txn.commit()?;
         Ok(())
     }
+}
+
+/// `old` becomes `new` where it stands, or is dropped when `new` is listed
+/// already. False when `old` is not in the list.
+fn rename_entry(history: &mut Vec<String>, old: &str, new: &str) -> bool {
+    let Some(at) = history.iter().position(|x| x.as_str() == old) else {
+        return false;
+    };
+    if history.iter().any(|x| x.as_str() == new) {
+        history.remove(at);
+    } else {
+        history[at] = new.to_string();
+    }
+    true
 }
 
 // ── the four lists kept this way ───────────────────────────────────────────
@@ -298,6 +350,30 @@ mod tests {
         let after = m.add_record("hm-mru", "alpha").expect("add again");
         assert_eq!(after, vec!["alpha", "beta"]);
         assert_eq!(m.records("hm-mru").expect("records"), vec!["alpha", "beta"]);
+    }
+
+    /// A renamed key keeps its place in the list, on disk too; a name that
+    /// is not listed is left alone, and one that would be listed twice is
+    /// not.
+    #[test]
+    fn a_renamed_entry_keeps_its_place() {
+        let m = manager(20);
+        for keyword in ["one", "two", "three"] {
+            m.add_record("hm-rename", keyword).expect("add");
+        }
+        assert!(m.rename_record("hm-rename", "two", "deux").expect("rename"));
+        assert_eq!(m.records("hm-rename").expect("records"), vec!["three", "deux", "one"]);
+        assert_eq!(on_disk("hm-rename").expect("row"), vec!["three", "deux", "one"]);
+
+        // Not listed: nothing to follow, and nothing written.
+        assert!(!m.rename_record("hm-rename", "absent", "other").expect("rename"));
+        assert!(!m.rename_record("hm-rename-empty", "one", "uno").expect("rename"));
+        assert_eq!(on_disk("hm-rename-empty"), None);
+
+        // The new name is listed already: the old entry goes, the other
+        // stays where it was.
+        assert!(m.rename_record("hm-rename", "one", "three").expect("rename"));
+        assert_eq!(m.records("hm-rename").expect("records"), vec!["three", "deux"]);
     }
 
     #[test]
