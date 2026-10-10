@@ -4,7 +4,8 @@ name: "Integration"
 # scripts/it/up.sh builds the same topology CI and a dev machine use:
 # standalone + TLS + mTLS + sentinel + cluster from one image on the host
 # network, plus an unprivileged sshd on the runner for the tunnel tests.
-# Dragonfly has a job of its own at the bottom: a smoke lane, not a flavour.
+# Dragonfly and Garnet have a job of their own at the bottom: smoke lanes,
+# not flavours.
 on:
   push:
     branches: ["main"]
@@ -142,22 +143,31 @@ jobs:
         if: always()
         run: scripts/it/down.sh
 
-  # Dragonfly speaks Redis's protocol and is not Redis. It is not a lane of
-  # the matrix above — a dozen of those tests do not hold on it, and nothing
-  # here should make a new test answer to a third server. What it has is
-  # three tests of its own (`dragonfly_*`): it connects, it is identified,
-  # the key tree's scan and the collection editors' operations work. That is
-  # the promise the README makes, and the one that broke unseen: Dragonfly
-  # answers `ROLE` in two elements, the connect read it as Redis's three,
-  # and every connection to it failed until someone tried one by hand.
-  dragonfly:
-    name: dragonfly
+  # Dragonfly and Garnet speak Redis's protocol and are not Redis. They are
+  # not lanes of the matrix above — a dozen of those tests do not hold on
+  # Dragonfly and half of them do not on Garnet, and nothing here should make
+  # a new test answer to a third and a fourth server. What each has is three
+  # tests of its own (`dragonfly_*`, `garnet_*`): it connects, it is
+  # identified, the key tree's scan and the collection editors' operations
+  # work. That is the promise the README makes, and both lanes paid for
+  # themselves the day they were added: Dragonfly answers `ROLE` in two
+  # elements, which failed every connect to it, and Garnet answers `+OK` to a
+  # `SET … KEEPTTL` that deletes the key, which is how the editor saved.
+  #
+  # The images are pinned in scripts/it/up.sh (`DRAGONFLY_IMAGE`,
+  # `GARNET_IMAGE`), which is also what a local run uses.
+  smoke:
+    name: ${{ matrix.server }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      # The release these tests were written against. Pinned, and bumped by
-      # hand: a red lane should mean this repository changed, not theirs.
-      DRAGONFLY_IMAGE: docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: dragonfly
+            started: ZEDIS_IT_DRAGONFLY
+          - server: garnet
+            started: ZEDIS_IT_GARNET
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -167,19 +177,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: integration
-      - name: pull image
-        run: docker pull "$DRAGONFLY_IMAGE"
-      - name: start dragonfly
+      - name: start ${{ matrix.server }}
         env:
-          IT_SCENARIOS: dragonfly
+          IT_SCENARIOS: ${{ matrix.server }}
         run: scripts/it/up.sh
       # Without the variable the three tests skip — and pass, having tested
       # nothing. up.sh only leaves it out where there is no docker, which is
       # not here; this is for the day that stops being true.
       - name: assert it started
+        env:
+          STARTED: ${{ matrix.started }}
         run: |
-          grep -q '^ZEDIS_IT_DRAGONFLY=' scripts/it/.env && exit 0
-          echo "::error::ZEDIS_IT_DRAGONFLY is missing — up.sh skipped the scenario, so its tests would skip too"
+          grep -q "^$STARTED=" scripts/it/.env && exit 0
+          echo "::error::$STARTED is missing — up.sh skipped the scenario, so its tests would skip too"
           exit 1
       # The filter is a substring of the test names, so a rename could leave
       # it matching nothing and the step green: at least one has to have run.
@@ -187,15 +197,18 @@ jobs:
         shell: bash
         env:
           RUST_BACKTRACE: "1"
+          SERVER: ${{ matrix.server }}
         run: |
           set -o pipefail
-          cargo test -p zedis-connection --test live -- --ignored dragonfly | tee dragonfly-tests.log
-          grep -Eq 'test result: ok\. [1-9][0-9]* passed' dragonfly-tests.log && exit 0
-          echo "::error::no dragonfly test ran — the filter matched nothing"
+          cargo test -p zedis-connection --test live -- --ignored "$SERVER" | tee smoke-tests.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed' smoke-tests.log && exit 0
+          echo "::error::no $SERVER test ran — the filter matched nothing"
           exit 1
       - name: server log on failure
         if: failure()
-        run: docker logs zedis-it-dragonfly 2>&1 | tail -50 || true
+        env:
+          SERVER: ${{ matrix.server }}
+        run: docker logs "zedis-it-$SERVER" 2>&1 | tail -50 || true
       - name: stop
         if: always()
         run: scripts/it/down.sh

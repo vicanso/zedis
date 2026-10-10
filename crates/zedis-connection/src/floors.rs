@@ -27,6 +27,7 @@
 //! that is probed (`probe.rs`), not versioned.
 
 use semver::Version;
+use zedis_core::features::ServerFlavor;
 
 /// Valkey forked at Redis 7.2.4: every Valkey release is at least this, so
 /// a feature Redis had by 7.2 is "all of Valkey".
@@ -225,9 +226,56 @@ pub fn no_touch_is_safe(is_valkey: bool, version: &Version) -> bool {
     *version < affected_from || *version >= fixed_in
 }
 
+/// Whether `SET … KEEPTTL` can be sent to this product without losing the
+/// key. The second thing a [`Floor`] cannot say, after [`no_touch_is_safe`]:
+/// the option is there and it is broken.
+///
+/// **Garnet** accepts it, answers `+OK`, and — where the key has an expiry
+/// and the new value is *longer* than the one it replaces — the key is gone.
+/// Measured against 2.2.1, each case from a fresh two-byte value:
+///
+/// | key        | `SET` with            | afterwards            |
+/// |------------|-----------------------|-----------------------|
+/// | has a TTL  | longer, `KEEPTTL`     | **no key** (`TTL` -2) |
+/// | has a TTL  | same length / shorter | kept, TTL kept        |
+/// | no TTL     | longer, `KEEPTTL`     | kept                  |
+/// | has a TTL  | longer, `PX` / `EX`   | kept, TTL as given    |
+/// | has a TTL  | longer, no option     | kept, TTL cleared     |
+///
+/// That first row is how the editor saves a string (`string_ops::string_set`),
+/// so editing any value with an expiry into a longer one deleted it, with a
+/// success notice. Garnet claims Redis 7.4.3, which is why [`SET_KEEPTTL`]
+/// alone says yes; it was the collections live test, run on the Garnet lane
+/// the day that lane was added, that said otherwise.
+///
+/// Every Garnet is treated as affected: no release is known to keep the
+/// key. When one is verified to, bound this by the product's own version
+/// (`RedisClient`'s `flavor_version`) with that release named here — and
+/// until then the save falls back to re-applying the expiry with `PX`, as
+/// it does on a server older than the option.
+pub fn set_keepttl_is_safe(flavor: ServerFlavor) -> bool {
+    flavor != ServerFlavor::Garnet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Garnet has the option and loses the key with it; everyone else keeps
+    /// the option they have.
+    #[test]
+    fn set_keepttl_is_withheld_from_garnet_alone() {
+        assert!(!set_keepttl_is_safe(ServerFlavor::Garnet));
+        for flavor in [
+            ServerFlavor::Redis,
+            ServerFlavor::Valkey,
+            ServerFlavor::Dragonfly,
+            ServerFlavor::KeyDb,
+            ServerFlavor::Kvrocks,
+        ] {
+            assert!(set_keepttl_is_safe(flavor), "{flavor:?}");
+        }
+    }
 
     fn v(s: &str) -> Version {
         Version::parse(s).expect("test version")

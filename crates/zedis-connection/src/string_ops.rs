@@ -18,7 +18,6 @@
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
-use crate::floors;
 use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
@@ -68,9 +67,10 @@ pub enum StringWrite {
 
 /// `SET key value`, the way the editor saves.
 ///
-/// The TTL is kept: `KEEPTTL` where the server has it (Redis 6.0), else
-/// `PX ttl_ms` re-applied by hand — a `SET` without either would drop the
-/// expiry. `cas_baseline` is the bytes the editor loaded: where the server
+/// The TTL is kept: `KEEPTTL` where the server has it (Redis 6.0) and can be
+/// trusted with it (`RedisClient::keeps_ttl_on_set` — Garnet answers OK and
+/// drops the key), else `PX ttl_ms` re-applied by hand — a `SET` without
+/// either would drop the expiry. `cas_baseline` is the bytes the editor loaded: where the server
 /// offers `IFEQ` (`floors::SET_IFEQ`) the write is refused rather than
 /// clobbering a concurrent writer's change, and where it does not, the
 /// baseline is simply not sent — the same write, without the guard.
@@ -85,7 +85,7 @@ pub async fn string_set(
     let mut conn = client.connection();
     let mut c = cmd("SET");
     c.arg(key).arg(value);
-    if client.supports(floors::SET_KEEPTTL) {
+    if client.keeps_ttl_on_set() {
         c.arg("KEEPTTL");
     } else if ttl_ms > 0 {
         c.arg("PX").arg(ttl_ms);

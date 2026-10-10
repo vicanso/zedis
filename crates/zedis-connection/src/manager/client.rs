@@ -64,6 +64,12 @@ impl RedisClient {
     pub fn info_unavailable(&self) -> bool {
         self.info_unavailable
     }
+    /// Whether a save may say `SET … KEEPTTL`: the server has the option
+    /// ([`floors::SET_KEEPTTL`]) and keeps the key when it is used
+    /// ([`floors::set_keepttl_is_safe`] — Garnet does not).
+    pub fn keeps_ttl_on_set(&self) -> bool {
+        self.supports(floors::SET_KEEPTTL) && floors::set_keepttl_is_safe(self.flavor)
+    }
     /// Whether the server is a Valkey — what a flavor-dependent command
     /// shape (atomic slot migration) is chosen by.
     pub fn is_valkey(&self) -> bool {
