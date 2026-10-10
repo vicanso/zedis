@@ -496,7 +496,7 @@ fn status_from_reply(code: Option<&str>, message: &str) -> CommandStatus {
 }
 
 /// `key:value` lines of an `INFO` reply.
-fn info_fields(info: &str) -> impl Iterator<Item = (&str, &str)> {
+pub(crate) fn info_fields(info: &str) -> impl Iterator<Item = (&str, &str)> {
     info.lines().filter_map(|line| line.split_once(':'))
 }
 

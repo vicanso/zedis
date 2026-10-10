@@ -19,7 +19,7 @@ use crate::states::i18n_trash;
 use crate::{
     assets::CustomIconName,
     connection::{
-        CommandStatus, DangerKind, KillTarget, RedisClientDescription, ServerCommand, ServerFeatures,
+        CommandStatus, DangerKind, KillTarget, RedisClientDescription, ServerCommand, ServerFeatures, ServerFlavor,
         WRITE_UNLOCK_SECS, get_server,
     },
     constants::STATUS_BAR_HEIGHT,
@@ -53,6 +53,25 @@ use rust_i18n::t;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{debug, info};
 use zedis_ui::ZedisDivider;
+
+/// The server-status tooltip's first line: which product this is, in its own
+/// version.
+///
+/// `version` is the one the version gates are asked. For Redis and Valkey
+/// that is the product's own, and the line is `Redis 8.6.1` / `Valkey 9.0.3`.
+/// A server that only speaks Redis has a second one — a Dragonfly 2.0.2
+/// answers `redis_version:7.4.0` — and was labelled "Redis 7.4.0", the name
+/// and number of another product. Its own comes first, and the Redis it
+/// claims stays beside it because that is what decides which commands the
+/// app expects of it: `Dragonfly 2.0.2 (Redis 7.4.0)`.
+fn product_line(flavor: ServerFlavor, own_version: &str, version: &str) -> String {
+    let label = flavor.label();
+    if own_version.is_empty() || own_version == version {
+        format!("{label} {version}")
+    } else {
+        format!("{label} {own_version} (Redis {version})")
+    }
+}
 
 /// Fixed mono width for the latency label (value left-aligned, padding
 /// trailing): 5 chars covers "999ms" / "1.23s" / "--". The heartbeat
@@ -149,10 +168,9 @@ fn format_nodes_description(
     // as Redis; the product name needs no translation and says both facts
     // at once.
     if !version.is_empty() {
-        let flavor = if description.is_valkey { "Valkey" } else { "Redis" };
-        messages.push(format!("{flavor} {version}"));
-    } else if description.is_valkey {
-        messages.push("Valkey".to_string());
+        messages.push(product_line(description.flavor, &description.flavor_version, version));
+    } else if description.flavor != ServerFlavor::Redis {
+        messages.push(description.flavor.label().to_string());
     }
     messages.push(format!("{t}: {}", description.server_type.as_str()));
     if description.topology.is_empty() {
@@ -1852,6 +1870,20 @@ impl Render for ZedisStatusBar {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    /// A product is named in its own version; the Redis it claims to speak
+    /// stays beside it only where that is a different number.
+    #[test]
+    fn the_status_tooltip_names_the_product_in_its_own_version() {
+        assert_eq!(product_line(ServerFlavor::Redis, "", "8.6.1"), "Redis 8.6.1");
+        assert_eq!(product_line(ServerFlavor::Valkey, "9.0.3", "9.0.3"), "Valkey 9.0.3");
+        assert_eq!(
+            product_line(ServerFlavor::Dragonfly, "2.0.2", "7.4.0"),
+            "Dragonfly 2.0.2 (Redis 7.4.0)"
+        );
+        // A product that names no version of its own keeps the one it claims.
+        assert_eq!(product_line(ServerFlavor::KeyDb, "", "6.3.4"), "KeyDB 6.3.4");
+    }
 
     fn db_rows(count: usize) -> Vec<DbInfo> {
         (0..count)

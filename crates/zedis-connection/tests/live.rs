@@ -301,6 +301,17 @@ fn standalone_connect_reports_metadata() {
         let client = get_connection_manager().get_client(&id, 0).await.expect("client");
         client.ping().await.expect("ping");
         assert!(!client.version().is_empty(), "version must be read from INFO server");
+        // Which product answered, and in its own version. On the two this
+        // matrix runs that is the version the floors are asked as well: Redis
+        // has no second one, and Valkey's own is its column in `floors`.
+        let description = client.nodes_description();
+        if client.is_valkey() {
+            assert_eq!(description.flavor, ServerFlavor::Valkey);
+            assert_eq!(description.flavor_version, client.version());
+        } else {
+            assert_eq!(description.flavor, ServerFlavor::Redis);
+            assert_eq!(description.flavor_version, "", "Redis names one version");
+        }
         // The setup goes out as one pipeline of best-effort commands: one a
         // server refuses (SETINFO before 7.2) must not take the rest with it.
         let mut c = conn(&id, 0).await;

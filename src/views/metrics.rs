@@ -311,9 +311,11 @@ fn convert_metrics_to_chart_data(history_metrics: Vec<RedisMetrics>, time_format
         min_total_commands_processed = min_total_commands_processed.min(processed);
         total_commands_processed.push(processed);
 
-        // One axis for both directions, so in and out compare by eye.
-        let input = metrics.instantaneous_input_kbps;
-        let output = metrics.instantaneous_output_kbps;
+        // One axis for both directions, so in and out compare by eye. A
+        // rate below zero is a server saying it keeps none (`net_rate_label`)
+        // and is drawn as the flat line it is, not as a dip under the axis.
+        let input = metrics.instantaneous_input_kbps.max(0.);
+        let output = metrics.instantaneous_output_kbps.max(0.);
         max_net_kbps = max_net_kbps.max(input.max(output));
         min_net_kbps = min_net_kbps.min(input.min(output));
         input_kbps.push(input);
@@ -572,10 +574,7 @@ impl ZedisMetrics {
             "100%".to_string()
         };
 
-        let net = format!(
-            "{:.1} / {:.1} KB/s",
-            m.instantaneous_input_kbps, m.instantaneous_output_kbps
-        );
+        let net = net_rate_label(m.instantaneous_input_kbps, m.instantaneous_output_kbps);
 
         // 0 means INFO did not report it (a proxy), not a perfect ratio.
         let fragmentation = if m.mem_fragmentation_ratio > 0. {
@@ -1087,12 +1086,31 @@ fn memory_axis(min: f64, max: f64) -> (f64, f64) {
     ((min - margin).max(0.0), max + margin)
 }
 
+/// The Net In / Out card. A negative rate is not traffic: Dragonfly answers
+/// `instantaneous_input_kbps:-1` for a counter it does not keep, and the card
+/// read "-1.0 / -1.0 KB/s". Unmeasured is "--", as the fragmentation card
+/// beside it says for a ratio the server did not report.
+fn net_rate_label(input_kbps: f64, output_kbps: f64) -> String {
+    if input_kbps < 0. || output_kbps < 0. {
+        return "--".to_string();
+    }
+    format!("{input_kbps:.1} / {output_kbps:.1} KB/s")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The x labels are as many as the chart has room for, and fewer when
     /// the font is larger — a fixed ten ran into each other.
+    #[test]
+    fn a_rate_the_server_does_not_measure_is_not_shown_as_minus_one() {
+        assert_eq!(net_rate_label(1.25, 30.), "1.2 / 30.0 KB/s");
+        assert_eq!(net_rate_label(0., 0.), "0.0 / 0.0 KB/s");
+        // Dragonfly's `instantaneous_*_kbps:-1`.
+        assert_eq!(net_rate_label(-1., -1.), "--");
+    }
+
     #[test]
     fn x_labels_are_thinned_to_what_the_chart_is_wide_enough_for() {
         // Two columns in a 1280px window with the sidebar open.

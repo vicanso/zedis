@@ -45,8 +45,14 @@ async fn detect_server_type_over(conn: &mut RedisAsyncConn) -> Result<ServerType
     // (e.g. Upstash, which answers "command not available"). Treat that as
     // "not a sentinel" and fall through to the INFO check rather than failing
     // detection outright — only a genuine error is propagated.
-    match cmd("ROLE").query_async::<Role>(conn).await {
-        Ok(Role::Sentinel { .. }) => return Ok(ServerType::Sentinel),
+    //
+    // Read as a plain reply, because the one thing asked of it is whether it
+    // is a sentinel's. redis-rs's typed `Role` holds every role to Redis's
+    // own shape — a master is `[master, offset, replicas]` — so a compatible
+    // server that answers a shorter one (Dragonfly: `[master, []]`) failed
+    // the parse, and the connect with it, over fields nobody here reads.
+    match cmd("ROLE").query_async::<Value>(conn).await {
+        Ok(role) if role_is_sentinel(&role) => return Ok(ServerType::Sentinel),
         Ok(_) => {}
         Err(e) if is_ignorable_server_error(&e.to_string()) => {
             // Visible at the default INFO level (fires once per connection, not
@@ -73,6 +79,54 @@ async fn detect_server_type_over(conn: &mut RedisAsyncConn) -> Result<ServerType
     } else {
         Ok(ServerType::Standalone)
     }
+}
+
+/// What `INFO server` says a server is.
+///
+/// Two versions, because a compatible server has two. `version` is the one
+/// the floors are asked (`floors.rs`): Valkey's own, since Valkey has its own
+/// column there, and otherwise `redis_version` — for Redis its release, for
+/// Dragonfly and the rest the Redis they claim to speak, which is the right
+/// question to put to a floor written in Redis's numbers. `flavor_version`
+/// is the product's own release, for showing: a Dragonfly 2.0.2 that answers
+/// `redis_version:7.4.0` was labelled "Redis 7.4.0".
+#[derive(Debug, Default, PartialEq)]
+struct ServerIdentity {
+    is_valkey: bool,
+    version: Option<Version>,
+    flavor: ServerFlavor,
+    /// Empty where the product names no version of its own.
+    flavor_version: String,
+}
+
+impl ServerIdentity {
+    fn from_info(info: &str) -> Self {
+        let fields = || crate::probe::info_fields(info).map(|(key, value)| (key.trim(), value.trim()));
+        let field = |name: &str| fields().find(|(key, _)| *key == name).map(|(_, value)| value);
+        // `valkey_version` decides the floors' column, as it always has.
+        let valkey = field("valkey_version");
+        let flavor = ServerFlavor::from_info(fields());
+        Self {
+            is_valkey: valkey.is_some(),
+            version: valkey
+                .or_else(|| field("redis_version"))
+                .and_then(|version| Version::parse(version).ok()),
+            flavor,
+            flavor_version: flavor.own_version(fields()).unwrap_or_default(),
+        }
+    }
+}
+
+/// Whether a `ROLE` reply is a sentinel's: the role is its first element,
+/// and that is all this reads. What follows differs by role and by server.
+fn role_is_sentinel(role: &Value) -> bool {
+    let Value::Array(items) = role else {
+        return false;
+    };
+    items
+        .first()
+        .and_then(crate::reply::text)
+        .is_some_and(|name| name.eq_ignore_ascii_case("sentinel"))
 }
 
 /// `cluster_enabled` out of an `INFO cluster` reply, in either shape it comes.
@@ -652,21 +706,14 @@ impl ConnectionManager {
             sentinel_master_names,
             version: Version::new(0, 0, 0),
             is_valkey: false,
+            flavor: ServerFlavor::default(),
+            flavor_version: String::new(),
             info_unavailable: false,
             connection,
             #[cfg(not(target_family = "wasm"))]
             client: rclient,
         };
         let mut conn = client.connection.clone();
-        let get_version = |info: InfoDict| -> (bool, Option<Version>) {
-            if let Some(v) = info.get::<String>("valkey_version") {
-                return (true, Version::parse(&v).ok());
-            }
-            if let Some(v) = info.get::<String>("redis_version") {
-                return (false, Version::parse(&v).ok());
-            }
-            (false, None)
-        };
 
         // The version is `INFO`'s to tell. Where the user may not run it (or
         // the server has none) the client is still a client: the version
@@ -681,32 +728,25 @@ impl ConnectionManager {
             }
             Err(e) => return Err(e.into()),
         };
-        (client.is_valkey, client.version) = match (server_info, server_type) {
-            (None, _) => (false, Version::new(0, 0, 0)),
-            (Some(info), ServerType::Cluster) => {
-                let mut version = None;
-                let mut is_valkey = false;
-                if let redis::Value::Map(items) = info {
-                    for (_, node_info_val) in items {
-                        if let Ok(info) = InfoDict::from_redis_value(node_info_val)
-                            && let (valkey, Some(v)) = get_version(info)
-                        {
-                            version = Some(v);
-                            is_valkey = valkey;
-                            break;
-                        }
-                    }
-                }
-                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
-            }
-            (Some(info), _) => {
-                // A reply that is not an INFO text names no version either.
-                let (is_valkey, version) = InfoDict::from_redis_value(info)
-                    .map(get_version)
-                    .unwrap_or((false, None));
-                (is_valkey, version.unwrap_or(Version::new(0, 0, 0)))
-            }
+        // One node's answer speaks for a cluster: the first that names a
+        // version. A reply that is not an INFO text names none.
+        let identity = match (server_info, server_type) {
+            (None, _) => ServerIdentity::default(),
+            (Some(redis::Value::Map(nodes)), ServerType::Cluster) => nodes
+                .iter()
+                .filter_map(|(_node, info)| crate::reply::text(info))
+                .map(|info| ServerIdentity::from_info(&info))
+                .find(|identity| identity.version.is_some())
+                .unwrap_or_default(),
+            (Some(_), ServerType::Cluster) => ServerIdentity::default(),
+            (Some(info), _) => crate::reply::text(&info)
+                .map(|info| ServerIdentity::from_info(&info))
+                .unwrap_or_default(),
         };
+        client.is_valkey = identity.is_valkey;
+        client.version = identity.version.unwrap_or(Version::new(0, 0, 0));
+        client.flavor = identity.flavor;
+        client.flavor_version = identity.flavor_version;
 
         debug!(server_id, version = client.version(), modules = ?client.modules, db, access_mode = ?client.access_mode(), "create redis client success");
         Ok(client)
@@ -874,8 +914,72 @@ impl ConnectionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{WriteVerdict, classify_denial, cluster_enabled, configured_count, probe_key};
+    use super::{
+        ServerIdentity, WriteVerdict, classify_denial, cluster_enabled, configured_count, probe_key, role_is_sentinel,
+    };
     use redis::Value;
+    use semver::Version;
+    use zedis_core::features::ServerFlavor;
+
+    /// A compatible server has two versions, and each has its use: the Redis
+    /// it claims is what the floors are asked, its own is what it is called.
+    /// Valkey's own is both, because the floors have a column for it.
+    #[test]
+    fn a_server_is_identified_by_its_own_version_and_gated_by_the_one_it_claims() {
+        let dragonfly = ServerIdentity::from_info(
+            "# Server\r\nredis_version:7.4.0\r\ndragonfly_version:df-v2.0.2\r\nredis_mode:standalone\r\n",
+        );
+        assert_eq!(dragonfly.flavor, ServerFlavor::Dragonfly);
+        assert_eq!(dragonfly.flavor_version, "2.0.2");
+        assert_eq!(dragonfly.version, Some(Version::new(7, 4, 0)), "the floors' question");
+        assert!(!dragonfly.is_valkey);
+
+        let valkey = ServerIdentity::from_info("redis_version:7.2.4\r\nserver_name:valkey\r\nvalkey_version:9.0.3\r\n");
+        assert_eq!(valkey.flavor, ServerFlavor::Valkey);
+        assert_eq!(valkey.flavor_version, "9.0.3");
+        assert_eq!(valkey.version, Some(Version::new(9, 0, 3)));
+        assert!(valkey.is_valkey);
+
+        let redis = ServerIdentity::from_info("# Server\r\nredis_version:8.6.1\r\n");
+        assert_eq!(redis.flavor, ServerFlavor::Redis);
+        assert_eq!(redis.flavor_version, "", "it has no second version");
+        assert_eq!(redis.version, Some(Version::new(8, 6, 1)));
+
+        // Not an INFO text at all: nothing is known, and nothing is guessed.
+        assert_eq!(ServerIdentity::from_info("nope"), ServerIdentity::default());
+    }
+
+    /// Only the first element of `ROLE` is read. Redis's master answers
+    /// three elements and Dragonfly's two; a parse that held both to Redis's
+    /// shape refused the connect to the second (`Role primary response too
+    /// short, expected 3 elements`).
+    #[test]
+    fn a_role_reply_is_a_sentinel_only_when_it_says_so() {
+        let name = |role: &str| Value::BulkString(role.as_bytes().to_vec());
+        let redis_master = Value::Array(vec![name("master"), Value::Int(3129659), Value::Array(vec![])]);
+        let dragonfly_master = Value::Array(vec![name("master"), Value::Array(vec![])]);
+        let replica = Value::Array(vec![
+            name("slave"),
+            name("127.0.0.1"),
+            Value::Int(6379),
+            name("connected"),
+            Value::Int(3129659),
+        ]);
+        let sentinel = Value::Array(vec![name("sentinel"), Value::Array(vec![name("mymaster")])]);
+        assert!(role_is_sentinel(&sentinel));
+        assert!(role_is_sentinel(&Value::Array(vec![Value::SimpleString(
+            "sentinel".into()
+        )])));
+        for other in [
+            redis_master,
+            dragonfly_master,
+            replica,
+            Value::Array(vec![]),
+            Value::Nil,
+        ] {
+            assert!(!role_is_sentinel(&other), "{other:?}");
+        }
+    }
 
     fn text(info: &str) -> Value {
         Value::BulkString(info.as_bytes().to_vec())

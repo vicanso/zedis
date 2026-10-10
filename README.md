@@ -34,7 +34,7 @@
 - 🧠 **Reads your values** — decompresses and decodes on its own: JSON, Protobuf, MessagePack, JWT, images and more, with a viewer for every Redis type and module.
 - 📊 **Observability in the same window** — live metrics, a memory analyzer, hot keys, slow log, `MONITOR` and cluster health.
 - 🔐 **Safe on production** — Prod connections start write-locked, a destructive command there asks for the server's name, secrets are encrypted per machine, and there is no telemetry.
-- 🌐 **Connects to what you actually run** — TLS, SSH, Cluster, Sentinel; Redis and Valkey as first-class; proxies and managed clouds grey out what they lack, with the reason.
+- 🌐 **Connects to what you actually run** — TLS, SSH, Cluster, Sentinel; Redis and Valkey as first-class; Dragonfly, proxies and managed clouds grey out what they lack, with the reason.
 - ⌨️ **For people who live in Redis** — ⌘K, a redis-cli with completion, an AI command assistant, copy and diff across servers, and the same app in the browser.
 
 Already on Redis Insight, ARDM or Tiny RDM? **Paste the export and every connection lands at once.**
@@ -148,7 +148,7 @@ Open <http://localhost:7379> as `admin` / `change-me`. That command is a plain-h
 
 ## 🔀 Redis and Valkey
 
-Valkey is first-class, not a compatibility mode. Each version-gated feature has its own Redis floor and Valkey floor, so a server is never sent a command it did not ship. What only Valkey has — `COMMANDLOG`, atomic slot migration, multiple databases in cluster — has a panel. Copy works both ways even though `DUMP` payloads do not. CI runs Redis 6.2–8 and Valkey 8.0–9.1 on every change.
+Valkey is first-class, not a compatibility mode. Each version-gated feature has its own Redis floor and Valkey floor, so a server is never sent a command it did not ship. What only Valkey has — `COMMANDLOG`, atomic slot migration, multiple databases in cluster — has a panel. Copy works both ways even though `DUMP` payloads do not. CI runs Redis 6.2–8 and Valkey 8.0–9.1 on every change. Dragonfly connects too: it is named in its own version, and the commands it does not have are probed and left out — it is not in the CI matrix yet.
 
 📖 **[Compatibility matrix →](./docs/REDIS_VALKEY.md)**
 

@@ -28,7 +28,7 @@ use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use futures::future::try_join_all;
 use rand::RngExt;
-use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Role, Value, cmd};
+use redis::{Cmd, FromRedisValue, InfoDict, ParsingError, Value, cmd};
 #[cfg(not(target_family = "wasm"))]
 use redis::{aio::MultiplexedConnection, cluster};
 use regex::Regex;
@@ -41,6 +41,7 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, info};
+use zedis_core::features::ServerFlavor;
 use zedis_core::string::format_host_port;
 use zedis_core::ttl_cache::TtlCache;
 
@@ -623,6 +624,10 @@ pub struct RedisClient {
     sentinel_master_names: Vec<String>,
     version: Version,
     is_valkey: bool,
+    /// Which product answered, and its own version where it has one beside
+    /// the Redis version it claims — see [`ServerIdentity`].
+    flavor: ServerFlavor,
+    flavor_version: String,
     /// The connect found `INFO` denied or missing — see
     /// [`RedisClient::info_unavailable`].
     info_unavailable: bool,
@@ -666,6 +671,13 @@ pub struct TopologyMaster {
 #[derive(Debug, Clone, Default)]
 pub struct RedisClientDescription {
     pub is_valkey: bool,
+    /// The product that answered — Redis, Valkey, Dragonfly… — for naming it.
+    /// Never for deciding what it can do: that is probed (`ServerFeatures`)
+    /// and gated by version (`floors`).
+    pub flavor: ServerFlavor,
+    /// That product's own version (`2.0.2` for a Dragonfly that claims Redis
+    /// `7.4.0`), empty where it is the version already known.
+    pub flavor_version: String,
     pub server_type: String,
     pub master_nodes: String,
     pub slave_nodes: String,

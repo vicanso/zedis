@@ -478,6 +478,34 @@ impl ServerFlavor {
         flavor
     }
 
+    /// The `INFO server` field holding this product's own version, where
+    /// that is not `redis_version`.
+    ///
+    /// A compatible server answers `redis_version` with the Redis it claims
+    /// to speak (Dragonfly 2.0: `7.4.0`) and puts its own release beside it.
+    /// Both are wanted, for different things: the claimed one says which
+    /// commands to expect, and its own is the one a person recognises —
+    /// "Redis 7.4.0" over a Dragonfly is the name of another product.
+    pub const fn version_field(self) -> Option<&'static str> {
+        match self {
+            ServerFlavor::Redis => None,
+            ServerFlavor::Valkey => Some("valkey_version"),
+            ServerFlavor::Dragonfly => Some("dragonfly_version"),
+            ServerFlavor::KeyDb => Some("keydb_version"),
+            ServerFlavor::Kvrocks => Some("kvrocks_version"),
+            ServerFlavor::Garnet => Some("garnet_version"),
+        }
+    }
+
+    /// This product's own version out of `INFO server`, as a bare number —
+    /// Dragonfly writes `df-v2.0.2` — or `None` where the server names none.
+    pub fn own_version<'a>(self, fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<String> {
+        let name = self.version_field()?;
+        let (_, value) = fields.into_iter().find(|(key, _)| key.trim() == name)?;
+        let number = value.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
+        (!number.is_empty()).then(|| number.to_string())
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             ServerFlavor::Redis => "Redis",
@@ -672,6 +700,18 @@ mod tests {
         assert_eq!(
             ServerFlavor::from_info([("redis_version", "7.2.4"), ("dragonfly_version", "df-v1.2")]),
             ServerFlavor::Dragonfly
+        );
+        // Its own version is the number in its own field, without the
+        // product's prefix; Redis has no second field to read.
+        let dragonfly = [("redis_version", "7.4.0"), ("dragonfly_version", "df-v2.0.2")];
+        assert_eq!(ServerFlavor::Dragonfly.own_version(dragonfly).as_deref(), Some("2.0.2"));
+        let valkey = [("redis_version", "7.2.4"), ("valkey_version", "9.0.3")];
+        assert_eq!(ServerFlavor::Valkey.own_version(valkey).as_deref(), Some("9.0.3"));
+        assert_eq!(ServerFlavor::Redis.own_version([("redis_version", "8.6.1")]), None);
+        assert_eq!(ServerFlavor::Dragonfly.own_version([("redis_version", "7.4.0")]), None);
+        assert_eq!(
+            ServerFlavor::Dragonfly.own_version([("dragonfly_version", "unknown")]),
+            None
         );
         assert_eq!(
             ServerFlavor::from_info([("redis_version", "7.2.4"), ("valkey_version", "8.0.1")]),

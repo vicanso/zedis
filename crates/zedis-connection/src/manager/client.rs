@@ -110,6 +110,8 @@ impl RedisClient {
         let slot_map = self.build_slot_map();
         RedisClientDescription {
             is_valkey: self.is_valkey,
+            flavor: self.flavor,
+            flavor_version: self.flavor_version.clone(),
             server_type: format!("{:?}", self.server_type),
             master_nodes: master_nodes.join(","),
             slave_nodes: slave_nodes.join(","),
