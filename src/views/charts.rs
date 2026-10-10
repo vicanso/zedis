@@ -161,12 +161,74 @@ pub(crate) fn make_series_chart(params: ChartParams, series: Vec<ChartSeries>, s
     chart
 }
 
+/// The ticks gpui-kit's bar chart draws on its value axis unless told
+/// otherwise.
+const DEFAULT_VALUE_TICKS: usize = 5;
+
+/// How many ticks the value axis of a bar chart of counts carries.
+///
+/// A bar chart's axis runs from zero to its tallest bar and its ticks are
+/// spaced evenly between the two — five by default, which puts them on whole
+/// numbers only when the tallest bar is a multiple of four. Everywhere else
+/// they fall between, and a label that rounds them names a place it is not
+/// at: with a tallest bar of 5 the ticks are 0, 1.25, 2.5, 3.75 and 5, drawn
+/// as "0, 1, 2, 4, 5", so a bar of one key ended four fifths of the way to
+/// the line that said "1" (#175). The count here divides the tallest bar
+/// into whole steps: one per unit while that is few enough to read, else the
+/// first of four, five, three, six or two that goes into it evenly. Where
+/// none does (11, 13, 17…) it stays at five and [`tick_label`] says which
+/// of them can be named.
+fn count_axis_ticks(tallest: f64) -> usize {
+    if !(tallest >= 1.0 && tallest.fract() == 0.0) {
+        return DEFAULT_VALUE_TICKS;
+    }
+    let tallest = tallest as u64;
+    if tallest <= 8 {
+        return tallest as usize + 1;
+    }
+    [4u64, 5, 3, 6, 2]
+        .into_iter()
+        .find(|steps| tallest.is_multiple_of(*steps))
+        .map_or(DEFAULT_VALUE_TICKS, |steps| steps as usize + 1)
+}
+
+/// The tallest bar from which a rounded tick label is as good as an exact
+/// one. A tick is at most half a key from a whole number, and on an axis of
+/// a hundred that is half a percent of its height — about a pixel.
+const ROUNDING_UNSEEN_FROM: f64 = 100.0;
+
+/// The label of a tick on a count axis: its number where it is one, nothing
+/// where it falls between two. The question is asked of the axis before the
+/// tick — past [`ROUNDING_UNSEEN_FROM`] every tick is labelled, below it only
+/// the whole ones — so an axis never names its quarters and skips its middle.
+/// "Whole" allows for the chart's own arithmetic, which places ticks in `f32`.
+fn tick_label(value: f64, tallest: f64, format: &dyn Fn(f64) -> String) -> String {
+    let whole = value.round();
+    if tallest >= ROUNDING_UNSEEN_FROM || (value - whole).abs() < 1e-3 {
+        format(whole)
+    } else {
+        String::new()
+    }
+}
+
 /// One series as bars, one per sample. The value axis runs from zero to the
 /// tallest bar, so `y_min` / `y_max` are not read.
+///
+/// Bars here are counts — keys in a size bucket, keys in a TTL bucket — so
+/// where every bar is a whole number the axis is ticked in whole numbers
+/// ([`count_axis_ticks`]). A series with fractions keeps the default axis.
 pub(crate) fn make_bar_chart(params: ChartParams, values: Arc<Vec<f64>>, fill: Hsla) -> impl IntoElement {
     let len = params.dates.len().min(values.len());
     let format: Rc<dyn Fn(f64) -> String> = Rc::from(params.y_format);
     let tooltip = format.clone();
+    let drawn = &values[..len];
+    let tallest = drawn.iter().copied().fold(0.0_f64, f64::max);
+    let counts = drawn.iter().all(|value| *value >= 0.0 && value.fract() == 0.0);
+    let ticks = if counts {
+        count_axis_ticks(tallest)
+    } else {
+        DEFAULT_VALUE_TICKS
+    };
     BarChart::new(0..len)
         .id(params.id)
         .band(sample_at(&params.dates))
@@ -174,13 +236,68 @@ pub(crate) fn make_bar_chart(params: ChartParams, values: Arc<Vec<f64>>, fill: H
         .fill(move |_, _, _, _| fill)
         .tick_margin(params.tick_margin)
         .value_axis(true)
-        .value_tick_format(move |value| format(value))
+        .value_tick_count(ticks)
+        .value_tick_format(move |value| {
+            if counts {
+                tick_label(value, tallest, format.as_ref())
+            } else {
+                format(value)
+            }
+        })
         .tooltip_value(move |_, value| tooltip(value).into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every tick of a count axis is a whole number where the tallest bar
+    /// can be divided into whole steps, which is where the labels used to
+    /// name places they were not at (#175).
+    #[test]
+    fn a_count_axis_is_ticked_in_whole_numbers() {
+        // One tick per unit while that is few: 0 and 1; 0 to 5.
+        assert_eq!(count_axis_ticks(1.0), 2);
+        assert_eq!(count_axis_ticks(5.0), 6);
+        assert_eq!(count_axis_ticks(8.0), 9);
+        // Past that, the first even division: 9 in threes, 20 in fives,
+        // 22 in elevens.
+        assert_eq!(count_axis_ticks(9.0), 4);
+        assert_eq!(count_axis_ticks(20.0), 5);
+        assert_eq!(count_axis_ticks(22.0), 3);
+        for tallest in [1.0, 5.0, 8.0, 9.0, 12.0, 20.0, 22.0, 100.0] {
+            let ticks = count_axis_ticks(tallest);
+            let spacing: f64 = tallest / (ticks - 1) as f64;
+            assert_eq!(spacing.fract(), 0.0, "{tallest} in {ticks} ticks");
+        }
+        // Nothing divides 11 evenly, and nothing is drawn of a fraction or
+        // an empty chart: the default five.
+        assert_eq!(count_axis_ticks(11.0), 5);
+        assert_eq!(count_axis_ticks(2.5), 5);
+        assert_eq!(count_axis_ticks(0.0), 5);
+    }
+
+    /// A tick between two whole numbers has no label — a rounded one is the
+    /// name of somewhere else — until the axis is long enough that half a
+    /// key cannot be seen, and then all of them have one.
+    #[test]
+    fn a_tick_between_two_counts_is_not_labelled_as_one_of_them() {
+        let plain = |value: f64| format!("{value:.0}");
+        // Tallest bar 11, five ticks: 0, 2.75, 5.5, 8.25, 11.
+        assert_eq!(tick_label(11.0, 11.0, &plain), "11");
+        assert_eq!(tick_label(8.25, 11.0, &plain), "");
+        assert_eq!(tick_label(5.5, 11.0, &plain), "");
+        assert_eq!(tick_label(0.0, 11.0, &plain), "0");
+        // The chart's own f32 arithmetic.
+        assert_eq!(tick_label(2.999_999_8, 5.0, &plain), "3");
+        // One answer per axis: 53 names neither its quarters nor its middle,
+        // 101 names both.
+        assert_eq!(tick_label(13.25, 53.0, &plain), "");
+        assert_eq!(tick_label(26.5, 53.0, &plain), "");
+        assert_eq!(tick_label(25.25, 101.0, &plain), "25");
+        assert_eq!(tick_label(50.5, 101.0, &plain), "51");
+        assert_eq!(tick_label(25_000.75, 100_003.0, &plain), "25001");
+    }
 
     #[test]
     fn a_negative_series_gets_an_axis_below_zero() {

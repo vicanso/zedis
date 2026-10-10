@@ -126,11 +126,14 @@ impl ZedisContent {
             #[cfg(not(target_family = "wasm"))]
             self.script_editor.take();
         }
-        // Tool panels: keep only the one the current route still shows —
-        // leaving a tool route drops its panel (and any large scan buffers),
-        // same per-view policy as before, now uniform over the map.
+        // Tool panels: keep the one the current route still shows — leaving
+        // a tool route drops its panel (and any large scan buffers) — and
+        // the ones whose content is a result the user ran, which is not
+        // something to throw away for having looked elsewhere
+        // (`ServerView::survives_navigation`).
         let current_tool = route.server_view();
-        self.tool_views.retain(|view, _| Some(*view) == current_tool);
+        self.tool_views
+            .retain(|view, _| Some(*view) == current_tool || (route.is_server() && view.survives_navigation()));
         self.placeholders.retain(|view| Some(*view) == current_tool);
     }
 

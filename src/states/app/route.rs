@@ -164,6 +164,19 @@ impl ServerView {
         }
     }
 
+    /// Whether the panel is kept when the route leaves it, for as long as
+    /// its tab stays on the same server.
+    ///
+    /// A tool panel is dropped on the way out by default: most of them show
+    /// what the server says now, and a fresh one is a re-read. A memory
+    /// analysis is not — it is something the user ran, minutes of `SCAN` and
+    /// `MEMORY USAGE` on a large keyspace, and it was gone the moment they
+    /// opened one of the keys it had found (#175). The panel resets itself
+    /// when the server or database under it changes.
+    pub const fn survives_navigation(self) -> bool {
+        matches!(self, ServerView::MemoryAnalysis)
+    }
+
     /// Whether this build has the panel.
     ///
     /// The desktop has all of them. The browser build leaves out the two
@@ -244,6 +257,9 @@ mod tests {
             let view = ServerView::from_name(name).expect(name);
             assert_eq!(view.as_str(), name);
             assert!(view.in_this_build(), "{name}");
+            // A result the user ran is kept across navigation; a panel that
+            // only shows what the server says now is rebuilt.
+            assert_eq!(view.survives_navigation(), name == "memoryanalysis", "{name}");
         }
     }
 }
