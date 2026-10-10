@@ -54,6 +54,29 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 use zedis_core::change_log::ChangeEntry;
 
+/// A key the recycle bin put back: where, and with what expiry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredKey {
+    pub key: SharedString,
+    pub db: usize,
+    /// The `PTTL` the key was deleted with, which is what `RESTORE` gave it
+    /// back: milliseconds, or not positive for a key that does not expire.
+    pub pttl_ms: i64,
+}
+
+impl RestoredKey {
+    /// The expiry as the tree's TTL chip counts it: whole seconds, rounded
+    /// up so a key with half a second left is not drawn as expired, and -1
+    /// for none.
+    fn ttl_secs(&self) -> i64 {
+        if self.pttl_ms > 0 {
+            (self.pttl_ms + 999) / 1000
+        } else {
+            -1
+        }
+    }
+}
+
 /// What one auto-refresh round changes: keys to add, keys to take out, and
 /// new TTLs for keys already loaded.
 struct AutoRefreshPlan {
@@ -1916,6 +1939,66 @@ impl ZedisServerState {
         self.emit_success_notification(message.to_string().into(), i18n_key_tree(cx, "batch_ttl_title"), cx);
     }
 
+    /// The keys of `restored` that belong in this tree: the ones the recycle
+    /// bin put back into the server and database it is showing. The bin
+    /// lists a server's deleted keys across all its databases, and a key
+    /// restored into another one is not a row here.
+    fn restored_here(&self, server_id: &str, restored: &[RestoredKey]) -> Vec<RestoredKey> {
+        if self.server_id.as_ref() != server_id {
+            return Vec::new();
+        }
+        restored.iter().filter(|key| key.db == self.db).cloned().collect()
+    }
+
+    /// Put keys the recycle bin restored back in the tree, and recount.
+    ///
+    /// The bin restores from a dialog, over a connection of its own
+    /// (`restore_key`), and used to tell nobody: the key was back in Redis,
+    /// the toast said so, and the tree went on without it under the old
+    /// count until something reloaded it (#173). A bin entry is a `DUMP`
+    /// payload and does not record the type, so that is asked here — one
+    /// `TYPE` per key — before the rows are drawn with a badge.
+    pub fn note_keys_restored(&mut self, server_id: &str, restored: &[RestoredKey], cx: &mut Context<Self>) {
+        let restored = self.restored_here(server_id, restored);
+        if restored.is_empty() {
+            return;
+        }
+        let at = self.at();
+        // -2 is "not fetched", which is what a scan reports while the tree
+        // shows no TTL chips; the restored expiry is known either way.
+        let with_ttl = self.show_key_tree_ttl();
+        self.spawn(
+            ServerTask::FillKeyTypes,
+            move || async move {
+                let names: Vec<String> = restored.iter().map(|key| key.key.to_string()).collect();
+                let types = key_types(&at, names).await?;
+                Ok(restored
+                    .into_iter()
+                    .zip(types)
+                    // "none": deleted again, or expired, between the restore
+                    // and this question. It is not a row.
+                    .filter(|(_, key_type)| key_type != "none")
+                    .map(|(key, key_type)| {
+                        let ttl = if with_ttl { key.ttl_secs() } else { -2 };
+                        (key.key, SharedString::from(key_type), ttl)
+                    })
+                    .collect::<Vec<_>>())
+            },
+            move |this, result, cx| {
+                if let Ok(rows) = result {
+                    this.extend_keys(rows);
+                    // The tree rebuilds on this event and on nothing else.
+                    cx.emit(ServerEvent::KeyTreeUpdated);
+                }
+                // The keys are back whether or not their types could be
+                // asked, so the total has changed either way.
+                this.refresh_dbsize_now(cx);
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     pub fn add_key(
         &mut self,
         category: SharedString,
@@ -2080,6 +2163,34 @@ mod auto_refresh_tests {
         assert!(ZedisServerState::compile_name_filter("^zedis:fn:session", false).is_none());
         assert!(ZedisServerState::compile_name_filter("", true).is_none());
         assert!(ZedisServerState::compile_name_filter("user:(", true).is_none());
+    }
+
+    /// The bin lists one server's deleted keys across all its databases.
+    /// Only the ones restored into the server and database on screen are
+    /// rows of this tree (#173 — until then none of them were).
+    #[gpui::test]
+    fn a_restored_key_is_a_row_only_in_the_tree_it_belongs_to(cx: &mut gpui::TestAppContext) {
+        let here = RestoredKey {
+            key: "here".into(),
+            db: 2,
+            pttl_ms: 1500,
+        };
+        let elsewhere = RestoredKey {
+            key: "other-db".into(),
+            db: 0,
+            pttl_ms: -1,
+        };
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, _| {
+            state.server_id = "one".into();
+            state.db = 2;
+            let restored = [here.clone(), elsewhere.clone()];
+            assert_eq!(state.restored_here("one", &restored), std::slice::from_ref(&here));
+            assert!(state.restored_here("two", &restored).is_empty(), "another server's bin");
+        });
+        // The chip counts whole seconds, rounded up; no expiry is -1.
+        assert_eq!(here.ttl_secs(), 2);
+        assert_eq!(elsewhere.ttl_secs(), -1);
     }
 
     fn loaded(keys: &[&str]) -> LoadedKeys {

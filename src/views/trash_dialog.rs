@@ -25,7 +25,9 @@ use crate::connection::{Capability, ServerDb, restore_key};
 use crate::db::{TRASH_RETENTION_MS, TrashMeta, get_trash_entry, list_trash_meta, purge_trash, remove_trash_entry};
 use crate::error::Error;
 use crate::helpers::{format_unix_millis_with, get_mono_font_family, unix_ts_millis};
-use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_trash};
+use crate::states::{
+    GlobalEvent, NotificationAction, RestoredKey, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_trash,
+};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
@@ -134,7 +136,7 @@ impl ZedisTrashDialog {
             let sid = server_id.clone();
             let (restored, skipped, failed) = cx
                 .background_spawn(async move {
-                    let mut restored = 0usize;
+                    let mut restored: Vec<RestoredKey> = Vec::new();
                     let mut skipped = 0usize;
                     let mut failed = 0usize;
                     for id in ids {
@@ -151,7 +153,11 @@ impl ZedisTrashDialog {
                         match result {
                             Ok(()) => {
                                 let _ = remove_trash_entry(&sid, &id);
-                                restored += 1;
+                                restored.push(RestoredKey {
+                                    key: entry.key.into(),
+                                    db: entry.db,
+                                    pttl_ms: entry.pttl_ms,
+                                });
                             }
                             Err(e) if e.to_string().contains("BUSYKEY") => skipped += 1,
                             Err(_) => failed += 1,
@@ -162,7 +168,7 @@ impl ZedisTrashDialog {
                 .await;
             let msg = t!(
                 "trash.restore_all_result",
-                restored = restored,
+                restored = restored.len(),
                 skipped = skipped,
                 failed = failed,
                 locale = &locale
@@ -175,6 +181,7 @@ impl ZedisTrashDialog {
             cx.update(|cx| emit_notification(notification, cx));
             let _ = this.update(cx, |state, cx| {
                 state.restoring = false;
+                state.keys_restored(&restored, cx);
                 state.reload(cx);
             });
         })
@@ -217,6 +224,7 @@ impl ZedisTrashDialog {
             let sid = server_id.clone();
             let row_id = id.clone();
             let entry = cx.background_spawn(async move { get_trash_entry(&sid, &row_id) }).await;
+            let mut came_back: Vec<RestoredKey> = Vec::new();
             let notification = match entry {
                 Ok(Some(entry)) => {
                     let restored = async {
@@ -232,6 +240,11 @@ impl ZedisTrashDialog {
                             let _ = cx
                                 .background_spawn(async move { remove_trash_entry(&sid, &row_id) })
                                 .await;
+                            came_back.push(RestoredKey {
+                                key: entry.key.clone().into(),
+                                db: entry.db,
+                                pttl_ms: entry.pttl_ms,
+                            });
                             let msg = t!("trash.restored", key = entry.key, locale = &locale);
                             NotificationAction::new_success(msg.into())
                         }
@@ -256,9 +269,25 @@ impl ZedisTrashDialog {
                 }
             };
             cx.update(|cx| emit_notification(notification, cx));
-            let _ = this.update(cx, |state, cx| state.reload(cx));
+            let _ = this.update(cx, |state, cx| {
+                state.keys_restored(&came_back, cx);
+                state.reload(cx);
+            });
         })
         .detach();
+    }
+
+    /// Tell the connection what came back, so its tree and its count show
+    /// it. The bin writes over a connection of its own, and the toast used
+    /// to be the only place a restore was visible until the tree was
+    /// reloaded by hand.
+    fn keys_restored(&self, restored: &[RestoredKey], cx: &mut Context<Self>) {
+        if restored.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        self.server_state
+            .update(cx, |state, cx| state.note_keys_restored(&server_id, restored, cx));
     }
 
     /// Drop one entry from the bin permanently.

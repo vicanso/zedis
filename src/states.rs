@@ -100,6 +100,7 @@ pub use server::cluster::{
 pub use server::element::KvElement;
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
+pub use server::key::RestoredKey;
 pub use server::stream::project_stream_entries;
 // Used by the value-diff view to render the same RFC 7396 merge patch
 // document the Save path sends as JSON.MERGE — single source of truth.
