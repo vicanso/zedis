@@ -43,7 +43,7 @@ use session::Sessions;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
-use zedis_connection::{disable_keychain, install_crypto_provider};
+use zedis_connection::{clear_expired_cache, disable_keychain, install_crypto_provider};
 use zedis_core::fs::get_or_create_config_dir;
 
 /// Loopback by default. Binding every interface is opting in to handing the
@@ -266,6 +266,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let live = sweeper.len().await;
                 tracing::info!(dropped, live, "swept idle sessions");
             }
+            // The pooled clients and their sockets, idle past their five
+            // minutes. An expired entry is only ever *taken out* here: the
+            // cache stops handing it out by itself, but it goes on holding
+            // the connection open until something removes it, and the
+            // desktop's housekeeping tick is the GUI's — this process had
+            // none. Every server and database anyone had looked at once kept
+            // its connections until the bridge was restarted (#176).
+            clear_expired_cache();
         }
     });
 
