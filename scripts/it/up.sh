@@ -22,6 +22,10 @@
 #   cluster     127.0.0.1:17000-17005   3 masters + 3 replicas, password-protected (cluster bus on
 #                                       27000-27005; `IT_CLUSTER_BASE=7100` moves the block when
 #                                       those are taken)
+#   dragonfly   127.0.0.1:16391   one Dragonfly, for the three `dragonfly_*` smoke tests. Opt-in
+#                                 (`IT_SCENARIOS=dragonfly`) and docker only: it is another
+#                                 program with its own image (`DRAGONFLY_IMAGE`) and flags, not
+#                                 a scenario the Redis / Valkey image can play
 #
 # Sentinel and cluster are the two topologies whose auth plumbing is not just "send AUTH"
 # (`masterauth` for replication, `sentinel auth-pass` for monitoring, a redirect that has to
@@ -70,6 +74,7 @@ PORT_SSH=$((PORT_BASE + 10))
 # two tests can only both *authenticate* if they reach it under two
 # addresses — the RSA signature test needs a handshake of its own.
 PORT_SSH_RSA=$((PORT_BASE + 11))
+PORT_DRAGONFLY=$((PORT_BASE + 12))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
@@ -171,6 +176,17 @@ wait_pong() { # <name> <cli args…>   (name = the log to show on failure)
   show_log "$name"
   exit 1
 }
+# PING over a plain socket, for a server that is not started from the Redis
+# image: `cli` is that image's redis-cli, and there is none to ask with. In a
+# subshell, because a failed `exec` redirection ends the shell it runs in.
+resp_ping() { # <port>
+  (
+    exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1
+    printf 'PING\r\n' >&3
+    IFS= read -r -t 2 reply <&3 || exit 1
+    [ "${reply%$'\r'}" = "+PONG" ]
+  ) 2>/dev/null
+}
 has() { case " $SCENARIOS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # True when something listens on 127.0.0.1:<port> (any protocol).
 port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -208,6 +224,42 @@ if has standalone; then
   fi
   wait_pong standalone -p "$PORT_STANDALONE"
   env_put ZEDIS_IT_STANDALONE "127.0.0.1:$PORT_STANDALONE"
+fi
+
+# ── dragonfly ────────────────────────────────────────────────────────────
+# Not Redis, so not `start`: its own image, its own flags, and no redis-cli
+# in sight. Never in the default list — it is a smoke lane of three tests
+# (`dragonfly_*` in live.rs), there to notice the day it stops connecting,
+# not a topology the suite is held to.
+DRAGONFLY_IMAGE=${DRAGONFLY_IMAGE:-docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2}
+if has dragonfly; then
+  echo "dragonfly :$PORT_DRAGONFLY"
+  if ! command -v docker >/dev/null 2>&1; then
+    # Loud, like the sshd scenario: its tests then skip, and whoever asked
+    # for it should know they did.
+    echo "  dragonfly skipped: it ships as an image and there is no docker here"
+  else
+    wait_port_free "$PORT_DRAGONFLY" dragonfly
+    # Two threads. Dragonfly takes one per core and wants 256 MiB for each;
+    # where it finds less than that it exits at startup, and says so only
+    # in its own log.
+    docker run -d --network host --name zedis-it-dragonfly "$DRAGONFLY_IMAGE" \
+      --port "$PORT_DRAGONFLY" --proactor_threads=2 >/dev/null
+    echo zedis-it-dragonfly >> "$IT_DIR/containers"
+    dragonfly_up=0
+    for _ in $(seq 1 60); do
+      if resp_ping "$PORT_DRAGONFLY"; then dragonfly_up=1; break; fi
+      if [ "$(docker inspect -f '{{.State.Running}}' zedis-it-dragonfly 2>/dev/null)" != "true" ]; then break; fi
+      sleep 0.5
+    done
+    if [ "$dragonfly_up" != 1 ]; then
+      echo "!! dragonfly did not come up" >&2
+      docker logs zedis-it-dragonfly 2>&1 | tail -20 >&2 || true
+      exit 1
+    fi
+    echo "  dragonfly ready"
+    env_put ZEDIS_IT_DRAGONFLY "127.0.0.1:$PORT_DRAGONFLY"
+  fi
 fi
 
 # One CA for both TLS scenarios, generated once: `tls` verifies the server,

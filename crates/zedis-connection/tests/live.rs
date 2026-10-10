@@ -24,6 +24,7 @@
 
 use redis::{FromRedisValue, cmd};
 use regex::Regex;
+use semver::Version;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Once;
@@ -343,99 +344,107 @@ fn standalone_connect_reports_metadata() {
 fn standalone_scan_sees_every_type_it_wrote() {
     smol::block_on(async {
         let id = register(server("it-standalone", standalone())).await;
-        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
-        let mut c = conn(&id, 0).await;
-        let prefix = unique("types");
-        let keys = [
-            (format!("{prefix}:s"), "string"),
-            (format!("{prefix}:h"), "hash"),
-            (format!("{prefix}:l"), "list"),
-            (format!("{prefix}:z"), "zset"),
-            (format!("{prefix}:set"), "set"),
-        ];
-        cmd("SET")
-            .arg(&keys[0].0)
-            .arg("v")
-            .exec_async(&mut c)
-            .await
-            .expect("set");
-        cmd("HSET")
-            .arg(&keys[1].0)
-            .arg("f")
-            .arg("v")
-            .exec_async(&mut c)
-            .await
-            .expect("hset");
-        cmd("RPUSH")
-            .arg(&keys[2].0)
-            .arg("a")
-            .exec_async(&mut c)
-            .await
-            .expect("rpush");
-        cmd("ZADD")
-            .arg(&keys[3].0)
-            .arg(1)
-            .arg("m")
-            .exec_async(&mut c)
-            .await
-            .expect("zadd");
-        cmd("SADD")
-            .arg(&keys[4].0)
-            .arg("m")
-            .exec_async(&mut c)
-            .await
-            .expect("sadd");
-        cmd("EXPIRE")
-            .arg(&keys[0].0)
-            .arg(600)
-            .exec_async(&mut c)
-            .await
-            .expect("expire");
-
-        // Page until every cursor is 0 — the tree's own loop.
-        let mut found: Vec<(String, String, i64)> = Vec::new();
-        let mut cursors = None;
-        loop {
-            let (next, page) = client
-                .scan(cursors, &format!("{prefix}:*"), 100, true, None)
-                .await
-                .expect("scan");
-            found.extend(page);
-            if next.iter().sum::<u64>() == 0 {
-                break;
-            }
-            cursors = Some(next);
-        }
-        let by_name: HashSet<(String, String)> = found.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
-        for (key, kind) in &keys {
-            assert!(
-                by_name.contains(&(key.clone(), kind.to_string())),
-                "missing {key} as {kind}: {found:?}"
-            );
-        }
-        let ttl = found
-            .iter()
-            .find(|(k, _, _)| k == &keys[0].0)
-            .map(|(_, _, ttl)| *ttl)
-            .expect("ttl row");
-        assert!((1..=600).contains(&ttl), "SCAN with_ttl must carry the TTL, got {ttl}");
-
-        // The server-side TYPE filter (6.0+) and the client-side fallback agree.
-        let (_, only_hashes) = client
-            .first_scan(&format!("{prefix}:*"), 100, false, Some("hash"))
-            .await
-            .expect("scan hash");
-        assert_eq!(only_hashes.len(), 1);
-        assert_eq!(only_hashes[0].0, keys[1].0);
-
-        assert_eq!(client.key_type(&keys[2].0).await.expect("type"), "list");
-        assert_eq!(client.get_key_bytes(&keys[0].0).await.expect("get"), b"v");
-        assert!(client.memory_usage(&keys[1].0, "hash").await.expect("memory usage") > 0);
-
-        for (key, _) in &keys {
-            cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");
-        }
+        scan_sees_every_type_it_wrote(id).await;
     });
+}
+
+/// The key tree's scan: every type it wrote comes back named, with its TTL.
+/// Shared with the Dragonfly lane (`dragonfly_scan_sees_every_type_it_wrote`),
+/// so an assertion added here is one Dragonfly has to meet too — a
+/// Redis-only one belongs in a test of its own.
+async fn scan_sees_every_type_it_wrote(id: String) {
+    let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+    let mut c = conn(&id, 0).await;
+    let prefix = unique("types");
+    let keys = [
+        (format!("{prefix}:s"), "string"),
+        (format!("{prefix}:h"), "hash"),
+        (format!("{prefix}:l"), "list"),
+        (format!("{prefix}:z"), "zset"),
+        (format!("{prefix}:set"), "set"),
+    ];
+    cmd("SET")
+        .arg(&keys[0].0)
+        .arg("v")
+        .exec_async(&mut c)
+        .await
+        .expect("set");
+    cmd("HSET")
+        .arg(&keys[1].0)
+        .arg("f")
+        .arg("v")
+        .exec_async(&mut c)
+        .await
+        .expect("hset");
+    cmd("RPUSH")
+        .arg(&keys[2].0)
+        .arg("a")
+        .exec_async(&mut c)
+        .await
+        .expect("rpush");
+    cmd("ZADD")
+        .arg(&keys[3].0)
+        .arg(1)
+        .arg("m")
+        .exec_async(&mut c)
+        .await
+        .expect("zadd");
+    cmd("SADD")
+        .arg(&keys[4].0)
+        .arg("m")
+        .exec_async(&mut c)
+        .await
+        .expect("sadd");
+    cmd("EXPIRE")
+        .arg(&keys[0].0)
+        .arg(600)
+        .exec_async(&mut c)
+        .await
+        .expect("expire");
+
+    // Page until every cursor is 0 — the tree's own loop.
+    let mut found: Vec<(String, String, i64)> = Vec::new();
+    let mut cursors = None;
+    loop {
+        let (next, page) = client
+            .scan(cursors, &format!("{prefix}:*"), 100, true, None)
+            .await
+            .expect("scan");
+        found.extend(page);
+        if next.iter().sum::<u64>() == 0 {
+            break;
+        }
+        cursors = Some(next);
+    }
+    let by_name: HashSet<(String, String)> = found.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
+    for (key, kind) in &keys {
+        assert!(
+            by_name.contains(&(key.clone(), kind.to_string())),
+            "missing {key} as {kind}: {found:?}"
+        );
+    }
+    let ttl = found
+        .iter()
+        .find(|(k, _, _)| k == &keys[0].0)
+        .map(|(_, _, ttl)| *ttl)
+        .expect("ttl row");
+    assert!((1..=600).contains(&ttl), "SCAN with_ttl must carry the TTL, got {ttl}");
+
+    // The server-side TYPE filter (6.0+) and the client-side fallback agree.
+    let (_, only_hashes) = client
+        .first_scan(&format!("{prefix}:*"), 100, false, Some("hash"))
+        .await
+        .expect("scan hash");
+    assert_eq!(only_hashes.len(), 1);
+    assert_eq!(only_hashes[0].0, keys[1].0);
+
+    assert_eq!(client.key_type(&keys[2].0).await.expect("type"), "list");
+    assert_eq!(client.get_key_bytes(&keys[0].0).await.expect("get"), b"v");
+    assert!(client.memory_usage(&keys[1].0, "hash").await.expect("memory usage") > 0);
+
+    for (key, _) in &keys {
+        cmd("DEL").arg(key).exec_async(&mut c).await.expect("del");
+    }
 }
 
 #[test]
@@ -3132,223 +3141,230 @@ fn standalone_dedicated_connection_keeps_select_to_itself() {
 fn standalone_collections_page_and_write_through_their_operations() {
     smol::block_on(async {
         let id = register(server("it-collections", standalone())).await;
-        let at = ServerDb::new(&id, 0);
-        let mut c = conn(&id, 0).await;
-        let prefix = unique("coll");
-        let binary = b"\xffb".as_slice();
-
-        // ── list ───────────────────────────────────────────────────────────
-        let list = format!("{prefix}:list");
-        for (n, item) in ["a", "b", "c"].iter().enumerate() {
-            assert_eq!(
-                list_push(&at, &list, item.as_bytes(), false).await.expect("rpush"),
-                n + 1
-            );
-        }
-        assert_eq!(list_push(&at, &list, binary, true).await.expect("lpush"), 4);
-        assert_eq!(list_len(&at, &list).await.expect("llen"), 4);
-        assert_eq!(
-            list_range(&at, &list, 0, 1).await.expect("lrange"),
-            vec![binary.to_vec(), b"a".to_vec()],
-            "the page is inclusive on both ends, bytes as answered"
-        );
-        // The row is written only while it still holds what was loaded.
-        assert!(
-            list_set_if_unchanged(&at, &list, 1, b"a", b"A").await.expect("lset"),
-            "unchanged: written"
-        );
-        assert!(
-            !list_set_if_unchanged(&at, &list, 1, b"a", b"Z").await.expect("lset"),
-            "somebody else changed it: refused"
-        );
-        assert_eq!(list_range(&at, &list, 1, 1).await.expect("lrange"), vec![b"A".to_vec()]);
-        assert_eq!(remove_list_indexes(&at, &list, &[0, 2]).await.expect("remove"), 2);
-        assert_eq!(list_len(&at, &list).await.expect("llen"), 2);
-
-        // ── set ────────────────────────────────────────────────────────────
-        let set = format!("{prefix}:set");
-        assert!(set_add(&at, &set, b"one").await.expect("sadd"), "new member");
-        assert!(!set_add(&at, &set, b"one").await.expect("sadd"), "already there");
-        for member in [b"two".as_slice(), b"three".as_slice(), binary] {
-            set_add(&at, &set, member).await.expect("sadd");
-        }
-        assert_eq!(set_card(&at, &set).await.expect("scard"), 4);
-        let (cursor, members) = set_scan(&at, &set, None, 0, 100).await.expect("sscan");
-        assert_eq!((cursor, members.len()), (0, 4), "one round covers a small set");
-        assert!(members.contains(&binary.to_vec()), "bytes as answered");
-        let (_, filtered) = set_scan(&at, &set, Some("t"), 0, 100).await.expect("sscan");
-        let mut filtered: Vec<Vec<u8>> = filtered;
-        filtered.sort();
-        assert_eq!(
-            filtered,
-            [b"three".to_vec(), b"two".to_vec()],
-            "the keyword is a substring"
-        );
-        assert!(
-            set_replace_member(&at, &set, b"one", b"uno").await.expect("edit"),
-            "the new member is new"
-        );
-        assert!(
-            !set_replace_member(&at, &set, b"uno", b"two").await.expect("edit"),
-            "edited onto an existing member: the two merged"
-        );
-        assert_eq!(set_remove(&at, &set, &[b"two", binary]).await.expect("srem"), 2);
-        assert_eq!(set_remove(&at, &set, &[]).await.expect("nothing"), 0);
-
-        // ── hash ───────────────────────────────────────────────────────────
-        let hash = format!("{prefix}:hash");
-        for (field, value) in [("f1", "v1"), ("f2", "v2"), ("other", "v3")] {
-            write_hash_field(&at, &hash, field.as_bytes(), value.as_bytes(), FieldTtl::Persist, false)
-                .await
-                .expect("hset");
-        }
-        assert_eq!(hash_len(&at, &hash).await.expect("hlen"), 3);
-        let (cursor, pairs) = hash_scan(&at, &hash, Some("f"), 0, 100).await.expect("hscan");
-        assert_eq!(cursor, 0);
-        let mut names: Vec<Vec<u8>> = pairs.iter().map(|(field, _)| field.clone()).collect();
-        names.sort();
-        assert_eq!(names, [b"f1".to_vec(), b"f2".to_vec()]);
-        if supports(&id, floors::HASH_FIELD_TTL).await {
-            write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Expire(120), false)
-                .await
-                .expect("hset with ttl");
-            let ttls = hash_field_ttls(&at, &hash, &[b"f1", b"f2", b"gone"])
-                .await
-                .expect("httl");
-            assert!((1..=120).contains(&ttls[0]), "{ttls:?}");
-            assert_eq!((ttls[1], ttls[2]), (-1, -2), "no TTL, and no field");
-            // Writing it again without one takes the TTL away: `HSET`
-            // discards it, which is why `Persist` sends nothing extra.
-            write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Persist, false)
-                .await
-                .expect("hset without ttl");
-            assert_eq!(
-                hash_field_ttls(&at, &hash, &[b"f1"]).await.expect("httl")[0],
-                -1,
-                "the plain write dropped the TTL"
-            );
-        }
-        assert!(hash_field_ttls(&at, &hash, &[]).await.expect("no fields").is_empty());
-        assert_eq!(
-            hash_delete_fields(&at, &hash, &[b"f2", b"gone"]).await.expect("hdel"),
-            1
-        );
-        assert_eq!(hash_delete_fields(&at, &hash, &[]).await.expect("nothing"), 0);
-
-        // ── sorted set ─────────────────────────────────────────────────────
-        let zset = format!("{prefix}:zset");
-        for (member, score) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
-            assert!(
-                zset_put(&at, &zset, member.as_bytes(), score, None)
-                    .await
-                    .expect("zadd"),
-                "new member"
-            );
-        }
-        assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3);
-        assert_eq!(
-            zset_range(&at, &zset, false, 0, 1).await.expect("zrange"),
-            vec![(b"a".to_vec(), 1.0), (b"b".to_vec(), 2.0)]
-        );
-        assert_eq!(
-            zset_range(&at, &zset, true, 0, 0).await.expect("zrevrange"),
-            vec![(b"c".to_vec(), 3.0)],
-            "descending starts at the top score"
-        );
-        assert_eq!(zset_count_by_score(&at, &zset, "2", "+inf").await.expect("zcount"), 2);
-        // A score window pages by LIMIT; its min and max are passed the same
-        // way round in both directions.
-        assert_eq!(
-            zset_range_by_score(&at, &zset, false, ("2", "+inf"), 0, 1)
-                .await
-                .expect("window"),
-            vec![(b"b".to_vec(), 2.0)]
-        );
-        assert_eq!(
-            zset_range_by_score(&at, &zset, true, ("2", "+inf"), 0, 1)
-                .await
-                .expect("window"),
-            vec![(b"c".to_vec(), 3.0)]
-        );
-        let (cursor, scanned) = zset_scan(&at, &zset, 0, "[ab]", 100).await.expect("zscan");
-        assert_eq!(cursor, 0);
-        assert_eq!(scanned.len(), 2, "the pattern is a glob, as typed: {scanned:?}");
-        // An edit that renames a member adds the new one and drops the old;
-        // re-scoring the same member adds nothing.
-        assert!(
-            zset_put(&at, &zset, b"A", 9.0, Some(b"a")).await.expect("rename"),
-            "the renamed-to member is new to the set"
-        );
-        assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3, "renamed, not added");
-        assert!(
-            !zset_put(&at, &zset, b"A", 0.5, Some(b"A")).await.expect("rescore"),
-            "the same member, a new score"
-        );
-        assert_eq!(
-            zset_range(&at, &zset, false, 0, 0).await.expect("zrange"),
-            vec![(b"A".to_vec(), 0.5)],
-            "the new score put it first"
-        );
-        assert_eq!(zset_remove(&at, &zset, &[b"A", b"gone"]).await.expect("zrem"), 1);
-        assert_eq!(zset_remove(&at, &zset, &[]).await.expect("nothing"), 0);
-
-        // ── string ─────────────────────────────────────────────────────────
-        let string = format!("{prefix}:string");
-        assert!(matches!(
-            string_set(&at, &string, binary, 0, None).await.expect("set"),
-            StringWrite::Saved(Some(size)) if size > 0
-        ));
-        assert_eq!(string_get(&at, &string).await.expect("get"), binary, "bytes, not text");
-        // The preview of a value too large to load: its first bytes and its
-        // whole length; a shorter string whole, a missing one empty.
-        assert_eq!(
-            string_prefix(&at, &string, 1).await.expect("prefix"),
-            (binary[..1].to_vec(), binary.len() as u64)
-        );
-        assert_eq!(
-            string_prefix(&at, &string, 64).await.expect("prefix"),
-            (binary.to_vec(), binary.len() as u64)
-        );
-        assert_eq!(
-            string_prefix(&at, &format!("{prefix}:no-such-string"), 8)
-                .await
-                .expect("missing"),
-            (Vec::new(), 0)
-        );
-        // The TTL survives a save: KEEPTTL where the server has it, a
-        // re-applied PX where it does not.
-        let _: () = cmd("EXPIRE")
-            .arg(&string)
-            .arg(120)
-            .query_async(&mut c)
-            .await
-            .expect("expire");
-        string_set(&at, &string, b"second", 120_000, None).await.expect("set");
-        let ttl: i64 = cmd("TTL").arg(&string).query_async(&mut c).await.expect("ttl");
-        assert!((1..=120).contains(&ttl), "the save must not drop the expiry: {ttl}");
-        if supports(&id, floors::SET_IFEQ).await {
-            assert!(matches!(
-                string_set(&at, &string, b"third", 0, Some(b"second"))
-                    .await
-                    .expect("cas"),
-                StringWrite::Saved(_)
-            ));
-            assert_eq!(
-                string_set(&at, &string, b"fourth", 0, Some(b"second"))
-                    .await
-                    .expect("cas"),
-                StringWrite::Conflict,
-                "the value moved under us: refused, not clobbered"
-            );
-            assert_eq!(string_get(&at, &string).await.expect("get"), b"third");
-        }
-
-        let _: () = cmd("DEL")
-            .arg(&[&list, &set, &hash, &zset, &string])
-            .query_async(&mut c)
-            .await
-            .expect("cleanup");
+        collections_page_and_write_through_their_operations(id).await;
     });
+}
+
+/// The list, set, hash and sorted-set operations the editors are built on.
+/// Shared with the Dragonfly lane, on the same terms as
+/// [`scan_sees_every_type_it_wrote`].
+async fn collections_page_and_write_through_their_operations(id: String) {
+    let at = ServerDb::new(&id, 0);
+    let mut c = conn(&id, 0).await;
+    let prefix = unique("coll");
+    let binary = b"\xffb".as_slice();
+
+    // ── list ───────────────────────────────────────────────────────────
+    let list = format!("{prefix}:list");
+    for (n, item) in ["a", "b", "c"].iter().enumerate() {
+        assert_eq!(
+            list_push(&at, &list, item.as_bytes(), false).await.expect("rpush"),
+            n + 1
+        );
+    }
+    assert_eq!(list_push(&at, &list, binary, true).await.expect("lpush"), 4);
+    assert_eq!(list_len(&at, &list).await.expect("llen"), 4);
+    assert_eq!(
+        list_range(&at, &list, 0, 1).await.expect("lrange"),
+        vec![binary.to_vec(), b"a".to_vec()],
+        "the page is inclusive on both ends, bytes as answered"
+    );
+    // The row is written only while it still holds what was loaded.
+    assert!(
+        list_set_if_unchanged(&at, &list, 1, b"a", b"A").await.expect("lset"),
+        "unchanged: written"
+    );
+    assert!(
+        !list_set_if_unchanged(&at, &list, 1, b"a", b"Z").await.expect("lset"),
+        "somebody else changed it: refused"
+    );
+    assert_eq!(list_range(&at, &list, 1, 1).await.expect("lrange"), vec![b"A".to_vec()]);
+    assert_eq!(remove_list_indexes(&at, &list, &[0, 2]).await.expect("remove"), 2);
+    assert_eq!(list_len(&at, &list).await.expect("llen"), 2);
+
+    // ── set ────────────────────────────────────────────────────────────
+    let set = format!("{prefix}:set");
+    assert!(set_add(&at, &set, b"one").await.expect("sadd"), "new member");
+    assert!(!set_add(&at, &set, b"one").await.expect("sadd"), "already there");
+    for member in [b"two".as_slice(), b"three".as_slice(), binary] {
+        set_add(&at, &set, member).await.expect("sadd");
+    }
+    assert_eq!(set_card(&at, &set).await.expect("scard"), 4);
+    let (cursor, members) = set_scan(&at, &set, None, 0, 100).await.expect("sscan");
+    assert_eq!((cursor, members.len()), (0, 4), "one round covers a small set");
+    assert!(members.contains(&binary.to_vec()), "bytes as answered");
+    let (_, filtered) = set_scan(&at, &set, Some("t"), 0, 100).await.expect("sscan");
+    let mut filtered: Vec<Vec<u8>> = filtered;
+    filtered.sort();
+    assert_eq!(
+        filtered,
+        [b"three".to_vec(), b"two".to_vec()],
+        "the keyword is a substring"
+    );
+    assert!(
+        set_replace_member(&at, &set, b"one", b"uno").await.expect("edit"),
+        "the new member is new"
+    );
+    assert!(
+        !set_replace_member(&at, &set, b"uno", b"two").await.expect("edit"),
+        "edited onto an existing member: the two merged"
+    );
+    assert_eq!(set_remove(&at, &set, &[b"two", binary]).await.expect("srem"), 2);
+    assert_eq!(set_remove(&at, &set, &[]).await.expect("nothing"), 0);
+
+    // ── hash ───────────────────────────────────────────────────────────
+    let hash = format!("{prefix}:hash");
+    for (field, value) in [("f1", "v1"), ("f2", "v2"), ("other", "v3")] {
+        write_hash_field(&at, &hash, field.as_bytes(), value.as_bytes(), FieldTtl::Persist, false)
+            .await
+            .expect("hset");
+    }
+    assert_eq!(hash_len(&at, &hash).await.expect("hlen"), 3);
+    let (cursor, pairs) = hash_scan(&at, &hash, Some("f"), 0, 100).await.expect("hscan");
+    assert_eq!(cursor, 0);
+    let mut names: Vec<Vec<u8>> = pairs.iter().map(|(field, _)| field.clone()).collect();
+    names.sort();
+    assert_eq!(names, [b"f1".to_vec(), b"f2".to_vec()]);
+    if supports(&id, floors::HASH_FIELD_TTL).await {
+        write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Expire(120), false)
+            .await
+            .expect("hset with ttl");
+        let ttls = hash_field_ttls(&at, &hash, &[b"f1", b"f2", b"gone"])
+            .await
+            .expect("httl");
+        assert!((1..=120).contains(&ttls[0]), "{ttls:?}");
+        assert_eq!((ttls[1], ttls[2]), (-1, -2), "no TTL, and no field");
+        // Writing it again without one takes the TTL away: `HSET`
+        // discards it, which is why `Persist` sends nothing extra.
+        write_hash_field(&at, &hash, b"f1", b"v1", FieldTtl::Persist, false)
+            .await
+            .expect("hset without ttl");
+        assert_eq!(
+            hash_field_ttls(&at, &hash, &[b"f1"]).await.expect("httl")[0],
+            -1,
+            "the plain write dropped the TTL"
+        );
+    }
+    assert!(hash_field_ttls(&at, &hash, &[]).await.expect("no fields").is_empty());
+    assert_eq!(
+        hash_delete_fields(&at, &hash, &[b"f2", b"gone"]).await.expect("hdel"),
+        1
+    );
+    assert_eq!(hash_delete_fields(&at, &hash, &[]).await.expect("nothing"), 0);
+
+    // ── sorted set ─────────────────────────────────────────────────────
+    let zset = format!("{prefix}:zset");
+    for (member, score) in [("a", 1.0), ("b", 2.0), ("c", 3.0)] {
+        assert!(
+            zset_put(&at, &zset, member.as_bytes(), score, None)
+                .await
+                .expect("zadd"),
+            "new member"
+        );
+    }
+    assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3);
+    assert_eq!(
+        zset_range(&at, &zset, false, 0, 1).await.expect("zrange"),
+        vec![(b"a".to_vec(), 1.0), (b"b".to_vec(), 2.0)]
+    );
+    assert_eq!(
+        zset_range(&at, &zset, true, 0, 0).await.expect("zrevrange"),
+        vec![(b"c".to_vec(), 3.0)],
+        "descending starts at the top score"
+    );
+    assert_eq!(zset_count_by_score(&at, &zset, "2", "+inf").await.expect("zcount"), 2);
+    // A score window pages by LIMIT; its min and max are passed the same
+    // way round in both directions.
+    assert_eq!(
+        zset_range_by_score(&at, &zset, false, ("2", "+inf"), 0, 1)
+            .await
+            .expect("window"),
+        vec![(b"b".to_vec(), 2.0)]
+    );
+    assert_eq!(
+        zset_range_by_score(&at, &zset, true, ("2", "+inf"), 0, 1)
+            .await
+            .expect("window"),
+        vec![(b"c".to_vec(), 3.0)]
+    );
+    let (cursor, scanned) = zset_scan(&at, &zset, 0, "[ab]", 100).await.expect("zscan");
+    assert_eq!(cursor, 0);
+    assert_eq!(scanned.len(), 2, "the pattern is a glob, as typed: {scanned:?}");
+    // An edit that renames a member adds the new one and drops the old;
+    // re-scoring the same member adds nothing.
+    assert!(
+        zset_put(&at, &zset, b"A", 9.0, Some(b"a")).await.expect("rename"),
+        "the renamed-to member is new to the set"
+    );
+    assert_eq!(zset_card(&at, &zset).await.expect("zcard"), 3, "renamed, not added");
+    assert!(
+        !zset_put(&at, &zset, b"A", 0.5, Some(b"A")).await.expect("rescore"),
+        "the same member, a new score"
+    );
+    assert_eq!(
+        zset_range(&at, &zset, false, 0, 0).await.expect("zrange"),
+        vec![(b"A".to_vec(), 0.5)],
+        "the new score put it first"
+    );
+    assert_eq!(zset_remove(&at, &zset, &[b"A", b"gone"]).await.expect("zrem"), 1);
+    assert_eq!(zset_remove(&at, &zset, &[]).await.expect("nothing"), 0);
+
+    // ── string ─────────────────────────────────────────────────────────
+    let string = format!("{prefix}:string");
+    assert!(matches!(
+        string_set(&at, &string, binary, 0, None).await.expect("set"),
+        StringWrite::Saved(Some(size)) if size > 0
+    ));
+    assert_eq!(string_get(&at, &string).await.expect("get"), binary, "bytes, not text");
+    // The preview of a value too large to load: its first bytes and its
+    // whole length; a shorter string whole, a missing one empty.
+    assert_eq!(
+        string_prefix(&at, &string, 1).await.expect("prefix"),
+        (binary[..1].to_vec(), binary.len() as u64)
+    );
+    assert_eq!(
+        string_prefix(&at, &string, 64).await.expect("prefix"),
+        (binary.to_vec(), binary.len() as u64)
+    );
+    assert_eq!(
+        string_prefix(&at, &format!("{prefix}:no-such-string"), 8)
+            .await
+            .expect("missing"),
+        (Vec::new(), 0)
+    );
+    // The TTL survives a save: KEEPTTL where the server has it, a
+    // re-applied PX where it does not.
+    let _: () = cmd("EXPIRE")
+        .arg(&string)
+        .arg(120)
+        .query_async(&mut c)
+        .await
+        .expect("expire");
+    string_set(&at, &string, b"second", 120_000, None).await.expect("set");
+    let ttl: i64 = cmd("TTL").arg(&string).query_async(&mut c).await.expect("ttl");
+    assert!((1..=120).contains(&ttl), "the save must not drop the expiry: {ttl}");
+    if supports(&id, floors::SET_IFEQ).await {
+        assert!(matches!(
+            string_set(&at, &string, b"third", 0, Some(b"second"))
+                .await
+                .expect("cas"),
+            StringWrite::Saved(_)
+        ));
+        assert_eq!(
+            string_set(&at, &string, b"fourth", 0, Some(b"second"))
+                .await
+                .expect("cas"),
+            StringWrite::Conflict,
+            "the value moved under us: refused, not clobbered"
+        );
+        assert_eq!(string_get(&at, &string).await.expect("get"), b"third");
+    }
+
+    let _: () = cmd("DEL")
+        .arg(&[&list, &set, &hash, &zset, &string])
+        .query_async(&mut c)
+        .await
+        .expect("cleanup");
 }
 
 /// What the key tree and the key header ask of a key: scanned, typed, sized,
@@ -7781,5 +7797,82 @@ fn standalone_bgsave_cancel_stops_a_snapshot_on_valkey_8_1() {
         taken(bgsave_cancel(&at).await);
         smol::Timer::after(std::time::Duration::from_millis(500)).await;
         taken(bgsave_cancel(&at).await);
+    });
+}
+
+// ── Dragonfly ────────────────────────────────────────────────────────────
+//
+// A smoke lane, not a matrix lane. Dragonfly speaks Redis's protocol and is
+// not Redis: a dozen of the `standalone_*` tests above do not hold on it
+// (ACL selectors, `CLIENT PAUSE`, `OBJECT`, `PUBSUB CHANNELS`…), and holding
+// every new test to a third server is a cost its share of users does not
+// pay for. What the README does promise is that it connects and the basics
+// work — which is what broke unnoticed (its two-element `ROLE` failed the
+// whole connect) for want of one test that dials it. These are those tests:
+// `IT_SCENARIOS=dragonfly scripts/it/up.sh`, then the `dragonfly` filter.
+// Everywhere else `ZEDIS_IT_DRAGONFLY` is unset and they skip.
+
+/// The connect is the first thing under test, then what it learned: which
+/// product answered, in its own version, beside the Redis it claims.
+#[test]
+#[ignore]
+fn dragonfly_connects_and_is_named_in_its_own_version() {
+    let addr = skip_unless!("ZEDIS_IT_DRAGONFLY");
+    smol::block_on(async {
+        let id = register(server("it-dragonfly", addr)).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("client");
+        client.ping().await.expect("ping");
+        assert_eq!(client.nodes(), (1, 1), "one master, one node in total");
+        assert_eq!(format!("{:?}", client.access_mode()), "ReadWrite");
+        assert!(!client.is_valkey(), "the floors' Redis column, not Valkey's");
+
+        let description = client.nodes_description();
+        assert_eq!(description.flavor, ServerFlavor::Dragonfly);
+        // Its own release as a bare number (`INFO` says `df-v2.0.2`), and
+        // the Redis it claims — which is what the floors are asked, so it
+        // has to be a version in Redis's numbers and not Dragonfly's 2.x.
+        Version::parse(&description.flavor_version).expect("its own version, without the `df-v`");
+        let claimed = Version::parse(&client.version()).expect("the Redis version it claims");
+        assert!(
+            claimed.major >= 6,
+            "a floor is a question in Redis's numbers: {claimed}"
+        );
+
+        // A beat is one `INFO` on the client's own connection.
+        let info = client
+            .heartbeat_probe()
+            .await
+            .expect("beat")
+            .expect("one master beats with INFO");
+        assert!(info.contains("dragonfly_version:"), "{info}");
+        client.dbsize().await.expect("dbsize");
+
+        // The probe is what decides which panels the app offers there.
+        let features = probe_server_features(&id, 0).await.expect("probe");
+        assert!(features.probed);
+        assert_eq!(features.flavor, ServerFlavor::Dragonfly);
+        for command in [ServerCommand::Info, ServerCommand::Scan, ServerCommand::Dbsize] {
+            assert_eq!(features.status(command), CommandStatus::Available, "{command:?}");
+        }
+    });
+}
+
+#[test]
+#[ignore]
+fn dragonfly_scan_sees_every_type_it_wrote() {
+    let addr = skip_unless!("ZEDIS_IT_DRAGONFLY");
+    smol::block_on(async {
+        let id = register(server("it-dragonfly", addr)).await;
+        scan_sees_every_type_it_wrote(id).await;
+    });
+}
+
+#[test]
+#[ignore]
+fn dragonfly_collections_page_and_write_through_their_operations() {
+    let addr = skip_unless!("ZEDIS_IT_DRAGONFLY");
+    smol::block_on(async {
+        let id = register(server("it-dragonfly-collections", addr)).await;
+        collections_page_and_write_through_their_operations(id).await;
     });
 }

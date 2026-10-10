@@ -148,7 +148,7 @@ Open <http://localhost:7379> as `admin` / `change-me`. That command is a plain-h
 
 ## 🔀 Redis and Valkey
 
-Valkey is first-class, not a compatibility mode. Each version-gated feature has its own Redis floor and Valkey floor, so a server is never sent a command it did not ship. What only Valkey has — `COMMANDLOG`, atomic slot migration, multiple databases in cluster — has a panel. Copy works both ways even though `DUMP` payloads do not. CI runs Redis 6.2–8 and Valkey 8.0–9.1 on every change. Dragonfly connects too: it is named in its own version, and the commands it does not have are probed and left out — it is not in the CI matrix yet.
+Valkey is first-class, not a compatibility mode. Each version-gated feature has its own Redis floor and Valkey floor, so a server is never sent a command it did not ship. What only Valkey has — `COMMANDLOG`, atomic slot migration, multiple databases in cluster — has a panel. Copy works both ways even though `DUMP` payloads do not. CI runs Redis 6.2–8 and Valkey 8.0–9.1 on every change. Dragonfly connects too: it is named in its own version, and the commands it does not have are probed and left out. A smoke lane in CI keeps it connecting; it is not held to the full matrix.
 
 📖 **[Compatibility matrix →](./docs/REDIS_VALKEY.md)**
 
