@@ -231,20 +231,26 @@ pub fn no_touch_is_safe(is_valkey: bool, version: &Version) -> bool {
 /// the option is there and it is broken.
 ///
 /// **Garnet** accepts it, answers `+OK`, and — where the key has an expiry
-/// and the new value is *longer* than the one it replaces — the key is gone.
-/// Measured against 2.2.1, each case from a fresh two-byte value:
+/// and the new *value* needs more room than its record has — the key is gone
+/// (`EXISTS` 0, `TTL` -2, not in `DBSIZE`). Measured against 2.2.1:
 ///
-/// | key        | `SET` with            | afterwards            |
-/// |------------|-----------------------|-----------------------|
-/// | has a TTL  | longer, `KEEPTTL`     | **no key** (`TTL` -2) |
-/// | has a TTL  | same length / shorter | kept, TTL kept        |
-/// | no TTL     | longer, `KEEPTTL`     | kept                  |
-/// | has a TTL  | longer, `PX` / `EX`   | kept, TTL as given    |
-/// | has a TTL  | longer, no option     | kept, TTL cleared     |
+/// | key        | `SET` with                    | afterwards     |
+/// |------------|-------------------------------|----------------|
+/// | has a TTL  | a value that outgrows the record, `KEEPTTL` | **no key** |
+/// | has a TTL  | one that still fits, `KEEPTTL` | kept, TTL kept |
+/// | no TTL     | any size, `KEEPTTL`           | kept           |
+/// | has a TTL  | any size, `PX` / `EX`         | kept, TTL as given |
+/// | has a TTL  | any size, no option           | kept, TTL cleared |
+///
+/// How much a record has room for is its own padding: under a 2-byte key a
+/// value growing from 2 bytes to 6 is kept and to 8 is not, under a 22-byte
+/// key 2 to 3 already is not, and 100 to 101 is kept where 100 to 200 is
+/// not. Three commands show it: `SET k ab`, `EXPIRE k 120`,
+/// `SET k abcdefgh KEEPTTL`.
 ///
 /// That first row is how the editor saves a string (`string_ops::string_set`),
-/// so editing any value with an expiry into a longer one deleted it, with a
-/// success notice. Garnet claims Redis 7.4.3, which is why [`SET_KEEPTTL`]
+/// so editing a value with an expiry into a longer one could delete it, with
+/// a success notice. Garnet claims Redis 7.4.3, which is why [`SET_KEEPTTL`]
 /// alone says yes; it was the collections live test, run on the Garnet lane
 /// the day that lane was added, that said otherwise.
 ///
