@@ -31,7 +31,10 @@ use crate::{
         open_score_filter_dialog,
     },
 };
-use gpui::{AnyElement, App, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Bounds, Entity, FocusHandle, Pixels, SharedString, Subscription, Window, canvas, div, prelude::*,
+    px,
+};
 use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
@@ -48,6 +51,8 @@ use gpui_kit::component::{
 use indexmap::IndexMap;
 use rust_i18n::t;
 use serde_json::Value;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tracing::info;
 use zedis_core::json::numbers_survive_round_trip;
@@ -115,6 +120,55 @@ fn element_json_document(element: &KvElement, max_truncate_length: usize) -> Opt
 }
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+/// The least the entry panel is useful at: its fields, and Remove / Cancel /
+/// Update on one line.
+const ENTRY_PANEL_MIN_WIDTH: f32 = 320.;
+/// What the table keeps beside an open entry panel: the tick box, the row
+/// number and the column that names a row — a hash field, a stream id, a
+/// score, 200 at the widest.
+const TABLE_MIN_WIDTH: f32 = 320.;
+/// The least of the table worth drawing beside the panel: the tick box, the
+/// row number, a dozen characters of the naming column — and a footer its
+/// filter box fits in. In a pane that cannot give it this, the panel is
+/// shown alone.
+const TABLE_USEFUL_WIDTH: f32 = 240.;
+
+/// How an open entry panel and the table share the pane, in pixels.
+#[derive(Debug, PartialEq)]
+struct PanelSplit {
+    /// The panel's width when it opens.
+    panel: f32,
+    /// How narrow and how wide the handle lets it go.
+    panel_min: f32,
+    panel_max: f32,
+    /// What the table keeps whatever the handle does.
+    table_min: f32,
+}
+
+/// Divide `pane` — the width the table has, measured — between the table and
+/// the entry panel, which opens at `saved` (the user's last drag) or at half.
+/// `None` where the pane cannot hold the panel and a table worth drawing:
+/// the panel is then shown alone, and the table is back when it closes.
+///
+/// The table keeps [`TABLE_MIN_WIDTH`] wherever the pane has room for both
+/// minimums, and the rest where it has not. Both used to be worked out from
+/// the *window*: half of it by default and three quarters at most, inside a
+/// pane that is itself only about half the window — so at the default window
+/// size the panel left the table its floor of 100, the tick box and the row
+/// number, and the footer's filter read "Fi" (#182).
+fn entry_panel_split(pane: f32, saved: Option<f32>) -> Option<PanelSplit> {
+    if pane < ENTRY_PANEL_MIN_WIDTH + TABLE_USEFUL_WIDTH {
+        return None;
+    }
+    let panel_min = ENTRY_PANEL_MIN_WIDTH;
+    let panel_max = (pane - TABLE_MIN_WIDTH).max(panel_min);
+    Some(PanelSplit {
+        panel: saved.unwrap_or(pane / 2.).clamp(panel_min, panel_max),
+        panel_min,
+        panel_max,
+        table_min: (pane - panel_max).min(TABLE_MIN_WIDTH),
+    })
+}
 
 /// Parse pasted text into rows of values for bulk insertion.
 ///
@@ -229,7 +283,11 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     editor_form: Option<Entity<ZedisForm>>,
     /// User-resized width of the entry panel (right pane); mirrors the
     /// persisted `kv_edit_panel_width` so renders don't re-read the store.
-    panel_width: Option<gpui::Pixels>,
+    panel_width: Option<Pixels>,
+    /// The width this view was last laid out at — what the table and the
+    /// entry panel have to share. Written after layout (`measure` in
+    /// `render`), read by the next render; `None` until the first paint.
+    pane_width: Rc<Cell<Option<Pixels>>>,
     /// Fetcher instance
     fetcher: Arc<T>,
     /// Server state, kept so the CSV export action can call `export_to_file`.
@@ -517,6 +575,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             mode,
             base_mode: KvTableMode::ALL,
             panel_width: cx.global::<ZedisGlobalStore>().read(cx).kv_edit_panel_width(),
+            pane_width: Rc::new(Cell::new(None)),
             fetcher,
             server_state,
             columns,
@@ -1398,9 +1457,14 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                     .flex_none()
                     .w_full()
                     .p_3()
-                    // Left side: Add button and search input
+                    // Left side: Add button and search input. It wraps:
+                    // beside an open entry panel the table is a third of its
+                    // usual width, and a second line of controls is better
+                    // than a filter box cut to "Fi".
                     .child(
                         h_flex()
+                            .flex_wrap()
+                            .min_w_0()
                             .gap_2()
                             .when(can_add, |this| {
                                 this.child(
@@ -1436,11 +1500,13 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                 },
                             )
                             .when(can_filter, |this| {
+                                // Its own box, so that the line wraps around
+                                // it rather than squeezing it.
                                 this.child(
-                                    Input::new(&self.keyword_state)
+                                    div()
+                                        .flex_none()
                                         .w(px(KEYWORD_INPUT_WIDTH))
-                                        .suffix(search_btn)
-                                        .cleanable(true),
+                                        .child(Input::new(&self.keyword_state).suffix(search_btn).cleanable(true)),
                                 )
                             })
                             // List and Stream have no server-side scan, so
@@ -1579,14 +1645,24 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                                         ),
                                 )
                             })
+                            // Status icon and count, at the right end of
+                            // whichever line they land on: part of the
+                            // wrapping group, or a narrow footer drew them
+                            // over the end of the filter box.
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .ml_auto()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(status_icon.text_color(text_color))
+                                    .child(
+                                        Label::new(format!("{} / {}", self.items_count, self.total_count))
+                                            .text_sm()
+                                            .text_color(text_color),
+                                    ),
+                            )
                             .flex_1(),
-                    )
-                    // Right side: Status icon and count
-                    .child(status_icon.text_color(text_color).mr_2())
-                    .child(
-                        Label::new(format!("{} / {}", self.items_count, self.total_count))
-                            .text_sm()
-                            .text_color(text_color),
                     ),
             );
 
@@ -1608,38 +1684,78 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                 .on_click(cx.listener(|_this, _, _, cx| {
                     cx.stop_propagation();
                 }));
-            let viewport_width = window.viewport_size().width;
-            let panel_width = self.panel_width.unwrap_or(viewport_width * 0.5);
-            h_resizable("kv-table-split")
-                .child(resizable_panel().child(left))
-                .child(
-                    resizable_panel()
-                        .size(panel_width)
-                        .size_range(px(320.)..viewport_width * 0.75)
-                        .child(panel),
-                )
-                .on_resize(cx.listener(|this, event: &Entity<ResizableState>, _window, cx| {
-                    let Some(width) = event.read(cx).sizes().get(1).copied() else {
-                        return;
-                    };
-                    this.panel_width = Some(width);
-                    // Drags fire a stream of resize events — update state per
-                    // event, write the config once the drag settles. Quiet:
-                    // the width repaints locally via `this.panel_width`.
-                    update_app_state_and_save_quiet_debounced(cx, "save_kv_edit_panel_width", move |state, _| {
-                        state.set_kv_edit_panel_width(width);
-                    });
-                }))
-                .into_any_element()
+            // The pane as it was last laid out. Before the first paint —
+            // the panel cannot be open that early — the app's own estimate.
+            let pane_width = self.pane_width.get().unwrap_or_else(|| {
+                let estimate = cx.global::<ZedisGlobalStore>().read(cx).content_width();
+                estimate.unwrap_or(window.viewport_size().width * 0.5)
+            });
+            match entry_panel_split(pane_width.as_f32(), self.panel_width.map(|width| width.as_f32())) {
+                Some(split) => h_resizable("kv-table-split")
+                    .child(
+                        resizable_panel()
+                            .size_range(px(split.table_min)..Pixels::MAX)
+                            .child(left),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size(px(split.panel))
+                            .size_range(px(split.panel_min)..px(split.panel_max))
+                            .child(panel),
+                    )
+                    .on_resize(cx.listener(|this, event: &Entity<ResizableState>, _window, cx| {
+                        let Some(width) = event.read(cx).sizes().get(1).copied() else {
+                            return;
+                        };
+                        this.panel_width = Some(width);
+                        // Drags fire a stream of resize events — update state per
+                        // event, write the config once the drag settles. Quiet:
+                        // the width repaints locally via `this.panel_width`.
+                        update_app_state_and_save_quiet_debounced(cx, "save_kv_edit_panel_width", move |state, _| {
+                            state.set_kv_edit_panel_width(width);
+                        });
+                    }))
+                    .into_any_element(),
+                // No room for both: the entry being edited has the pane.
+                None => panel.into_any_element(),
+            }
         } else {
             left.into_any_element()
         };
 
+        // The view's width, measured where it is known: after layout. The
+        // split's limits come from it, so while the panel is open a new
+        // width lays the split out again on the next frame — a window made
+        // narrower with the panel open is what #182 was reported from.
+        let measured = self.pane_width.clone();
+        let view = cx.entity().downgrade();
+        let measure = canvas(
+            move |bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App| {
+                let width = bounds.size.width;
+                if measured.get() == Some(width) {
+                    return;
+                }
+                measured.set(Some(width));
+                if panel_open {
+                    window.on_next_frame(move |_, cx| {
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+
         h_flex()
             .track_focus(&self.focus_handle)
+            .relative()
             .h_full()
             .w_full()
             .child(body)
+            .child(measure)
             .on_action(cx.listener(move |this, event: &KeyOpAction, window, cx| {
                 this.open_key_op_dialog(*event, window, cx);
             }))
@@ -1714,7 +1830,63 @@ fn row_holds(
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewMode, element_json_document, parse_bulk_rows, preview_modes, row_holds, tree_editable};
+    use super::{
+        ENTRY_PANEL_MIN_WIDTH, PanelSplit, PreviewMode, TABLE_MIN_WIDTH, TABLE_USEFUL_WIDTH, element_json_document,
+        entry_panel_split, parse_bulk_rows, preview_modes, row_holds, tree_editable,
+    };
+
+    /// The table and the entry panel share the pane the table is in, not the
+    /// window: the table keeps its naming column wherever there is room for
+    /// both, and the two never add up to more than the pane.
+    #[test]
+    fn the_entry_panel_leaves_the_table_its_naming_column() {
+        let split = |pane, saved| entry_panel_split(pane, saved).expect("room for both");
+        // A wide pane: the panel opens at half, the handle stops where the
+        // table would lose its naming column.
+        assert_eq!(
+            split(1200., None),
+            PanelSplit {
+                panel: 600.,
+                panel_min: ENTRY_PANEL_MIN_WIDTH,
+                panel_max: 880.,
+                table_min: TABLE_MIN_WIDTH,
+            }
+        );
+        // The pane of the default window (649): half of the *window* was 600
+        // here and left the table 49.
+        let default_window = split(649., None);
+        assert_eq!(default_window.panel, 324.5);
+        assert_eq!(default_window.table_min, TABLE_MIN_WIDTH);
+        // A width dragged on a wide window does not take the table's share
+        // on a narrow one — and is not forgotten either: it is only clamped.
+        assert_eq!(split(649., Some(600.)).panel, 329.);
+        assert_eq!(split(1200., Some(600.)).panel, 600.);
+        assert_eq!(split(1200., Some(200.)).panel, ENTRY_PANEL_MIN_WIDTH);
+
+        // No room for both minimums: the panel keeps its own and the table
+        // has the rest, down to the least of it worth drawing.
+        let narrow = split(578., None);
+        assert_eq!((narrow.panel, narrow.table_min), (ENTRY_PANEL_MIN_WIDTH, 258.));
+        let least = ENTRY_PANEL_MIN_WIDTH + TABLE_USEFUL_WIDTH;
+        assert_eq!(split(least, None).table_min, TABLE_USEFUL_WIDTH);
+        // Narrower than that, the panel is shown alone.
+        assert_eq!(entry_panel_split(least - 1., None), None);
+        assert_eq!(entry_panel_split(449., Some(600.)), None);
+
+        for pane in [560., 578., 649., 900., 1200., 2400.] {
+            for saved in [None, Some(100.), Some(600.), Some(5000.)] {
+                let split = split(pane, saved);
+                assert!(
+                    split.panel_min <= split.panel && split.panel <= split.panel_max,
+                    "{pane} {saved:?}"
+                );
+                assert!(
+                    split.panel_max + split.table_min <= pane + 0.01,
+                    "{pane} {saved:?}: {split:?}"
+                );
+            }
+        }
+    }
     use crate::components::KvTableColumn;
     use crate::states::{DataFormat, KvElement};
     use gpui::SharedString;
