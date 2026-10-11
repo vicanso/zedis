@@ -509,6 +509,16 @@ impl ViewMode {
     }
 }
 
+/// A viewer the user configured for a key that could not show its value:
+/// which rule, and what it said. The value is then shown the way it would be
+/// with no rule at all, and without this that is all the screen says — the
+/// rule looks ignored, and the reason is a line in the log (#187).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewerFailure {
+    pub rule: SharedString,
+    pub error: SharedString,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RedisBytesValue {
     pub format: DataFormat,
@@ -516,6 +526,9 @@ pub struct RedisBytesValue {
     pub mime: Option<SharedString>,
     pub text: Option<SharedString>,
     pub view_mode: ViewMode,
+    /// Set by [`Self::detect_and_update`] when a script viewer matched the
+    /// key and failed.
+    pub viewer_failure: Option<ViewerFailure>,
 }
 
 impl RedisBytesValue {

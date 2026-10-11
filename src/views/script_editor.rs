@@ -19,7 +19,7 @@ use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_script_editor;
-use crate::states::{ZedisServerState, dialog_button_props};
+use crate::states::{GlobalEvent, NotificationAction, ZedisServerState, dialog_button_props};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::label::Label;
@@ -236,6 +236,15 @@ pub struct ZedisScriptEditor {
     _subscriptions: Vec<Subscription>,
 }
 
+/// A rule that could not be written or removed is said, not only logged: the
+/// form would otherwise go on sitting there as if Save had not been pressed.
+fn notify_store_error(error: &Error, cx: &mut App) {
+    let message: SharedString = error.to_string().into();
+    cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+        cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message)));
+    });
+}
+
 impl ZedisScriptEditor {
     fn create_table_state(
         items: Arc<Vec<(String, ScriptConfig)>>,
@@ -436,7 +445,10 @@ impl ZedisScriptEditor {
                         cx.notify();
                     });
                 }
-                Err(e) => error!(error = %e, "save script viewer fail"),
+                Err(e) => {
+                    error!(error = %e, "save script viewer fail");
+                    let _ = handle.update(cx, |_, cx| notify_store_error(&e, cx));
+                }
             }
         })
         .detach();
@@ -519,7 +531,10 @@ impl ZedisScriptEditor {
                                 cx.notify();
                             });
                         }
-                        Err(e) => error!(error = %e, "delete script viewer fail"),
+                        Err(e) => {
+                            error!(error = %e, "delete script viewer fail");
+                            view_handle.update(cx, |_, cx| notify_store_error(&e, cx));
+                        }
                     }
                 })
                 .detach();

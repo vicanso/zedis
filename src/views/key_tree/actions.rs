@@ -245,12 +245,7 @@ impl Render for ZedisKeyTree {
                     } else {
                         TagColor::from_name(color_name.as_ref())
                     };
-                    if this.state.selected_tag_filter != new_filter {
-                        this.state.selected_tag_filter = new_filter;
-                        // Local-only: rebuild the tree from the cached
-                        // SCAN snapshot + metadata. No re-SCAN.
-                        this.update_key_tree(true, cx);
-                    }
+                    this.set_tag_filter(new_filter, cx);
                 }
                 KeyTreeAction::SetTtlFilter(id) => {
                     let new_filter = if id.is_empty() {
@@ -258,10 +253,7 @@ impl Render for ZedisKeyTree {
                     } else {
                         TtlFilter::from_name(id.as_ref())
                     };
-                    if this.state.selected_ttl_filter != new_filter {
-                        this.state.selected_ttl_filter = new_filter;
-                        this.update_key_tree(true, cx);
-                    }
+                    this.set_ttl_filter(new_filter, cx);
                 }
                 KeyTreeAction::SetSort(id) => {
                     let new_sort = KeySort::from_name(id.as_ref());

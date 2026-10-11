@@ -17,6 +17,7 @@
 //! Split out of `key_tree.rs`.
 
 use super::*;
+use gpui::{AnyElement, ClickEvent};
 
 impl ZedisKeyTree {
     pub(super) fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -726,6 +727,49 @@ impl ZedisKeyTree {
                 )
             });
 
+        // What narrows the tree besides the keyword, one chip each, with the
+        // click that takes it off. The filters are picked three levels down
+        // a menu and used to leave no trace outside it: a tree showing 2 of
+        // 25 keys looked like a tree that had lost 23 (#184).
+        let mut active_filters: Vec<AnyElement> = Vec::new();
+        if let Some(key_type) = type_filter {
+            let label = format!(
+                "{}: {}",
+                i18n_key_tree(cx, "type_filter"),
+                type_filter_label(key_type, cx)
+            );
+            active_filters.push(filter_chip(
+                "key-tree-filter-type",
+                label.into(),
+                None,
+                cx.listener(|this, _, _, cx| {
+                    this.server_state
+                        .update(cx, |state, cx| state.set_type_filter(None, cx));
+                }),
+                cx,
+            ));
+        }
+        // Only where the TTL chips are on: without them the filter is not
+        // applied either (`update_key_tree`).
+        if show_key_tree_ttl && let Some(label_key) = ttl_filter_label_key(ttl_filter) {
+            active_filters.push(filter_chip(
+                "key-tree-filter-ttl",
+                i18n_key_tree(cx, label_key),
+                None,
+                cx.listener(|this, _, _, cx| this.set_ttl_filter(TtlFilter::All, cx)),
+                cx,
+            ));
+        }
+        if let Some(color) = tag_filter_active {
+            active_filters.push(filter_chip(
+                "key-tree-filter-tag",
+                i18n_key_tag(cx, tag_color_label_key(color)),
+                Some(theme_color_for_tag(color, cx)),
+                cx.listener(|this, _, _, cx| this.set_tag_filter(None, cx)),
+                cx,
+            ));
+        }
+
         // A regex that will not compile is reported under the bar, not by
         // emptying the tree: half a pattern is a normal state while typing.
         let regex_error = self.state.regex_error.clone();
@@ -777,6 +821,15 @@ impl ZedisKeyTree {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(bar)
+            .children((!active_filters.is_empty()).then(|| {
+                h_flex()
+                    .w_full()
+                    .px_2()
+                    .pb_1p5()
+                    .gap_1()
+                    .flex_wrap()
+                    .children(active_filters)
+            }))
             .children(regex_error.map(|message| {
                 div()
                     .w_full()
@@ -784,5 +837,75 @@ impl ZedisKeyTree {
                     .pb_1()
                     .child(Label::new(message).text_xs().text_color(danger).whitespace_normal())
             }))
+    }
+}
+
+/// One active filter in the strip under the bar: what it is, and a click on
+/// it takes it off.
+fn filter_chip(
+    id: &'static str,
+    label: SharedString,
+    swatch: Option<Hsla>,
+    on_clear: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    Button::new(id)
+        .outline()
+        .xsmall()
+        .tooltip(i18n_key_tree(cx, "remove_filter"))
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .when_some(swatch, |this, color| {
+                    this.child(div().flex_none().size(px(8.)).rounded_full().bg(color))
+                })
+                .child(Label::new(label).text_xs())
+                .child(Icon::new(IconName::Close).xsmall()),
+        )
+        .on_click(on_clear)
+        .into_any_element()
+}
+
+/// A type filter as the Type menu names it.
+fn type_filter_label(key_type: KeyType, cx: &App) -> SharedString {
+    match key_type {
+        KeyType::String => "String".into(),
+        KeyType::Hash => "Hash".into(),
+        KeyType::List => "List".into(),
+        KeyType::Set => "Set".into(),
+        KeyType::Zset => "Zset".into(),
+        KeyType::Stream => "Stream".into(),
+        KeyType::Json => "JSON".into(),
+        KeyType::TimeSeries => i18n_timeseries(cx, "title"),
+        KeyType::Vectorset => i18n_vector_set(cx, "title"),
+        KeyType::Probabilistic(_) => i18n_key_tree(cx, "type_probabilistic"),
+        KeyType::Module(id) => id.name().into(),
+        KeyType::Unknown | KeyType::Channel => key_type.as_str().into(),
+    }
+}
+
+/// The label of a TTL filter that narrows the tree; `None` for "any TTL".
+fn ttl_filter_label_key(filter: TtlFilter) -> Option<&'static str> {
+    match filter {
+        TtlFilter::All => None,
+        TtlFilter::NoTtl => Some("ttl_filter_no_ttl"),
+        TtlFilter::Expiring => Some("ttl_filter_expiring"),
+        TtlFilter::Lt1h => Some("ttl_filter_lt_1h"),
+        TtlFilter::Lt1d => Some("ttl_filter_lt_1d"),
+        TtlFilter::Lt7d => Some("ttl_filter_lt_7d"),
+        TtlFilter::Gte7d => Some("ttl_filter_gte_7d"),
+    }
+}
+
+/// i18n key per tag colour — the `[key_tag]` section's.
+fn tag_color_label_key(color: TagColor) -> &'static str {
+    match color {
+        TagColor::Red => "color_red",
+        TagColor::Orange => "color_orange",
+        TagColor::Yellow => "color_yellow",
+        TagColor::Green => "color_green",
+        TagColor::Blue => "color_blue",
+        TagColor::Purple => "color_purple",
     }
 }

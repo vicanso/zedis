@@ -274,6 +274,25 @@ fn keyword_clear_starts_scan(input: &str, scanned_keyword: &str) -> bool {
 }
 
 impl ZedisKeyTree {
+    /// Narrow the tree to the keys tagged `filter`, or back to all of them.
+    /// Local: the tree is rebuilt from the keys already scanned and the
+    /// stored tags, nothing is scanned again.
+    pub(super) fn set_tag_filter(&mut self, filter: Option<TagColor>, cx: &mut Context<Self>) {
+        if self.state.selected_tag_filter != filter {
+            self.state.selected_tag_filter = filter;
+            self.update_key_tree(true, cx);
+        }
+    }
+
+    /// Narrow the tree to a TTL range, or back to any TTL. Local, like the
+    /// tag filter.
+    pub(super) fn set_ttl_filter(&mut self, filter: TtlFilter, cx: &mut Context<Self>) {
+        if self.state.selected_ttl_filter != filter {
+            self.state.selected_ttl_filter = filter;
+            self.update_key_tree(true, cx);
+        }
+    }
+
     /// Put the caret in the keyword filter (`EditorAction::Search` / ⌘F).
     pub fn focus_search(&self, window: &mut Window, cx: &mut App) {
         self.keyword_state.focus_handle(cx).focus(window, cx);

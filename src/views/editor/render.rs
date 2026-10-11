@@ -977,6 +977,14 @@ impl Render for ZedisEditor {
             }
             return self.render_no_key_selected(cx).into_any_element();
         }
+        // A script viewer that matched this key and failed. The value below
+        // is then what it would be with no rule at all, so this is the only
+        // thing on screen that says the rule ran — it used to be a line in
+        // the log (#187).
+        let viewer_failure = server_state
+            .value()
+            .and_then(|value| value.bytes_value())
+            .and_then(|bytes| bytes.viewer_failure.clone());
         if let Some(true) = self.should_enter_ttl_edit_mode.take() {
             self.enter_ttl_edit_mode(window, cx);
         }
@@ -990,10 +998,31 @@ impl Render for ZedisEditor {
             self.open_save_conflict_dialog(key, draft, window, cx);
         }
 
+        let viewer_notice = viewer_failure.map(|failure| {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+            let title = t!(
+                "editor.script_failed_title",
+                name = failure.rule.as_ref(),
+                locale = locale
+            )
+            .to_string();
+            // What the script said, then what is on screen instead — on a
+            // line of its own, since the first is the script's wording and
+            // ends wherever it ends.
+            let message: SharedString =
+                format!("{}\n{}", failure.error, i18n_editor(cx, "script_failed_fallback")).into();
+            div()
+                .flex_none()
+                .px_2()
+                .pt_2()
+                .child(Alert::warning("editor-viewer-failed", message).small().title(title))
+        });
+
         v_flex()
             .w_full()
             .h_full()
             .when(!is_channel_mode, |this| this.child(self.render_select_key(cx)))
+            .children(viewer_notice)
             // The key bar above is fixed-height; the editor body must be a
             // bounded flex item (`flex_1` + `min_h_0`) so children that scroll
             // internally — e.g. the side-by-side diff view's panes — have a

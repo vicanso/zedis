@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::value::{DataFormat, RedisBytesValue, ViewMode, detect_format};
+use super::value::{DataFormat, RedisBytesValue, ViewMode, ViewerFailure, detect_format};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{ProtoManager, ScriptManager};
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
@@ -294,7 +294,9 @@ impl RedisBytesValue {
         // value that also happens to be gzip / zstd / snappy / an image is
         // decoded natively and the configured viewer never runs. A viewer whose
         // decode/execute fails falls through to native handling.
-        let result = if let Some(viewer) = configured_viewer(server_id, key, data) {
+        let (viewer, viewer_failure) = configured_viewer(server_id, key, data);
+        self.viewer_failure = viewer_failure;
+        let result = if let Some(viewer) = viewer {
             Some(viewer)
         } else {
             match initial_format {
@@ -408,50 +410,78 @@ pub(crate) async fn get_redis_bytes_value(at: &ServerDb, key: &str) -> Result<Re
     })
 }
 
-/// Runs the script viewer configured for this key, or `None` if it failed.
-///
-/// A failure (missing interpreter, non-zero exit, timeout, output cap) falls
-/// back to native format handling, which is the right behaviour but is
-/// otherwise indistinguishable from "no viewer matched this key" — so it is
-/// logged rather than dropped.
+/// What a configured viewer made of a value: its output, or why there is
+/// none.
+type ViewerOutcome = (Option<(DataFormat, SharedString)>, Option<ViewerFailure>);
+
 /// The proto / script viewer the user configured for this key, if any: a
 /// protobuf descriptor decodes the bytes, or a viewer program is run over
 /// them. Both live on disk and the second is a process, so the browser has
 /// neither and every key goes straight to the native format handling.
+///
+/// A script that fails (missing program, non-zero exit, timeout, output cap)
+/// falls back to native format handling, which is the right thing to show
+/// and looks exactly like "no viewer matched this key" — so the failure is
+/// handed back with it, for the editor to say.
 #[cfg(not(target_family = "wasm"))]
-fn configured_viewer(server_id: &str, key: &str, data: &[u8]) -> Option<(DataFormat, SharedString)> {
+fn configured_viewer(server_id: &str, key: &str, data: &[u8]) -> ViewerOutcome {
     if let Some(id) = ProtoManager::match_key_to_name(server_id, key)
         && let Ok(decoded) = ProtoManager::decode_data(&id, data)
     {
-        return Some((DataFormat::Protobuf, SharedString::from(decoded)));
+        return (Some((DataFormat::Protobuf, SharedString::from(decoded))), None);
     }
-    if let Some(id) = ScriptManager::match_key_to_id(server_id, key)
-        && let Some(output) = run_script_viewer(&id, key, data)
-    {
-        return Some((DataFormat::Script, SharedString::from(output)));
+    let Some(id) = ScriptManager::match_key_to_id(server_id, key) else {
+        return (None, None);
+    };
+    match ScriptManager::execute(&id, key, data) {
+        Ok(output) => (Some((DataFormat::Script, SharedString::from(output))), None),
+        Err(e) => {
+            warn!(id, key, error = %e, "script viewer failed, falling back to native formatting");
+            // The rule as the user named it; its id says nothing to them.
+            let rule = ScriptManager::get(&id).map_or(id, |config| config.name);
+            (None, Some(viewer_failure(rule, &e.to_string())))
+        }
     }
-    None
 }
 
 #[cfg(target_family = "wasm")]
-fn configured_viewer(_server_id: &str, _key: &str, _data: &[u8]) -> Option<(DataFormat, SharedString)> {
-    None
+fn configured_viewer(_server_id: &str, _key: &str, _data: &[u8]) -> ViewerOutcome {
+    (None, None)
 }
 
+/// A script's failure as the notice words it: the storage layer's
+/// "Invalid: " is its own classification, not something the script said.
 #[cfg(not(target_family = "wasm"))]
-fn run_script_viewer(id: &str, key: &str, data: &[u8]) -> Option<String> {
-    match ScriptManager::execute(id, key, data) {
-        Ok(output) => Some(output),
-        Err(e) => {
-            warn!(id, key, error = %e, "script viewer failed, falling back to native formatting");
-            None
-        }
+fn viewer_failure(rule: String, error: &str) -> ViewerFailure {
+    ViewerFailure {
+        rule: rule.into(),
+        error: error.strip_prefix("Invalid: ").unwrap_or(error).to_string().into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The notice names the rule and repeats what the script said, without
+    /// the storage layer's own "Invalid: " in front of it.
+    #[test]
+    fn a_failed_viewer_is_reported_in_the_scripts_own_words() {
+        let failure = viewer_failure(
+            "fn-hexdump".to_string(),
+            "Invalid: script exited with error: sh: xxd: command not found",
+        );
+        assert_eq!(failure.rule.as_ref(), "fn-hexdump");
+        assert_eq!(
+            failure.error.as_ref(),
+            "script exited with error: sh: xxd: command not found"
+        );
+        // Anything else is passed on as it came.
+        assert_eq!(
+            viewer_failure("r".to_string(), "IO error: denied").error.as_ref(),
+            "IO error: denied"
+        );
+    }
     use flate2::{Compression, write::GzEncoder};
     use lz4_flex::block::compress_prepend_size;
     use std::io::Write;
