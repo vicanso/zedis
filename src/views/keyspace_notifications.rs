@@ -612,7 +612,7 @@ impl ZedisKeyspaceNotifications {
         let editor = cx.entity().downgrade();
         let flags = flags.to_string();
         ZedisDialog::new_alert(title, body.to_string())
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
                     editor.update(cx, |this, cx| this.run_enable(&flags, cx));

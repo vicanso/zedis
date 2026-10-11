@@ -980,7 +980,7 @@ impl ZedisSlowlogEditor {
         let body = i18n_slowlog_editor(cx, "enable_tracking_confirm_body");
         let editor = cx.entity().downgrade();
         ZedisDialog::new_alert(title, body.to_string())
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
                     editor.update(cx, |this, cx| this.run_enable_latency_tracking(cx));
@@ -1118,7 +1118,7 @@ impl ZedisSlowlogEditor {
         let body = escalate_dangerous_body(cx, &server_id, body);
         let editor = cx.entity().downgrade();
         ZedisDialog::new_alert(title, body)
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
             .on_ok(move |_, window, cx| {
                 if let Some(editor) = editor.upgrade() {
                     editor.update(cx, |this, cx| this.run_reset_slowlog(cx));

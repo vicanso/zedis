@@ -1481,6 +1481,13 @@ where
     apply_and_save(cx, action_name, false, true, mutation);
 }
 
+/// Cancel / **Delete**: the buttons of a confirm that deletes something.
+///
+/// The name does not say so, and for a while every confirm took it as it
+/// came — killing a client, a failover, enabling keyspace notifications and
+/// `SENTINEL RESET` all asked their question over a button reading "Delete"
+/// (#186). A confirm that deletes nothing names its own verb, or at least
+/// `.ok_text(i18n_common(cx, "confirm"))`.
 pub fn dialog_button_props(cx: &App) -> DialogButtonProps {
     DialogButtonProps::default()
         .cancel_text(i18n_common(cx, "cancel"))

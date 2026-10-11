@@ -912,11 +912,17 @@ impl ZedisStreamEditor {
                 }
                 let server_state = server_state.clone();
                 let message = i18n_stream_editor(cx, "setid_stream_prompt").to_string();
+                // Close this form, then ask. Answering `true` after opening
+                // the confirm closed the confirm instead — it is the top of
+                // the stack by then — so the form stayed, the question was
+                // never seen and `XSETID` never sent (the same bug
+                // `open_key_op_form` records for the pops).
+                window.close_dialog(cx);
                 ZedisDialog::new_alert(
                     i18n_stream_editor(cx, "setid_stream_title"),
                     escalate_dangerous_body(cx, &server_id, message),
                 )
-                .button_props(dialog_button_props(cx))
+                .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
                 .on_ok(move |_, window, cx| {
                     server_state.update(cx, |state, cx| {
                         state.set_stream_id(id.clone().into(), cx);
@@ -925,7 +931,7 @@ impl ZedisStreamEditor {
                     true
                 })
                 .open(window, cx);
-                true
+                false
             })
             .open(window, cx);
     }
@@ -1129,7 +1135,7 @@ impl ZedisStreamEditor {
                     i18n_stream_editor(cx, "trim_title"),
                     escalate_dangerous_body(cx, &server_id, message),
                 )
-                .button_props(dialog_button_props(cx))
+                .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
                 .on_ok(move |_, window, cx| {
                     let trim = trim.clone();
                     server_state.update(cx, |state, cx| state.trim_stream(trim, policy, cx));

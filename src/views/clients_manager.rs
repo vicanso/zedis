@@ -497,7 +497,7 @@ fn build_table(
                             let client_addr = client_addr.clone();
                             let client_node = client_node.clone();
                             ZedisDialog::new_alert(title.clone(), prompt.clone())
-                                .button_props(dialog_button_props(cx))
+                                .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
                                 .on_ok(move |_, window, cx| {
                                     if let Some(ref cb) = kill_callback {
                                         cb(client_id.clone(), client_addr.clone(), client_node.clone());
@@ -884,7 +884,7 @@ impl ZedisClientsManager {
         let entity = cx.entity().clone();
 
         ZedisDialog::new_alert(title, prompt)
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
             .on_ok(move |_, window, cx| {
                 let targets = targets.clone();
                 entity.update(cx, |this, cx| {
@@ -1071,7 +1071,7 @@ impl ZedisClientsManager {
                 let entity = entity.clone();
                 let commands = plan.commands;
                 ZedisDialog::new_alert(title, prompt)
-                    .button_props(dialog_button_props(cx))
+                    .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
                     .on_ok(move |_, window, cx| {
                         let commands = commands.clone();
                         entity.update(cx, |this, cx| this.run_kill_filter(commands, cx));
@@ -1079,7 +1079,11 @@ impl ZedisClientsManager {
                         true
                     })
                     .open(window, cx);
-                true
+                // The form is closed above and the confirm is now the top of
+                // the stack: answering `true` here closed *it*, so the
+                // question was never seen and the kill never sent — the bug
+                // `open_key_op_form` records for the pops.
+                false
             })
             .open(window, cx);
     }

@@ -609,7 +609,7 @@ impl ZedisTopology {
         let target_id_s: SharedString = target_id.into();
         let entity = cx.entity().downgrade();
         ZedisDialog::new_alert(title, escalate_dangerous_body(cx, &server_id, body))
-            .button_props(dialog_button_props(cx))
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
             .on_ok(move |_, window, cx| {
                 let slots = slots.clone();
                 let source_by_slot = source_by_slot.clone();
