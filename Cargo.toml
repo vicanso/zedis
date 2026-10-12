@@ -299,7 +299,7 @@ percent-encoding = "2.3.2"
 # lock through russh-keys; `encryption` + `pem` are the two features used.
 pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
-protox = "0.9.1"
+protox = "0.10.0"
 rand = "0.10.3"
 redb = "4.3.0"
 # Both runtime adapters are on. redis picks per connection: it takes tokio
