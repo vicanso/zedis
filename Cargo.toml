@@ -324,7 +324,7 @@ redis = { version = "1.7.1", features = [
     "aio",
 ] }
 regex = "1.13.1"
-russh = { version = "0.63.3", default-features = false, features = [
+russh = { version = "0.64.1", default-features = false, features = [
     "ring",
     "flate2",
     "rsa",
