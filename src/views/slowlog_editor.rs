@@ -23,9 +23,9 @@ use crate::connection::ServerCommand;
 /// (large requests / large replies, fetched by the panel with a 30s poll)
 /// behind a log-kind switch; the Duration column reads Size there.
 use crate::connection::{
-    CommandLogKind, LatencyEvent, LatencySample, ServerDb, SlowLogEntry, command_log_reset, command_logs, config_set,
-    floors, get_server, is_subcommand, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
-    script_show,
+    CommandLogKind, LatencyEvent, LatencySample, ServerDb, SlowLogEntry, SlowLogSettings, command_log_reset,
+    command_logs, config_set, floors, get_server, is_subcommand, latency_history, latency_latest,
+    latency_monitor_threshold, latency_reset, script_show, slowlog_settings,
 };
 use crate::error::Error;
 use crate::helpers::saves_files;
@@ -697,6 +697,13 @@ pub struct ZedisSlowlogEditor {
     /// remembers why the table is showing a subset (e.g. "near fork at
     /// 2026-05-28 14:32:00"). Cleared together with `window_filter`.
     window_filter_label: Option<SharedString>,
+    /// What the server records — `slowlog-log-slower-than` and
+    /// `slowlog-max-len` — read best-effort with each slow log and printed
+    /// above the table. The Latency tab says its threshold; this tab used to
+    /// say nothing about why its table was empty or short (#238). `None`
+    /// until read, and when the server would not say.
+    slowlog_settings: Option<SlowLogSettings>,
+    _slowlog_settings_task: Option<Task<()>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -779,9 +786,10 @@ impl ZedisSlowlogEditor {
                 this.script_show_supported
                     .set(this.server_state.read(cx).supports(floors::SCRIPT_SHOW));
                 // A new server starts on its slow log — the size log shown was
-                // the previous server's.
+                // the previous server's — and its own settings are read.
                 if matches!(event, ServerEvent::ServerSelected(_)) {
                     this.set_log_kind(CommandLogKind::Slow, window, cx);
+                    this.fetch_slowlog_settings(cx);
                 }
                 // A size log is the panel's own fetch, not the heartbeat's.
                 if !this.log_kind.is_slow() {
@@ -803,11 +811,14 @@ impl ZedisSlowlogEditor {
                     // already populated.
                     let new_rows = this.rows_from_current_log(cx);
                     this.replace_rows(new_rows, cx);
+                    // A setting changed elsewhere (the Config panel, redis-cli)
+                    // is picked up with the next sample.
+                    this.fetch_slowlog_settings(cx);
                 }
             }),
         );
 
-        Self {
+        let mut editor = Self {
             server_state,
             script_show_supported,
             table_state,
@@ -838,8 +849,92 @@ impl ZedisSlowlogEditor {
             _commandlog_poll_task: None,
             window_filter: None,
             window_filter_label: None,
+            slowlog_settings: None,
+            _slowlog_settings_task: None,
             _subscriptions: subscriptions,
+        };
+        editor.fetch_slowlog_settings(cx);
+        editor
+    }
+
+    /// Read the two settings behind the slow log, best-effort: a refusal
+    /// (`CONFIG` hidden by a managed cloud, a user without `@admin`) leaves
+    /// them unknown and the line above the table unsaid.
+    fn fetch_slowlog_settings(&mut self, cx: &mut gpui::Context<Self>) {
+        let state = self.server_state.read(cx);
+        if state.server_id().is_empty() {
+            return;
         }
+        let at = state.at();
+        self._slowlog_settings_task = Some(cx.spawn(async move |handle, cx| {
+            let settings = cx.background_spawn(async move { slowlog_settings(&at).await }).await;
+            let _ = handle.update(cx, |this, cx| {
+                this.slowlog_settings = settings.ok().filter(|settings| !settings.is_unknown());
+                cx.notify();
+            });
+        }));
+    }
+
+    /// What the server records, said above the Slow Log table: the threshold
+    /// and the length kept — or that logging is off, which is why the table
+    /// is empty — with the way to the Config panel beside it (#238). Nothing
+    /// for a size log (its thresholds are in its empty state) or where the
+    /// settings could not be read.
+    fn render_slowlog_settings_line(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
+        if !self.log_kind.is_slow() {
+            return None;
+        }
+        let settings = self.slowlog_settings?;
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let mut color = cx.theme().muted_foreground;
+        let mut parts: Vec<String> = Vec::new();
+        if settings.is_disabled() {
+            parts.push(i18n_slowlog_editor(cx, "settings_disabled").to_string());
+            color = cx.theme().yellow;
+        } else if settings.logs_every_command() {
+            parts.push(i18n_slowlog_editor(cx, "settings_every_command").to_string());
+        } else if let Some(us) = settings.slower_than_us {
+            let threshold = format_us_as_ms(u64::try_from(us).unwrap_or(0));
+            parts.push(
+                rust_i18n::t!(
+                    "slowlog_editor.settings_slower_than",
+                    threshold = threshold,
+                    locale = locale
+                )
+                .to_string(),
+            );
+        }
+        if let Some(max) = settings.max_len {
+            parts.push(rust_i18n::t!("slowlog_editor.settings_max_len", max = max, locale = locale).to_string());
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(
+            h_flex()
+                .mx_3()
+                .mt_2()
+                .gap_2()
+                .items_center()
+                .flex_wrap()
+                .child(
+                    Label::new(SharedString::from(parts.join(" · ")))
+                        .text_xs()
+                        .text_color(color),
+                )
+                .child(
+                    Button::new("slowlog-open-config")
+                        .ghost()
+                        .xsmall()
+                        .label(i18n_slowlog_editor(cx, "settings_open_config"))
+                        .on_click(|_, _w, cx| {
+                            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                store.update(cx, |state, cx| state.go_to_view(ServerView::Config, cx));
+                            });
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Rebuild `all_rows` from the current server state, re-decorating
@@ -1424,7 +1519,11 @@ impl gpui::Render for ZedisSlowlogEditor {
                     .min_h_0()
                     .when(self.current_tab == PerformanceTab::SlowLog, |this| {
                         let window_pill = self.window_filter_label.clone();
+                        let settings_line = self.render_slowlog_settings_line(cx);
                         this
+                            // What the server records, whether or not it has
+                            // recorded anything yet.
+                            .children(settings_line)
                             // Pill banner sits above both the empty-state
                             // message and the table so users always see why
                             // the table is narrowed even when the filter

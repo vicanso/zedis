@@ -506,6 +506,11 @@ pub struct ZedisAppState {
     /// is skipped (cheaper scans on large dbs) and no chip is rendered.
     /// Defaults to `true`.
     show_key_tree_ttl: Option<bool>,
+    /// When `true`, the Live Monitor shows the commands Zedis's own
+    /// connections send (the heartbeat's `INFO`, the key tree's `SCAN`…)
+    /// among everyone else's. Defaults to `false`: on a quiet server they
+    /// were most of the feed (#241).
+    monitor_show_own_commands: Option<bool>,
     /// When `true`, clicking a server in the sidebar opens it in a workspace
     /// tab (reveal-or-open) instead of switching the current tab in place.
     /// ⌘/Ctrl+click inverts this per click; ⌘⇧+click always duplicates.
@@ -1115,6 +1120,12 @@ impl ZedisAppState {
     }
     pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
         self.show_key_tree_ttl = Some(enabled);
+    }
+    pub fn monitor_show_own_commands(&self) -> bool {
+        self.monitor_show_own_commands.unwrap_or(false)
+    }
+    pub fn set_monitor_show_own_commands(&mut self, enabled: bool) {
+        self.monitor_show_own_commands = Some(enabled);
     }
     /// Whether the navigation sidebar is collapsed to an icon-only rail.
     pub fn sidebar_collapsed(&self) -> bool {

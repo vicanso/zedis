@@ -401,6 +401,14 @@ impl ZedisTopology {
             .child(Label::new(summary).text_sm().text_color(muted))
             .children(rows)
             .child(actions)
+            // The cluster tabs exist; this server is not one. Said once, so
+            // the panel does not read as missing them (#237).
+            .child(
+                Label::new(i18n_topology(cx, "cluster_only_hint"))
+                    .text_xs()
+                    .text_color(muted)
+                    .whitespace_normal(),
+            )
             .into_any_element()
     }
 

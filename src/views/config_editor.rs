@@ -26,7 +26,7 @@ use crate::{
         ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props,
         escalate_dangerous_body, i18n_common, i18n_config_editor,
     },
-    views::{ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
+    views::{CopyDialogPurpose, ZedisCopyKeyDialog, config_doc::load_config_docs, confirm_dangerous_command},
 };
 use gpui::{App, Entity, FocusHandle, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -704,7 +704,8 @@ impl ZedisConfigEditor {
         if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
             return;
         }
-        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, false, window, cx));
+        let view = cx
+            .new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, CopyDialogPurpose::PickServer, window, cx));
         let view_child = view.clone();
         let view_ok = view.clone();
         let editor = cx.entity().downgrade();

@@ -105,6 +105,17 @@ pub const HOTKEYS_POLL_SECS: u64 = 2;
 #[cfg(target_family = "wasm")]
 pub const HOTKEYS_POLL_SECS: u64 = 10;
 
+/// The Live Monitor's `CLIENT LIST`, while it runs: which addresses are
+/// Zedis's own connections, so their commands can be left out of the feed.
+/// Our connections come and go — a pooled one expires after five idle
+/// minutes and is dialed again on another port — so the set is read again
+/// this often; a line from a connection newer than the last read shows for
+/// at most this long.
+#[cfg(not(target_family = "wasm"))]
+pub const MONITOR_OWN_CLIENTS_REFRESH: Duration = Duration::from_secs(10);
+#[cfg(target_family = "wasm")]
+pub const MONITOR_OWN_CLIENTS_REFRESH: Duration = Duration::from_secs(30);
+
 /// The root's housekeeping tick: expired connection caches on every one, and
 /// once an hour the idle key histories and the recycle bin. The browser has
 /// no SSH sessions, no socket pool and no bin, so only the hourly part means
@@ -215,6 +226,7 @@ mod tests {
         assert_eq!(TRAY_REFRESH_INTERVAL, Duration::from_secs(5));
         assert_eq!(SERVER_LOAD_POLL_SECS, 3);
         assert_eq!(HOTKEYS_POLL_SECS, 2);
+        assert_eq!(MONITOR_OWN_CLIENTS_REFRESH, Duration::from_secs(10));
         assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));
         assert_eq!(HOUSEKEEPING_HOURLY_TICKS, 120);
         assert_eq!(WINDOW_IDLE_AFTER, Duration::from_secs(120));

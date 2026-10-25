@@ -13,19 +13,23 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
-use crate::connection::{Capability, MonitorFeeds, ServerDb, get_server, open_monitor_feeds};
+use crate::connection::{Capability, MonitorFeeds, ServerDb, get_server, open_monitor_feeds, zedis_client_addrs};
 use crate::error::Error;
 use crate::helpers::channel;
-use crate::helpers::{MonitorAction, build_csv, format_clock, get_mono_font_family, group_thousands, saves_files};
+use crate::helpers::{
+    MonitorAction, build_csv, format_clock, get_mono_font_family, group_thousands, pacing, saves_files,
+};
 use crate::states::{
     ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_monitor, i18n_status_bar,
+    update_app_state_and_save,
 };
 /// Redis MONITOR live viewer.
 ///
 /// Opens dedicated (non-cached) connections to each master node, sends
 /// the `MONITOR` command, and streams the output in real time into a
-/// scrollable table.  Supports keyword and command-type filtering.
+/// scrollable table.  Supports keyword and command-type filtering, and
+/// leaves out what Zedis's own connections send unless asked (#241).
 /// The buffer is capped at `MAX_RECORDS` entries.
 use crate::views::{BridgeMonitor, bridge_monitor, confirm_dangerous_command, export_to_file, open_key_in_editor};
 use gpui::{AnyElement, App, Div, Entity, Hsla, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
@@ -33,6 +37,7 @@ use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonGroup},
+    checkbox::Checkbox,
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -42,7 +47,7 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 use tracing::error;
@@ -283,6 +288,14 @@ pub struct ZedisMonitor {
     sample: Option<SampleResult>,
     /// Show the sample's summary rather than the lines.
     show_summary: bool,
+    /// Show the lines Zedis's own connections send. Off by default — on a
+    /// quiet server the heartbeat's `INFO` every two seconds was most of the
+    /// feed (#241) — and kept in the app state across visits.
+    show_own: bool,
+    /// Zedis's own connections on each master, as `(node, addr)`, which is
+    /// how a `MONITOR` line names its client; read before the first line and
+    /// again every `MONITOR_OWN_CLIENTS_REFRESH` while the feed runs.
+    own_clients: HashSet<(SharedString, SharedString)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -365,8 +378,29 @@ impl ZedisMonitor {
             sampling: None,
             sample: None,
             show_summary: false,
+            show_own: cx.global::<ZedisGlobalStore>().read(cx).monitor_show_own_commands(),
+            own_clients: HashSet::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The latest reading of which clients are ours.
+    fn set_own_clients(&mut self, own: HashSet<(String, String)>) {
+        self.own_clients = own.into_iter().map(|(node, addr)| (node.into(), addr.into())).collect();
+    }
+
+    /// A line from one of Zedis's own connections.
+    fn is_own(&self, entry: &MonitorEntry) -> bool {
+        self.own_clients.contains(&(entry.node.clone(), entry.client.clone()))
+    }
+
+    /// The toggle: what it says is kept for the next visit.
+    fn set_show_own(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_own = show;
+        update_app_state_and_save(cx, "monitor_show_own_commands", move |state, _| {
+            state.set_monitor_show_own_commands(show)
+        });
+        cx.notify();
     }
 
     fn events_per_sec(&self) -> f64 {
@@ -504,6 +538,35 @@ impl ZedisMonitor {
         }
         cx.notify();
 
+        // Our connections come and go — a pooled one expires after five idle
+        // minutes and is dialed again on another port — so which clients are
+        // ours is read again while the feed runs; dropped with it on Stop.
+        let refresh_at = ServerDb::new(server_id.clone(), db);
+        let refresh_entity = cx.entity().downgrade();
+        let refresh = cx.spawn(async move |_handle, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(pacing::MONITOR_OWN_CLIENTS_REFRESH)
+                    .await;
+                match refresh_entity.update(cx, |this: &mut ZedisMonitor, _| this.paused) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+                let at = refresh_at.clone();
+                let Ok(own) = cx.background_spawn(async move { zedis_client_addrs(&at).await }).await else {
+                    continue;
+                };
+                if refresh_entity
+                    .update(cx, |this: &mut ZedisMonitor, _| this.set_own_clients(own))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.monitor_tasks.push(refresh);
+
         let table_state = self.table_state.clone();
         let entity = cx.entity().downgrade();
         let (tx, rx) = channel::unbounded::<MonitorEntry>();
@@ -519,6 +582,15 @@ impl ZedisMonitor {
                 Some(answer) => at.confirmed(answer),
                 None => at,
             };
+            // Which clients are ours, before the first line: the filter has
+            // nothing to go on until this answers. A refusal leaves the set
+            // empty and the feed unfiltered.
+            let own_at = at.clone();
+            let own = cx
+                .background_spawn(async move { zedis_client_addrs(&own_at).await })
+                .await
+                .unwrap_or_default();
+            let _ = entity.update(cx, |this: &mut ZedisMonitor, _| this.set_own_clients(own));
             let opened: Result<MonitorFeeds> = cx
                 .background_spawn(async move { Ok(open_monitor_feeds(&at).await?) })
                 .await;
@@ -608,7 +680,14 @@ impl ZedisMonitor {
                     if this.paused {
                         return false;
                     }
+                    // The rate guard counts every line the server sent —
+                    // ours cost it the same — so it is counted before the
+                    // filter; the table, the sample and the export see only
+                    // what is left.
                     let n = batch.len();
+                    if !this.show_own {
+                        batch.retain(|entry| !this.is_own(entry));
+                    }
                     if let Some(sampling) = this.sampling.as_mut() {
                         let separator = this.server_state.read(cx).key_separator().to_string();
                         for entry in &batch {
@@ -949,18 +1028,27 @@ impl Render for ZedisMonitor {
             .overflow_hidden()
             // Monospace cascades to the command stream + filter/toolbar text.
             .font_family(get_mono_font_family())
-            // Toolbar
+            // Toolbar. One row where it fits; where it does not, the
+            // controls drop to a second row instead of running off the edge.
             .child(
                 h_flex()
+                    .w_full()
+                    .flex_none()
                     .items_center()
                     .justify_between()
                     .px_4()
-                    .h(px(40.))
+                    .py(px(6.))
+                    .min_h(px(40.))
+                    .gap_x_4()
+                    .gap_y_2()
+                    .flex_wrap()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
                         h_flex()
+                            .flex_none()
                             .gap_2()
+                            .items_center()
                             .child(
                                 Button::new("monitor-back")
                                     .ghost()
@@ -1042,6 +1130,7 @@ impl Render for ZedisMonitor {
                     )
                     .child(
                         h_flex()
+                            .flex_none()
                             .gap_2()
                             .items_center()
                             .child(
@@ -1049,6 +1138,18 @@ impl Render for ZedisMonitor {
                                     .w(px(KEYWORD_INPUT_WIDTH))
                                     .cleanable(true)
                                     .small(),
+                            )
+                            // The other filter: an unticked box is how the
+                            // feed says it is filtered.
+                            .child(
+                                Checkbox::new("monitor-show-own")
+                                    .small()
+                                    .label(i18n_monitor(cx, "show_own"))
+                                    .tooltip(i18n_monitor(cx, "show_own_tooltip"))
+                                    .checked(self.show_own)
+                                    .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                        this.set_show_own(*checked, cx);
+                                    })),
                             )
                             .when(!self.monitoring, |this| {
                                 this.child(

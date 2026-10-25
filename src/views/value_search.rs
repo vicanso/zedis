@@ -66,7 +66,7 @@ use gpui_kit::component::{
     notification::Notification,
     v_flex,
 };
-use std::{mem::take, sync::Arc, time::Duration};
+use std::{cell::Cell, mem::take, rc::Rc, sync::Arc, time::Duration};
 use web_time::Instant;
 
 // The scan cap, time budget and match cap are user-tunable (Settings →
@@ -222,6 +222,8 @@ pub struct ZedisValueSearch {
     preview_scroll: ScrollHandle,
     /// Re-words the three fields' placeholders after a language change.
     placeholders: Placeholders,
+    /// `only`, as the query placeholder's wording reads it — set with it.
+    query_type: Rc<Cell<Option<SearchableType>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -232,6 +234,16 @@ impl ZedisValueSearch {
     /// input and appear to do nothing.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query_input.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Pick the type to search, and word the query field for it.
+    fn set_type(&mut self, only: Option<SearchableType>, window: &mut Window, cx: &mut Context<Self>) {
+        self.only = only;
+        self.query_type.set(only);
+        let text = query_placeholder(only, cx);
+        self.query_input
+            .update(cx, |state, cx| state.set_placeholder(text, window, cx));
         cx.notify();
     }
 
@@ -248,9 +260,14 @@ impl ZedisValueSearch {
             window,
             cx,
         );
+        // The query's placeholder names what the picked type is searched
+        // for (#239): the type is shared with the wording so a language
+        // change re-words it for the type then selected.
+        let query_type: Rc<Cell<Option<SearchableType>>> = Rc::new(Cell::new(None));
+        let worded_type = query_type.clone();
         placeholders.add(
             &query_input,
-            |cx| i18n_value_search(cx, "query_placeholder"),
+            move |cx| query_placeholder(worded_type.get(), cx),
             window,
             cx,
         );
@@ -326,6 +343,7 @@ impl ZedisValueSearch {
             preview_task: None,
             preview_scroll: ScrollHandle::new(),
             placeholders,
+            query_type,
             _subscriptions: subscriptions,
         }
     }
@@ -1151,6 +1169,21 @@ fn searchable(filter: ValueSearchTypeFilter) -> Option<SearchableType> {
 }
 
 /// A type's name as the key tree's type filter writes it.
+/// The query field's placeholder: what is read of the picked type — a hash's
+/// field names and values, a list's items, a set's members — or every type
+/// when none is picked (#239).
+fn query_placeholder(only: Option<SearchableType>, cx: &App) -> SharedString {
+    let key = match only {
+        None => "query_placeholder",
+        Some(SearchableType::String) => "query_placeholder_string",
+        Some(SearchableType::Hash) => "query_placeholder_hash",
+        Some(SearchableType::List) => "query_placeholder_list",
+        Some(SearchableType::Set) => "query_placeholder_set",
+        Some(SearchableType::Zset) => "query_placeholder_zset",
+    };
+    i18n_value_search(cx, key)
+}
+
 fn type_label(only: SearchableType) -> &'static str {
     match only {
         SearchableType::String => "String",
@@ -1316,9 +1349,8 @@ impl Render for ZedisValueSearch {
             .size_full()
             .font_family(get_mono_font_family())
             // The type dropdown dispatches these.
-            .on_action(cx.listener(|this, filter: &ValueSearchTypeFilter, _window, cx| {
-                this.only = searchable(*filter);
-                cx.notify();
+            .on_action(cx.listener(|this, filter: &ValueSearchTypeFilter, window, cx| {
+                this.set_type(searchable(*filter), window, cx);
             }))
             .child(
                 h_flex()
@@ -1520,6 +1552,13 @@ mod tests {
             assert_eq!(window.find("vs-type").label(), Some("Hash"));
         })
         .expect("the window is open");
+        // And the query field says what a hash is searched for (#239).
+        let placeholder = |cx: &mut TestAppContext| {
+            panel.read_with(cx, |this, cx| {
+                this.query_input.read(cx).presentation().placeholder().to_string()
+            })
+        };
+        assert_eq!(placeholder(cx), "Text to find in hash field names or values");
         assert!(!shows_continue(cx), "another type is a new search");
         panel.update(cx, |this, _| this.only = None);
         assert!(shows_continue(cx));

@@ -308,7 +308,16 @@ impl ZedisTopology {
                     ),
             );
         }
-        col.child(v_flex().gap_1().children(rows)).into_any_element()
+        col.child(v_flex().gap_1().children(rows))
+            // A Sentinel deployment has no slots: the cluster tabs are said
+            // to exist here once, as on a standalone (#237).
+            .child(
+                Label::new(i18n_topology(cx, "cluster_only_hint"))
+                    .text_xs()
+                    .text_color(muted)
+                    .whitespace_normal(),
+            )
+            .into_any_element()
     }
 
     pub(super) fn open_sentinel_failover_dialog(

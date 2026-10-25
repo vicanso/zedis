@@ -196,6 +196,69 @@ pub async fn config_get_named(at: &ServerDb, names: &[&str]) -> Result<Vec<Optio
     Ok(values)
 }
 
+/// The two settings that decide what reaches the slow log: how slow a
+/// command has to be, and how many entries are kept. Either is `None` where
+/// the server would not say.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlowLogSettings {
+    /// `slowlog-log-slower-than`, in microseconds. Negative switches the log
+    /// off; zero logs every command.
+    pub slower_than_us: Option<i64>,
+    /// `slowlog-max-len`: how many entries the server keeps.
+    pub max_len: Option<u64>,
+}
+
+impl SlowLogSettings {
+    /// Neither setting could be read: nothing to show.
+    pub fn is_unknown(&self) -> bool {
+        self.slower_than_us.is_none() && self.max_len.is_none()
+    }
+
+    /// A negative threshold: the server records nothing.
+    pub fn is_disabled(&self) -> bool {
+        self.slower_than_us.is_some_and(|us| us < 0)
+    }
+
+    /// A threshold of zero: every command is recorded.
+    pub fn logs_every_command(&self) -> bool {
+        self.slower_than_us == Some(0)
+    }
+
+    /// The settings as `CONFIG GET` answered them, in the order they were
+    /// asked: the two slow-log names, then Valkey 8.1's `COMMANDLOG` names
+    /// for the same two settings, read where the old names answered nothing.
+    fn from_values(slowlog: &[Option<String>], commandlog: &[Option<String>]) -> Self {
+        fn parse<T: std::str::FromStr>(values: &[Option<String>], index: usize) -> Option<T> {
+            values.get(index)?.as_deref()?.trim().parse().ok()
+        }
+        Self {
+            slower_than_us: parse(slowlog, 0).or_else(|| parse(commandlog, 0)),
+            max_len: parse(slowlog, 1).or_else(|| parse(commandlog, 1)),
+        }
+    }
+}
+
+/// The names `slowlog_settings` asks for, in the order [`SlowLogSettings`]
+/// reads them: Redis's, and Valkey 8.1's `COMMANDLOG` spellings of the same
+/// two settings (Valkey keeps the old names as aliases, so the second pair is
+/// only asked where the first answered nothing).
+const SLOWLOG_SETTING_NAMES: [&str; 2] = ["slowlog-log-slower-than", "slowlog-max-len"];
+const COMMANDLOG_SETTING_NAMES: [&str; 2] = ["commandlog-execution-slower-than", "commandlog-slow-execution-max-len"];
+
+/// `slowlog-log-slower-than` and `slowlog-max-len`, best-effort: a managed
+/// cloud may hide `CONFIG`, and a user without `@admin` is refused it, so a
+/// missing value is `None`, not an error. `Err` only when there is no
+/// connection to ask on.
+pub async fn slowlog_settings(at: &ServerDb) -> Result<SlowLogSettings> {
+    let slowlog = config_get_named(at, &SLOWLOG_SETTING_NAMES).await?;
+    let commandlog = if slowlog.iter().any(Option::is_none) {
+        config_get_named(at, &COMMANDLOG_SETTING_NAMES).await?
+    } else {
+        Vec::new()
+    };
+    Ok(SlowLogSettings::from_values(&slowlog, &commandlog))
+}
+
 /// `CONFIG RESETSTAT` — zeroes the counters `INFO stats` / `commandstats`
 /// report, on the connected node.
 pub async fn config_resetstat(at: &ServerDb) -> Result<()> {
@@ -239,7 +302,33 @@ fn config_file_of(info: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_file_of, fold_config_aliases};
+    use super::{SlowLogSettings, config_file_of, fold_config_aliases};
+
+    fn answered(values: &[&str]) -> Vec<Option<String>> {
+        values.iter().map(|v| Some(v.to_string())).collect()
+    }
+
+    /// The slow-log settings are read from Redis's names, and from Valkey's
+    /// `COMMANDLOG` names where those answered nothing — never one over the
+    /// other — and a refusal leaves the setting unknown rather than zero.
+    #[test]
+    fn slow_log_settings_fall_back_to_the_commandlog_names_setting_by_setting() {
+        let redis = SlowLogSettings::from_values(&answered(&["10000", "128"]), &[]);
+        assert_eq!((redis.slower_than_us, redis.max_len), (Some(10_000), Some(128)));
+        assert!(!redis.is_disabled() && !redis.logs_every_command() && !redis.is_unknown());
+
+        let valkey = SlowLogSettings::from_values(&[None, None], &answered(&["-1", "256"]));
+        assert_eq!((valkey.slower_than_us, valkey.max_len), (Some(-1), Some(256)));
+        assert!(valkey.is_disabled());
+
+        let partly = SlowLogSettings::from_values(&[None, Some("64".into())], &answered(&["0", "999"]));
+        assert_eq!((partly.slower_than_us, partly.max_len), (Some(0), Some(64)));
+        assert!(partly.logs_every_command());
+
+        let refused = SlowLogSettings::from_values(&[None, None], &[None, None]);
+        assert!(refused.is_unknown() && !refused.is_disabled());
+        assert!(SlowLogSettings::from_values(&answered(&["not a number"]), &[]).is_unknown());
+    }
 
     #[test]
     fn the_config_file_is_read_from_info_server_and_may_be_empty() {

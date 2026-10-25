@@ -149,7 +149,15 @@ impl ZedisEditor {
         if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
             return;
         }
-        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.clone().into(), source_db, true, window, cx));
+        let view = cx.new(|cx| {
+            ZedisCopyKeyDialog::new(
+                source_id.clone().into(),
+                source_db,
+                CopyDialogPurpose::CopyKey,
+                window,
+                cx,
+            )
+        });
         let view_child = view.clone();
         let view_ok = view.clone();
         let editor = cx.entity().downgrade();
@@ -244,7 +252,8 @@ impl ZedisEditor {
         if get_servers().map(|s| s.is_empty()).unwrap_or(true) {
             return;
         }
-        let view = cx.new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, false, window, cx));
+        let view = cx
+            .new(|cx| ZedisCopyKeyDialog::new(source_id.into(), source_db, CopyDialogPurpose::PickServer, window, cx));
         let view_child = view.clone();
         let view_ok = view.clone();
         let editor = cx.entity().downgrade();

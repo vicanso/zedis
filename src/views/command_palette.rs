@@ -25,7 +25,14 @@ use crate::states::{
     i18n_command_palette, i18n_features, i18n_shortcuts,
 };
 use crate::states::{i18n_status_bar, i18n_trash, i18n_troubleshoot};
+// The application's own chores: About is a window and the rest are about an
+// installed program, none of which a page has (#240).
 use crate::views::placeholders::Placeholders;
+#[cfg(not(target_family = "wasm"))]
+use crate::{
+    helpers::{DiagnosticsAction, MemuAction, UpdateAction, is_app_store_build},
+    states::i18n_sidebar,
+};
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::{ActiveTheme, label::Label, v_flex};
@@ -81,6 +88,23 @@ enum PaletteCommand {
     /// matrix. Handed to the root's `ServerToolsAction` handler, the same
     /// one the status bar's menu dispatches to (#221).
     Tool(ServerToolsAction),
+    /// The title-bar menu's application items — About, the update check,
+    /// the logs folder, the diagnostics bundle — handed to the handlers the
+    /// menu dispatches to. The desktop's alone: a page has no second window
+    /// to open and no installed program to update, so the browser build has
+    /// neither the variant nor the rows (#240).
+    #[cfg(not(target_family = "wasm"))]
+    AppChore(AppChore),
+}
+
+/// The application items of the title-bar menu, as the palette lists them.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum AppChore {
+    About,
+    CheckUpdates,
+    OpenLogs,
+    ExportDiagnostics,
 }
 
 struct PaletteItem {
@@ -476,6 +500,8 @@ impl ZedisCommandPalette {
             prescore: None,
             command: PaletteCommand::OpenSettings,
         });
+        #[cfg(not(target_family = "wasm"))]
+        self.push_app_chores(items, cx);
         // Pub/Sub mode only makes sense against a connection.
         if conn.is_some() {
             let label = i18n_command_palette(cx, "cmd_pubsub");
@@ -556,6 +582,42 @@ impl ZedisCommandPalette {
 
     /// Filter+rank `items` by `query`. Returns indices into `items`, best
     /// match first. Empty query keeps the natural (insertion) order.
+    /// About, Check for Updates, Open Logs Folder and Export Diagnostics,
+    /// on the title-bar menu's terms: an App Store build updates through the
+    /// store and is not offered the check. About is the quickest way to read
+    /// which build is running — what a nightly tester asks the palette for
+    /// — and "about" used to answer "No matches" (#240).
+    #[cfg(not(target_family = "wasm"))]
+    fn push_app_chores(&self, items: &mut Vec<PaletteItem>, cx: &Context<Self>) {
+        let mut chores: Vec<(gpui::SharedString, Option<gpui::SharedString>, AppChore)> = vec![(
+            i18n_command_palette(cx, "cmd_about"),
+            Some(i18n_command_palette(cx, "about_keywords")),
+            AppChore::About,
+        )];
+        if !is_app_store_build() {
+            chores.push((i18n_sidebar(cx, "check_updates"), None, AppChore::CheckUpdates));
+        }
+        chores.push((i18n_sidebar(cx, "open_logs"), None, AppChore::OpenLogs));
+        chores.push((
+            i18n_sidebar(cx, "export_diagnostics"),
+            None,
+            AppChore::ExportDiagnostics,
+        ));
+        for (label, keywords, chore) in chores {
+            let search = match keywords {
+                Some(keywords) => format!("{label} {keywords}"),
+                None => label.to_string(),
+            };
+            items.push(PaletteItem {
+                label,
+                hint: gpui::SharedString::default(),
+                search,
+                prescore: None,
+                command: PaletteCommand::AppChore(chore),
+            });
+        }
+    }
+
     fn ranked(items: &[PaletteItem], query: &str) -> Vec<usize> {
         let prepared = prepare_fuzzy_query(query);
         let mut scored: Vec<(i32, usize)> = items
@@ -593,6 +655,19 @@ impl ZedisCommandPalette {
         if let PaletteCommand::Tool(action) = command {
             self.close(cx);
             window.dispatch_action(Box::new(action), cx);
+            return;
+        }
+        // And the application's chores: the root answers About and the logs
+        // folder, the global handlers the update check and the diagnostics.
+        #[cfg(not(target_family = "wasm"))]
+        if let PaletteCommand::AppChore(chore) = command {
+            self.close(cx);
+            match chore {
+                AppChore::About => window.dispatch_action(Box::new(MemuAction::About), cx),
+                AppChore::CheckUpdates => window.dispatch_action(Box::new(UpdateAction::Check), cx),
+                AppChore::OpenLogs => window.dispatch_action(Box::new(MemuAction::OpenLogs), cx),
+                AppChore::ExportDiagnostics => window.dispatch_action(Box::new(DiagnosticsAction::Export), cx),
+            }
             return;
         }
         // Selecting a key needs the per-connection ServerState entity (not the
@@ -637,6 +712,8 @@ impl ZedisCommandPalette {
                 PaletteCommand::ShowShortcuts => {}
                 PaletteCommand::OpenSettings => {}
                 PaletteCommand::Tool(_) => {}
+                #[cfg(not(target_family = "wasm"))]
+                PaletteCommand::AppChore(_) => {}
                 PaletteCommand::Key(_) => {}
                 PaletteCommand::PubsubMode => {}
             });
@@ -988,6 +1065,44 @@ mod tests {
                         .iter()
                         .any(|item| matches!(item.command, PaletteCommand::Tool(listed) if listed == action)),
                     "{action:?}"
+                );
+            }
+        });
+    }
+
+    /// The title-bar menu's application items are commands too: About is
+    /// found by "about" and by "version", the word someone checking which
+    /// build is running would type, and the chores are listed beside it
+    /// (#240).
+    #[gpui::test]
+    fn about_is_a_command_found_as_version(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let mut palette = None;
+        cx.open_window(size(px(600.), px(400.)), |window, cx| {
+            let page_focus = cx.focus_handle();
+            let view = cx.new(|cx| ZedisCommandPalette::new(server_state.clone(), page_focus, window, cx));
+            palette = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let palette = palette.expect("the window built the palette");
+
+        palette.update(cx, |palette, cx| {
+            for query in ["about", "version"] {
+                let items = palette.build_items(Scope::General, query, cx);
+                let first = ZedisCommandPalette::ranked(&items, query).first().copied();
+                assert!(
+                    first.is_some_and(|ix| matches!(items[ix].command, PaletteCommand::AppChore(AppChore::About))),
+                    "{query}"
+                );
+            }
+            let items = palette.build_items(Scope::Commands, "", cx);
+            for chore in [AppChore::OpenLogs, AppChore::ExportDiagnostics] {
+                assert!(
+                    items
+                        .iter()
+                        .any(|item| matches!(item.command, PaletteCommand::AppChore(listed) if listed == chore)),
+                    "{chore:?}"
                 );
             }
         });

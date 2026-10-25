@@ -133,7 +133,7 @@ pub use bridge::{
 pub use bridge::{BridgePipeline, BridgeQuery};
 pub use clients::{
     KillFilter, PauseMode, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
-    kill_filter_commands, kill_filter_summary, pause_args,
+    is_zedis_client_name, kill_filter_commands, kill_filter_summary, pause_args, zedis_client_addrs,
 };
 /// Cluster surgery: node-addressed commands, which need a socket per node.
 #[cfg(not(target_family = "wasm"))]
@@ -240,8 +240,8 @@ pub use sentinel::{
     sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset, sentinel_set, summarize_replies,
 };
 pub use server_config::{
-    ServerConfig, config_get_all, config_get_named, config_get_one, config_load, config_resetstat, config_rewrite,
-    config_set, info_everything,
+    ServerConfig, SlowLogSettings, config_get_all, config_get_named, config_get_one, config_load, config_resetstat,
+    config_rewrite, config_set, info_everything, slowlog_settings,
 };
 pub use server_db::ServerDb;
 pub use server_ops::{

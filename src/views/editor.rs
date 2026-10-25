@@ -37,11 +37,12 @@ use crate::{
         i18n_status_bar, update_app_state_and_save_quiet,
     },
     views::{
-        BitmapEvent, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor, ZedisCopyKeyDialog,
-        ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor, ZedisProbabilisticEditor,
-        ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff, ZedisVectorSetEditor,
-        ZedisZsetEditor, bitmap_eligible, confirm_delete_key, export_to_file, json_invalid_message, key_op_title_key,
-        looks_like_bitmap, looks_like_hll, open_change_log_dialog, open_file, open_key_op_dialog,
+        BitmapEvent, CopyDialogPurpose, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor,
+        ZedisCopyKeyDialog, ZedisExpireAtDialog, ZedisGeoMap, ZedisHashEditor, ZedisHllEditor, ZedisListEditor,
+        ZedisProbabilisticEditor, ZedisSetEditor, ZedisStreamEditor, ZedisTimeSeriesEditor, ZedisValueDiff,
+        ZedisVectorSetEditor, ZedisZsetEditor, bitmap_eligible, confirm_delete_key, export_to_file,
+        json_invalid_message, key_op_title_key, looks_like_bitmap, looks_like_hll, open_change_log_dialog, open_file,
+        open_key_op_dialog,
     },
 };
 use crate::{states::i18n_servers, views::open_connection_diagnostics};

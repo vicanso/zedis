@@ -24,6 +24,7 @@ use crate::config::RedisServer;
 use crate::error::Error;
 use crate::server_db::ServerDb;
 use redis::{Cmd, cmd};
+use std::collections::HashSet;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -44,6 +45,46 @@ pub async fn client_list(at: &ServerDb) -> Result<Vec<(RedisServer, String)>> {
         .query_async_masters(vec![client_cmd(&["LIST"])])
         .await?;
     Ok(nodes.into_iter().zip(replies).collect())
+}
+
+/// Whether a `CLIENT LIST` name is one this application gives its own
+/// connections: `zedis:v…` ([`crate::client_name`]), or the bare `zedis` of
+/// a build from before the version was added.
+pub fn is_zedis_client_name(name: &str) -> bool {
+    name == "zedis" || name.starts_with("zedis:")
+}
+
+/// The addresses of the clients in one node's `CLIENT LIST` reply that
+/// [`is_zedis_client_name`] claims, as the server wrote them (`addr=…`).
+fn zedis_client_addrs_in(listing: &str) -> impl Iterator<Item = &str> {
+    listing.lines().filter_map(|line| {
+        let mut addr = None;
+        let mut name = None;
+        for field in line.split_ascii_whitespace() {
+            if let Some(value) = field.strip_prefix("addr=") {
+                addr = Some(value);
+            } else if let Some(value) = field.strip_prefix("name=") {
+                name = Some(value);
+            }
+        }
+        name.filter(|name| is_zedis_client_name(name)).and(addr)
+    })
+}
+
+/// The connections Zedis itself holds on every master, as `(node, addr)`:
+/// the node as `host:port`, the address as `CLIENT LIST` wrote it — which is
+/// also how a `MONITOR` line names the client. The Live Monitor leaves these
+/// out of its feed by default: the heartbeat's `INFO`, the key tree's
+/// `SCAN`, this very listing. The match is on the name alone, so another
+/// Zedis on another machine, and a bridge's connections, count as well: they
+/// are Zedis's commands too, not the application under study's.
+pub async fn zedis_client_addrs(at: &ServerDb) -> Result<HashSet<(String, String)>> {
+    let mut own = HashSet::new();
+    for (node, listing) in client_list(at).await? {
+        let node = format!("{}:{}", node.host, node.port);
+        own.extend(zedis_client_addrs_in(&listing).map(|addr| (node.clone(), addr.to_string())));
+    }
+    Ok(own)
 }
 
 /// `CLIENT KILL ID id` on `node` — the master whose `CLIENT LIST` had the id
@@ -218,6 +259,25 @@ mod tests {
 
     fn words(args: &[String]) -> String {
         args.join(" ")
+    }
+
+    /// Our own connections are told apart by the name `CLIENT SETNAME` gave
+    /// them — this build's, an older build's bare `zedis` — and nothing
+    /// else: not a client whose name merely contains the word, not one
+    /// without a name.
+    #[test]
+    fn our_connections_are_found_by_their_name_in_a_client_listing() {
+        let listing = concat!(
+            "id=3 addr=127.0.0.1:51166 laddr=127.0.0.1:6379 fd=8 name=zedis:v0.15.0 age=10 idle=0 cmd=info\n",
+            "id=4 addr=127.0.0.1:51170 laddr=127.0.0.1:6379 fd=9 name=zedis age=8 idle=1 cmd=scan\n",
+            "id=5 addr=[::1]:51180 laddr=[::1]:6379 fd=10 name= age=7 idle=2 cmd=get\n",
+            "id=6 addr=10.0.0.9:40000 laddr=10.0.0.1:6379 fd=11 name=my-zedis-app age=5 idle=0 cmd=set\n",
+            "id=7 addr=10.0.0.9:40001 fd=12 age=5 idle=0 cmd=set\n",
+        );
+        let own: Vec<&str> = zedis_client_addrs_in(listing).collect();
+        assert_eq!(own, ["127.0.0.1:51166", "127.0.0.1:51170"]);
+        assert!(is_zedis_client_name(crate::client_name()), "this build's own name");
+        assert!(!is_zedis_client_name("zedisx") && !is_zedis_client_name(""));
     }
 
     #[test]

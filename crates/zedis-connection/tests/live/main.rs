@@ -77,8 +77,8 @@ use zedis_connection::{
 };
 use zedis_connection::{
     MonitorFeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, command_stats, copy_key,
-    copy_key_logically, function_delete, function_load, function_stats, is_foreign_payload, migrate_slot,
-    restore_or_recreate_chunk,
+    copy_key_logically, function_delete, function_load, function_stats, is_foreign_payload, is_zedis_client_name,
+    migrate_slot, restore_or_recreate_chunk, slowlog_settings, zedis_client_addrs,
 };
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;

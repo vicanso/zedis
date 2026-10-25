@@ -114,7 +114,7 @@ pub use command_palette::ZedisCommandPalette;
 pub use config_editor::ZedisConfigEditor;
 pub use connection_diagnostics::open_connection_diagnostics;
 pub use content::ZedisContent;
-pub use copy_key_dialog::ZedisCopyKeyDialog;
+pub use copy_key_dialog::{CopyDialogPurpose, ZedisCopyKeyDialog};
 pub use danger_confirm::{
     BridgeMonitor, bridge_asks_first, bridge_danger, bridge_monitor, confirm_dangerous_command, confirm_delete_key,
 };

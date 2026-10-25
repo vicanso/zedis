@@ -344,6 +344,99 @@ fn standalone_server_operations_describe_and_administer_the_server() {
     });
 }
 
+/// What the Slow Log tab prints above its table: the server's own
+/// `slowlog-log-slower-than` and `slowlog-max-len`, as `CONFIG GET` answers
+/// them (on Valkey 8.1+ through the aliases of the `COMMANDLOG` names).
+#[test]
+#[ignore]
+fn standalone_slow_log_settings_are_the_servers_own() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let settings = slowlog_settings(&at).await.expect("slow log settings");
+        let raw = |name: &'static str| {
+            let id = id.clone();
+            async move {
+                let pair: Vec<String> = cmd("CONFIG")
+                    .arg("GET")
+                    .arg(name)
+                    .query_async(&mut conn(&id, 0).await)
+                    .await
+                    .expect("raw CONFIG GET");
+                pair.into_iter().nth(1).expect("a value")
+            }
+        };
+        assert_eq!(
+            settings.slower_than_us.map(|us| us.to_string()),
+            Some(raw("slowlog-log-slower-than").await)
+        );
+        assert_eq!(
+            settings.max_len.map(|n| n.to_string()),
+            Some(raw("slowlog-max-len").await)
+        );
+        assert!(!settings.is_unknown());
+    });
+}
+
+/// The Live Monitor's own-commands filter: the connections Zedis holds are
+/// found by the name `CLIENT SETNAME` gave them, the listing's own pooled
+/// connection among them, and a client under another name is not.
+#[test]
+#[ignore]
+fn standalone_lists_its_own_connections_by_name() {
+    smol::block_on(async {
+        let (host, port) = standalone();
+        let entry = server("it-standalone", (host.clone(), port));
+        let id = register(entry.clone()).await;
+        let at = ServerDb::new(&id, 0);
+        // A connection of ours under someone else's name: the application
+        // under study, as far as the filter can tell.
+        let mut foreign = open_single_connection(&entry, 0, false).await.expect("a connection");
+        let _: () = cmd("CLIENT")
+            .arg("SETNAME")
+            .arg("someone-else")
+            .query_async(&mut foreign)
+            .await
+            .expect("setname");
+        let foreign_id: i64 = cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut foreign)
+            .await
+            .expect("client id");
+
+        let own = zedis_client_addrs(&at).await.expect("own clients");
+        let node = format!("{host}:{port}");
+        assert!(!own.is_empty(), "the pooled connection that asked is named zedis");
+        assert!(own.iter().all(|(n, _)| *n == node), "{own:?}");
+
+        let listing = client_list(&at).await.expect("client list");
+        let (_, clients) = &listing[0];
+        let addr_of = |id: i64| {
+            clients
+                .lines()
+                .find(|line| line.split_whitespace().any(|f| f == format!("id={id}")))
+                .and_then(|line| line.split_whitespace().find_map(|f| f.strip_prefix("addr=")))
+                .expect("listed with an address")
+                .to_string()
+        };
+        assert!(
+            !own.contains(&(node.clone(), addr_of(foreign_id))),
+            "another name is another application"
+        );
+        for line in clients.lines() {
+            let named_zedis = line
+                .split_whitespace()
+                .any(|f| f.strip_prefix("name=").is_some_and(is_zedis_client_name));
+            let addr = line
+                .split_whitespace()
+                .find_map(|f| f.strip_prefix("addr="))
+                .expect("addr")
+                .to_string();
+            assert_eq!(own.contains(&(node.clone(), addr)), named_zedis, "{line}");
+        }
+    });
+}
+
 /// `CLIENT PAUSE` spelled per version (a mode word from 6.2), lifted by
 /// `UNPAUSE` where it exists; a filtered `CLIENT KILL` composed the way
 /// the panel composes it takes exactly the connection it names, and a

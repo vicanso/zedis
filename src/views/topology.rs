@@ -527,8 +527,18 @@ impl Render for ZedisTopology {
                 },
             );
 
-        let first_visit_hint = self.show_first_visit_hint.then(|| {
-            hint_banner("topology-first-visit", i18n_hints(cx, "topology_banner")).on_close(cx.listener(
+        // Worded for the deployment on screen: the cluster's banner promised
+        // slot coverage to a standalone user, who then looked for it (#237).
+        // Held back until the mode is known, so the first frame does not
+        // show one deployment's banner and the next another's.
+        let banner_key = match self.mode {
+            TopologyMode::Standalone => Some("topology_banner_standalone"),
+            TopologyMode::Sentinel => Some("topology_banner_sentinel"),
+            TopologyMode::Cluster => Some("topology_banner"),
+            TopologyMode::Unknown => None,
+        };
+        let first_visit_hint = banner_key.filter(|_| self.show_first_visit_hint).map(|banner_key| {
+            hint_banner("topology-first-visit", i18n_hints(cx, banner_key)).on_close(cx.listener(
                 |this, _, _window, cx| {
                     this.show_first_visit_hint = false;
                     update_app_state_and_save_quiet(cx, "dismiss_hint_topology", |state, _| {
