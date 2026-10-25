@@ -848,7 +848,11 @@ fn stack_search_index_is_created_altered_aggregated_and_dropped() {
                 on_json: false,
                 prefixes: vec![format!("{prefix}:")],
                 // SORTABLE, so the grouping below reads the tag without a
-                // LOAD on any RediSearch: the panel sends none.
+                // LOAD on any RediSearch: the panel sends none. valkey-search
+                // reads only what `LOAD` put in the working set — one bucket,
+                // `count 2`, no `kind` — which is why `ft_aggregate` LOADs
+                // the grouped fields on Valkey; this test is what holds it to
+                // that on the valkey-bundle lane.
                 fields: vec![field("title", "TEXT", false), field("kind", "TAG", true)],
             },
         )

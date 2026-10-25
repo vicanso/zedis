@@ -25,7 +25,7 @@ Zedis treats the two as what they are: one wire protocol, two release lines that
 | Vector sets | 8.0 | — |
 | `allkeys-lrm` / `volatile-lrm` eviction | 8.6 | — |
 | JSON | RedisJSON | valkey-json |
-| Search | RediSearch | valkey-search — `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`; no `TAGVALS`, `SPELLCHECK`, `EXPLAIN`, `PROFILE` or `DROPINDEX DD`, which the panel reports as unavailable |
+| Search | RediSearch | valkey-search — `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`; no `TAGVALS`, `SPELLCHECK`, `EXPLAIN`, `PROFILE` or `DROPINDEX DD`, which the panel reports as unavailable. Its `FT.AGGREGATE` groups only over fields `LOAD`ed into the working set (SORTABLE is no shortcut there), so Zedis loads the grouped and reduced fields on Valkey and not on RediSearch |
 | Probabilistic | RedisBloom — BF, CF, CMS, TOPK, TDIGEST | valkey-bloom — BF |
 | Time series | RedisTimeSeries | — |
 

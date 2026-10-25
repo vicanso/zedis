@@ -558,10 +558,54 @@ pub async fn ft_search(at: &ServerDb, index: &str, query: &str, opts: &SearchOpt
     })
 }
 
-fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions) -> Cmd {
+/// A reducer argument as it goes on the wire: a field name takes the `@`
+/// sigil; one that has it already, or a numeric literal (QUANTILE's
+/// percentile), is passed as written.
+fn reducer_arg(arg: &str) -> String {
+    if !arg.starts_with('@') && !is_numeric_literal(arg) {
+        format!("@{arg}")
+    } else {
+        arg.to_string()
+    }
+}
+
+/// Every field an aggregate reads — grouped by, or reduced over — spelled
+/// `@field`, once each in order of first use.
+fn aggregate_fields(opts: &AggregateOptions) -> Vec<String> {
+    let mut fields: Vec<String> = Vec::new();
+    let grouped = opts.group_by.iter().map(|f| format!("@{f}"));
+    let reduced = opts
+        .reducer
+        .iter()
+        .flat_map(|reducer| reducer.args.iter())
+        .map(|arg| reducer_arg(arg))
+        .filter(|arg| arg.starts_with('@'));
+    for field in grouped.chain(reduced) {
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+/// `FT.AGGREGATE`. With `load_fields` — valkey-search — the grouped and
+/// reduced fields are `LOAD`ed ahead of the GROUPBY: that pipeline works on
+/// what `LOAD` put in its working set and nothing else, a SORTABLE field
+/// being no shortcut there as it is on RediSearch, so without it a GROUPBY
+/// on `@kind` put every match in one bucket named by nothing and answered a
+/// single `count`. RediSearch is sent no `LOAD`: there a SORTABLE field is
+/// read from the index, and `LOAD` would read the hash instead.
+fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions, load_fields: bool) -> Cmd {
     let mut c = cmd("FT.AGGREGATE");
     c.arg(index).arg(query);
     if !opts.group_by.is_empty() {
+        if load_fields {
+            let fields = aggregate_fields(opts);
+            c.arg("LOAD").arg(fields.len());
+            for field in &fields {
+                c.arg(field.as_str());
+            }
+        }
         c.arg("GROUPBY").arg(opts.group_by.len());
         for f in &opts.group_by {
             // GROUPBY fields use `@field` form on the wire.
@@ -572,14 +616,7 @@ fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions) -> Cmd {
         {
             c.arg("REDUCE").arg(func.as_str()).arg(reducer.args.len());
             for arg in &reducer.args {
-                // Field-name args also need the `@` sigil — except for
-                // QUANTILE's numeric percentile, which is just a literal.
-                let is_field_arg = !arg.starts_with('@') && !is_numeric_literal(arg);
-                if is_field_arg {
-                    c.arg(format!("@{}", arg.as_str()));
-                } else {
-                    c.arg(arg.as_str());
-                }
+                c.arg(reducer_arg(arg));
             }
             if let Some(alias) = &reducer.alias {
                 c.arg("AS").arg(alias.as_str());
@@ -595,8 +632,11 @@ fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions) -> Cmd {
 }
 
 pub async fn ft_aggregate(at: &ServerDb, index: &str, query: &str, opts: &AggregateOptions) -> Result<AggregateResult> {
+    // valkey-search reads only what `LOAD` put in the working set (see
+    // `aggregate_cmd`).
+    let load_fields = at.client().await?.is_valkey();
     let conn = &mut at.connection().await?;
-    let value: Value = aggregate_cmd(index, query, opts).query_async(conn).await?;
+    let value: Value = aggregate_cmd(index, query, opts, load_fields).query_async(conn).await?;
     parse_aggregate(&value).ok_or_else(|| Error::Invalid {
         message: format!("FT.AGGREGATE {index} returned unexpected shape"),
     })
@@ -1211,10 +1251,62 @@ mod tests {
         );
     }
 
+    /// valkey-search's aggregate pipeline reads only what `LOAD` put in its
+    /// working set — a SORTABLE field is no shortcut there, as it is on
+    /// RediSearch — so on Valkey the grouped and reduced fields are loaded
+    /// first, once each, ahead of GROUPBY. RediSearch is sent none: there
+    /// LOAD would read the hash a SORTABLE field spares. Found by the
+    /// valkey-bundle lane the day its image carried search 1.2 and the
+    /// aggregate stopped being skipped: one bucket, `count 2`, no `kind`.
+    #[test]
+    fn valkey_search_is_told_to_load_the_fields_it_groups_and_reduces() {
+        let opts = AggregateOptions {
+            group_by: vec!["kind".to_string()],
+            reducer: Some(ReducerSpec {
+                func: Some(ReducerFn::Sum),
+                args: vec!["n".to_string()],
+                alias: Some("total".to_string()),
+            }),
+            ..Default::default()
+        };
+        let a = args(&aggregate_cmd("idx", "@title:hello", &opts, true));
+        let load = position(&a, "LOAD");
+        assert_eq!(
+            &a[load..load + 4],
+            [b"LOAD".to_vec(), b"2".to_vec(), b"@kind".to_vec(), b"@n".to_vec()]
+        );
+        assert!(load < position(&a, "GROUPBY"), "{a:?}");
+        let a = args(&aggregate_cmd("idx", "@title:hello", &opts, false));
+        assert!(
+            !a.iter().any(|x| x == b"LOAD"),
+            "RediSearch reads SORTABLE fields unasked: {a:?}"
+        );
+
+        // A field grouped and reduced over is loaded once; a percentile and a
+        // name already sigiled are passed as written.
+        let opts = AggregateOptions {
+            group_by: vec!["kind".to_string()],
+            reducer: Some(ReducerSpec {
+                func: Some(ReducerFn::Min),
+                args: vec!["@kind".to_string(), "0.5".to_string()],
+                alias: None,
+            }),
+            ..Default::default()
+        };
+        let a = args(&aggregate_cmd("idx", "*", &opts, true));
+        let load = position(&a, "LOAD");
+        assert_eq!(&a[load..load + 3], [b"LOAD".to_vec(), b"1".to_vec(), b"@kind".to_vec()]);
+        let reduce = position(&a, "REDUCE");
+        assert_eq!(&a[reduce + 3..reduce + 5], [b"@kind".to_vec(), b"0.5".to_vec()]);
+        // Nothing grouped, nothing to load.
+        let a = args(&aggregate_cmd("idx", "*", &AggregateOptions::default(), true));
+        assert!(!a.iter().any(|x| x == b"LOAD"), "{a:?}");
+    }
+
     #[test]
     fn no_params_means_no_params_clause() {
         let search = args(&search_cmd("idx", "*", &SearchOptions::default()));
-        let aggregate = args(&aggregate_cmd("idx", "*", &AggregateOptions::default()));
+        let aggregate = args(&aggregate_cmd("idx", "*", &AggregateOptions::default(), false));
         let explain = args(&explain_cmd("idx", "*", &[], None));
         let profile = args(&profile_cmd("idx", false, "*", &[], None));
         for a in [search, aggregate, explain, profile] {
@@ -1235,6 +1327,7 @@ mod tests {
                 params: params.clone(),
                 ..Default::default()
             },
+            false,
         ));
         let explain = args(&explain_cmd("idx", "*=>[KNN 2 @v $q]", &params, Some(2)));
         let profile = args(&profile_cmd("idx", true, "*=>[KNN 2 @v $q]", &params, Some(2)));

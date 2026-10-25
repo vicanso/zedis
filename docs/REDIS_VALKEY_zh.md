@@ -25,7 +25,7 @@ Zedis 如实对待这两者：协议是同一套，版本线却有两条，从 7
 | Vector set | 8.0 | — |
 | `allkeys-lrm` / `volatile-lrm` 淘汰策略 | 8.6 | — |
 | JSON | RedisJSON | valkey-json |
-| 搜索 | RediSearch | valkey-search —— 有 `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`；没有 `TAGVALS`、`SPELLCHECK`、`EXPLAIN`、`PROFILE` 和 `DROPINDEX DD`，面板会提示不可用 |
+| 搜索 | RediSearch | valkey-search —— 有 `FT.CREATE` / `SEARCH` / `AGGREGATE` / `INFO`；没有 `TAGVALS`、`SPELLCHECK`、`EXPLAIN`、`PROFILE` 和 `DROPINDEX DD`，面板会提示不可用。它的 `FT.AGGREGATE` 只对 `LOAD` 进工作集的字段分组（SORTABLE 在那里不是捷径），所以 Zedis 在 Valkey 上会先 LOAD 分组和归约用到的字段，RediSearch 上则不发 |
 | 概率结构 | RedisBloom —— BF、CF、CMS、TOPK、TDIGEST | valkey-bloom —— BF |
 | 时间序列 | RedisTimeSeries | — |
 
