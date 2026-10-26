@@ -11,4 +11,4 @@ AKE = "AKE"
 helo = "helo"
 
 [files]
-extend-exclude = ["*.md", "*.toml", "assets/**"]
+extend-exclude = ["*.md", "*.toml", "assets/**", "patches/**"]
