@@ -404,6 +404,10 @@ fn standalone_lists_its_own_connections_by_name() {
             .await
             .expect("client id");
 
+        // Other tests share this server and connect while this one runs, so
+        // `own` is held only to the connections listed before and after it
+        // under the same id and name.
+        let before = client_list(&at).await.expect("client list");
         let own = zedis_client_addrs(&at).await.expect("own clients");
         let node = format!("{host}:{port}");
         assert!(!own.is_empty(), "the pooled connection that asked is named zedis");
@@ -411,6 +415,16 @@ fn standalone_lists_its_own_connections_by_name() {
 
         let listing = client_list(&at).await.expect("client list");
         let (_, clients) = &listing[0];
+        let field = |line: &str, name: &str| {
+            line.split_whitespace()
+                .find_map(|f| f.strip_prefix(name))
+                .map(str::to_string)
+        };
+        let throughout: HashSet<_> = before[0]
+            .1
+            .lines()
+            .map(|line| (field(line, "id="), field(line, "name=")))
+            .collect();
         let addr_of = |id: i64| {
             clients
                 .lines()
@@ -424,6 +438,9 @@ fn standalone_lists_its_own_connections_by_name() {
             "another name is another application"
         );
         for line in clients.lines() {
+            if !throughout.contains(&(field(line, "id="), field(line, "name="))) {
+                continue;
+            }
             let named_zedis = line
                 .split_whitespace()
                 .any(|f| f.strip_prefix("name=").is_some_and(is_zedis_client_name));

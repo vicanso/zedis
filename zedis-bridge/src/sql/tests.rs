@@ -284,14 +284,25 @@ async fn failed_sign_ins_are_counted_across_bridges() {
         one.failed(&key);
         two.failed(&key);
     }
-    tokio::time::sleep(STORE_POLL / 4).await;
-    one.merge().await;
-    assert!(one.blocked(&key));
+    assert!(merged_until(&one, &key, true).await);
     two.succeeded(&key);
     one.succeeded(&key);
-    tokio::time::sleep(STORE_POLL / 4).await;
-    one.merge().await;
-    assert!(!one.blocked(&key));
+    assert!(merged_until(&one, &key, false).await);
+}
+
+/// Merge until `throttle` says `blocked` about `key`, for a few polls'
+/// worth at most. A failure is written by a task of its own, and on a CI
+/// runner the writes have been seen to land later than a quarter of a poll
+/// (`postgres:18`, 2026-10-26).
+async fn merged_until(throttle: &Throttle, key: &str, blocked: bool) -> bool {
+    for _ in 0..100 {
+        throttle.merge().await;
+        if throttle.blocked(key) == blocked {
+            return true;
+        }
+        tokio::time::sleep(STORE_POLL / 20).await;
+    }
+    false
 }
 
 /// The server list: a change lands in the cache the pool dials from, a
