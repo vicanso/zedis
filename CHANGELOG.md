@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.1](https://github.com/vicanso/zedis/compare/v0.15.0..v0.15.1) - 2026-10-26
+
+### ⛰️  Features
+
+- *(views, connection, locales)* Act on the seven UX suggestions #235–#241 - ([f4f9b45](https://github.com/vicanso/zedis/commit/f4f9b45f7279ba36584e0eb28d5f63e76b6f2d75))
+
+### 🐛 Bug Fixes
+
+- *(deps)* Bump tokio to 1.54.1, ctutils to 0.4.5 and crypto-bigint to 0.7.6 for RUSTSEC-2026-0384/0385/0387 (#232, #233) - ([ee4aa6b](https://github.com/vicanso/zedis/commit/ee4aa6b2577db4678669b7a28c157e6617a782eb))
+- *(search)* LOAD the grouped fields for FT.AGGREGATE on valkey-search - ([ebfb0d9](https://github.com/vicanso/zedis/commit/ebfb0d9316655dd4d600e592ee8253754e4db845))
+- Fix accesskit #835 - ([8736389](https://github.com/vicanso/zedis/commit/873638991c190c4936bd721bd1b704f4f2f3e921))
+
+### 🧪 Testing
+
+- *(connection)* Pad value-search SCAN so Valkey 9 still pages - ([a14878c](https://github.com/vicanso/zedis/commit/a14878cecb416917198b2d61eaf56d57689c7202))
+- *(db)* Import only the backup round-trip's own rows - ([1750b1a](https://github.com/vicanso/zedis/commit/1750b1a81c29dddd6bd906850be878a357422442))
+
 ## [0.15.0](https://github.com/vicanso/zedis/compare/v0.14.0..v0.15.0) - 2026-10-21
 
 ### ⛰️  Features
