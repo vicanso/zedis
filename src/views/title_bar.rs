@@ -22,6 +22,7 @@ use crate::helpers::{
     MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
 };
 use crate::states::i18n_shortcuts;
+use crate::views::update_prompt;
 use crate::{
     assets::CustomIconName,
     connection::{get_server, signed_in_to_bridge},
@@ -517,49 +518,53 @@ impl Render for ZedisTitleBar {
                 let dismiss_hover_bg = cx.theme().foreground.alpha(0.12);
                 let dismiss_fg = cx.theme().muted_foreground;
                 let dismiss_tooltip = i18n_status_bar(cx, "update_dismiss");
-                this.child(
-                    Button::new("zedis-titlebar-update")
-                        .ghost()
-                        .small()
-                        .icon(CustomIconName::Download)
-                        .label(label)
-                        // Spinner while re-checking on click; disabled
-                        // during that and while a download is running.
-                        .loading(update_checking)
-                        .disabled(update_checking || download_progress.is_some())
-                        .tooltip(i18n_status_bar(cx, "update_available"))
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(UpdateAction::OpenPrompt), cx);
-                        })
-                        // Inline session-only dismiss (tab-pill pattern:
-                        // Button renders children after the label).
-                        // Clears the chip until the next check — the
-                        // persistent "skip this version" stays in the
-                        // update dialog's ×. Hidden while downloading:
-                        // the chip is the only progress surface then.
-                        // `stop_propagation` on mouse-down keeps the ×
-                        // from also triggering the outer download click.
-                        .when(download_progress.is_none(), |this| {
-                            this.child(
-                                div()
-                                    .id("zedis-titlebar-update-dismiss")
-                                    .flex_none()
-                                    .ml_0p5()
-                                    .p_0p5()
-                                    .rounded_sm()
-                                    .cursor_pointer()
-                                    .hover(move |s| s.bg(dismiss_hover_bg))
-                                    .tooltip(move |window, cx| Tooltip::new(dismiss_tooltip.clone()).build(window, cx))
-                                    .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
-                                    .on_mouse_down(MouseButton::Left, |_, _window, cx| {
-                                        cx.stop_propagation();
-                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                            store.update(cx, |state, cx| state.set_available_update(None, cx));
-                                        });
-                                    }),
-                            )
-                        }),
-                )
+                let prompt_open = cx.global::<ZedisGlobalStore>().read(cx).update_prompt_open();
+                // Outlined, unlike the title bar's other buttons: it is the
+                // one that says something is waiting, and a ghost button
+                // read as part of the chrome.
+                let chip = Button::new(update_prompt::UPDATE_CHIP_ID)
+                    .outline()
+                    .small()
+                    .icon(CustomIconName::Download)
+                    .label(label)
+                    // Spinner while the click re-checks; the answer opens
+                    // the popover. Not disabled while downloading: a click
+                    // then opens the popover on the progress.
+                    .loading(update_checking)
+                    .disabled(update_checking)
+                    // Its tooltip would sit over its own popover.
+                    .when(!prompt_open, |this| {
+                        this.tooltip(i18n_status_bar(cx, "update_available"))
+                    })
+                    // Inline session-only dismiss (tab-pill pattern:
+                    // Button renders children after the label).
+                    // Clears the chip until the next check — the
+                    // persistent "skip this version" is the popover's.
+                    // Hidden while downloading: the chip is the only
+                    // progress surface once the popover is closed.
+                    // `stop_propagation` on mouse-down keeps the × from
+                    // also opening the popover.
+                    .when(download_progress.is_none(), |this| {
+                        this.child(
+                            div()
+                                .id("zedis-titlebar-update-dismiss")
+                                .flex_none()
+                                .ml_0p5()
+                                .p_0p5()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(dismiss_hover_bg))
+                                .tooltip(move |window, cx| Tooltip::new(dismiss_tooltip.clone()).build(window, cx))
+                                .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
+                                .on_mouse_down(MouseButton::Left, |_, _window, cx| {
+                                    cx.stop_propagation();
+                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                        store.update(cx, |state, cx| state.set_available_update(None, cx));
+                                    });
+                                }),
+                        )
+                    });
+                this.child(update_prompt(chip, cx))
             })
             .child(
                 Button::new("settings")

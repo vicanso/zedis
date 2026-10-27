@@ -176,9 +176,14 @@ pub enum DiagnosticsAction {
 pub enum UpdateAction {
     /// Run an update check now (app menu "Check for Updates").
     Check,
-    /// Open the download/skip prompt for the already-found update (status-bar
-    /// chip click).
+    /// Title-bar chip click: check again, then open the chip's popover with
+    /// the release notes (or just open it while a download is running).
     OpenPrompt,
+    /// The popover's "Update and restart": download, install, restart.
+    Install,
+    /// The popover's "Skip this version": never offer this version again
+    /// unasked.
+    Skip,
 }
 
 /// JSONPath query bar. `AcceptCompletion` is bound to `tab` in the

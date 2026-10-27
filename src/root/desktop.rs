@@ -21,20 +21,17 @@
 //! first*).
 
 use super::*;
+use crate::helpers::focus_installer_ui;
+#[cfg(target_os = "macos")]
+use crate::helpers::relaunch;
 use gpui::Subscription;
 
 /// The desktop-only state of the [`Zedis`] root.
 pub(crate) struct DesktopOnly {
-    /// A newer release found by a check, awaiting its prompt. Consumed in
-    /// `render` (which has the `Window` needed to open the dialog).
-    pub(crate) pending_update: Option<UpdateInfo>,
     /// The in-flight update check, if any — guards against overlapping checks.
     pub(crate) update_task: Option<Task<()>>,
     /// The in-flight installer download, if any — guards against re-entry.
     pub(crate) download_task: Option<Task<()>>,
-    /// The installer is open and this platform needs Zedis gone to finish the
-    /// install — prompt to quit. Consumed in `render` (which has the `Window`).
-    pub(crate) pending_install_quit: bool,
     /// The crash report the previous run left behind, if it ended in a panic.
     /// Consumed in `render` (which has the `Window` needed for the dialog).
     pub(crate) pending_crash: Option<CrashReport>,
@@ -52,10 +49,8 @@ impl DesktopOnly {
             zedis.on_window_activation(window.is_window_active(), cx);
         });
         Self {
-            pending_update: None,
             update_task: None,
             download_task: None,
-            pending_install_quit: false,
             pending_crash: None,
             idle_task: None,
             _activation: activation,
@@ -98,32 +93,58 @@ impl Zedis {
     }
 
     /// Open whatever the desktop queued for the first frame that has a
-    /// `Window`: the crash report, the install-quit prompt, the update prompt.
+    /// `Window`: the crash report the previous run left behind.
     pub(super) fn open_desktop_prompts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(report) = self.desktop.pending_crash.take() {
             // Deferred for the same focus reason as the welcome card.
             window.defer(cx, move |window, cx| open_crash_dialog(&report, window, cx));
         }
-        // The installer is up and this platform needs Zedis closed to finish —
-        // ask (the update dialog has already dismissed itself by now).
-        if std::mem::take(&mut self.desktop.pending_install_quit) {
-            open_install_quit_dialog(window, cx);
+    }
+
+    /// The title-bar chip was clicked. While a download runs the popover
+    /// only shows its progress, so it opens at once; otherwise the release is
+    /// asked for again — the chip spins — and the answer opens the popover
+    /// (`check_for_updates` with `then_prompt`), so the notes it shows are
+    /// the release's as of the click and not as of the startup check.
+    pub(crate) fn open_update_prompt(&mut self, cx: &mut Context<Self>) {
+        let store = cx.global::<ZedisGlobalStore>().clone();
+        if store.read(cx).download_progress().is_some() {
+            store.update(cx, |state, cx| state.set_update_prompt_open(true, cx));
+            return;
         }
-        if let Some(info) = self.desktop.pending_update.take() {
-            let weak = cx.entity().downgrade();
-            open_update_dialog(info, weak, window, cx);
-            // The prompt is on screen now — stop the chip's loading spinner so it
-            // spins right up until the dialog appears (no stop-then-wait gap).
-            cx.global::<ZedisGlobalStore>()
-                .clone()
-                .update(cx, |state, cx| state.set_update_checking(false, cx));
-        }
+        self.check_for_updates(true, true, cx);
+    }
+
+    /// The popover's "Update and restart", for the release the chip holds.
+    pub(crate) fn install_available_update(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = cx.global::<ZedisGlobalStore>().read(cx).available_update() else {
+            return;
+        };
+        self.start_download(info, cx);
+    }
+
+    /// The popover's "Skip this version": the startup check stays quiet about
+    /// it from now on (a manual check still finds it), and the chip goes.
+    pub(crate) fn skip_available_update(&mut self, cx: &mut Context<Self>) {
+        let store = cx.global::<ZedisGlobalStore>().clone();
+        let Some(version) = store.read(cx).available_update().map(|info| info.version) else {
+            return;
+        };
+        info!(version = %version, "update: version skipped by user");
+        update_app_state_and_save_quiet(cx, "skip_update_version", move |state, _| {
+            state.set_skipped_version(version.clone());
+        });
+        store.update(cx, |state, cx| {
+            state.set_update_prompt_open(false, cx);
+            state.set_available_update(None, cx);
+        });
     }
 
     /// Kick off a background check for a newer release. A `manual` check always
     /// reports its outcome (up-to-date / failure toast) and ignores a skipped
     /// version; the silent startup check stays quiet unless it finds a fresh,
-    /// non-skipped update.
+    /// non-skipped update. `then_prompt` (a chip click) opens the chip's
+    /// popover on the answer instead of toasting it.
     pub(crate) fn check_for_updates(&mut self, manual: bool, then_prompt: bool, cx: &mut Context<Self>) {
         // App Store builds are updated through the App Store; never self-check or
         // self-download (Apple forbids it). Guards every trigger at once.
@@ -148,25 +169,19 @@ impl Zedis {
                 .await;
             let _ = handle.update(cx, |this, cx| {
                 this.desktop.update_task = None;
-                // For a chip click we keep the spinner running until the dialog
-                // actually opens (cleared in `render` after `open_update_dialog`),
-                // so there's no gap between "loading stops" and the prompt
-                // appearing. Every other outcome clears it right here.
-                let mut opened_prompt = false;
+                let store = cx.global::<ZedisGlobalStore>().clone();
+                // The spinner stops in the same update that opens the popover,
+                // so the chip goes from loading straight to open.
+                let mut open_prompt = false;
                 match result {
                     Ok(Some(info)) => {
-                        let skipped = cx.global::<ZedisGlobalStore>().read(cx).update_skipped(&info.version);
+                        let skipped = store.read(cx).update_skipped(&info.version);
                         if manual || !skipped {
                             let version = info.version.clone();
                             // Light the persistent title-bar chip...
-                            cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                                state.set_available_update(Some(info.clone()), cx);
-                            });
+                            store.update(cx, |state, cx| state.set_available_update(Some(info), cx));
                             if then_prompt {
-                                // Chip click: open the download/skip dialog with
-                                // the freshly fetched info instead of toasting.
-                                this.desktop.pending_update = Some(info);
-                                opened_prompt = true;
+                                open_prompt = true;
                             } else {
                                 // ...and fire a one-time toast so the user notices
                                 // it, spelling out that updating is manual.
@@ -179,43 +194,50 @@ impl Zedis {
                         }
                     }
                     Ok(None) => {
-                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                            state.set_available_update(None, cx);
-                        });
+                        store.update(cx, |state, cx| state.set_available_update(None, cx));
                         if manual {
                             this.pending_notification = Some(Notification::success(i18n_update(cx, "up_to_date")));
                         }
                     }
                     Err(e) => {
                         error!(error = %e, "update check failed");
-                        if manual {
+                        // A chip click that could not reach the release still
+                        // has the notes the check that lit the chip fetched.
+                        if then_prompt && store.read(cx).available_update().is_some() {
+                            open_prompt = true;
+                        } else if manual {
                             this.pending_notification = Some(Notification::error(i18n_update(cx, "check_failed")));
                         }
                     }
                 }
-                // When a prompt is opening, the spinner is cleared in `render`
-                // (right after the dialog opens) to avoid a stop-then-wait gap.
-                if !opened_prompt {
-                    cx.global::<ZedisGlobalStore>()
-                        .clone()
-                        .update(cx, |state, cx| state.set_update_checking(false, cx));
-                }
+                store.update(cx, |state, cx| {
+                    state.set_update_checking(false, cx);
+                    if open_prompt {
+                        state.set_update_prompt_open(true, cx);
+                    }
+                });
                 cx.notify();
             });
         }));
     }
 
-    /// Act on the user's "Download" choice. With a verified manifest asset,
-    /// download + checksum-verify it in the background and hand it to the OS
-    /// installer; without one (API fallback / missing asset) just open the
-    /// release page. A failed download falls back to the page too.
+    /// Act on the user's "Update and restart". With a verified manifest asset,
+    /// download + checksum-verify it in the background and install it: on
+    /// macOS over the running bundle, then restart; where the installer has
+    /// to run with Zedis gone (the macOS drag window, the MSI), hand it to the
+    /// OS and quit; on Linux hand it over and stay. Without an asset (API
+    /// fallback / no build for this machine) just open the release page. A
+    /// failed download falls back to the page too.
     pub(crate) fn start_download(&mut self, info: UpdateInfo, cx: &mut Context<Self>) {
         let Some(asset) = info.asset.clone() else {
             // No verified asset for this os/arch (manifest missing → API
             // fallback, or no matching build): nothing to download in-app, so
             // hand off to the browser. Logged because it otherwise looks
-            // identical to "the Download button did nothing".
+            // identical to "the button did nothing".
             info!(version = %info.version, url = %info.page_url, "update: no asset for this platform, opening release page");
+            cx.global::<ZedisGlobalStore>()
+                .clone()
+                .update(cx, |state, cx| state.set_update_prompt_open(false, cx));
             cx.open_url(&info.page_url);
             return;
         };
@@ -235,20 +257,18 @@ impl Zedis {
         // Publish 0% *synchronously*, before any await: connecting (DNS, TLS,
         // the GitHub → CDN redirect) takes a second or two during which no byte
         // has arrived, and the first `on_progress` can only fire after that. If
-        // the UI waited for it, the dialog would keep showing the Download
-        // button and the chip its version — looking like the click did nothing,
-        // which is exactly what made it get clicked twice. Publishing here
-        // swaps both to the progress state on the click itself.
+        // the UI waited for it, the popover would keep showing its buttons and
+        // the chip its version — looking like the click did nothing, which is
+        // exactly what made it get clicked twice. Publishing here swaps both to
+        // the progress state on the click itself.
         cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
             state.set_download_progress(Some((0, asset.size)), cx);
-            // A fresh download voids any earlier "installed, restart?" state.
-            state.set_update_installed(false, cx);
         });
         cx.notify();
 
         // Progress is produced on the background thread and ferried to the UI
         // through a channel as `(downloaded, total)` bytes; this foreground
-        // drainer publishes it to the global store, which the update dialog
+        // drainer publishes it to the global store, which the update popover
         // (progress bar) and the title-bar chip (percentage) both read.
         let (tx, rx) = channel::unbounded::<(u64, u64)>();
         cx.spawn(async move |_, cx| {
@@ -263,7 +283,7 @@ impl Zedis {
             // with every queued tick already applied. Clearing *here* (rather
             // than in the completion handler, which races the drainer) means a
             // late tick can't land after the clear and freeze the chip at a
-            // stale percent. This is also what dismisses the dialog.
+            // stale percent.
             cx.update(|cx| {
                 cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
                     state.set_download_progress(None, cx);
@@ -310,30 +330,33 @@ impl Zedis {
                 // The progress is cleared by the drainer once it has applied
                 // every queued tick (see above) — clearing it here too would
                 // race it and could leave the chip stuck at a stale percent.
+                // The user chose "Update and restart", so nothing asks again:
+                // the restart and the quit below are what the button said.
+                // App state is flushed by `flush_app_state_on_quit`, which gpui
+                // waits on during shutdown.
                 match result {
                     // macOS in-place install landed: the bundle on disk is
-                    // already the new version. Flag it on the store — the
-                    // update dialog (still open, showing the progress bar)
-                    // swaps itself to the Restart / Later row instead of
-                    // closing. A separate restart dialog is NOT opened
-                    // here: the update dialog's deferred self-close targets
-                    // the topmost dialog and would eat it.
+                    // already the new version, and a detached shell reopens it
+                    // once this process has exited.
                     #[cfg(target_os = "macos")]
                     Ok(Delivery::Replaced) => {
-                        info!(version = %version, "update: installed in place, restart offered");
-                        this.pending_notification = Some(Notification::success(i18n_update(cx, "installed_done")));
-                        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                            state.set_update_installed(true, cx);
-                        });
+                        info!(version = %version, "update: installed in place, restarting");
+                        relaunch();
+                        cx.quit();
+                        return;
+                    }
+                    // macOS / Windows: the installer cannot replace a running
+                    // Zedis. Quitting hands focus to whatever ran before Zedis,
+                    // not to the installer — pull its window forward first.
+                    Ok(Delivery::HandedToOs) if installer_requires_quit() => {
+                        info!(version = %version, "update: installer handed to the OS, quitting so it can finish");
+                        focus_installer_ui();
+                        cx.quit();
+                        return;
                     }
                     Ok(Delivery::HandedToOs) => {
                         info!(version = %version, "update: download finished, installer handed to the OS");
                         this.pending_notification = Some(Notification::success(i18n_update(cx, "download_done")));
-                        // macOS / Windows: the installer can't replace a running
-                        // Zedis, so offer to quit.
-                        if installer_requires_quit() {
-                            this.desktop.pending_install_quit = true;
-                        }
                     }
                     Err(e) => {
                         error!(error = %e, "update download failed");
@@ -342,6 +365,11 @@ impl Zedis {
                         cx.open_url(&page_url);
                     }
                 }
+                // Zedis keeps running: the popover has nothing left to offer
+                // for this release once its progress bar goes.
+                cx.global::<ZedisGlobalStore>()
+                    .clone()
+                    .update(cx, |state, cx| state.set_update_prompt_open(false, cx));
                 cx.notify();
             });
         }));

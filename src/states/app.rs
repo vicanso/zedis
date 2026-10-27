@@ -577,17 +577,18 @@ pub struct ZedisAppState {
     available_update: Option<UpdateInfo>,
     /// Installer download progress as `(downloaded, total)` bytes while an
     /// update is downloading; `None` when idle. Runtime only — the update
-    /// dialog renders the bar plus "6.2 MB / 13.2 MB", the title-bar chip
+    /// popover renders the bar plus "6.2 MB / 13.2 MB", the title-bar chip
     /// renders just the percentage (see `download_percent`).
     #[serde(skip)]
     download_progress: Option<(u64, u64)>,
-    /// See [`Self::update_installed`]. Runtime only, never persisted.
-    #[serde(skip)]
-    update_installed: bool,
     /// True while an update check (network fetch) is in flight. Runtime only —
     /// drives the title-bar update chip's loading spinner.
     #[serde(skip)]
     update_checking: bool,
+    /// Whether the update chip's popover (the notes, Skip, Update and
+    /// restart) is open. Runtime only; see [`Self::update_prompt_open`].
+    #[serde(skip)]
+    update_prompt_open: bool,
 }
 
 impl EventEmitter<GlobalEvent> for ZedisAppState {}
@@ -1338,23 +1339,20 @@ impl ZedisAppState {
             .map(|(done, total)| (done * 100 / total).min(100) as u8)
     }
     /// Set (or clear with `None`) the download progress and broadcast it so the
-    /// update dialog's progress bar and the title-bar chip both refresh.
+    /// update popover's progress bar and the title-bar chip both refresh.
     pub fn set_download_progress(&mut self, progress: Option<(u64, u64)>, cx: &mut Context<Self>) {
         self.download_progress = progress;
         cx.emit(GlobalEvent::UpdateDownloadProgress);
     }
-    /// macOS: the downloaded update was installed in place — the update
-    /// dialog swaps its progress bar for the Restart / Later row instead
-    /// of closing (closing targets the *topmost* dialog, so opening a
-    /// separate restart dialog raced the self-close and lost). Runtime
-    /// only.
-    pub fn update_installed(&self) -> bool {
-        self.update_installed
+    /// Whether the update chip's popover is open. A click on the chip does
+    /// not open it: the click re-checks (the chip spins) and the check's
+    /// answer opens it, so the notes it shows are the release's as of now.
+    pub fn update_prompt_open(&self) -> bool {
+        self.update_prompt_open
     }
-    pub fn set_update_installed(&mut self, installed: bool, cx: &mut Context<Self>) {
-        self.update_installed = installed;
-        // Same event the dialog already subscribes to for progress ticks.
-        cx.emit(GlobalEvent::UpdateDownloadProgress);
+    pub fn set_update_prompt_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.update_prompt_open = open;
+        cx.emit(GlobalEvent::UpdateAvailable);
     }
     /// Whether an update check (network fetch) is currently running.
     pub fn update_checking(&self) -> bool {

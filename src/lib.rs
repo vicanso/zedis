@@ -681,23 +681,9 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
                             UpdateAction::Check => {
                                 view.update(cx, |zedis, cx| zedis.check_for_updates(true, false, cx));
                             }
-                            // Title-bar chip click: open the prompt straight from
-                            // the store. The check that lit the chip already
-                            // fetched everything the dialog shows — version,
-                            // changelog, the per-arch asset — so re-fetching here
-                            // only made the chip spin for a beat before anything
-                            // appeared. The fallback fetch is for the (unreachable)
-                            // case of a chip with no cached update behind it.
-                            UpdateAction::OpenPrompt => {
-                                let cached = cx.global::<ZedisGlobalStore>().read(cx).available_update();
-                                view.update(cx, |zedis, cx| match cached {
-                                    Some(info) => {
-                                        zedis.desktop.pending_update = Some(info);
-                                        cx.notify();
-                                    }
-                                    None => zedis.check_for_updates(true, true, cx),
-                                });
-                            }
+                            UpdateAction::OpenPrompt => view.update(cx, |zedis, cx| zedis.open_update_prompt(cx)),
+                            UpdateAction::Install => view.update(cx, |zedis, cx| zedis.install_available_update(cx)),
+                            UpdateAction::Skip => view.update(cx, |zedis, cx| zedis.skip_available_update(cx)),
                         }
                     });
                     // Silent startup check: at most one per `UPDATE_CHECK_INTERVAL`,

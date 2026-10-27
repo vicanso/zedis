@@ -15,30 +15,19 @@
 //! App-level dialogs opened from the root.
 //!
 //! The ones the browser also has are here; the desktop-only ones (crash
-//! report, SSH host key, the updater's prompts) are one gated module away.
+//! report, SSH host key) are one gated module away.
 
 #[cfg(not(target_family = "wasm"))]
 mod desktop;
 #[cfg(not(target_family = "wasm"))]
-pub(crate) use desktop::{install_host_key_prompt, open_crash_dialog, open_install_quit_dialog, open_update_dialog};
+pub(crate) use desktop::{install_host_key_prompt, open_crash_dialog};
 
 use crate::helpers::{ConfigRecovery, with_hot_key};
 use crate::states::{ZedisGlobalStore, i18n_hints};
-use gpui::{App, SharedString, Window, prelude::*, px, rems};
-use gpui_kit::component::{IconName, text::TextViewStyle, v_flex};
+use gpui::{App, SharedString, Window, prelude::*};
+use gpui_kit::component::{IconName, v_flex};
 use rust_i18n::t;
 use zedis_ui::ZedisDialog;
-
-pub(crate) fn release_notes_style() -> TextViewStyle {
-    TextViewStyle::default()
-        .paragraph_gap(rems(0.5))
-        .heading_font_size(|level, _base| match level {
-            1 => px(18.),
-            2 => px(16.),
-            3 => px(15.),
-            _ => px(14.),
-        })
-}
 
 /// First-launch onboarding: a one-shot card walking through the three steps to
 /// get productive. Only opened when no server is configured yet, and never

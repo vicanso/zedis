@@ -13,26 +13,23 @@
 // limitations under the License.
 
 //! The app-level dialogs the browser has no use for: the crash report, the
-//! SSH host-key confirmation, and the updater's two prompts.
+//! SSH host-key confirmation.
 //!
 //! One gated `mod` in `dialogs.rs` instead of a `#[cfg]` on each function and
 //! on each import only some of them need — the shape `root/desktop.rs` and
 //! `dump_restore/file.rs` already use. Every import below is desktop-only by
 //! construction, so none of them needs a gate of its own.
 
-use super::release_notes_style;
 use crate::connection::{HostKeyPrompt, set_host_key_approver};
 use crate::helpers::channel;
-use crate::helpers::{CrashReport, UpdateInfo, focus_installer_ui, get_mono_font_family, logs_dir};
-use crate::root::Zedis;
-use crate::states::{ZedisGlobalStore, i18n_crash, i18n_servers, i18n_update, update_app_state_and_save_quiet};
-use crate::views::{DialogCallback, ZedisUpdateDialog};
-use gpui::{App, SharedString, WeakEntity, Window, div, prelude::*, px};
-use gpui_kit::component::{ActiveTheme, IconName, label::Label, scroll::ScrollableElement, text::TextView, v_flex};
+use crate::helpers::{CrashReport, get_mono_font_family, logs_dir};
+use crate::states::{ZedisGlobalStore, i18n_crash, i18n_servers};
+use gpui::{App, SharedString, Window, div, prelude::*};
+use gpui_kit::component::{ActiveTheme, IconName, v_flex};
 use rust_i18n::t;
 use std::sync::Arc;
-use std::{cell::Cell, rc::Rc, time::Duration};
-use tracing::{error, info};
+use std::time::Duration;
+use tracing::error;
 use zedis_ui::ZedisDialog;
 
 /// "Zedis closed unexpectedly last time": the panic message and where the full
@@ -74,10 +71,6 @@ pub(crate) fn open_crash_dialog(report: &CrashReport, window: &mut Window, cx: &
         .open(window, cx);
 }
 
-/// Offered once the installer is open on a platform that can't install over a
-/// running Zedis (macOS / Windows — see `installer_requires_quit`). Quitting is
-/// the user's call: an editor may hold unsaved changes, and they may simply want
-/// to install later.
 /// SSH host keys seen for the first time are confirmed here rather than
 /// trusted silently: the connection layer hands the fingerprint over a
 /// channel, this foreground drainer opens a dialog on the active window,
@@ -154,125 +147,6 @@ pub(crate) fn open_host_key_dialog(
         // `true`, so this `false` is dropped.
         .on_close(move |_, _window, _cx| {
             let _ = answer.try_send(false);
-        })
-        .open(window, cx);
-}
-
-pub(crate) fn open_install_quit_dialog(window: &mut Window, cx: &mut App) {
-    ZedisDialog::new(i18n_update(cx, "quit_to_install_title"))
-        .icon(IconName::Info)
-        .message(i18n_update(cx, "quit_to_install_body"))
-        .ok_text(i18n_update(cx, "quit_to_install_now"))
-        .cancel_text(i18n_update(cx, "quit_to_install_later"))
-        .on_ok(|_, _window, cx| {
-            // The app state is flushed by `flush_app_state_on_quit`, which gpui
-            // waits on during shutdown — nothing to do for it here.
-            //
-            // Quitting hands focus to whatever ran before Zedis, not to the
-            // installer — pull its window forward first, or it ends up buried.
-            focus_installer_ui();
-            info!("update: quitting so the installer can replace the app");
-            cx.quit();
-            true
-        })
-        .open(window, cx);
-}
-
-pub(crate) fn open_update_dialog(info: UpdateInfo, zedis: WeakEntity<Zedis>, window: &mut Window, cx: &mut App) {
-    // The notes area scrolls, so this cap only guards layout work against a
-    // pathologically long text. It holds the notes of every release since
-    // the running one (up to ten of them, a few thousand characters each):
-    // at 5000 a build three versions behind was cut off inside the second.
-    const MAX_NOTES: usize = 20_000;
-    let title = format!("{} {}", i18n_update(cx, "available_title"), info.version);
-    let mut notes = info.notes.clone();
-    if notes.chars().count() > MAX_NOTES {
-        notes = notes.chars().take(MAX_NOTES).collect::<String>();
-        notes.push('…');
-    }
-    let update_hint = i18n_update(cx, "update_body");
-    let version_line = format!("{} → {}", info.current, info.version);
-    let skip_version = info.version.clone();
-    let download_info = info.clone();
-    // Shared flag so the Download path suppresses the skip-on-close below (the
-    // dialog's own × still records a skip when the user never started one).
-    let downloaded = Rc::new(Cell::new(false));
-    let on_download_flag = downloaded.clone();
-
-    // Kick off the download and *leave the dialog open* — `ZedisUpdateDialog`
-    // watches the progress in the store and swaps its buttons for the bar.
-    let on_download: DialogCallback = Rc::new(move |_window, cx| {
-        on_download_flag.set(true);
-        // Download + verify + open the installer (or open the release page when
-        // there's no verified asset) — see `Zedis::start_download`.
-        if let Some(view) = zedis.upgrade() {
-            view.update(cx, |this, cx| this.start_download(download_info.clone(), cx));
-        }
-    });
-    let skip = skip_version.clone();
-    let on_skip: DialogCallback = Rc::new(move |_window, cx| {
-        info!(version = %skip, "update: version skipped by user");
-        let version = skip.clone();
-        update_app_state_and_save_quiet(cx, "skip_update_version", move |state, _| {
-            state.set_skipped_version(version.clone());
-        });
-        cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-            state.set_available_update(None, cx);
-        });
-    });
-
-    // The action row is a *view* in the dialog footer, not part of the body:
-    // the body is the dialog's scroll container, so a long changelog would push
-    // the buttons below the fold. As a footer view it stays put and can swap
-    // itself for the live progress bar (see `ZedisUpdateDialog`).
-    let actions = cx.new(|cx| ZedisUpdateDialog::new(on_download.clone(), on_skip.clone(), cx));
-    ZedisDialog::new(title)
-        .child(move || {
-            let mut body = v_flex()
-                .gap_2()
-                .child(Label::new(update_hint.clone()))
-                .child(Label::new(version_line.clone()));
-            // Render the changelog as Markdown (it comes straight from the
-            // GitHub release body) inside a capped, scrollable area.
-            //
-            // Not `max_h`: `Scrollable` copies the caller's size styles onto
-            // its wrapper but the inner content keeps them too, and while its
-            // forced `h_auto` overrides a fixed `h`, nothing resets `max_h` —
-            // so the content itself gets clamped and there is never anything
-            // to scroll. A definite `h` viewport scrolls correctly; short
-            // bodies render inline so the dialog stays compact.
-            if !notes.trim().is_empty() {
-                let text = TextView::markdown("update-release-notes", notes.clone()).style(release_notes_style());
-                let long_notes = notes.lines().count() > 12 || notes.chars().count() > 800;
-                body = body.child(if long_notes {
-                    div()
-                        .w_full()
-                        .h(px(280.))
-                        .child(text)
-                        .overflow_y_scrollbar()
-                        .into_any_element()
-                } else {
-                    div().w_full().child(text).into_any_element()
-                });
-            }
-            body
-        })
-        .footer_child(move || actions.clone().into_any_element())
-        .w(px(520.))
-        .overlay_closable(false)
-        .on_close(move |_, _window, cx| {
-            // Only dismissing without downloading (the × button) records a skip
-            // and clears the chip. The Download path sets the flag above, and
-            // the dialog then closes itself once the download settles.
-            if !downloaded.get() {
-                let version = skip_version.clone();
-                update_app_state_and_save_quiet(cx, "skip_update_version", move |state, _| {
-                    state.set_skipped_version(version.clone());
-                });
-                cx.global::<ZedisGlobalStore>().clone().update(cx, |state, cx| {
-                    state.set_available_update(None, cx);
-                });
-            }
         })
         .open(window, cx);
 }
