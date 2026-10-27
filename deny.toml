@@ -32,6 +32,22 @@ ignore = [
     # over a connection without TLS: it only encrypts, with the server's
     # public key — no private-key operation for the attack to time.
     { id = "RUSTSEC-2023-0071", reason = "no fix; the SSH handshake's timing is outside the threat model, and the MySQL store only encrypts with a public key" },
+    # zstd 0.13.3 / zstd-safe 7.3.0 (#244–#256). Reached only through
+    # rust-embed's `compression` → include-flate 0.3.4, which pins zstd 0.13.
+    # Our derives name no `#[compression]`, so the assets are deflated and
+    # zstd is linked but never called; include-flate would only ever call
+    # `Encoder::new` / `Decoder::new`, on files embedded at build time, and
+    # none of these advisories is about those. Values the user stores are
+    # decoded with ruzstd, and the bridge's zstd (tower-http) is already the
+    # patched 0.14.3 / 8.2.0. include-flate's main is on zstd 0.14 but not
+    # released (checked 2026-10-27): `cargo update` and drop these once it
+    # is. These are the three vulnerabilities; the other ten of #244–#256
+    # are `unsound`, which cargo-deny reports only for workspace crates, so
+    # they are listed in `.cargo/audit.toml` alone — an ignore here would be
+    # an `advisory-not-detected` warning on every run.
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 reaches only include-flate, which inflates our deflated assets and never calls zstd; drop with include-flate's zstd 0.14 release" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd 0.13 reaches only include-flate, which inflates our deflated assets and never calls zstd; drop with include-flate's zstd 0.14 release" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd 0.13 reaches only include-flate, which inflates our deflated assets and never calls zstd; drop with include-flate's zstd 0.14 release" },
 ]
 
 [licenses]

@@ -57,4 +57,30 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant        (zbus 5)
     "RUSTSEC-2026-0371", # zbus_names      (zbus 5)
     "RUSTSEC-2026-0372", # zvariant_derive (zbus 5)
+
+    # zstd 0.13.3 / zstd-safe 7.3.0, issues #244–#256. Reached only through
+    # rust-embed's `compression` → include-flate 0.3.4, which pins zstd 0.13.
+    # Our derives name no `#[compression]`, so the assets are deflated and
+    # zstd is linked but never called; include-flate would only ever call
+    # `Encoder::new` / `Decoder::new`, on files embedded at build time, and
+    # none of these advisories is about those. Values the user stores are
+    # decoded with ruzstd, and the bridge's zstd (tower-http) is already the
+    # patched 0.14.3 / 8.2.0. include-flate's main is on zstd 0.14 but not
+    # released (checked 2026-10-27): `cargo update` and drop these thirteen
+    # once it is. `deny.toml` lists 0391, 0398 and 0403, the vulnerabilities;
+    # the other ten are `unsound`, which cargo-deny does not report for a
+    # transitive crate and cargo-audit does.
+    "RUSTSEC-2026-0391", # zstd      — abandoned stream leaks into the next (#244)
+    "RUSTSEC-2026-0395", # zstd-safe — StableInBuffer use-after-free (#247)
+    "RUSTSEC-2026-0396", # zstd-safe — Seekable NULL / out-of-bounds seek table (#254)
+    "RUSTSEC-2026-0397", # zstd-safe — OutBuffer::around_pos uninitialized memory (#248)
+    "RUSTSEC-2026-0398", # zstd-safe — Seekable::decompress length past capacity (#245)
+    "RUSTSEC-2026-0399", # zstd-safe — init_using_cdict / ddict use-after-free (#255)
+    "RUSTSEC-2026-0400", # zstd-safe — dictionary after a one-shot call (#256)
+    "RUSTSEC-2026-0401", # zstd-safe — train_from_buffer out-of-bounds read (#253)
+    "RUSTSEC-2026-0402", # zstd-safe — CCtx::try_clone overflow, multithreaded (#252)
+    "RUSTSEC-2026-0403", # zstd-safe — legacy frame streaming failure (#246)
+    "RUSTSEC-2026-0404", # zstd-safe — DCtx::try_clone double free (#250)
+    "RUSTSEC-2026-0405", # zstd-safe — out-of-range InBuffer::pos (#249)
+    "RUSTSEC-2026-0406", # zstd-safe — multithreaded context, unfinished frame (#251)
 ]
