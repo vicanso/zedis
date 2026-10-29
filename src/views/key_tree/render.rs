@@ -199,7 +199,7 @@ impl ZedisKeyTree {
             // Wheel/trackpad scrolling repaints the list without notifying its
             // entity, so nudge a re-render here to keep the sticky overlay in
             // step (scrollbar drags & keyboard nav land on existing notifies).
-            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_scroll(cx.listener(|_, _, _, cx| cx.notify()))
             .child(List::new(&self.key_tree_list_state))
             .when(scanning, |this| {
                 this.child(

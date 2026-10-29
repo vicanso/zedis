@@ -382,7 +382,7 @@ impl ListDelegate for KeyTreeDelegate {
             return;
         }
         // `secondary` is Cmd on macOS, Ctrl elsewhere.
-        if !modifiers.secondary() && !self.enabled_multiple_selection {
+        if !modifiers.secondary(_cx) && !self.enabled_multiple_selection {
             // A plain click in normal mode opens the key; the anchor still
             // follows it, so a Shift-click right after works from where the
             // user is looking.

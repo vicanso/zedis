@@ -410,7 +410,7 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
     if overridden > 0 {
         info!(overridden, "keybinding overrides loaded");
     }
-    cx.bind_keys(new_hot_keys());
+    cx.bind_keys(new_hot_keys(cx));
     cx.on_action(|e: &MemuAction, cx: &mut App| match e {
         MemuAction::Quit => {
             cx.quit();

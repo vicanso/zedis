@@ -376,24 +376,24 @@ web-time = "1.1.0"
 webpki-roots = "1.0.10"
 # GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
 # too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
-# names (0.3.9 = zed@93d7456) and depends on it itself. The `package =`
+# names (0.3.10 = zed@08cbb88) and depends on it itself. The `package =`
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.9" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.9", features = [
+gpui = { package = "gpui-pre", version = "0.3.10" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.10", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.9" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.10" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.9" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.10" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
@@ -403,12 +403,10 @@ gpui_web = { package = "gpui-pre-web", version = "0.3.9" }
 # (0.8+) instead.
 #
 # Since 0.7.2 its manifest also lists the optional GPUI Fast backend
-# (`gpui-fast-*`: not enabled here, never compiled). A lock file covers
-# optional dependencies as well, and two of theirs are exact pins on crates
-# this build does compile — `cocoa =0.26.0` (gpui-pre-macos) and
-# `unicode-properties =0.1.3` (gpui-pre-web, rustybuzz) — so `cargo update`
-# cannot move those two past the pins while gpui-kit carries them.
-gpui-kit = { version = "0.8.0" }
+# (`gpui-fast-*`: not enabled here, never compiled). The lockfile covers
+# those too. `unicode-properties` 0.1.3 is what gpui-pre-web and rustybuzz
+# ask for; gpui-pre-macos no longer pins `cocoa` (`zed-scap` brings 0.25).
+gpui-kit = { version = "0.8.1" }
 
 [build-dependencies]
 winres = "0.1.12"

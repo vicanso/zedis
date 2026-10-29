@@ -544,7 +544,7 @@ impl ZedisSidebar {
                 // empty server id is the Home "connection" the tab machinery
                 // already understands (project_active_tab / ServerSelected).
                 let mods = e.modifiers();
-                let secondary = mods.secondary();
+                let secondary = mods.secondary(cx);
                 let force_new = secondary && mods.shift;
                 let default_new_tab = cx.global::<ZedisGlobalStore>().read(cx).sidebar_click_new_tab();
                 let want_new_tab = force_new || (default_new_tab != secondary);
@@ -765,7 +765,7 @@ impl ZedisSidebar {
                 // fresh duplicate tab. The in-place case on the current
                 // server is a no-op (as a plain re-click always was).
                 let mods = e.modifiers();
-                let secondary = mods.secondary();
+                let secondary = mods.secondary(cx);
                 let force_new = secondary && mods.shift;
                 let default_new_tab = cx.global::<ZedisGlobalStore>().read(cx).sidebar_click_new_tab();
                 let want_new_tab = force_new || (default_new_tab != secondary);
@@ -1297,15 +1297,16 @@ mod tests {
             ));
         });
 
-        let shift_secondary = Modifiers {
-            shift: true,
-            ..Modifiers::secondary_key()
-        };
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            window.click_with_modifiers("sidebar-srv-c", Modifiers::secondary_key(), cx);
+            let secondary = Modifiers::secondary_key(cx);
+            let shift_secondary = Modifiers {
+                shift: true,
+                ..secondary
+            };
+            window.click_with_modifiers("sidebar-srv-c", secondary, cx);
             window.click_with_modifiers("sidebar-srv-c", shift_secondary, cx);
-            window.click_with_modifiers("sidebar-home-item", Modifiers::secondary_key(), cx);
+            window.click_with_modifiers("sidebar-home-item", secondary, cx);
         })
         .expect("the window is open");
         cx.run_until_parked();

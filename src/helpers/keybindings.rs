@@ -23,7 +23,7 @@
 //! ([`shortcut_reference`]) show the same keys.
 
 use crate::helpers::hot_key_table;
-use gpui::Keystroke;
+use gpui::{Keystroke, OperatingSystem};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -115,8 +115,14 @@ pub fn parse_keybinding_overrides(text: &str) -> (HashMap<String, String>, Vec<S
 
 /// A keystroke is one or more space-separated gpui keystrokes
 /// (`secondary-k`, `ctrl-alt-x`, `ctrl-k ctrl-s`).
+///
+/// `Keystroke::parse` rejects `secondary` and only accepts a `'static`
+/// string. The check is syntax, and `secondary` is legal on every OS.
 fn keystroke_is_valid(keystroke: &str) -> bool {
-    !keystroke.is_empty() && keystroke.split_whitespace().all(|part| Keystroke::parse(part).is_ok())
+    !keystroke.is_empty()
+        && keystroke
+            .split_whitespace()
+            .all(|part| Keystroke::parse_with_os(part, OperatingSystem::Linux).is_ok())
 }
 
 /// The file body written on first open: every id with its default, commented

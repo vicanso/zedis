@@ -37,7 +37,7 @@ use crate::{
 };
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Subscription, Task, Window,
+    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollEvent, ScrollHandle, SharedString, Subscription, Task, Window,
     bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
 };
 use gpui_kit::component::{
@@ -331,7 +331,7 @@ impl ZedisGeoMap {
         ))
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
         let dy = match event.delta {
             ScrollDelta::Pixels(p) => p.y.as_f32(),
             ScrollDelta::Lines(l) => l.y * 20.0,
@@ -1201,7 +1201,7 @@ impl Render for ZedisGeoMap {
                 .when_some(self.render_ruler(cx), |this, r| this.child(r))
                 .when_some(self.render_measure_hint(cx), |this, h| this.child(h))
                 .when_some(self.render_tooltip(cx), |this, tip| this.child(tip))
-                .on_scroll_wheel(cx.listener(|this, event, _window, cx| this.on_scroll(event, cx)))
+                .on_scroll(cx.listener(|this, event, _window, cx| this.on_scroll(event, cx)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event, _window, cx| this.on_down(event, cx)),

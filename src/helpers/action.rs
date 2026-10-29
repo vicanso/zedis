@@ -15,6 +15,7 @@
 use crate::helpers::keybinding_overrides;
 use crate::states::SettingsAction;
 use gpui::Action;
+use gpui::App;
 use gpui::KeyBinding;
 use gpui::SharedString;
 // `input::Copy` and not an import of it: the name would shadow the trait.
@@ -467,13 +468,12 @@ fn keystroke_parts(keystroke: &str) -> Vec<&str> {
 
 /// The ⌘ spelling of a `secondary-…` keystroke, for the browser only.
 ///
-/// GPUI resolves `secondary` when it *parses* a keystroke, with
-/// `cfg!(target_os = "macos")` — so in a wasm module it is always Ctrl, on
-/// every machine, and every ⌘ shortcut a Mac user reaches for is dead. The
-/// module cannot be recompiled per visitor, so the browser build binds both:
-/// the `secondary` spelling (Ctrl) and this twin. On a keyboard without a
-/// command key the twin is the Windows / Super key, which the OS keeps for
-/// itself, so it costs nothing there.
+/// `KeyBinding::load` resolves `secondary` from the host OS, and the browser
+/// backend reports the visitor's, so a Mac page gets ⌘ and every other page
+/// gets Ctrl. The twin is still bound beside that, and bound first: a menu
+/// draws the last keystroke of an action, and on a keyboard without a
+/// command key the twin is the Windows / Super key, which the OS keeps. With
+/// the `secondary` spelling last, the menu names the key that works there.
 ///
 /// What no spelling can fix: a page never sees the combinations the browser
 /// reserves for its own windows and tabs — ⌘N ⌘T ⌘W ⌘Q on a Mac, the Ctrl
@@ -534,7 +534,22 @@ pub struct HotKey {
     pub id: &'static str,
     pub default: &'static str,
     pub reference: Option<(&'static str, &'static str)>,
-    bind: fn(&str) -> KeyBinding,
+    bind: fn(&str, &App) -> KeyBinding,
+}
+
+/// Bind one keystroke, resolving `secondary` for this machine.
+///
+/// `KeyBinding::new` takes a `'static` string of explicit modifiers and does
+/// not resolve `secondary`. A user override and the browser's `cmd-` twin
+/// are neither, so every row of [`HOT_KEYS`] goes through [`KeyBinding::load`].
+fn bind_keystroke(keystroke: &str, action: impl Action, context: Option<&str>, cx: &App) -> KeyBinding {
+    let context_predicate = context.map(|source| {
+        gpui::KeyBindingContextPredicate::parse(source)
+            .unwrap_or_else(|error| panic!("keybinding context `{source}`: {error}"))
+            .into()
+    });
+    KeyBinding::load(keystroke, Box::new(action), context_predicate, false, None, cx)
+        .unwrap_or_else(|error| panic!("keystroke `{keystroke}`: {error}"))
 }
 
 impl HotKey {
@@ -559,7 +574,7 @@ static HOT_KEYS: &[HotKey] = &[
         id: "command_palette",
         default: "secondary-k",
         reference: Some((GROUP_GENERAL, "command_palette")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, PaletteAction::Toggle, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, PaletteAction::Toggle, None, cx),
     },
     // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
     // from tool pages and after the picker closes (focus-independent).
@@ -567,7 +582,7 @@ static HOT_KEYS: &[HotKey] = &[
         id: "recent_keys",
         default: "secondary-p",
         reference: Some((GROUP_GENERAL, "recent_keys")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, RecentKeysAction::Toggle, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, RecentKeysAction::Toggle, None, cx),
     },
     // Multi-database search — ⌘⇧F, deliberately adjacent to the
     // key-tree filter's ⌘F ("search here" vs "search everywhere").
@@ -575,56 +590,56 @@ static HOT_KEYS: &[HotKey] = &[
         id: "multi_search",
         default: "secondary-shift-f",
         reference: Some((GROUP_GENERAL, "multi_search")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, MultiSearchAction::Toggle, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, MultiSearchAction::Toggle, None, cx),
     },
     HotKey {
         id: "keyboard_shortcuts",
         default: "secondary-/",
         reference: Some((GROUP_GENERAL, "keyboard_shortcuts")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, ShortcutsAction::Toggle, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, ShortcutsAction::Toggle, None, cx),
     },
     // ⌘, — where every Mac app keeps its settings.
     HotKey {
         id: "settings",
         default: "secondary-,",
         reference: Some((GROUP_GENERAL, "settings")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, SettingsAction::Editor, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, SettingsAction::Editor, None, cx),
     },
     HotKey {
         id: "zoom_in",
         default: "secondary-=",
         reference: Some((GROUP_GENERAL, "zoom_in")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::In, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::In, None, cx),
     },
     HotKey {
         id: "zoom_out",
         default: "secondary--",
         reference: Some((GROUP_GENERAL, "zoom_out")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::Out, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::Out, None, cx),
     },
     HotKey {
         id: "zoom_reset",
         default: "secondary-0",
         reference: Some((GROUP_GENERAL, "zoom_reset")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, ZoomAction::Reset, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::Reset, None, cx),
     },
     HotKey {
         id: "quit",
         default: "secondary-q",
         reference: Some((GROUP_GENERAL, "quit")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, MemuAction::Quit, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, MemuAction::Quit, None, cx),
     },
     HotKey {
         id: "new_key",
         default: "secondary-n",
         reference: Some((GROUP_EDITOR, "new_key")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Create, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Create, None, cx),
     },
     HotKey {
         id: "save",
         default: "secondary-s",
         reference: Some((GROUP_EDITOR, "save")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Save, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Save, None, cx),
     },
     // Key-tree refresh is the primary, high-frequency action so it owns
     // plain `cmd-r`; value reload is the rarer one and takes `cmd-shift-r`.
@@ -632,19 +647,19 @@ static HOT_KEYS: &[HotKey] = &[
         id: "reload_keys",
         default: "secondary-r",
         reference: Some((GROUP_EDITOR, "reload_keys")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::ReloadKeyTree, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::ReloadKeyTree, None, cx),
     },
     HotKey {
         id: "reload_value",
         default: "secondary-shift-r",
         reference: Some((GROUP_EDITOR, "reload_value")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Reload, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Reload, None, cx),
     },
     HotKey {
         id: "update_ttl",
         default: "secondary-t",
         reference: Some((GROUP_EDITOR, "update_ttl")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::UpdateTtl, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::UpdateTtl, None, cx),
     },
     // Delete the selected key. A modifier combo (not bare Backspace) so it
     // can't fire while navigating the tree or typing; still routes through
@@ -655,7 +670,7 @@ static HOT_KEYS: &[HotKey] = &[
         id: "delete_key",
         default: "secondary-backspace",
         reference: Some((GROUP_EDITOR, "delete_key")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Delete, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Delete, None, cx),
     },
     // Rename the selected key. ⌘E is free on macOS text inputs (unlike
     // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
@@ -665,7 +680,7 @@ static HOT_KEYS: &[HotKey] = &[
         id: "rename_key",
         default: "secondary-e",
         reference: Some((GROUP_EDITOR, "rename_key")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Rename, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Rename, None, cx),
     },
     // Focus the active page's filter box — except while focus is inside
     // any gpui-component `Input`: a context-free binding out-ranks every
@@ -677,13 +692,13 @@ static HOT_KEYS: &[HotKey] = &[
         id: "search",
         default: "secondary-f",
         reference: Some((GROUP_EDITOR, "search")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Search, Some("!Input")),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Search, Some("!Input"), cx),
     },
     HotKey {
         id: "terminal",
         default: "secondary-j",
         reference: Some((GROUP_EDITOR, "terminal")),
-        bind: |keystroke: &str| KeyBinding::new(keystroke, EditorAction::Cmd, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Cmd, None, cx),
     },
     // Close the window via ⌘W, mirroring the red close button (on macOS
     // that hides the app — `on_window_should_close` in `main.rs`). Not in
@@ -692,7 +707,7 @@ static HOT_KEYS: &[HotKey] = &[
         id: "close_window",
         default: "secondary-w",
         reference: None,
-        bind: |keystroke: &str| KeyBinding::new(keystroke, MemuAction::Close, None),
+        bind: |keystroke, cx| bind_keystroke(keystroke, MemuAction::Close, None, cx),
     },
 ];
 
@@ -828,27 +843,26 @@ fn apple_input_keys() -> Vec<KeyBinding> {
     ]
 }
 
-pub fn new_hot_keys() -> Vec<KeyBinding> {
+pub fn new_hot_keys(cx: &App) -> Vec<KeyBinding> {
     let mut keys: Vec<KeyBinding> = Vec::new();
     // The twin goes in *first*. A menu draws the last keystroke bound to its
-    // action, and gpui-component draws the command key for the platform it
-    // was compiled for — "Win+K" in a browser, on a Mac too. With the
-    // `secondary` spelling last, the menu says Ctrl+K, which is at least a
-    // key that works there.
+    // action. On a keyboard without a command key the twin is the Windows /
+    // Super key, so the `secondary` spelling stays last and the menu names
+    // the key that works there.
     for hot_key in HOT_KEYS {
         let keystroke = hot_key.effective();
         if let Some(twin) = web_twin(keystroke) {
-            keys.push((hot_key.bind)(&twin));
+            keys.push((hot_key.bind)(&twin, cx));
         }
-        keys.push((hot_key.bind)(keystroke));
+        keys.push((hot_key.bind)(keystroke, cx));
     }
     // `=` is the unshifted `+` key on every layout that has one, so both
     // spellings zoom in — unless the user moved zoom-in elsewhere.
     if !keybinding_overrides().contains_key("zoom_in") {
         if let Some(twin) = web_twin("secondary-shift-=") {
-            keys.push(KeyBinding::new(&twin, ZoomAction::In, None));
+            keys.push(bind_keystroke(&twin, ZoomAction::In, None, cx));
         }
-        keys.push(KeyBinding::new("secondary-shift-=", ZoomAction::In, None));
+        keys.push(bind_keystroke("secondary-shift-=", ZoomAction::In, None, cx));
     }
     keys.extend([
         // Esc on a tool page returns to the editor (mirrors the page's
@@ -881,9 +895,9 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
     for index in 0..8 {
         let keystroke = format!("secondary-{}", index + 1);
         if let Some(twin) = web_twin(&keystroke) {
-            keys.push(KeyBinding::new(&twin, WorkspaceTabAction::Select(index), None));
+            keys.push(bind_keystroke(&twin, WorkspaceTabAction::Select(index), None, cx));
         }
-        keys.push(KeyBinding::new(&keystroke, WorkspaceTabAction::Select(index), None));
+        keys.push(bind_keystroke(&keystroke, WorkspaceTabAction::Select(index), None, cx));
     }
     // ⌘⇧F is two shortcuts on macOS: gpui-component's Replace in a
     // searchable editor (the value editor's menu names it) and multi-db
