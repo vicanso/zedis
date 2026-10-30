@@ -524,6 +524,16 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
                 // was never mapped.
                 show: cfg!(not(target_os = "macos")),
                 window_min_size: Some(main_window_min_size()),
+                // The custom title bar zooms on a double-click (`TitleBar` →
+                // `titlebar_double_click`) and drags via `start_window_move`.
+                // AppKit has to be told the app owns that region, which is
+                // what `TitleBar::window_options` sets. Left to AppKit, the
+                // same double-click sends a second `zoom:`, and `zoom:`
+                // toggles, so the window grows and then returns to the frame
+                // it had. Only this window: a secondary window still drags
+                // with the system title bar (`own_title_strip`), and the flag
+                // would take that drag away.
+                app_owns_titlebar_drag: true,
                 ..Default::default()
             }),
             |window, cx| {
