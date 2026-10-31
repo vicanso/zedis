@@ -343,8 +343,10 @@ impl RedisBytesValue {
         if let Some((new_format, text)) = result {
             self.format = new_format;
             self.text = Some(text);
+            self.script_editable = new_format == DataFormat::Script && script_viewer_has_encoder(server_id, key);
         } else {
             self.format = initial_format;
+            self.script_editable = false;
         }
     }
 }
@@ -470,6 +472,45 @@ fn configured_viewer(server_id: &str, key: &str, data: &[u8]) -> ViewerOutcome {
             (None, Some(viewer_failure(ViewerKind::Proto, rule, &e.to_string())))
         }
     }
+}
+
+/// Returns `true` when the script viewer matching `(server_id, key)` has a
+/// non-empty `encode_command` configured.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn script_viewer_has_encoder(server_id: &str, key: &str) -> bool {
+    ScriptManager::has_encoder_for_key(server_id, key)
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn script_viewer_has_encoder(_server_id: &str, _key: &str) -> bool {
+    false
+}
+
+/// Runs the `encode_command` of the script viewer matching `(server_id, key)`
+/// against `edited_text`, returning the encoded raw bytes plus the freshly
+/// decoded display text (if re-decoding succeeds).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn encode_with_script_viewer(
+    server_id: &str,
+    key: &str,
+    edited_text: &str,
+) -> Result<(Vec<u8>, Option<SharedString>)> {
+    let encoded = ScriptManager::encode_for_key(server_id, key, edited_text)?;
+    let redecoded = configured_viewer(server_id, key, &encoded)
+        .0
+        .and_then(|(fmt, text)| (fmt == DataFormat::Script).then_some(text));
+    Ok((encoded, redecoded))
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn encode_with_script_viewer(
+    _server_id: &str,
+    _key: &str,
+    _edited_text: &str,
+) -> Result<(Vec<u8>, Option<SharedString>)> {
+    Err(Error::Invalid {
+        message: "script viewers are not supported in the browser".to_string(),
+    })
 }
 
 /// A viewer's failure as the notice words it: the storage layer's
@@ -648,5 +689,22 @@ mod tests {
         let (format, text) = detect_and_decode(wrapped.as_bytes(), 1000);
         assert_eq!(format, DataFormat::Base64);
         assert!(text.contains("\"n\": 1"), "{text}");
+    }
+
+    #[test]
+    fn script_value_is_editable_only_when_viewer_has_encoder() {
+        let decode_only = RedisBytesValue {
+            format: DataFormat::Script,
+            script_editable: false,
+            ..Default::default()
+        };
+        assert!(!decode_only.is_text_editable());
+
+        let bidirectional = RedisBytesValue {
+            format: DataFormat::Script,
+            script_editable: true,
+            ..Default::default()
+        };
+        assert!(bidirectional.is_text_editable());
     }
 }

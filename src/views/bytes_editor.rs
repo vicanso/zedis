@@ -638,7 +638,7 @@ impl ZedisBytesEditor {
                 || preview
                 || unsendable
                 || hex_dump
-                || (!hex_mode && !redis_bytes_value.is_utf8_text());
+                || (!hex_mode && !redis_bytes_value.is_text_editable());
             self.data = if hex_dump {
                 hex_dump_data(&redis_bytes_value.bytes, cx)
             } else {

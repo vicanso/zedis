@@ -50,9 +50,9 @@ Compressed values are unpacked in place so you read the real payload, not a blob
 **JSON & RedisJSON** with pretty-printing, syntax highlighting, and saves that send only the changed fields as a `JSON.MERGE` patch (RFC 7396) — **JSONPath** (`$.user.email`, `$.items[?(@.price > 100)]`) works on plain string keys too, no module needed. **MessagePack** deserializes with zero config, and **Protobuf** decodes against `.proto` schemas you register (matched to keys by exact / prefix / suffix / regex, per server); 10/13-digit **Unix timestamps** preview as local + UTC; **images** (`PNG/JPG/WEBP/SVG/GIF`) and a fully editable **hex** view round it out.
 
 ### Custom Script Viewer
-**Pipe any value through an external shell command for custom decoding.**
+**Pipe any value through external shell commands for custom decoding and optional write-back encoding.**
 
-Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{HEX_FILE}`, `{RAW_FILE}`); Zedis runs it via `sh -c` / `cmd /c` and shows stdout as the formatted value. **Starter template chips** fill the field with a working command for common tools (each needs that tool on `PATH`). Per-server key matching by exact / prefix / suffix / regex. The key and value reach the command as environment variables and are never spliced into the command line, so a hostile key name cannot turn into a shell command.
+Configure a command template with placeholders (`{KEY}`, `{VALUE}`, `{HEX}`, `{HEX_FILE}`, `{RAW_FILE}`); Zedis runs it via `sh -c` / `cmd /c` and shows stdout as the formatted value. Add an optional **Encode Command** (`encode_command`) to make the decoded text editable in the value editor: saving runs your encoder with the edited text in `{RAW_FILE}` / `{VALUE}` and writes stdout's raw bytes back to Redis (aborting with an error toast if the encoder exits non-zero). **Starter template chips** fill the field with a working command for common tools (each needs that tool on `PATH`), and **Import / Export** lets teams share script viewer rules as JSON. Per-server key matching by exact / prefix / suffix / regex. The key and value reach the command as environment variables and are never spliced into the command line, so a hostile key name cannot turn into a shell command.
 
 ### Decode Pipeline
 **A documented, deterministic order — your custom viewers always win.**

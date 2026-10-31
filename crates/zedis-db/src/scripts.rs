@@ -58,27 +58,24 @@
 //! jq -r .name {RAW_FILE}               # parse JSON value directly
 //! ```
 //!
-//! ## Viewers only decode — no write-back (deliberate, TODO on demand)
+//! ## Bidirectional viewers (`encode_command` write-back)
 //!
-//! A viewer's output is a read-only preview, the same contract every
-//! native decoder (MessagePack, gzip, Protobuf) follows: edits go through
-//! the hex view. Values that need a private decoder are rarely hand-edited,
-//! and a decode is often lossy (`jq -r .name`), so an encode path is not
-//! built until someone asks for it. If that happens, the shape is:
+//! By default, a script viewer's output is a read-only preview — the same
+//! contract every native decoder (MessagePack, gzip, Protobuf) follows, with
+//! edits going through the hex view. Many custom decoders are lossy
+//! (`jq -r .name`), so write-back is strictly opt-in per viewer:
 //!
-//! 1. an `encode_command: String` on [`ScriptConfig`] (the struct is
-//!    `#[serde(default)]`, so stored rows stay readable), run by a
-//!    bytes-returning twin of [`run_script`] with the edited text as
-//!    `{VALUE}` / `{RAW_FILE}` and stdout taken as the raw value;
+//! 1. [`ScriptConfig::encode_command`] (optional, `#[serde(default)]` so stored
+//!    rows upgrade cleanly) holds the inverse shell command template. When set,
+//!    [`ScriptManager::execute_encode`] / [`ScriptManager::encode_for_key`] runs
+//!    [`run_script_bytes`] with the edited text as `{VALUE}` / `{RAW_FILE}` and
+//!    captures raw stdout bytes for `SET`;
 //! 2. the value editor lifts its read-only rule for a `Script` value whose
-//!    viewer has an encoder, and runs it before `SET` — a failure is an
-//!    error toast, never a write;
-//! 3. the script editor form gains the second command field and its copy
-//!    in every locale.
-//!
-//! Keep it opt-in per viewer: an encoder that silently emits wrong bytes
-//! overwrites the key, with only value history and the production write
-//! confirm to catch it.
+//!    viewer has a non-empty `encode_command` ([`ScriptConfig::has_encoder`]),
+//!    and runs the encoder before `SET` — any non-zero exit or timeout surfaces
+//!    as an error toast and aborts the write;
+//! 3. [`ScriptManager::export_all`] exports all configured script viewers in a
+//!    deterministic order for team JSON sharing.
 
 use super::{SCRIPT_VIEWER_TABLE, get_database};
 use crate::error::Error;
@@ -136,7 +133,7 @@ static SCRIPT_CACHE: LazyLock<DashMap<String, ScriptConfig>> = LazyLock::new(Das
 /// what it cannot read.
 ///
 /// [`init`]: ScriptManager::init
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScriptConfig {
     pub server_id: String,
@@ -147,8 +144,21 @@ pub struct ScriptConfig {
     /// `{VALUE}` expand out of band (see the module docs), so server-controlled
     /// text can never become part of the command.
     pub shell_command: String,
+    /// Optional inverse shell command template executed when saving an edited
+    /// decoded value back to Redis. Receives the edited text via `{VALUE}` /
+    /// `{RAW_FILE}` and writes the raw bytes to stdout. Empty means decode-only
+    /// (read-only in the text editor).
+    pub encode_command: String,
     pub match_pattern: String,
     pub mode: MatchMode,
+}
+
+impl ScriptConfig {
+    /// Returns `true` when this viewer has an `encode_command` configured for
+    /// bidirectional editing.
+    pub fn has_encoder(&self) -> bool {
+        !self.encode_command.trim().is_empty()
+    }
 }
 
 pub struct ScriptManager;
@@ -197,6 +207,14 @@ impl ScriptManager {
             .iter()
             .map(|item| (item.key().clone(), item.value().clone()))
             .collect()
+    }
+
+    /// Exports all saved script viewer configurations sorted deterministically
+    /// by `(name, server_id, match_pattern)` for JSON sharing.
+    pub fn export_all() -> Vec<ScriptConfig> {
+        let mut items: Vec<ScriptConfig> = SCRIPT_CACHE.iter().map(|entry| entry.value().clone()).collect();
+        items.sort_by(|a, b| (&a.name, &a.server_id, &a.match_pattern).cmp(&(&b.name, &b.server_id, &b.match_pattern)));
+        items
     }
 
     pub fn get(id: &str) -> Result<ScriptConfig> {
@@ -254,6 +272,19 @@ impl ScriptManager {
         Some(item.key().clone())
     }
 
+    /// Returns `true` when the script viewer matching `(server_id, key)` has a
+    /// non-empty `encode_command` configured.
+    pub fn has_encoder_for_key(server_id: &str, key: &str) -> bool {
+        let Some(id) = Self::match_key_to_id(server_id, key) else {
+            return false;
+        };
+        SCRIPT_CACHE
+            .get(&id)
+            .map(|c| c.has_encoder())
+            .or_else(|| Self::get(&id).ok().map(|c| c.has_encoder()))
+            .unwrap_or(false)
+    }
+
     /// Executes the shell command for the given script ID with `data` as input.
     ///
     /// Substitutes template placeholders in `shell_command`, then runs it via
@@ -269,14 +300,55 @@ impl ScriptManager {
 
         run_script(&config.shell_command, key, data, SCRIPT_TIMEOUT, MAX_SCRIPT_OUTPUT)
     }
+
+    /// Executes the `encode_command` for the given script ID with `edited_text`
+    /// as input (`{VALUE}` / `{RAW_FILE}`) and returns the raw stdout bytes.
+    ///
+    /// Fails if `encode_command` is empty, exits non-zero, or times out.
+    pub fn execute_encode(id: &str, key: &str, edited_text: &str) -> Result<Vec<u8>> {
+        let config = if let Some(c) = SCRIPT_CACHE.get(id) {
+            c.clone()
+        } else {
+            Self::get(id)?
+        };
+        if !config.has_encoder() {
+            return Err(Error::Invalid {
+                message: "script viewer has no encode command".to_string(),
+            });
+        }
+
+        run_script_bytes(
+            &config.encode_command,
+            key,
+            edited_text.as_bytes(),
+            SCRIPT_TIMEOUT,
+            MAX_SCRIPT_OUTPUT,
+        )
+    }
+
+    /// Finds the script viewer matching `(server_id, key)` and runs its
+    /// `encode_command` against `edited_text`, returning the raw stdout bytes.
+    pub fn encode_for_key(server_id: &str, key: &str, edited_text: &str) -> Result<Vec<u8>> {
+        let id = Self::match_key_to_id(server_id, key).ok_or_else(|| Error::Invalid {
+            message: "no matching script viewer for key".to_string(),
+        })?;
+        Self::execute_encode(&id, key, edited_text)
+    }
 }
 
-/// Runs one viewer template against `key` / `data` and returns its stdout.
+/// Runs one viewer template against `key` / `data` and returns its UTF-8 stdout.
 ///
 /// Split out of [`ScriptManager::execute`] so the limits are injectable: the
 /// tests drive the timeout and the output cap without sleeping for seconds or
 /// buffering megabytes.
 fn run_script(tmpl: &str, key: &str, data: &[u8], timeout: Duration, max_output: usize) -> Result<String> {
+    let stdout = run_script_bytes(tmpl, key, data, timeout, max_output)?;
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// Runs one viewer or encoder template against `key` / `data` and returns its
+/// raw stdout bytes.
+fn run_script_bytes(tmpl: &str, key: &str, data: &[u8], timeout: Duration, max_output: usize) -> Result<Vec<u8>> {
     let hex = bytes_to_hex(data);
     let value_str = String::from_utf8_lossy(data);
 
@@ -396,7 +468,7 @@ fn run_script(tmpl: &str, key: &str, data: &[u8], timeout: Duration, max_output:
         warn!(max_output, "script viewer output truncated");
     }
 
-    Ok(String::from_utf8_lossy(&stdout).into_owned())
+    Ok(stdout)
 }
 
 /// The shell that runs a template, configured so that the environment variables
@@ -704,6 +776,7 @@ mod tests {
                 server_id: server_id.to_string(),
                 name: "viewer".to_string(),
                 shell_command: "cat {RAW_FILE}".to_string(),
+                encode_command: String::new(),
                 match_pattern: pattern.to_string(),
                 mode,
             }
@@ -826,6 +899,76 @@ mod tests {
             ScriptManager::init().expect("init");
             assert!(!SCRIPT_CACHE.contains_key("sc-init-empty"));
             assert!(ScriptManager::match_key_to_id("sc-empty-srv", "any:key").is_none());
+        }
+
+        #[test]
+        #[cfg(not(target_os = "windows"))]
+        fn bidirectional_encode_and_decode_round_trip() {
+            setup();
+            let mut cfg = config("sc-bi-srv", "enc:", MatchMode::Prefix);
+            // Decode strips the "MAGIC:" header; encode prepends "MAGIC:".
+            cfg.shell_command = "sed 's/^MAGIC://' {RAW_FILE}".to_string();
+            cfg.encode_command = "printf 'MAGIC:%s' {VALUE}".to_string();
+            ScriptManager::upsert("sc-bi", cfg).expect("upsert");
+
+            assert!(ScriptManager::has_encoder_for_key("sc-bi-srv", "enc:1"));
+            assert!(!ScriptManager::has_encoder_for_key("sc-bi-srv", "other:1"));
+
+            let encoded = ScriptManager::encode_for_key("sc-bi-srv", "enc:1", "hello world").expect("encode");
+            assert_eq!(encoded, b"MAGIC:hello world");
+
+            let decoded = ScriptManager::execute("sc-bi", "enc:1", &encoded).expect("decode");
+            assert_eq!(decoded, "hello world");
+
+            ScriptManager::delete("sc-bi").expect("cleanup");
+        }
+
+        #[test]
+        #[cfg(not(target_os = "windows"))]
+        fn encode_fails_when_missing_or_nonzero_exit() {
+            setup();
+            // Decode-only script (no encode_command).
+            let decode_only = config("sc-ro-srv", "ro:", MatchMode::Prefix);
+            ScriptManager::upsert("sc-ro", decode_only).expect("upsert");
+            assert!(!ScriptManager::has_encoder_for_key("sc-ro-srv", "ro:1"));
+            assert!(ScriptManager::encode_for_key("sc-ro-srv", "ro:1", "test").is_err());
+
+            // Failing encode_command exits non-zero and never returns partial/empty bytes as Ok.
+            let mut failing = config("sc-fail-srv", "fail:", MatchMode::Prefix);
+            failing.encode_command = "echo 'invalid payload' >&2; exit 2".to_string();
+            ScriptManager::upsert("sc-fail", failing).expect("upsert");
+            assert!(ScriptManager::has_encoder_for_key("sc-fail-srv", "fail:1"));
+            let err =
+                ScriptManager::encode_for_key("sc-fail-srv", "fail:1", "bad").expect_err("non-zero encoder must fail");
+            assert!(err.to_string().contains("invalid payload"), "{err}");
+
+            ScriptManager::delete("sc-ro").expect("cleanup");
+            ScriptManager::delete("sc-fail").expect("cleanup");
+        }
+
+        #[test]
+        fn export_all_returns_sorted_configs() {
+            setup();
+            let mut c1 = config("sc-exp-srv", "b:", MatchMode::Prefix);
+            c1.name = "zeta-viewer".to_string();
+            let mut c2 = config("sc-exp-srv", "a:", MatchMode::Prefix);
+            c2.name = "alpha-viewer".to_string();
+            c2.encode_command = "cat {RAW_FILE}".to_string();
+            ScriptManager::upsert("sc-exp-1", c1).expect("upsert 1");
+            ScriptManager::upsert("sc-exp-2", c2).expect("upsert 2");
+
+            let exported: Vec<ScriptConfig> = ScriptManager::export_all()
+                .into_iter()
+                .filter(|c| c.server_id == "sc-exp-srv")
+                .collect();
+            assert_eq!(exported.len(), 2);
+            assert_eq!(exported[0].name, "alpha-viewer");
+            assert!(exported[0].has_encoder());
+            assert_eq!(exported[1].name, "zeta-viewer");
+            assert!(!exported[1].has_encoder());
+
+            ScriptManager::delete("sc-exp-1").expect("cleanup 1");
+            ScriptManager::delete("sc-exp-2").expect("cleanup 2");
         }
     }
 }

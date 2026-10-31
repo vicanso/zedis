@@ -1054,6 +1054,14 @@ remove_title = "Delete Script Viewer"
 remove_prompt = 'Möchten Sie dieses Skript wirklich löschen: "%{name}"?'
 field_errors_title = "Save Script Viewer Failed"
 field_errors_message = "Bitte überprüfen Sie die folgenden Felder und versuchen Sie es erneut:\n\n%{errors}"
+encode_command = "Kodierbefehl (Optional)"
+encode_command_placeholder = "z. B. base64 < {RAW_FILE}"
+encode_command_hint = "Optionaler Rückschreibbefehl. Wenn gesetzt, führt das Speichern des bearbeiteten Textes diesen Befehl mit {RAW_FILE} / {VALUE} aus und schreibt die Rohbytes von stdout zurück in Redis. Leer lassen für schreibgeschützte Vorschau."
+decode_only = "Nur Dekodieren"
+import = "Importieren"
+export = "Exportieren"
+import_success = "%{count} Skript-Viewer importiert"
+import_failed = "Import der Skript-Viewer fehlgeschlagen: %{error}"
 
 [clients_manager]
 cmd_none_tooltip = "Diese Verbindung hat nie einen Befehl ausgeführt (Redis meldet cmd=NULL) — meist eine ungenutzte Pool-Verbindung oder eine TCP-Healthcheck-Sonde."

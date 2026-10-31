@@ -1054,6 +1054,14 @@ remove_title = "Delete Script Viewer"
 remove_prompt = '¿Seguro que quiere eliminar este script: "%{name}"?'
 field_errors_title = "Save Script Viewer Failed"
 field_errors_message = "Por favor, verifique los siguientes campos e inténtelo de nuevo:\n\n%{errors}"
+encode_command = "Comando de codificación (opcional)"
+encode_command_placeholder = "p. ej. base64 < {RAW_FILE}"
+encode_command_hint = "Comando opcional de escritura. Si se define, editar el texto decodificado ejecuta este comando con {RAW_FILE} / {VALUE} y escribe los bytes de stdout en Redis. Déjelo vacío para vista previa de solo lectura."
+decode_only = "Solo decodificación"
+import = "Importar"
+export = "Exportar"
+import_success = "Se importaron %{count} visor(es) de script"
+import_failed = "Error al importar visores de script: %{error}"
 
 [clients_manager]
 cmd_none_tooltip = "Esta conexión nunca ha ejecutado un comando (Redis informa cmd=NULL): suele ser una conexión inactiva del pool o un sondeo TCP de estado."

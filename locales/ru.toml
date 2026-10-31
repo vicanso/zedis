@@ -1054,6 +1054,14 @@ remove_title = "Delete Script Viewer"
 remove_prompt = 'Вы уверены, что хотите удалить этот скрипт: «%{name}»?'
 field_errors_title = "Save Script Viewer Failed"
 field_errors_message = "Проверьте следующие поля и повторите попытку:\n\n%{errors}"
+encode_command = "Команда кодирования (необязательно)"
+encode_command_placeholder = "напр. base64 < {RAW_FILE}"
+encode_command_hint = "Необязательная команда обратной записи. Если задана, сохранение отредактированного текста запускает эту команду с {RAW_FILE} / {VALUE} и записывает байты из stdout обратно в Redis. Оставьте пустым для просмотра только для чтения."
+decode_only = "Только декодирование"
+import = "Импорт"
+export = "Экспорт"
+import_success = "Импортировано просмотрщиков скриптов: %{count}"
+import_failed = "Не удалось импортировать просмотрщики скриптов: %{error}"
 
 [clients_manager]
 cmd_none_tooltip = "Это соединение ни разу не выполняло команд (Redis возвращает cmd=NULL) — обычно простаивающее соединение из пула или TCP-проверка доступности."

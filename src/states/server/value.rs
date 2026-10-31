@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::element::KvElement;
+use super::string::encode_with_script_viewer;
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::{HeatMetric, StringWrite, json_merge, json_set, string_set};
 use bytes::Bytes;
@@ -535,6 +536,9 @@ pub struct RedisBytesValue {
     pub mime: Option<SharedString>,
     pub text: Option<SharedString>,
     pub view_mode: ViewMode,
+    /// True when `format == DataFormat::Script` and the matched script viewer
+    /// defines a non-empty `encode_command` for write-back.
+    pub script_editable: bool,
     /// Set by [`Self::detect_and_update`] when a script viewer matched the
     /// key and failed.
     pub viewer_failure: Option<ViewerFailure>,
@@ -554,6 +558,10 @@ impl RedisBytesValue {
     }
     pub fn is_utf8_text(&self) -> bool {
         matches!(self.format, DataFormat::Text | DataFormat::Json)
+    }
+    /// Whether the text view can be edited and saved back to Redis.
+    pub fn is_text_editable(&self) -> bool {
+        self.is_utf8_text() || (self.format == DataFormat::Script && self.script_editable)
     }
 }
 
@@ -1211,27 +1219,44 @@ impl ZedisServerState {
         // single line, so editing one field does not multiply its size.
         // The editor keeps showing the indented text; only the bytes — the
         // next save's compare-and-set baseline — are what the server holds.
-        let wire_text: SharedString = if !is_redis_json && format == DataFormat::Json {
-            match std::str::from_utf8(&original_bytes_value.bytes) {
+        // For bidirectional script viewers (`DataFormat::Script`), run the
+        // configured `encode_command` first: if it fails, surface an error
+        // notification and abort the save without writing to Redis.
+        let (wire_bytes, display_text): (Bytes, SharedString) = if format == DataFormat::Script {
+            match encode_with_script_viewer(&self.server_id, key.as_str(), new_value.as_ref()) {
+                Ok((encoded, redecoded)) => (Bytes::from(encoded), redecoded.unwrap_or_else(|| new_value.clone())),
+                Err(e) => {
+                    self.emit_error_notification(e.to_string().into(), cx);
+                    return;
+                }
+            }
+        } else if !is_redis_json && format == DataFormat::Json {
+            let wire_text: SharedString = match std::str::from_utf8(&original_bytes_value.bytes) {
                 Ok(stored) => keep_stored_layout(stored, &new_value).into_owned().into(),
                 Err(_) => new_value.clone(),
-            }
+            };
+            (Bytes::from(wire_text.to_string().into_bytes()), new_value.clone())
         } else {
-            new_value.clone()
+            (Bytes::from(new_value.to_string().into_bytes()), new_value.clone())
         };
+        let redecoded_changed = display_text != new_value;
 
         let Some(value) = self.open.value.as_mut() else { return };
         value.status = RedisValueStatus::Updating;
         value.data = Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
-            bytes: Bytes::from(wire_text.to_string().into_bytes()),
-            text: Some(new_value.clone()),
+            bytes: wire_bytes.clone(),
+            text: Some(display_text),
             format,
+            script_editable: original_bytes_value.script_editable,
             ..Default::default()
         })));
+        if redecoded_changed {
+            cx.emit(ServerEvent::ValueModeViewUpdated);
+        }
 
         cx.notify();
         let cas_baseline = original_bytes_value.bytes.clone();
-        let draft = Bytes::from(wire_text.to_string().into_bytes());
+        let draft = wire_bytes.clone();
         let save = StringSave {
             epoch,
             key: key.clone(),
@@ -1254,14 +1279,7 @@ impl ZedisServerState {
                     }
                     return Ok(StringWrite::Saved(None));
                 }
-                Ok(string_set(
-                    &at,
-                    key.as_str(),
-                    wire_text.as_bytes(),
-                    ttl,
-                    Some(cas_baseline.as_ref()),
-                )
-                .await?)
+                Ok(string_set(&at, key.as_str(), wire_bytes.as_ref(), ttl, Some(cas_baseline.as_ref())).await?)
             },
             move |this, result, cx| {
                 this.finish_string_save(result, save, cx);
@@ -1360,6 +1378,7 @@ impl ZedisServerState {
             // Saved, the value stays in the viewer it was edited in: a Hex
             // value went back to Auto, and its text, on every save (#215).
             view_mode: original_bytes_value.view_mode.clone(),
+            script_editable: original_bytes_value.script_editable,
             ..Default::default()
         })));
 

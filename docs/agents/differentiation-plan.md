@@ -118,11 +118,15 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - Desktop & Web navigation: `cli_redis_urls` and `open_redis_urls` in `src/startup.rs` forward and handle `zedis://` links; `ZedisAppState::open_deep_link` in `src/states/app/servers.rs` resolves the server by ID or name (case-insensitive fallback), shows `common.deep_link_unknown_server` if not configured, and routes to the target DB, view, and key (`ZedisKeyTree::new` expands parent folders and scrolls to a pre-selected key); `zedis-web/src/lib.rs` applies `window.location.search` deep links once the initial server list arrives.
   - UI entry points: added **Copy link to key** (`key_tree.copy_key_link`) to the key tree right-click context menu (`src/views/key_tree/row_menu.rs`) and the value editor's `…` menu (`src/views/editor/more_menu.rs`).
 
-### B4. Plugin Decoders (WASM)
-- **Why**: The Custom Script Viewer already lets users decode values with a script. Opening that up as sandboxed WASM plugins would let companies decode in-house serialization formats and would grow a community ecosystem.
-- **Builds on**: Decode pipeline and Custom Script Viewer (`docs/FEATURES.md` § Smart Data Viewer).
-- **Scope**: A minimal ABI (`decode(bytes) -> {format, text|json}` and optional `encode`). Runtime: a lean embeddable WASM engine (evaluate with `cargo info` before adding; keep the dependency surface small). Plugins live in the config directory and are enabled per server or key pattern. They have no network or filesystem access.
-- **Constraints**: Decoded views stay read-only unless the plugin provides `encode` (ADR 8). Web build: browsers can run WASM natively, but plugin distribution needs a bridge-side store; decide later.
+### B4. Bidirectional Custom Script Viewer (`encode_command` Write-Back & JSON Sharing)
+- **Status**: **Done** (desktop)
+- **Why**: Instead of shipping a heavy embedded WASM runtime and forcing teams to compile bespoke WASM plugins, extending the existing Custom Script Viewer (`crates/zedis-db/src/scripts.rs`) with an opt-in `encode_command` lets teams decode *and* edit in-house serialization formats using standard CLI tools (`python3`, `jq`, `protoc`, `base64`, `xxd`, custom binaries) with zero binary size overhead, and share rules across a team via JSON import/export.
+- **Builds on**: Decode pipeline and Custom Script Viewer (`crates/zedis-db/src/scripts.rs`, `src/states/server/string.rs`, `src/states/server/value.rs`, `src/views/script_editor.rs`).
+- **Delivered**:
+  - `ScriptConfig::encode_command` (`#[serde(default)]` for seamless schema upgrade) and `ScriptConfig::has_encoder(&self) -> bool` in `crates/zedis-db/src/scripts.rs`.
+  - `ScriptManager::has_encoder_for_key`, `ScriptManager::execute_encode`, `ScriptManager::encode_for_key` (backed by raw-bytes `run_script_bytes` with identical out-of-band env-var safety, temp-file support, timeout, and non-zero exit rejection), and `ScriptManager::export_all`.
+  - Value editor write-back: `RedisBytesValue::script_editable` & `is_text_editable()` unlock the text editor when a matched `DataFormat::Script` rule defines an `encode_command`; `ZedisServerState::update_value` runs `encode_with_script_viewer` before `SET`, surfacing an error notification and aborting the write if the encoder fails, and re-decoding the saved bytes so the editor stays in sync.
+  - Script Viewer UI (`src/views/script_editor.rs`): added optional **Encode Command** textarea field, table column showing the encoder or `Decode only`, and **Import** / **Export** JSON buttons.
 
 ---
 
@@ -138,4 +142,4 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | B1 | Performance | Built-in benchmark with charts and run comparison | Done (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) |
 | B2 | Performance | MONITOR recording & aggregate analysis | Done (time + command-count sampling, Command×Prefix & Client×Command cross-tabs, multi-token drill-down, CSV/JSON summary export) |
 | B3 | Workflow | `zedis://` deep links & "copy link to key" | Done (`zedis://open?server=&db=&key=&view=`, web query links, OS URL scheme registration, Copy link to key in tree & editor) |
-| B4 | Extensibility | WASM plugin decoders | Proposed |
+| B4 | Extensibility | Bidirectional Custom Script Viewer (`encode_command` write-back & JSON import/export) | Done (opt-in `encode_command` write-back before `SET`, error toast on non-zero exit, JSON rule import/export) |

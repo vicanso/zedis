@@ -16,16 +16,17 @@ use crate::assets::CustomIconName;
 use crate::connection::get_servers;
 use crate::db::{MatchMode, ScriptConfig, ScriptManager};
 use crate::error::Error;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{get_mono_font_family, opens_files, saves_files};
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_script_editor;
 use crate::states::{GlobalEvent, NotificationAction, ZedisServerState, i18n_common};
+use crate::views::{export_filename, export_to_file_global, open_file};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex};
 use gpui_kit::component::{
     alert::Alert,
     form::{field, v_form},
@@ -151,8 +152,15 @@ impl TableDelegate for ScriptTableDelegate {
                     .unwrap_or_else(|| cfg.server_id.clone()),
                 1 => cfg.name.clone(),
                 2 => cfg.shell_command.clone(),
-                3 => cfg.match_pattern.clone(),
-                4 => format!("{:?}", cfg.mode),
+                3 => {
+                    if cfg.has_encoder() {
+                        cfg.encode_command.clone()
+                    } else {
+                        i18n_script_editor(cx, "decode_only").to_string()
+                    }
+                }
+                4 => cfg.match_pattern.clone(),
+                5 => format!("{:?}", cfg.mode),
                 _ => String::new(),
             }
         } else {
@@ -222,6 +230,7 @@ pub struct ZedisScriptEditor {
     server_select_state: Entity<SelectState<Vec<KeyValueOption>>>,
     name_state: Entity<InputState>,
     shell_command_state: Entity<TextareaState>,
+    encode_command_state: Entity<TextareaState>,
     match_pattern_state: Entity<InputState>,
     match_mode_select_state: Entity<usize>,
     field_errors: Entity<HashMap<String, SharedString>>,
@@ -265,7 +274,8 @@ impl ZedisScriptEditor {
         let columns = vec![
             Column::new("server_name", i18n_script_editor(cx, "server_name")).width(px(130.)),
             Column::new("name", i18n_script_editor(cx, "name")).width(px(120.)),
-            Column::new("shell_command", i18n_script_editor(cx, "shell_command")).width(px(220.)),
+            Column::new("shell_command", i18n_script_editor(cx, "shell_command")).width(px(200.)),
+            Column::new("encode_command", i18n_script_editor(cx, "encode_command")).width(px(180.)),
             Column::new("match_pattern", i18n_script_editor(cx, "match_pattern")).width(px(150.)),
             Column::new("mode", i18n_script_editor(cx, "mode")).width(px(80.)),
             Column::new("actions", i18n_script_editor(cx, "actions")).width(px(100.)),
@@ -295,6 +305,12 @@ impl ZedisScriptEditor {
             TextareaState::new(window, cx)
                 .clean_on_escape()
                 .placeholder(i18n_script_editor(cx, "shell_command_placeholder"))
+                .auto_grow(2, 6)
+        });
+        let encode_command_state = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_script_editor(cx, "encode_command_placeholder"))
                 .auto_grow(2, 6)
         });
         let match_pattern_state = cx.new(|cx| {
@@ -357,6 +373,7 @@ impl ZedisScriptEditor {
             server_select_state,
             name_state,
             shell_command_state,
+            encode_command_state,
             match_pattern_state,
             match_mode_select_state,
             field_errors,
@@ -375,6 +392,7 @@ impl ZedisScriptEditor {
         let server_id = self.server_id.clone();
         let name = self.name_state.read(cx).value();
         let shell_command = self.shell_command_state.read(cx).value();
+        let encode_command = self.encode_command_state.read(cx).value();
         let match_pattern = self.match_pattern_state.read(cx).value();
         let match_mode = *self.match_mode_select_state.read(cx);
         let field_errors = self.field_errors.clone();
@@ -419,6 +437,7 @@ impl ZedisScriptEditor {
             server_id: server_id.to_string(),
             name: name.to_string(),
             shell_command: shell_command.to_string(),
+            encode_command: encode_command.trim().to_string(),
             match_pattern: match_pattern.to_string(),
             mode: MatchMode::from(match_mode),
         };
@@ -460,6 +479,8 @@ impl ZedisScriptEditor {
             .update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.shell_command_state
             .update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        self.encode_command_state
+            .update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.match_pattern_state
             .update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.match_mode_select_state.update(cx, |s, _| *s = 0);
@@ -484,6 +505,8 @@ impl ZedisScriptEditor {
             .update(cx, |s, cx| s.set_value(cfg.name.clone(), window, cx));
         self.shell_command_state
             .update(cx, |s, cx| s.set_value(cfg.shell_command.clone(), window, cx));
+        self.encode_command_state
+            .update(cx, |s, cx| s.set_value(cfg.encode_command.clone(), window, cx));
         self.match_pattern_state
             .update(cx, |s, cx| s.set_value(cfg.match_pattern.clone(), window, cx));
         self.match_mode_select_state
@@ -629,6 +652,17 @@ impl ZedisScriptEditor {
                                             )),
                                     ),
                             ),
+                    )
+                    .child(
+                        field()
+                            .col_span(2)
+                            .label(i18n_script_editor(cx, "encode_command"))
+                            .description(i18n_script_editor(cx, "encode_command_hint"))
+                            .child(
+                                Textarea::new(&self.encode_command_state)
+                                    .w_full()
+                                    .font_family(get_mono_font_family()),
+                            ),
                     ),
             )
             .when(!self.field_errors.read(cx).is_empty(), |this| {
@@ -668,6 +702,79 @@ impl ZedisScriptEditor {
             )
     }
 
+    fn handle_export(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let configs = ScriptManager::export_all();
+        let Ok(json) = serde_json::to_string_pretty(&configs) else {
+            return;
+        };
+        let suggested = export_filename("script-viewers");
+        let success = i18n_common(cx, "json_exported");
+        let failure = i18n_common(cx, "json_export_failed");
+        export_to_file_global(cx, json.into_bytes(), &suggested, success, failure);
+    }
+
+    fn handle_import(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let fallback_server_id = self.server_id.to_string();
+        let valid_server_ids: Vec<String> = self.servers.iter().map(|s| s.value.to_string()).collect();
+        let pick = open_file(cx, ".json", 4 * 1024 * 1024);
+        cx.spawn(async move |handle, cx| {
+            let Some(picked) = pick.await else {
+                return;
+            };
+            let bytes = match picked {
+                Ok(file) => file.bytes,
+                Err(err) => {
+                    let _ = handle.update(cx, |_, cx| {
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                        let msg = t!(
+                            "script_editor.import_failed",
+                            error = format!("{err:?}"),
+                            locale = locale
+                        )
+                        .to_string();
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+                            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg.into())));
+                        });
+                    });
+                    return;
+                }
+            };
+            let imported = cx
+                .background_spawn(async move {
+                    let configs = parse_imported_scripts(&bytes, &fallback_server_id, &valid_server_ids)?;
+                    let mut count = 0usize;
+                    for config in configs {
+                        let id = Uuid::now_v7().to_string();
+                        ScriptManager::upsert(&id, config).map_err(|e| e.to_string())?;
+                        count += 1;
+                    }
+                    Ok::<usize, String>(count)
+                })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                match imported {
+                    Ok(count) => {
+                        this.items = Arc::new(ScriptManager::list_with_id());
+                        this.needs_table_recreate = Some(true);
+                        let msg = t!("script_editor.import_success", count = count, locale = locale).to_string();
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+                            cx.emit(GlobalEvent::Notification(NotificationAction::new_success(msg.into())));
+                        });
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        let msg = t!("script_editor.import_failed", error = error, locale = locale).to_string();
+                        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
+                            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg.into())));
+                        });
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     fn render_table_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(true) = self.needs_table_recreate.take() {
             self.table_state = Self::create_table_state(self.items.clone(), self.servers.clone(), window, cx);
@@ -693,19 +800,81 @@ impl ZedisScriptEditor {
                 ),
             )
             .child(
-                h_flex().w_full().justify_end().p_2().child(
-                    Button::new("add-sv-btn")
-                        .primary()
-                        .icon(CustomIconName::FilePlusCorner)
-                        .label(i18n_script_editor(cx, "add"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.reset_form(window, cx);
-                            this.view_mode = ViewMode::Edit;
-                        })),
-                ),
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .p_2()
+                    .when(opens_files(), |this| {
+                        this.child(
+                            Button::new("import-sv-btn")
+                                .outline()
+                                .icon(CustomIconName::Upload)
+                                .label(i18n_script_editor(cx, "import"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.handle_import(window, cx);
+                                })),
+                        )
+                    })
+                    .when(saves_files(), |this| {
+                        this.child(
+                            Button::new("export-sv-btn")
+                                .outline()
+                                .icon(CustomIconName::Download)
+                                .label(i18n_script_editor(cx, "export"))
+                                .disabled(self.items.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.handle_export(window, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("add-sv-btn")
+                            .primary()
+                            .icon(CustomIconName::FilePlusCorner)
+                            .label(i18n_script_editor(cx, "add"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_form(window, cx);
+                                this.view_mode = ViewMode::Edit;
+                            })),
+                    ),
             )
             .into_any_element()
     }
+}
+
+/// Parses a JSON array (or single object) of [`ScriptConfig`] entries and
+/// normalizes missing/foreign `server_id`s to `fallback_server_id`.
+fn parse_imported_scripts(
+    bytes: &[u8],
+    fallback_server_id: &str,
+    valid_server_ids: &[String],
+) -> Result<Vec<ScriptConfig>, String> {
+    let raw: Vec<ScriptConfig> = serde_json::from_slice::<Vec<ScriptConfig>>(bytes)
+        .or_else(|_| serde_json::from_slice::<ScriptConfig>(bytes).map(|single| vec![single]))
+        .map_err(|e| e.to_string())?;
+    let mut valid = Vec::new();
+    for mut cfg in raw {
+        cfg.name = cfg.name.trim().to_string();
+        cfg.shell_command = cfg.shell_command.trim().to_string();
+        cfg.encode_command = cfg.encode_command.trim().to_string();
+        cfg.match_pattern = cfg.match_pattern.trim().to_string();
+        if cfg.name.is_empty() || cfg.shell_command.is_empty() || cfg.match_pattern.is_empty() {
+            continue;
+        }
+        if (cfg.server_id.is_empty() || !valid_server_ids.iter().any(|id| id == &cfg.server_id))
+            && !fallback_server_id.is_empty()
+        {
+            cfg.server_id = fallback_server_id.to_string();
+        }
+        if !cfg.server_id.is_empty() {
+            valid.push(cfg);
+        }
+    }
+    if valid.is_empty() {
+        return Err("no valid script viewer entries found in JSON".to_string());
+    }
+    Ok(valid)
 }
 
 impl Render for ZedisScriptEditor {
@@ -714,5 +883,45 @@ impl Render for ZedisScriptEditor {
             ViewMode::Table => self.render_table_view(window, cx).into_any_element(),
             ViewMode::Edit => self.render_edit_form(window, cx).into_any_element(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_imported_scripts_accepts_array_and_normalizes_server_id() {
+        let json = br#"[
+            {
+                "server_id": "foreign-srv",
+                "name": " base64-bi ",
+                "shell_command": " base64 --decode {RAW_FILE} ",
+                "encode_command": " base64 < {RAW_FILE} ",
+                "match_pattern": " b64: ",
+                "mode": "Prefix"
+            },
+            {
+                "server_id": "local-srv",
+                "name": "ro-viewer",
+                "shell_command": "cat {RAW_FILE}",
+                "match_pattern": "ro:"
+            },
+            {
+                "server_id": "local-srv",
+                "name": "",
+                "shell_command": "cat {RAW_FILE}",
+                "match_pattern": "skip:"
+            }
+        ]"#;
+        let valid_servers = vec!["local-srv".to_string()];
+        let parsed = parse_imported_scripts(json, "local-srv", &valid_servers).expect("parse");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "base64-bi");
+        assert_eq!(parsed[0].server_id, "local-srv");
+        assert_eq!(parsed[0].encode_command, "base64 < {RAW_FILE}");
+        assert!(parsed[0].has_encoder());
+        assert_eq!(parsed[1].name, "ro-viewer");
+        assert!(!parsed[1].has_encoder());
     }
 }

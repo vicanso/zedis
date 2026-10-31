@@ -1054,6 +1054,14 @@ remove_title = "Delete Script Viewer"
 remove_prompt = 'このスクリプト "%{name}" を削除してもよろしいですか？'
 field_errors_title = "Save Script Viewer Failed"
 field_errors_message = "以下のフィールドを確認して再試行してください:\n\n%{errors}"
+encode_command = "エンコードコマンド（任意）"
+encode_command_placeholder = "例: base64 < {RAW_FILE}"
+encode_command_hint = "任意の書き戻しコマンド。設定すると、デコード済みテキストの編集保存時に {RAW_FILE} / {VALUE} を使ってこのコマンドを実行し、標準出力のバイト列を Redis に書き戻します。空欄の場合は読み取り専用プレビューになります。"
+decode_only = "デコードのみ"
+import = "インポート"
+export = "エクスポート"
+import_success = "%{count} 件のスクリプトビューアーをインポートしました"
+import_failed = "スクリプトビューアーのインポートに失敗しました: %{error}"
 
 [clients_manager]
 cmd_none_tooltip = "この接続はコマンドを一度も実行していません(Redis は cmd=NULL を返します)。通常はプール内のアイドル接続か TCP ヘルスチェックです。"

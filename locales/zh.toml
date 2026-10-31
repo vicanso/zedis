@@ -1053,6 +1053,14 @@ remove_title = "Delete Script Viewer"
 remove_prompt = '您确定要删除此脚本: "%{name}" 吗？'
 field_errors_title = "Save Script Viewer Failed"
 field_errors_message = "请检查以下字段后重试:\n\n%{errors}"
+encode_command = "编码命令（可选）"
+encode_command_placeholder = "如 base64 < {RAW_FILE}"
+encode_command_hint = "可选的回写命令。设置后，在编辑器中修改解码后的文本并保存时，会将编辑后的文本通过 {RAW_FILE} / {VALUE} 传入此命令，并将标准输出的原始字节写回 Redis；留空则为只读预览。"
+decode_only = "仅解码"
+import = "导入"
+export = "导出"
+import_success = "已导入 %{count} 个脚本视图规则"
+import_failed = "导入脚本视图规则失败: %{error}"
 
 [clients_manager]
 cmd_none_tooltip = "该连接从未执行过任何命令(Redis 返回 cmd=NULL)——通常是空闲的池化连接或 TCP 健康探测。"
