@@ -120,7 +120,7 @@ pub use danger_confirm::{
 };
 pub use editor::ZedisEditor;
 pub use expire_at_dialog::ZedisExpireAtDialog;
-pub use export::{ExportSource, open_key_export};
+pub use export::{CopyPreset, ExportSource, open_key_copy, open_key_export};
 pub(crate) use export::{export_filename, export_filename_with, export_to_file, export_to_file_global, open_file};
 pub use export_servers_dialog::ZedisExportServersDialog;
 pub use function_editor::ZedisFunctionEditor;
@@ -157,9 +157,7 @@ pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::format_timestamp_ms;
 #[cfg(not(target_family = "wasm"))]
-pub use migration_window::{
-    CopyPreset, open_migration_copy_window, open_migration_export_window, open_migration_import_window,
-};
+pub use migration_window::{open_migration_copy_window, open_migration_export_window, open_migration_import_window};
 pub use monitor::ZedisMonitor;
 pub use multi_search::ZedisMultiSearch;
 pub use persistence::ZedisPersistence;

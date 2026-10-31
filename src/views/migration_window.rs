@@ -17,7 +17,7 @@
 //! Import supports conflict strategy selection (Skip / Overwrite / Abort)
 //! and an optional dry-run preview (`EXISTS` on destination) before restore.
 
-use super::export::{ExportSource, dirs_default_directory};
+use super::export::{CopyPreset, ExportSource, dirs_default_directory};
 use crate::connection::{
     ConflictMode, ConflictPreview, get_server, get_servers, preview_import_conflicts, preview_key_conflicts,
 };
@@ -54,15 +54,6 @@ use sections::JobLook;
 const WINDOW_WIDTH: f32 = 720.0;
 const WINDOW_HEIGHT: f32 = 620.0;
 const PREVIEW_SAMPLE_LIMIT: usize = 40;
-
-/// A copy target the window opens on, when the caller already knows it —
-/// the compare window hands over what the target lacks.
-#[derive(Clone)]
-pub struct CopyPreset {
-    pub target_id: SharedString,
-    pub target_db: usize,
-    pub conflict: ConflictMode,
-}
 
 /// Where an export goes.
 #[derive(Clone, Copy, PartialEq, Eq)]

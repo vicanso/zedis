@@ -16,17 +16,14 @@
 //! on another server / db: what is missing on either side, and what is on
 //! both but different. The comparison itself is `compare_prefix`; this
 //! window is the form, the progress, the three lists, and the hand-off to
-//! the copy window for what the target lacks.
+//! the copy view for what the target lacks.
 //!
 //! A window of its own on the desktop; in the browser, which has one canvas
-//! per tab, the same view in a dialog over the page ([`open_compare`]), and
-//! without the hand-off: the copy window is the desktop's migration window.
+//! per tab, the same view in a dialog over the page ([`open_compare`]).
 
-#[cfg(not(target_family = "wasm"))]
-use crate::connection::ConflictMode;
 use crate::connection::{
-    CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, KeyDifference, compare_prefix,
-    get_servers,
+    CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, ConflictMode, KeyDifference,
+    compare_prefix, get_servers,
 };
 use crate::error::Error;
 use crate::helpers::channel;
@@ -34,8 +31,7 @@ use crate::helpers::get_mono_font_family;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::with_app_identity;
 use crate::states::{ZedisGlobalStore, i18n_common, i18n_compare, i18n_copy};
-#[cfg(not(target_family = "wasm"))]
-use crate::views::{CopyPreset, open_migration_copy_window};
+use crate::views::{CopyPreset, open_key_copy};
 use gpui::{
     AnyElement, App, ClipboardItem, Entity, FocusHandle, Focusable, KeyDownEvent, SharedString, Subscription, Task,
     Window, div, prelude::*, px,
@@ -499,20 +495,15 @@ impl ZedisCompareWindow {
     fn handle_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         close_compare(window, cx);
     }
-}
 
-/// The hand-off to the copy window, which is the desktop's migration window
-/// — a second window over files the browser has neither of.
-#[cfg(not(target_family = "wasm"))]
-impl ZedisCompareWindow {
-    /// [`Self::target_keys`], owned — what the copy dialog is opened with.
+    /// [`Self::target_keys`], owned — what the copy view is opened with.
     fn keys_for_target(&self) -> Vec<SharedString> {
         self.target_keys()
             .map(|key| SharedString::from(key.to_string()))
             .collect()
     }
 
-    fn open_copy(&mut self, cx: &mut Context<Self>) {
+    fn open_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target_id) = self.target_server_id.clone() else {
             return;
         };
@@ -520,7 +511,7 @@ impl ZedisCompareWindow {
         if keys.is_empty() {
             return;
         }
-        open_migration_copy_window(
+        open_key_copy(
             self.source_id.clone(),
             self.source_name.clone(),
             self.source_db,
@@ -532,6 +523,7 @@ impl ZedisCompareWindow {
                 // them would change nothing.
                 conflict: ConflictMode::Overwrite,
             },
+            window,
             cx,
         );
     }
@@ -544,17 +536,9 @@ impl ZedisCompareWindow {
                 .disabled(copy_keys == 0)
                 .label(format!("{} ({copy_keys})", i18n_compare(cx, "copy_to_target")))
                 .tooltip(i18n_compare(cx, "copy_to_target_hint"))
-                .on_click(cx.listener(|this, _, _window, cx| this.open_copy(cx)))
+                .on_click(cx.listener(|this, _, window, cx| this.open_copy(window, cx)))
                 .into_any_element(),
         )
-    }
-}
-
-/// None in the browser: the copy window is not there.
-#[cfg(target_family = "wasm")]
-impl ZedisCompareWindow {
-    fn copy_to_target_button(&self, _copy_keys: usize, _cx: &mut Context<Self>) -> Option<AnyElement> {
-        None
     }
 }
 
@@ -880,7 +864,10 @@ fn keys_to_copy(report: &CompareReport) -> impl Iterator<Item = &str> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection::DifferingKey;
+    use crate::connection::{DifferingKey, RedisServer, set_servers_cache};
+    use crate::test_support::{hold_the_server_list, init_ui};
+    use gpui::{AnyWindowHandle, TestAppContext};
+    use gpui_kit::test::TestWindowExt;
 
     #[test]
     fn a_copy_fixes_missing_and_differing_keys_but_not_unchecked_ones() {
@@ -906,5 +893,70 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(keys_to_copy(&report).collect::<Vec<_>>(), ["a", "b", "d"]);
+    }
+
+    #[gpui::test]
+    fn a_finished_report_offers_copy_to_target_for_missing_and_differing_keys(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _list = hold_the_server_list();
+        let prev = get_servers().unwrap_or_default();
+        let server = |id: &str| RedisServer {
+            id: id.into(),
+            name: id.into(),
+            host: "127.0.0.1".into(),
+            port: 6379,
+            ..Default::default()
+        };
+        set_servers_cache(vec![server("cmp-a"), server("cmp-b")]);
+
+        let mut view = None;
+        let handle: AnyWindowHandle = cx
+            .open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |window, cx| {
+                let compare = cx.new(|cx| ZedisCompareWindow::new("cmp-a".into(), "cmp-a".into(), 0, window, cx));
+                view = Some(compare.clone());
+                Root::new(compare, window, cx)
+            })
+            .into();
+        cx.run_until_parked();
+        let view = view.expect("compare view built");
+
+        view.update(cx, |compare, cx| {
+            compare.finish(
+                Ok(CompareReport {
+                    only_source: vec![("user:1".to_string(), "string".to_string())],
+                    differing: vec![DifferingKey {
+                        key: "user:2".to_string(),
+                        key_type: "string".to_string(),
+                        difference: KeyDifference::Value,
+                    }],
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("compare-copy-to-target").disabled(), None);
+            assert_eq!(
+                window.find("compare-copy-to-target").label(),
+                Some(format!("{} (2)", i18n_compare(cx, "copy_to_target")).as_str())
+            );
+        })
+        .expect("window is open");
+
+        view.update(cx, |compare, cx| {
+            compare.finish(Ok(CompareReport::default()), cx);
+        });
+        cx.run_until_parked();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("compare-copy-to-target").disabled(), Some(true));
+        })
+        .expect("window is open");
+
+        set_servers_cache(prev);
     }
 }

@@ -19,6 +19,7 @@
 //! (`helpers::web_files`), so a caller is written once and asks
 //! `saves_files()` / `opens_files()` whether to offer itself.
 
+use crate::connection::ConflictMode;
 use crate::helpers::{PickFailure, PickedFile};
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{get_download_dir, get_home_dir};
@@ -45,6 +46,15 @@ pub enum ExportSource {
     Loaded,
 }
 
+/// A copy target the export / copy view opens on, when the caller already
+/// knows it — the compare view hands over what the target lacks.
+#[derive(Clone)]
+pub struct CopyPreset {
+    pub target_id: SharedString,
+    pub target_db: usize,
+    pub conflict: ConflictMode,
+}
+
 /// Export `keys` of one server and database: the migration window on the
 /// desktop — binary, JSON or CSV, to a file or to another server…
 #[cfg(not(target_family = "wasm"))]
@@ -61,7 +71,8 @@ pub fn open_key_export(
 }
 
 /// …and in a page, which has neither a second window nor a file to stream
-/// into, a dialog that builds the JSON or CSV in memory and downloads it.
+/// into, a dialog that builds the JSON or CSV in memory and downloads it, or
+/// copies the keys to another server through the bridge.
 #[cfg(target_family = "wasm")]
 pub fn open_key_export(
     server_id: SharedString,
@@ -73,6 +84,36 @@ pub fn open_key_export(
     cx: &mut App,
 ) {
     super::key_export::open_key_export_dialog(server_id, server_name, db, keys, source, window, cx);
+}
+
+/// Open the export view already set to copy `keys` to `preset`'s server / db:
+/// the migration window on the desktop…
+#[cfg(not(target_family = "wasm"))]
+pub fn open_key_copy(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    keys: Vec<SharedString>,
+    preset: CopyPreset,
+    _window: &mut Window,
+    cx: &mut App,
+) {
+    super::open_migration_copy_window(server_id, server_name, db, keys, preset, cx);
+}
+
+/// …and in a page, the key export dialog opened on its server-to-server copy
+/// destination.
+#[cfg(target_family = "wasm")]
+pub fn open_key_copy(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    keys: Vec<SharedString>,
+    preset: CopyPreset,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    super::key_export::open_key_copy_dialog(server_id, server_name, db, keys, preset, window, cx);
 }
 
 /// Where a save dialog opens: the platform's Downloads directory when that

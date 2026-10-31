@@ -12,35 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! A page's key export: the keys' values read through the bridge, written
-//! into one JSON or CSV document in the tab and downloaded.
+//! A page's key export and server-to-server copy: the keys' values read
+//! through the bridge and either written into one JSON or CSV document in the
+//! tab and downloaded, or copied straight to another server / db via `DUMP`
+//! and `RESTORE` (with type-aware re-creation when the target does not read
+//! the source's RDB payload version).
 //!
-//! The desktop exports through the migration window — a binary dump, a file
-//! written as it goes, or another server — none of which a page has. What it
-//! downloads here is the file the desktop's JSON / CSV export writes
-//! (`ReadableDocument`), held in memory, so it stops at [`MAX_EXPORT_BYTES`]
-//! rather than at whatever the tab can take.
+//! The desktop exports through the migration window (`migration_window.rs`).
+//! What the file destination downloads here is the same `ReadableDocument` the
+//! desktop's JSON / CSV export writes, held in memory, so it stops at
+//! [`MAX_EXPORT_BYTES`] rather than at whatever the tab can take.
 
-use super::export::{ExportSource, export_filename_with, export_to_file_global};
+use super::export::{CopyPreset, ExportSource, export_filename_with, export_to_file_global};
 use crate::assets::CustomIconName;
-use crate::connection::{ReadLimits, ReadableDocument, ServerDb, read_readable_chunk};
-use crate::states::{ZedisGlobalStore, i18n_common, i18n_migration};
-use gpui::{App, SharedString, Task, Window, prelude::*, px};
+use crate::connection::{
+    ConflictMode, ConflictPreview, ReadLimits, ReadableDocument, RestoreStatus, ServerDb, dump_keys_chunk, get_server,
+    get_servers, preview_key_conflicts, read_readable_chunk, restore_or_recreate_chunk,
+};
+use crate::states::{ZedisGlobalStore, i18n_common, i18n_copy, i18n_migration};
+use gpui::{AnyElement, App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable, button::Button, h_flex, label::Label, progress::Progress, v_flex,
+    ActiveTheme, Disableable, Icon, Sizable,
+    button::{Button, ButtonVariants},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    label::Label,
+    progress::Progress,
+    radio::RadioGroup,
+    scroll::ScrollableElement,
+    v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use zedis_ui::ZedisDialog;
 
-/// Keys read per round trip to the bridge.
-const CHUNK_KEYS: usize = 100;
+/// Keys read or copied per round trip to the bridge.
+const CHUNK_KEYS: usize = 64;
 /// The most a download is built up to: the tab holds it whole, and twice
 /// over while the browser takes it.
 const MAX_EXPORT_BYTES: usize = 64_000_000;
+/// Maximum sample conflicting keys shown in the dry-run preview.
+const PREVIEW_SAMPLE_LIMIT: usize = 40;
 
-/// What a page exports to: the readable forms. A binary dump is the
-/// desktop's, for its import to read back.
+/// Where the keys go.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Destination {
+    File,
+    Server,
+}
+
+/// What a page exports to when downloading a file: the readable forms.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Format {
     Json,
@@ -58,15 +81,31 @@ impl Format {
 
 enum Phase {
     Idle,
-    Running {
+    RunningFile {
         format: Format,
         done: usize,
+        total: usize,
     },
-    Finished {
+    FinishedFile {
         exported: usize,
         bytes: usize,
         /// The document reached [`MAX_EXPORT_BYTES`] before the last key.
         stopped_early: bool,
+    },
+    RunningCopy {
+        done: usize,
+        total: usize,
+        written: u64,
+        skipped: u64,
+        failed: u64,
+        bytes: u64,
+    },
+    FinishedCopy {
+        written: u64,
+        skipped: u64,
+        failed: u64,
+        bytes: u64,
+        cancelled: bool,
     },
     Failed(SharedString),
 }
@@ -77,9 +116,20 @@ pub struct ZedisKeyExport {
     db: usize,
     keys: Vec<SharedString>,
     source: ExportSource,
+    destination: Destination,
+    prefix_input_state: Entity<InputState>,
+    servers: Vec<(SharedString, SharedString)>,
+    target_server_id: Option<SharedString>,
+    target_db_input: Entity<InputState>,
+    conflict_mode: ConflictMode,
+    preview: Option<ConflictPreview>,
+    preview_running: bool,
+    preview_error: Option<SharedString>,
+    cancel: Arc<AtomicBool>,
     phase: Phase,
-    /// The export under way; dropped with the dialog, which stops it.
+    /// The export or copy under way; dropped with the dialog, which stops it.
     _task: Option<Task<()>>,
+    _subs: Vec<Subscription>,
 }
 
 impl ZedisKeyExport {
@@ -89,32 +139,137 @@ impl ZedisKeyExport {
         db: usize,
         keys: Vec<SharedString>,
         source: ExportSource,
+        preset: Option<CopyPreset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Self {
+        let prefix_input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_migration(cx, "prefix_filter_placeholder"))
+        });
+        let servers: Vec<(SharedString, SharedString)> = get_servers()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| (s.id.into(), s.name.into()))
+            .collect();
+        let target_server_id = preset.as_ref().map(|preset| preset.target_id.clone()).or_else(|| {
+            servers
+                .iter()
+                .find(|(id, _)| *id != server_id)
+                .or_else(|| servers.first())
+                .map(|(id, _)| id.clone())
+        });
+        let target_db = preset.as_ref().map(|preset| preset.target_db).unwrap_or(db);
+        let target_db_input = cx.new(|cx| InputState::new(window, cx).default_value(target_db.to_string()));
+        let destination = if preset.is_some() {
+            Destination::Server
+        } else {
+            Destination::File
+        };
+        let conflict_mode = preset.as_ref().map(|preset| preset.conflict).unwrap_or_default();
+
+        let mut subs = Vec::new();
+        subs.push(
+            cx.subscribe_in(&prefix_input_state, window, |view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    view.drop_preview();
+                    cx.notify();
+                }
+            }),
+        );
+        subs.push(
+            cx.subscribe_in(&target_db_input, window, |view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    view.drop_preview();
+                    cx.notify();
+                }
+            }),
+        );
+
         Self {
             server_id,
             server_name,
             db,
             keys,
             source,
+            destination,
+            prefix_input_state,
+            servers,
+            target_server_id,
+            target_db_input,
+            conflict_mode,
+            preview: None,
+            preview_running: false,
+            preview_error: None,
+            cancel: Arc::new(AtomicBool::new(false)),
             phase: Phase::Idle,
             _task: None,
+            _subs: subs,
         }
     }
 
     fn is_running(&self) -> bool {
-        matches!(self.phase, Phase::Running { .. })
+        matches!(self.phase, Phase::RunningFile { .. } | Phase::RunningCopy { .. })
     }
 
-    fn start(&mut self, format: Format, cx: &mut Context<Self>) {
+    fn target_db(&self, cx: &App) -> usize {
+        self.target_db_input.read(cx).value().trim().parse().unwrap_or(0)
+    }
+
+    fn target_is_source(&self, cx: &App) -> bool {
+        self.target_server_id.as_ref() == Some(&self.server_id) && self.target_db(cx) == self.db
+    }
+
+    fn export_keys<'a>(&'a self, cx: &App) -> impl Iterator<Item = &'a SharedString> + use<'a> {
+        let prefix = self.prefix_input_state.read(cx).value().trim().to_string();
+        self.keys.iter().filter(move |key| key.starts_with(prefix.as_str()))
+    }
+
+    fn filtered_keys(&self, cx: &App) -> Vec<String> {
+        self.export_keys(cx).map(ToString::to_string).collect()
+    }
+
+    fn drop_preview(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        self.preview_running = false;
+        self.preview = None;
+        self.preview_error = None;
+    }
+
+    fn set_destination(&mut self, destination: Destination, cx: &mut Context<Self>) {
+        if self.destination == destination || self.is_running() {
+            return;
+        }
+        self.destination = destination;
+        self.drop_preview();
+        self.phase = Phase::Idle;
+        cx.notify();
+    }
+
+    fn select_target(&mut self, id: SharedString, cx: &mut Context<Self>) {
         if self.is_running() {
             return;
         }
+        self.target_server_id = Some(id);
+        self.drop_preview();
+        cx.notify();
+    }
+
+    fn start_file_export(&mut self, format: Format, cx: &mut Context<Self>) {
+        if self.is_running() {
+            return;
+        }
+        let keys = self.filtered_keys(cx);
+        if keys.is_empty() {
+            return;
+        }
+        let total = keys.len();
         let at = ServerDb::new(self.server_id.as_str(), self.db);
-        let keys: Vec<String> = self.keys.iter().map(ToString::to_string).collect();
         let file_name = export_filename_with(&format!("{}-db{}", self.server_name, self.db), format.extension());
         let success = i18n_migration(cx, "export_title");
         let failure = i18n_migration(cx, "phase_failed");
-        self.phase = Phase::Running { format, done: 0 };
+        self.phase = Phase::RunningFile { format, done: 0, total };
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
             let mut document = match format {
@@ -142,7 +297,7 @@ impl ZedisKeyExport {
                 }
                 done += chunk.len();
                 let progressed = this.update(cx, |view, cx| {
-                    view.phase = Phase::Running { format, done };
+                    view.phase = Phase::RunningFile { format, done, total };
                     cx.notify();
                 });
                 if progressed.is_err() {
@@ -154,10 +309,164 @@ impl ZedisKeyExport {
             let bytes = text.len();
             let _ = this.update(cx, |view, cx| {
                 export_to_file_global(cx, text.into_bytes(), &file_name, success, failure);
-                view.phase = Phase::Finished {
+                view.phase = Phase::FinishedFile {
                     exported,
                     bytes,
                     stopped_early,
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn preview_copy(&mut self, cx: &mut Context<Self>) {
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        if self.is_running() || self.preview_running || self.target_is_source(cx) {
+            return;
+        }
+        let keys = self.filtered_keys(cx);
+        if keys.is_empty() {
+            return;
+        }
+        let target_id = target_id.to_string();
+        let target_db = self.target_db(cx);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.cancel.clone();
+        let superseded = cancel.clone();
+        self.preview_running = true;
+        self.preview_error = None;
+        self.preview = None;
+        cx.notify();
+
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = preview_key_conflicts(&target_id, target_db, &keys, PREVIEW_SAMPLE_LIMIT, &cancel).await;
+            let _ = this.update(cx, |view, cx| {
+                if superseded.load(Ordering::Acquire) && !result.as_ref().is_ok_and(|p| p.cancelled) {
+                    return;
+                }
+                view.preview_running = false;
+                match result {
+                    Ok(preview) => {
+                        view.preview = Some(preview);
+                        view.preview_error = None;
+                    }
+                    Err(e) => {
+                        view.preview = None;
+                        view.preview_error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn start_copy(&mut self, cx: &mut Context<Self>) {
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        if self.is_running() || self.target_is_source(cx) {
+            return;
+        }
+        let keys = self.filtered_keys(cx);
+        if keys.is_empty() {
+            return;
+        }
+        self.drop_preview();
+        let total = keys.len();
+        let src = ServerDb::new(self.server_id.as_str(), self.db);
+        let dst = ServerDb::new(target_id.as_str(), self.target_db(cx));
+        let conflict = self.conflict_mode;
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.cancel.clone();
+        self.phase = Phase::RunningCopy {
+            done: 0,
+            total,
+            written: 0,
+            skipped: 0,
+            failed: 0,
+            bytes: 0,
+        };
+        cx.notify();
+
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let mut done = 0usize;
+            let mut written = 0u64;
+            let mut skipped = 0u64;
+            let mut failed = 0u64;
+            let mut bytes = 0u64;
+
+            for chunk in keys.chunks(CHUNK_KEYS) {
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                let entries = match dump_keys_chunk(&src, chunk).await {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        let _ = this.update(cx, |view, cx| {
+                            view.phase = Phase::Failed(e.to_string().into());
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let missing = chunk.len().saturating_sub(entries.len()) as u64;
+                skipped += missing;
+
+                if !entries.is_empty() {
+                    let statuses = match restore_or_recreate_chunk(&src, &dst, &entries, conflict).await {
+                        Ok(statuses) => statuses,
+                        Err(e) => {
+                            let _ = this.update(cx, |view, cx| {
+                                view.phase = Phase::Failed(e.to_string().into());
+                                cx.notify();
+                            });
+                            return;
+                        }
+                    };
+                    for (entry, status) in entries.iter().zip(statuses.iter()) {
+                        let size = entry.payload.len() as u64;
+                        match status {
+                            RestoreStatus::Written | RestoreStatus::Recreated => {
+                                written += 1;
+                                bytes += size;
+                            }
+                            RestoreStatus::Skipped => {
+                                skipped += 1;
+                            }
+                            RestoreStatus::Failed(_) => {
+                                failed += 1;
+                            }
+                        }
+                    }
+                }
+
+                done += chunk.len();
+                let progressed = this.update(cx, |view, cx| {
+                    view.phase = Phase::RunningCopy {
+                        done,
+                        total,
+                        written,
+                        skipped,
+                        failed,
+                        bytes,
+                    };
+                    cx.notify();
+                });
+                if progressed.is_err() {
+                    return;
+                }
+            }
+
+            let cancelled = cancel.load(Ordering::Acquire);
+            let _ = this.update(cx, |view, cx| {
+                view.phase = Phase::FinishedCopy {
+                    written,
+                    skipped,
+                    failed,
+                    bytes,
+                    cancelled,
                 };
                 cx.notify();
             });
@@ -178,12 +487,55 @@ impl ZedisKeyExport {
         summary.into()
     }
 
-    fn export_button(&self, format: Format, cx: &mut Context<Self>) -> Button {
+    fn destination_summary(&self, cx: &App) -> Option<SharedString> {
+        if self.destination != Destination::Server {
+            return None;
+        }
+        let target_id = self.target_server_id.as_ref()?;
+        let name = get_server(target_id)
+            .map(|s| s.name)
+            .unwrap_or_else(|_| target_id.to_string());
+        Some(
+            i18n_migration(cx, "destination_summary")
+                .replace("{server}", &name)
+                .replace("{db}", &self.target_db(cx).to_string())
+                .into(),
+        )
+    }
+
+    fn preview_summary(&self, cx: &App) -> SharedString {
+        if self.preview_running {
+            i18n_migration(cx, "preview_copy_running")
+        } else if let Some(err) = &self.preview_error {
+            format!("{}: {err}", i18n_migration(cx, "preview_failed")).into()
+        } else if let Some(p) = &self.preview {
+            if p.cancelled {
+                i18n_migration(cx, "preview_cancelled")
+            } else {
+                i18n_migration(cx, "preview_copy_summary")
+                    .replace("{total}", &p.total.to_string())
+                    .replace("{conflicts}", &p.conflicting.to_string())
+                    .replace("{free}", &p.free.to_string())
+                    .into()
+            }
+        } else {
+            i18n_migration(cx, "preview_copy_idle")
+        }
+    }
+
+    fn preview_sample(&self) -> Vec<SharedString> {
+        self.preview
+            .as_ref()
+            .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    fn export_button(&self, format: Format, filtered_count: usize, cx: &mut Context<Self>) -> Button {
         let (id, label) = match format {
             Format::Json => ("key-export-json", "export_json"),
             Format::Csv => ("key-export-csv", "export_csv"),
         };
-        let running_this = matches!(self.phase, Phase::Running { format: running, .. } if running == format);
+        let running_this = matches!(self.phase, Phase::RunningFile { format: running, .. } if running == format);
         Button::new(id)
             .small()
             .outline()
@@ -192,34 +544,48 @@ impl ZedisKeyExport {
             .icon(Icon::new(CustomIconName::Download))
             .label(i18n_common(cx, label))
             .loading(running_this)
-            .disabled(self.is_running() || self.keys.is_empty())
-            .on_click(cx.listener(move |this, _, _window, cx| this.start(format, cx)))
+            .disabled(self.is_running() || filtered_count == 0)
+            .on_click(cx.listener(move |this, _, _window, cx| this.start_file_export(format, cx)))
     }
 }
 
 impl Render for ZedisKeyExport {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let warning = cx.theme().warning;
-        let danger = cx.theme().danger;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let warning = theme.warning;
+        let danger = theme.danger;
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let limit = format_size(MAX_EXPORT_BYTES as u64, DECIMAL);
         let hint = t!("migration.web_export_hint", limit = limit, locale = &locale).to_string();
-        let total = self.keys.len();
+        let total_count = self.keys.len();
+        let filtered_count = self.export_keys(cx).count();
+        let is_running = self.is_running();
+        let is_copy = self.destination == Destination::Server;
+        let target_is_source = self.target_is_source(cx);
+
+        let destination_labels = vec![
+            i18n_migration(cx, "destination_file").to_string(),
+            i18n_migration(cx, "destination_server").to_string(),
+        ];
+        let destination_index = match self.destination {
+            Destination::File => 0,
+            Destination::Server => 1,
+        };
 
         let status = match &self.phase {
             Phase::Idle => None,
-            Phase::Running { done, .. } => {
+            Phase::RunningFile { done, total, .. } => {
                 let text = t!(
                     "migration.web_export_progress",
                     done = done,
                     total = total,
                     locale = &locale
                 );
-                let share = if total == 0 {
+                let share = if *total == 0 {
                     0.
                 } else {
-                    *done as f32 * 100. / total as f32
+                    *done as f32 * 100. / *total as f32
                 };
                 Some(
                     v_flex()
@@ -229,7 +595,7 @@ impl Render for ZedisKeyExport {
                         .into_any_element(),
                 )
             }
-            Phase::Finished {
+            Phase::FinishedFile {
                 exported,
                 bytes,
                 stopped_early,
@@ -258,6 +624,52 @@ impl Render for ZedisKeyExport {
                         .into_any_element(),
                 )
             }
+            Phase::RunningCopy {
+                done,
+                total,
+                written,
+                skipped,
+                failed,
+                bytes,
+            } => {
+                let share = if *total == 0 {
+                    0.
+                } else {
+                    *done as f32 * 100. / *total as f32
+                };
+                let text = format!(
+                    "{}: {} / {} ({}) · written {written}, skipped {skipped}, failed {failed}",
+                    i18n_migration(cx, "phase_running"),
+                    done,
+                    total,
+                    format_size(*bytes, DECIMAL),
+                );
+                Some(
+                    v_flex()
+                        .gap_1()
+                        .child(Progress::new("key-export-copy-progress").value(share))
+                        .child(Label::new(text).text_xs().text_color(muted))
+                        .into_any_element(),
+                )
+            }
+            Phase::FinishedCopy {
+                written,
+                skipped,
+                failed,
+                bytes,
+                cancelled,
+            } => {
+                let phase_name = if *cancelled {
+                    i18n_migration(cx, "phase_cancelled")
+                } else {
+                    i18n_migration(cx, "phase_finished")
+                };
+                let summary = format!(
+                    "{phase_name}: {written} ({}) · skipped {skipped} · failed {failed}",
+                    format_size(*bytes, DECIMAL),
+                );
+                Some(Label::new(summary).text_sm().into_any_element())
+            }
             Phase::Failed(error) => Some(
                 Label::new(error.clone())
                     .text_xs()
@@ -266,20 +678,198 @@ impl Render for ZedisKeyExport {
             ),
         };
 
+        let copy_controls = is_copy.then(|| {
+            let selected = self.target_server_id.clone();
+            let mut server_row = h_flex().gap_2().flex_wrap();
+            for (id, name) in &self.servers {
+                let is_selected = selected.as_ref() == Some(id);
+                let id_click = id.clone();
+                let button = Button::new(SharedString::from(format!("key-export-target-{id}")))
+                    .small()
+                    .label(name.clone())
+                    .disabled(is_running);
+                let button = if is_selected {
+                    button.primary()
+                } else {
+                    button.outline()
+                };
+                server_row = server_row.child(
+                    button.on_click(cx.listener(move |this, _, _window, cx| this.select_target(id_click.clone(), cx))),
+                );
+            }
+            let conflict_labels = vec![
+                i18n_migration(cx, "conflict_skip").to_string(),
+                i18n_migration(cx, "conflict_overwrite").to_string(),
+                i18n_migration(cx, "conflict_abort").to_string(),
+            ];
+            let sample_lines = self.preview_sample();
+            v_flex()
+                .gap_2()
+                .child(Label::new(i18n_copy(cx, "target_server")).text_sm())
+                .child(server_row)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_copy(cx, "target_db")).text_sm())
+                        .child(
+                            Input::new(&self.target_db_input)
+                                .small()
+                                .w(px(100.))
+                                .disabled(is_running),
+                        )
+                        .when(target_is_source, |this| {
+                            this.child(
+                                Label::new(i18n_migration(cx, "same_target_note"))
+                                    .text_xs()
+                                    .text_color(theme.yellow),
+                            )
+                        }),
+                )
+                .child(Label::new(i18n_migration(cx, "conflict_label")).text_sm())
+                .child(
+                    RadioGroup::horizontal("key-export-conflict")
+                        .children(conflict_labels)
+                        .selected_index(Some(self.conflict_mode.index()))
+                        .disabled(is_running)
+                        .on_click(cx.listener(|this, index, _window, cx| {
+                            this.conflict_mode = ConflictMode::from_index(*index);
+                            cx.notify();
+                        })),
+                )
+                .child(Label::new(self.preview_summary(cx)).text_xs().text_color(muted))
+                .when(!sample_lines.is_empty(), |this| {
+                    this.child(
+                        Label::new(i18n_migration(cx, "preview_sample_label"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(sample_block(sample_lines, cx))
+                })
+                .child(
+                    Label::new(i18n_copy(cx, "version_note"))
+                        .text_xs()
+                        .text_color(theme.yellow),
+                )
+        });
+
+        let action_row = if is_copy {
+            let can_copy = self.target_server_id.is_some() && !target_is_source && filtered_count > 0;
+            let start_label = if matches!(self.phase, Phase::FinishedCopy { .. }) {
+                "start_copy_again"
+            } else {
+                "start_copy"
+            };
+            let mut row = h_flex().w_full().gap_2().justify_end();
+            if is_running || self.preview_running {
+                row = row.child(
+                    Button::new("key-export-cancel")
+                        .small()
+                        .danger()
+                        .label(i18n_migration(cx, "cancel"))
+                        .on_click(cx.listener(|this, _, _window, _cx| {
+                            this.cancel.store(true, Ordering::Release);
+                        })),
+                );
+            } else {
+                row = row
+                    .child(
+                        Button::new("key-export-preview")
+                            .small()
+                            .outline()
+                            .disabled(!can_copy)
+                            .label(i18n_migration(cx, "preview_conflicts"))
+                            .on_click(cx.listener(|this, _, _window, cx| this.preview_copy(cx))),
+                    )
+                    .child(
+                        Button::new("key-export-start-copy")
+                            .small()
+                            .primary()
+                            .disabled(!can_copy)
+                            .label(i18n_migration(cx, start_label))
+                            .on_click(cx.listener(|this, _, _window, cx| this.start_copy(cx))),
+                    );
+            }
+            row
+        } else {
+            h_flex()
+                .w_full()
+                .gap_2()
+                .justify_end()
+                .child(self.export_button(Format::Csv, filtered_count, cx))
+                .child(self.export_button(Format::Json, filtered_count, cx))
+        };
+
         v_flex()
             .w_full()
             .gap_3()
             .child(Label::new(self.summary(cx)).text_sm())
-            .child(Label::new(hint).text_xs().text_color(muted))
-            .children(status)
+            .when_some(self.destination_summary(cx), |this, text| {
+                this.child(Label::new(text).text_xs().text_color(muted))
+            })
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(Label::new(i18n_migration(cx, "destination_label")).text_sm())
+                    .child(
+                        RadioGroup::horizontal("key-export-destination")
+                            .children(destination_labels)
+                            .selected_index(Some(destination_index))
+                            .disabled(is_running)
+                            .on_click(cx.listener(|this, index, _window, cx| {
+                                let destination = if *index == 1 {
+                                    Destination::Server
+                                } else {
+                                    Destination::File
+                                };
+                                this.set_destination(destination, cx);
+                            })),
+                    ),
+            )
             .child(
                 h_flex()
-                    .w_full()
                     .gap_2()
-                    .justify_end()
-                    .child(self.export_button(Format::Csv, cx))
-                    .child(self.export_button(Format::Json, cx)),
+                    .items_center()
+                    .child(Label::new(i18n_migration(cx, "prefix_filter")).text_sm())
+                    .child(
+                        Input::new(&self.prefix_input_state)
+                            .small()
+                            .w(px(220.))
+                            .disabled(is_running),
+                    )
+                    .child(
+                        Label::new(SharedString::from(format!("{filtered_count}/{total_count}")))
+                            .text_xs()
+                            .text_color(muted),
+                    ),
             )
+            .when(!is_copy, |this| {
+                this.child(Label::new(hint).text_xs().text_color(muted))
+            })
+            .children(copy_controls)
+            .children(status)
+            .child(action_row)
+    }
+}
+
+fn sample_block(sample_lines: Vec<SharedString>, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let long = sample_lines.len() > 5;
+    let block = v_flex()
+        .border_1()
+        .border_color(theme.border)
+        .rounded(px(4.))
+        .px_2()
+        .py_1()
+        .children(
+            sample_lines
+                .into_iter()
+                .map(|k| Label::new(k).text_xs().text_color(theme.danger_foreground)),
+        );
+    if long {
+        block.h(px(100.)).overflow_y_scrollbar().into_any_element()
+    } else {
+        block.into_any_element()
     }
 }
 
@@ -293,9 +883,38 @@ pub(crate) fn open_key_export_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let view = cx.new(|_| ZedisKeyExport::new(server_id, server_name, db, keys, source));
+    let view = cx.new(|cx| ZedisKeyExport::new(server_id, server_name, db, keys, source, None, window, cx));
     ZedisDialog::new(i18n_migration(cx, "export_title"))
-        .w(px(520.))
+        .w(px(580.))
+        .ok_text(i18n_common(cx, "close"))
+        .child(move || view.clone())
+        .open(window, cx);
+}
+
+/// Open the export dialog already set to copy `keys` to `preset`'s server / db.
+pub(crate) fn open_key_copy_dialog(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    keys: Vec<SharedString>,
+    preset: CopyPreset,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|cx| {
+        ZedisKeyExport::new(
+            server_id,
+            server_name,
+            db,
+            keys,
+            ExportSource::Selection,
+            Some(preset),
+            window,
+            cx,
+        )
+    });
+    ZedisDialog::new(i18n_migration(cx, "copy_title"))
+        .w(px(580.))
         .ok_text(i18n_common(cx, "close"))
         .child(move || view.clone())
         .open(window, cx);
