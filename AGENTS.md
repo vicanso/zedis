@@ -18,7 +18,7 @@ When working on any of the following subsystems, read the corresponding lines in
 - **Architecture, Server Feature Probe & Redis/Valkey Version Floors**: `CLAUDE.md` lines 103–121
 - **GPUI Gotchas & UI Conventions**: `CLAUDE.md` lines 123–166
 - **GPUI Skills (`.claude/skills/gpui-kit` & `.claude/skills/gpui-kit-design-guides`) & UI Tests**: `CLAUDE.md` lines 175–204
-- **Domain Vocabulary & ADRs**: `CONTEXT.md`, `docs/adr/`, `docs/agents/domain.md`, `docs/agents/issue-tracker.md`
+- **Domain Vocabulary, ADRs & Plans**: `CONTEXT.md`, `docs/adr/`, `docs/agents/domain.md`, `docs/agents/issue-tracker.md`, `docs/agents/optimization-plan.md`
 - **Project Memory (`~/.gemini/projects/zedis/memory/`)**:
   - `MEMORY.md` — full index of historical decisions and verification recipes
   - `desktop-ui-click-test-recipe.md` — isolated `ZEDIS_CONFIG_DIR` + `osascript` clicks by PID + `screencapture` + accessibility tree

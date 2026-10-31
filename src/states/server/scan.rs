@@ -51,6 +51,11 @@ pub(super) struct KeyScan {
     /// Set of prefixes that have been scanned (for lazy loading folders)
     pub(super) loaded_prefixes: AHashSet<SharedString>,
 
+    /// Lazy-loaded folder prefixes saved by [`Self::reset`] when
+    /// `keep_rows` is `true` (`begin_refresh_scan`), so expanded lazy folders
+    /// can be re-scanned once the top-level refresh round finishes.
+    pub(super) refresh_prefixes: AHashSet<SharedString>,
+
     /// Prefixes whose lazy folder-scan (`scan_prefix`) is currently in
     /// flight, stored in the same `"{folder_id}:"` form `scan_prefix`
     /// receives. Drives the inline spinner on the matching folder row;
@@ -167,10 +172,26 @@ impl KeyScan {
         // finished) is recognised as stale and drops its result instead of
         // re-injecting keys and resurrecting `incomplete_prefixes` entries.
         self.scan_epoch = self.scan_epoch.wrapping_add(1);
-        self.loaded_prefixes.clear();
+        if keep_rows {
+            self.refresh_prefixes = std::mem::take(&mut self.loaded_prefixes);
+        } else {
+            self.loaded_prefixes.clear();
+            self.refresh_prefixes.clear();
+        }
         self.scanning_prefixes.clear();
         self.complete_before_refresh.clear();
         self.incomplete_prefixes.clear();
+    }
+
+    /// How many keys the *current* scan has accumulated: zero while the
+    /// displayed rows are still the previous scan's waiting to be superseded
+    /// by the first replacement batch.
+    pub(super) fn scanned_len(&self) -> usize {
+        if self.keys_superseded_by_next_batch {
+            0
+        } else {
+            self.keys.len()
+        }
     }
 
     /// Add new keys with their types to the key map (deduplicating automatically)
@@ -181,7 +202,17 @@ impl KeyScan {
         // waiting for: they go now, so a key deleted on the server does not
         // survive the refresh that should have removed it. Emptied here
         // rather than before the scan so the panel never blanks.
-        let superseded = std::mem::take(&mut self.keys_superseded_by_next_batch);
+        //
+        // When a filter (keyword, regex, type, or prefix) narrows the scan and
+        // an intermediate page matches zero keys while more cursors remain
+        // (`cursors.is_some()`), keep the previous rows on screen until a
+        // non-empty batch lands or the scan finishes empty.
+        let keep_waiting = keys.is_empty() && self.cursors.is_some();
+        let superseded = if keep_waiting {
+            false
+        } else {
+            std::mem::take(&mut self.keys_superseded_by_next_batch)
+        };
         if superseded {
             self.keys.clear();
             self.key_ttls = Arc::new(AHashMap::new());

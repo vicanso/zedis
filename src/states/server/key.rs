@@ -40,7 +40,7 @@ use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar,
 use crate::{
     connection::{Capability, ServerDb},
     error::Error,
-    helpers::{escape_glob, format_ttl_chip, parse_duration, unix_ts, unix_ts_millis},
+    helpers::{escape_glob, folder_prefixes, format_ttl_chip, parse_duration, unix_ts, unix_ts_millis},
 };
 use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
@@ -285,7 +285,7 @@ impl ZedisServerState {
         // Describe this scan round in the task log: per-round COUNT and how many
         // keys are already loaded (the effective offset into the overall scan),
         // plus the match pattern when a keyword filter is active.
-        let offset = self.scan.keys.len();
+        let offset = self.scan.scanned_len();
         // A regex keyword has no glob to send: the scan asks for every name
         // and `name_filter` narrows each page as it arrives.
         let name_filter = self.name_filter();
@@ -355,6 +355,7 @@ impl ZedisServerState {
                         // next folder expand replace the tree with that
                         // folder alone.
                         this.scan.keys_superseded_by_next_batch = false;
+                        this.scan.refresh_prefixes.clear();
                     }
                 };
                 // Keep paging until this round's target is loaded or the scan
@@ -363,7 +364,7 @@ impl ZedisServerState {
                 // Load more, the tree's loading pill) sees the round's end in
                 // the same frame; and `KeyScanFinished` goes out after the
                 // last page is merged, so its handlers read the final key set.
-                let more = this.scan.cursors.is_some() && this.scan.keys.len() < max;
+                let more = this.scan.cursors.is_some() && this.scan.scanned_len() < max;
                 if !more {
                     this.scan.scanning = false;
                 }
@@ -878,6 +879,7 @@ impl ZedisServerState {
                 let mut finished = true;
                 if let Ok((keys, new_cursor, done)) = result {
                     let batch_loaded = loaded + keys.len();
+                    let will_continue = !done && batch_loaded < threshold && iteration + 1 < SCAN_PREFIX_MAX_PAGES;
                     debug!(
                         prefix = prefix.as_str(),
                         count = keys.len(),
@@ -887,12 +889,14 @@ impl ZedisServerState {
                         iteration,
                         "scan prefix page"
                     );
-                    this.extend_keys(
-                        keys.into_iter()
-                            .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
-                            .collect(),
-                    );
-                    cx.emit(ServerEvent::KeyTreeUpdated);
+                    if !keys.is_empty() || !will_continue {
+                        this.extend_keys(
+                            keys.into_iter()
+                                .map(|(k, t, ttl)| (SharedString::from(k), SharedString::from(t), ttl))
+                                .collect(),
+                        );
+                        cx.emit(ServerEvent::KeyTreeUpdated);
+                    }
                     if done {
                         this.scan.loaded_prefixes.insert(prefix.clone());
                         this.scan.incomplete_prefixes.remove(&prefix);
@@ -904,7 +908,7 @@ impl ZedisServerState {
                         {
                             this.scan.scan_completed = true;
                         }
-                    } else if batch_loaded < threshold && iteration + 1 < SCAN_PREFIX_MAX_PAGES {
+                    } else if will_continue {
                         // Haven't matched ~80% of key_scan_count yet and still
                         // under the page budget — keep scanning so results keep
                         // streaming in. Clone `prefix` so the original survives
@@ -927,6 +931,9 @@ impl ZedisServerState {
                         // the inline "Load more" row can resume the scan here.
                         this.scan.incomplete_prefixes.insert(prefix.clone(), new_cursor);
                     }
+                } else {
+                    this.scan.keys_superseded_by_next_batch = false;
+                    this.scan.refresh_prefixes.clear();
                 }
                 if finished {
                     // Prefix scan is over (completed, hit the page cap, or
@@ -997,6 +1004,34 @@ impl ZedisServerState {
             self.scan.complete_before_refresh.insert(prefix.clone());
         }
         self.scan_prefix(prefix, cx);
+    }
+
+    /// Re-scans lazy-loaded folder prefixes saved before a refresh (`⌘R`),
+    /// keeping only folders that are still expanded on screen (along with all
+    /// of their ancestor folders) while the keyspace scan is still partial.
+    pub fn reload_expanded_prefixes(&mut self, expanded_folders: &AHashSet<SharedString>, cx: &mut Context<Self>) {
+        let prefixes = std::mem::take(&mut self.scan.refresh_prefixes);
+        if prefixes.is_empty() || self.scan.scan_completed || self.keyword_query_mode() == QueryMode::Prefix {
+            return;
+        }
+        let separator = self.key_separator().to_string();
+        let max_depth = self.max_key_tree_depth();
+        let mut to_reload: Vec<SharedString> = prefixes
+            .into_iter()
+            .filter(|prefix| {
+                let Some(folder) = prefix.as_str().strip_suffix(separator.as_str()) else {
+                    return false;
+                };
+                expanded_folders.contains(folder)
+                    && folder_prefixes(folder, &separator, max_depth)
+                        .iter()
+                        .all(|ancestor| expanded_folders.contains(ancestor.as_str()))
+            })
+            .collect();
+        to_reload.sort_unstable();
+        for prefix in to_reload {
+            self.scan_prefix(prefix, cx);
+        }
     }
 
     fn get_value(&mut self, key: SharedString, task: ServerTask, cx: &mut Context<Self>) {

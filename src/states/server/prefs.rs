@@ -81,7 +81,11 @@ impl ConnectionPrefs {
     }
 
     pub(super) fn max_key_tree_depth(&self) -> usize {
-        self.max_key_tree_depth.max(1)
+        if self.max_key_tree_depth == 0 {
+            5
+        } else {
+            self.max_key_tree_depth
+        }
     }
 
     pub(super) fn auto_expand_threshold(&self) -> usize {

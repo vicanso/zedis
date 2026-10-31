@@ -327,14 +327,10 @@ impl ZedisStatusBar {
                 ServerEvent::KeyScanStarted => {
                     this.state.server_state.scan_finished = false;
                 }
-                ServerEvent::KeyScanFinished => {
+                ServerEvent::KeyScanFinished | ServerEvent::KeyScanPaged | ServerEvent::KeysListed => {
                     let state = server_state.read(cx);
                     this.state.server_state.size = format_size(state.dbsize(), state.listed_count());
-                    this.state.server_state.scan_finished = true;
-                }
-                ServerEvent::KeyScanPaged | ServerEvent::KeysListed => {
-                    let state = server_state.read(cx);
-                    this.state.server_state.size = format_size(state.dbsize(), state.listed_count());
+                    this.state.server_state.scan_finished = state.scan_completed();
                 }
                 ServerEvent::ErrorOccurred(error) => {
                     debug!(

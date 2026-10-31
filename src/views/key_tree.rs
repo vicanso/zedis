@@ -407,19 +407,10 @@ impl ZedisKeyTree {
                     this.reset_expand(cx);
                 }
                 ServerEvent::KeyScanFinished => {
-                    // Flush any coalesced rebuild first so the expansion
-                    // pass below sees the final key set.
-                    this.flush_key_tree_update(cx);
-                    this.check_and_expand_keys(cx);
-                    // Record what the freshly-built tree was scanned
-                    // for, so a later same-target refresh is recognised
-                    // — including the very first refresh after the
-                    // initial load (which never calls `handle_filter`).
-                    this.state.last_scan = Some((this.state.keyword.clone(), this.state.query_mode));
-                    // Refresh complete: drop the preserve flag so the
-                    // next genuinely-new query collapses as normal.
-                    this.state.preserve_expand_on_scan = false;
-                    cx.notify();
+                    this.finish_scan_round(cx);
+                }
+                ServerEvent::KeyScanPaged if !server_state.read(cx).scanning() => {
+                    this.finish_scan_round(cx);
                 }
                 _ => {}
             }),
@@ -629,17 +620,15 @@ impl ZedisKeyTree {
     /// what made it look random. The state knows both facts without the
     /// event, so ask it.
     fn catch_up_with_finished_scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (completed, keyword, query_mode) = {
+        let (settled, keyword, query_mode) = {
             let server_state = self.server_state.read(cx);
-            (
-                server_state.scan_completed(),
-                server_state.keyword(),
-                server_state.query_mode(),
-            )
+            let settled =
+                !server_state.scanning() && (server_state.scan_completed() || !server_state.keys().is_empty());
+            (settled, server_state.keyword(), server_state.query_mode())
         };
-        if !completed {
-            // Still paging, or never scanned: `KeyScanFinished` is still to
-            // come and this view will be there for it.
+        if !settled {
+            // Still paging, or never scanned: the round's end event is still
+            // to come and this view will be there for it.
             return;
         }
         self.state.query_mode = query_mode;
@@ -655,8 +644,31 @@ impl ZedisKeyTree {
         }
         self.check_and_expand_keys(cx);
         // What the displayed tree was scanned for, so the first refresh is
-        // recognised as one (see the `KeyScanFinished` handler).
+        // recognised as one (see `finish_scan_round`).
         self.state.last_scan = Some((keyword, query_mode));
+    }
+
+    /// Settle a scan round that has stopped paging — either because all
+    /// cursors returned to 0 (`KeyScanFinished`) or because the round filled
+    /// its per-page target (`KeyScanPaged` with `!scanning`).
+    fn finish_scan_round(&mut self, cx: &mut Context<Self>) {
+        // Cancel any coalesced timer and reset the throttle timestamp so the
+        // `KeyTreeUpdated` emitted at the end of the round rebuilds immediately
+        // with the updated `expanded_items`.
+        self.pending_tree_update = None;
+        self.last_tree_update_at = None;
+        self.check_and_expand_keys(cx);
+        // Record what the freshly-built tree was scanned for, so a later
+        // same-target refresh (`⌘R`) is recognised — including on databases
+        // larger than a single page where `KeyScanFinished` has not fired yet.
+        self.state.last_scan = Some((self.state.keyword.clone(), self.state.query_mode));
+        if self.state.preserve_expand_on_scan && !self.state.expanded_items.is_empty() {
+            let expanded = self.state.expanded_items.clone();
+            self.server_state.update(cx, |state, cx| {
+                state.reload_expanded_prefixes(&expanded, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn check_and_expand_keys(&mut self, cx: &mut Context<Self>) {
@@ -708,15 +720,6 @@ impl ZedisKeyTree {
                 this.update_key_tree(true, cx);
             });
         }));
-    }
-
-    /// Run any coalesced rebuild now — used on `KeyScanFinished` so
-    /// follow-up work (auto-expansion) operates on the final key set.
-    fn flush_key_tree_update(&mut self, cx: &mut Context<Self>) {
-        if self.pending_tree_update.take().is_some() {
-            self.last_tree_update_at = Some(Instant::now());
-            self.update_key_tree(true, cx);
-        }
     }
 
     /// Update the key tree structure when server state changes
@@ -771,6 +774,7 @@ impl ZedisKeyTree {
         // one anyway.
         let key_ttls_snapshot = server_state.key_ttls_arc();
         let readonly = server_state.readonly();
+        let top_level_scanning = server_state.scanning() && server_state.scanning_prefixes().is_empty();
         let scanning_prefixes = server_state.scanning_prefixes().clone();
         let incomplete_prefixes = server_state.incomplete_prefix_set();
         // Server-side SCAN TYPE already narrows the snapshot; re-apply
@@ -781,6 +785,10 @@ impl ZedisKeyTree {
         // Without tree TTL chips, `key_ttls` is empty — ignore any stale
         // TTL filter so the tree is not accidentally wiped.
         let ttl_enabled = server_state.show_key_tree_ttl();
+        let preserve_expand = self.state.preserve_expand_on_scan;
+        if !top_level_scanning {
+            self.state.preserve_expand_on_scan = false;
+        }
 
         let expanded_items = self.state.expanded_items.clone();
         let suppressed = self.state.suppressed_auto_expand.clone();
@@ -897,7 +905,7 @@ impl ZedisKeyTree {
                     // has nothing left or a scan still on its way — neither
                     // is a reason to throw the reader's folders away. Only a
                     // real "no results" (new query, flag not set) collapses.
-                    if result.is_empty() && !view.state.preserve_expand_on_scan {
+                    if result.is_empty() && !preserve_expand {
                         view.reset_expand(cx);
                     }
                     view.state.clear_selection = true;

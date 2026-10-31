@@ -1685,6 +1685,68 @@ mod tests {
         });
     }
 
+    /// When a filter narrows a multi-page refresh and an intermediate page
+    /// matches zero keys while cursors remain, the old rows stay on screen
+    /// until a matching batch arrives (or the scan finishes empty).
+    #[gpui::test]
+    fn a_refresh_waits_past_an_empty_intermediate_page_before_replacing_rows(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.extend_keys(batch(&[("a", "string"), ("b", "hash")]));
+            let before = state.scan.key_tree_id.clone();
+            state.begin_refresh_scan(cx);
+            assert_eq!(state.scan.scanned_len(), 0);
+
+            // Page 1 matched 0 keys, but the cursor is not back at 0 yet.
+            state.scan.cursors = Some(vec![42]);
+            state.extend_keys(Vec::new());
+            assert_eq!(key_names(state), ["a", "b"], "rows stay up while paging continues");
+            assert!(state.scan.keys_superseded_by_next_batch);
+            assert_eq!(state.scan.scanned_len(), 0);
+            assert_eq!(state.scan.key_tree_id, before);
+
+            // Page 2 brings the first matches and supersedes the old rows.
+            state.scan.cursors = None;
+            state.extend_keys(batch(&[("c", "list")]));
+            assert_eq!(key_names(state), ["c"]);
+            assert!(!state.scan.keys_superseded_by_next_batch);
+            assert_eq!(state.scan.scanned_len(), 1);
+            assert_ne!(state.scan.key_tree_id, before);
+        });
+    }
+
+    /// Lazy-loaded folder prefixes saved by a refresh are re-scanned only
+    /// when the folder and all of its ancestors remain expanded on screen.
+    #[gpui::test]
+    fn a_refresh_reloads_only_lazy_prefixes_whose_folder_chain_stays_open(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ZedisServerState::default());
+        state.update(cx, |state, cx| {
+            state.link.manually_offline = true;
+            state.link.last_offline_notice = unix_ts();
+            state.scan.loaded_prefixes.extend([
+                SharedString::from("open:sub:"),
+                SharedString::from("closed:"),
+                SharedString::from("collapsed_parent:child:"),
+            ]);
+            state.begin_refresh_scan(cx);
+            assert!(state.scan.loaded_prefixes.is_empty());
+            assert_eq!(state.scan.refresh_prefixes.len(), 3);
+
+            let expanded: AHashSet<SharedString> = [
+                SharedString::from("open"),
+                SharedString::from("open:sub"),
+                SharedString::from("collapsed_parent:child"),
+            ]
+            .into_iter()
+            .collect();
+            state.reload_expanded_prefixes(&expanded, cx);
+            assert_eq!(
+                state.scan.scanning_prefixes,
+                [SharedString::from("open:sub:")].into_iter().collect()
+            );
+        });
+    }
+
     /// A new query is not a refresh: its rows answer the old question and go
     /// at once, with nothing left owing to a later batch.
     #[gpui::test]

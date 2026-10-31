@@ -597,4 +597,33 @@ mod tests {
         })
         .expect("the window is open");
     }
+
+    /// On a database larger than a single page, the initial scan stops with
+    /// `KeyScanPaged` (not `KeyScanFinished`): the tree still records
+    /// `last_scan` so `⌘R` / `RefreshAll` keeps the expanded folders instead
+    /// of treating the refresh as a brand-new query (#148).
+    #[gpui::test]
+    fn a_paged_scan_round_settles_so_refresh_keeps_the_expanded_folders(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let (handle, tree, server_state) = open_tree(cx, None);
+
+        server_state.update(cx, |_, cx| {
+            cx.emit(ServerEvent::KeyScanPaged);
+            cx.emit(ServerEvent::KeyTreeUpdated);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            tree_state(cx, &tree, |s| s.last_scan.clone()),
+            Some((SharedString::default(), QueryMode::All))
+        );
+
+        tree.update(cx, |tree, _| {
+            tree.state.expanded_items.insert("user".into());
+        });
+        send(cx, handle, &tree, KeyTreeAction::RefreshAll);
+        assert!(
+            tree_state(cx, &tree, |s| s.expanded_items.contains("user")),
+            "refresh after a paged scan preserves expanded folders"
+        );
+    }
 }
