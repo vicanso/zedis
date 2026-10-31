@@ -41,7 +41,6 @@ env:
   # Baked into the binaries (startup::BUILD_CHANNEL): the rolling build from
   # main follows the pre-release update channel by default.
   ZEDIS_BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'nightly' || 'stable' }}
-  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.98.1
   APP_NAME: Zedis
@@ -53,6 +52,8 @@ env:
 jobs:
   prepare_vars:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
     outputs:
       build_date: ${{ steps.date.outputs.date }}
       should_build: ${{ steps.gate.outputs.should_build }}
@@ -345,6 +346,8 @@ jobs:
           echo "macos ${{ matrix.arch }} ${{ matrix.kind }} $NAME $SHA $SIZE" > "meta/macos-${{ matrix.dmg_suffix }}.txt"
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           ./.github/workflows/upload_asset.sh "$DMG_NAME" "$GITHUB_TOKEN"
@@ -657,6 +660,8 @@ jobs:
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           ./.github/workflows/upload_asset.sh "./${{ env.ZIP_NAME }}" "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh "./${{ env.MSI_NAME }}" "$GITHUB_TOKEN"
@@ -839,6 +844,8 @@ jobs:
           done
       - name: upload asset
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           ./.github/workflows/upload_asset.sh "./zedis-linux-${{ matrix.suffix }}.tar.gz" "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh "./zedis-${{ matrix.suffix }}.AppImage.tar.gz" "$GITHUB_TOKEN"
@@ -914,6 +921,8 @@ jobs:
           echo "--- SHA256SUMS ---"; cat SHA256SUMS
           echo "--- latest.json ---"; cat latest.json
       - name: upload checksum assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           ./.github/workflows/upload_asset.sh ./SHA256SUMS "$GITHUB_TOKEN"
           ./.github/workflows/upload_asset.sh ./latest.json "$GITHUB_TOKEN"
@@ -949,6 +958,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     env:
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
       # owner/repo on Gitee.
       GITEE_REPO: vicanso/zedis

@@ -6,7 +6,6 @@ on:
       branches: [ "**" ]
 
 env:
-  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.98.1
   APP_NAME: Zedis

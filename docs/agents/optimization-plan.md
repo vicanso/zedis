@@ -147,7 +147,7 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 | 3.1 | MCP Server | Add `troubleshooting_report` (10th MCP tool) in `zedis-bridge` | Done |
 | 3.2 | MCP Server | Update stale `WRITE_ACCOUNT_REFUSAL` hint in `zedis-bridge/src/mcp.rs` | Done |
 | 3.3 | MCP Server | Share client presence across multi-bridge SQL deployments | Optional |
-| 4.1 | CI Security | Scope `GITHUB_TOKEN` to only steps that need it in `lint.yml` / `publish.yml` | Pending |
-| 4.2 | Dependencies | Update yanked `crypto-bigint` (`0.7.6 -> 0.7.10`) in `Cargo.lock` | Pending |
+| 4.1 | CI Security | Scope `GITHUB_TOKEN` to only steps that need it in `lint.yml` / `publish.yml` | Done |
+| 4.2 | Dependencies | Update yanked `crypto-bigint` (`0.7.6 -> 0.7.10`) in `Cargo.lock` | Done |
 | 5.1 | Docs | Replace `user-attachments` links in `README.md` / `README_zh.md` (#257) | Pending |
 | 5.2 | Issues | Close confirmed-fixed Issue #190 | Pending |
