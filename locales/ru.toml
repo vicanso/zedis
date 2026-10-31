@@ -1,6 +1,8 @@
 [common]
 clients_connected_blocked = "Подключённые / заблокированные клиенты"
 deep_link_invalid = "Не удалось открыть эту ссылку Redis: %{error}"
+deep_link_unknown_server = "Сервер «%{server}» не настроен в Zedis."
+copied_key_link = "Ссылка zedis:// скопирована в буфер обмена"
 tab_close = "Закрыть вкладку"
 tab_close_others = "Закрыть другие вкладки"
 tab_close_right = "Закрыть вкладки справа"
@@ -486,6 +488,7 @@ key_timeline_view_snapshot = "Снимок"
 
 [key_tree]
 copy_key_tooltip = "Скопировать имя ключа"
+copy_key_link = "Скопировать ссылку на ключ"
 copy_prefix_tooltip = "Скопировать префикс папки"
 rename_key_tooltip = "Переименовать ключ…"
 folder_tags = "Теги: %{tags}"

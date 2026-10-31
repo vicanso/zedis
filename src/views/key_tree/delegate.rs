@@ -996,6 +996,7 @@ mod tests {
                 A::ExportKey(id("a")),
                 A::EditKeyTag(id("a")),
                 A::CopyKeyName(id("a")),
+                A::CopyKeyLink(id("a")),
                 A::RenameKey(id("a")),
                 A::ToggleFavoriteKey(id("a")),
             ]
@@ -1046,6 +1047,7 @@ mod tests {
                 A::ExportKey(id("a")),
                 A::EditKeyTag(id("a")),
                 A::CopyKeyName(id("a")),
+                A::CopyKeyLink(id("a")),
                 A::ToggleFavoriteKey(id("a")),
             ]
         );

@@ -26,15 +26,15 @@ use crate::{
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{
-        EditorAction, KeyOpAction, PickFailure, card_background, format_duration, format_duration_units,
+        DeepLink, EditorAction, KeyOpAction, PickFailure, card_background, format_duration, format_duration_units,
         format_unix_secs, get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs, unix_ts, validate_ttl,
         with_hot_key,
     },
     states::{
         ConnectionErrorKind, DataFormat, HINT_EDITOR_GUIDE, KeyType, LinkProblem, MAX_INLINE_VALUE_SIZE, ServerEvent,
         VALUE_PREVIEW_BYTES, ViewMode, ViewerKind, ZedisGlobalStore, ZedisServerState, dialog_button_props,
-        i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_expire_at, i18n_geo_map, i18n_key_ops, i18n_shortcuts,
-        i18n_status_bar, update_app_state_and_save_quiet,
+        i18n_bitmap, i18n_common, i18n_copy, i18n_editor, i18n_expire_at, i18n_geo_map, i18n_key_ops, i18n_key_tree,
+        i18n_shortcuts, i18n_status_bar, update_app_state_and_save_quiet,
     },
     views::{
         BitmapEvent, CopyDialogPurpose, DiffCloseCallback, GeoMapEvent, ZedisBitmapEditor, ZedisBytesEditor,

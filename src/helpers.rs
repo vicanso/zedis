@@ -98,6 +98,7 @@ pub use web_files::{
 pub use zedis_connection::string::*;
 pub use zedis_connection::time::{parse_duration, unix_ts, unix_ts_millis};
 pub use zedis_core::csv::build_csv;
+pub use zedis_core::deep_link::{DeepLink, DeepLinkError, is_zedis_deep_link};
 pub use zedis_core::diff::*;
 pub use zedis_core::env::is_development;
 pub use zedis_core::fs::*;

@@ -22,6 +22,7 @@ pub mod capability;
 pub mod change_log;
 pub mod codec;
 pub mod csv;
+pub mod deep_link;
 pub mod diff;
 pub mod env;
 pub mod features;

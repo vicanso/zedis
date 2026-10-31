@@ -278,6 +278,11 @@ impl MoreActions {
             menu = menu.menu_element_with_icon(IconName::Copy, Box::new(EditorAction::CopyTo), move |_, cx| {
                 Label::new(i18n_copy(cx, "copy_to"))
             });
+            menu = menu.menu_element_with_icon(
+                IconName::ExternalLink,
+                Box::new(EditorAction::CopyKeyLink),
+                move |_, cx| Label::new(i18n_key_tree(cx, "copy_key_link")),
+            );
         }
         if diff_with_server_item {
             menu = menu.menu_element_with_icon(

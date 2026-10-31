@@ -1766,12 +1766,14 @@ mod upgrade_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::DeepLink;
     // Before any test triggers `persist_nav`: a stray background save must
     // never touch the real `zedis.toml`.
     use crate::test_support::{hold_the_proxy, isolate_config};
     use gpui::{Subscription, TestAppContext};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use zedis_connection::set_servers_cache;
 
     /// The two secrets the settings hold are kept encrypted — the proxy only
     /// when it carries credentials — and read back plain. A value that does
@@ -1940,6 +1942,63 @@ mod tests {
             );
         });
         assert_eq!(events.borrow().as_slice(), &[("srv-1".to_string(), 1)]);
+    }
+
+    #[gpui::test]
+    fn open_deep_link_resolves_server_and_queues_key(cx: &mut TestAppContext) {
+        let (state, events, _sub) = state_with_recorder(cx);
+        set_servers_cache(vec![RedisServer {
+            id: "srv-prod".to_string(),
+            name: "Prod Cache".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 6379,
+            ..Default::default()
+        }]);
+        let notifications: Rc<RefCell<Vec<String>>> = Rc::default();
+        let notif_recorder = notifications.clone();
+        let _notif_sub = cx.update(|cx| {
+            cx.subscribe(&state, move |_state, event: &GlobalEvent, _cx| {
+                if let GlobalEvent::Notification(action) = event {
+                    notif_recorder.borrow_mut().push(action.message.to_string());
+                }
+            })
+        });
+
+        // Case-insensitive name match + db + key + view
+        state.update(cx, |state, cx| {
+            state.open_deep_link(
+                DeepLink {
+                    server: "prod cache".to_string(),
+                    db: Some(4),
+                    key: Some("user:42".to_string()),
+                    view: Some("editor".to_string()),
+                },
+                cx,
+            );
+        });
+        assert_eq!(events.borrow().as_slice(), &[("srv-prod".to_string(), 4)]);
+        state.update(cx, |state, _| {
+            assert_eq!(
+                state.take_multi_search_pending_key("srv-prod", 4).as_deref(),
+                Some("user:42")
+            );
+        });
+
+        // Unknown server emits a warning notification without changing selection
+        state.update(cx, |state, cx| {
+            state.open_deep_link(
+                DeepLink {
+                    server: "nonexistent".to_string(),
+                    db: Some(0),
+                    key: None,
+                    view: None,
+                },
+                cx,
+            );
+        });
+        assert_eq!(events.borrow().len(), 1);
+        assert_eq!(notifications.borrow().len(), 1);
+        assert!(notifications.borrow()[0].contains("nonexistent"));
     }
 
     /// The state is written asynchronously, so quitting used to be a race the

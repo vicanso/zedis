@@ -1015,6 +1015,7 @@ mod tests {
                 "-",
                 "Rename",
                 "CopyTo",
+                "CopyKeyLink",
                 "DiffWithServer",
                 "Delete",
             ]
@@ -1050,7 +1051,14 @@ mod tests {
         .expect("the window is open");
         assert_eq!(
             menu_items(cx, handle, &sent, more_menu),
-            ["ExportValue", "WatchTimeline", "-", "CopyTo", "DiffWithServer"]
+            [
+                "ExportValue",
+                "WatchTimeline",
+                "-",
+                "CopyTo",
+                "CopyKeyLink",
+                "DiffWithServer"
+            ]
         );
     }
 
@@ -1079,7 +1087,7 @@ mod tests {
         );
         assert_eq!(
             menu_items(cx, handle, &sent, more_menu),
-            ["WatchTimeline", "Rename", "CopyTo", "Delete"]
+            ["WatchTimeline", "Rename", "CopyTo", "CopyKeyLink", "Delete"]
         );
 
         let loading = RedisValue {

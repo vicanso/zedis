@@ -6,7 +6,7 @@ Icon=io.github.vicanso.zedis
 Type=Application
 Terminal=false
 Categories=Development;Database;
-MimeType=x-scheme-handler/redis;x-scheme-handler/rediss;
+MimeType=x-scheme-handler/redis;x-scheme-handler/rediss;x-scheme-handler/zedis;
 Keywords=redis;valkey;database;gui;client;
 # Flatpak sets FLATPAK_ID=io.github.vicanso.zedis; the binary uses that as
 # the Wayland app_id so this desktop entry is matched for name + icon.

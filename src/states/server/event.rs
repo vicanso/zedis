@@ -433,6 +433,7 @@ impl ZedisServerState {
             EditorAction::Delete => Capability::DeleteKey,
             EditorAction::Rename => Capability::RenameKey,
             EditorAction::CopyTo => Capability::CopyKeyToServer,
+            EditorAction::CopyKeyLink => Capability::CopyToClipboard,
             EditorAction::ExportValue => Capability::ExportValue,
             // Reading what was changed is a read, like any other diff.
             EditorAction::DiffHistory(_)

@@ -253,6 +253,11 @@ impl RowMenu {
                         Box::new(KeyTreeAction::CopyKeyName(id.clone())),
                         move |_, cx| Label::new(i18n_key_tree(cx, "copy_key_tooltip")),
                     );
+                    menu = menu.menu_element_with_icon(
+                        IconName::ExternalLink,
+                        Box::new(KeyTreeAction::CopyKeyLink(id.clone())),
+                        move |_, cx| Label::new(i18n_key_tree(cx, "copy_key_link")),
+                    );
                 }
             }
             if !is_folder {

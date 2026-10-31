@@ -1,6 +1,8 @@
 [common]
 clients_connected_blocked = "Clientes conectados / bloqueados"
 deep_link_invalid = "Não foi possível abrir este link do Redis: %{error}"
+deep_link_unknown_server = "O servidor \"%{server}\" não está configurado no Zedis."
+copied_key_link = "Link zedis:// copiado para a área de transferência"
 tab_close = "Fechar aba"
 tab_close_others = "Fechar outras abas"
 tab_close_right = "Fechar abas à direita"
@@ -486,6 +488,7 @@ key_timeline_view_snapshot = "Instantâneo"
 
 [key_tree]
 copy_key_tooltip = "Copiar nome da chave"
+copy_key_link = "Copiar link para a chave"
 copy_prefix_tooltip = "Copiar prefixo da pasta"
 rename_key_tooltip = "Renomear chave…"
 folder_tags = "Tags: %{tags}"

@@ -139,7 +139,7 @@
                             Source='$(var.CargoTargetBinDir)\zedis.exe' KeyPath='yes' />
                     </Component>
 
-                    <!-- redis:// and rediss:// links open in Zedis: the link
+                    <!-- redis://, rediss://, and zedis:// links open in Zedis: the link
                          arrives as the "%1" argument and a running instance
                          receives it through the single-instance hand-off. -->
                     <Component Id='UrlSchemeRedis' Guid='*'>
@@ -153,6 +153,14 @@
                     <Component Id='UrlSchemeRediss' Guid='*'>
                         <RegistryKey Root='HKCR' Key='rediss'>
                             <RegistryValue Type='string' Value='URL:Redis connection (TLS)' KeyPath='yes' />
+                            <RegistryValue Type='string' Name='URL Protocol' Value='' />
+                            <RegistryValue Key='DefaultIcon' Type='string' Value='"[APPLICATIONFOLDER]zedis.exe",0' />
+                            <RegistryValue Key='shell\open\command' Type='string' Value='"[APPLICATIONFOLDER]zedis.exe" "%1"' />
+                        </RegistryKey>
+                    </Component>
+                    <Component Id='UrlSchemeZedis' Guid='*'>
+                        <RegistryKey Root='HKCR' Key='zedis'>
+                            <RegistryValue Type='string' Value='URL:Zedis deep link' KeyPath='yes' />
                             <RegistryValue Type='string' Name='URL Protocol' Value='' />
                             <RegistryValue Key='DefaultIcon' Type='string' Value='"[APPLICATIONFOLDER]zedis.exe",0' />
                             <RegistryValue Key='shell\open\command' Type='string' Value='"[APPLICATIONFOLDER]zedis.exe" "%1"' />
@@ -178,6 +186,7 @@
             <ComponentRef Id='binary0' />
             <ComponentRef Id='UrlSchemeRedis' />
             <ComponentRef Id='UrlSchemeRediss' />
+            <ComponentRef Id='UrlSchemeZedis' />
 
             <ComponentRef Id='StartMenuShortcutComp' />
             <ComponentRef Id='DesktopShortcutComp' />

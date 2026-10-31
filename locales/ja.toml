@@ -1,6 +1,8 @@
 [common]
 clients_connected_blocked = "接続中 / ブロック中のクライアント"
 deep_link_invalid = "この Redis リンクを開けません: %{error}"
+deep_link_unknown_server = "サーバー「%{server}」は Zedis に設定されていません。"
+copied_key_link = "zedis:// リンクをクリップボードにコピーしました"
 tab_close = "タブを閉じる"
 tab_close_others = "他のタブを閉じる"
 tab_close_right = "右側のタブを閉じる"
@@ -486,6 +488,7 @@ key_timeline_view_snapshot = "スナップショット"
 
 [key_tree]
 copy_key_tooltip = "キー名をコピー"
+copy_key_link = "キーへのリンクをコピー"
 copy_prefix_tooltip = "フォルダの接頭辞をコピー"
 rename_key_tooltip = "キー名を変更…"
 folder_tags = "タグ: %{tags}"

@@ -25,7 +25,7 @@ use crate::{
         get_search_history_manager, recent_keys_scope,
     },
     helpers::{
-        EditorAction, TtlChipKind, TtlFilter, clearing_an_applied_filter, folder_prefixes, format_ttl_chip,
+        DeepLink, EditorAction, TtlChipKind, TtlFilter, clearing_an_applied_filter, folder_prefixes, format_ttl_chip,
         get_mono_font_family, group_thousands, saves_files, single_child_expanded_set, split_key_segments,
         theme_color_for_tag, ttl_chip_kind, ttl_secs, validate_long_string, with_hot_key,
     },
@@ -529,6 +529,20 @@ impl ZedisKeyTree {
         // A scan that finished before this view existed left no trace it can
         // subscribe to — read it off the state before the first build.
         this.catch_up_with_finished_scan(window, cx);
+        // A key selected before this view was constructed (e.g. from a deep
+        // link or multi-search jump) emitted `KeySelected` before our
+        // subscription existed: expand its parent folders and queue a scroll
+        // so the initial tree build reveals it.
+        if let Some(selected_key) = this.server_state.read(cx).key().filter(|k| !k.is_empty()) {
+            let (separator, max_depth) = {
+                let s = this.server_state.read(cx);
+                (s.key_separator().to_string(), s.max_key_tree_depth())
+            };
+            for prefix in folder_prefixes(&selected_key, &separator, max_depth) {
+                this.state.expanded_items.insert(prefix.into());
+            }
+            this.state.pending_scroll_key = Some(selected_key);
+        }
         // Initial tree build
         this.update_key_tree(true, cx);
         this.start_auto_refresh(cx);

@@ -18,6 +18,7 @@
 use crate::connection::{RedisServer, get_servers, is_connection_uri};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{DbOpenFailure, init_database, quarantine_database};
+use crate::helpers::{DeepLink, is_zedis_deep_link};
 #[cfg(not(target_family = "wasm"))]
 use crate::states::ZedisAppState;
 use crate::states::{GlobalEvent, NotificationAction, Route, ServerView, ZedisGlobalStore};
@@ -187,13 +188,16 @@ impl Render for DatabaseErrorView {
     }
 }
 
-/// The connection links among the arguments (`redis://` / `rediss://`, and
-/// Valkey's `valkey://` / `valkeys://` — see `is_connection_uri`). The OS
-/// hands a clicked link to the binary this way (the `%u` of the desktop
-/// entry, the `"%1"` of the Windows registry command), and a terminal user
-/// can pass one directly; macOS delivers links through `on_open_urls` instead.
+/// The connection and deep links among the arguments (`redis://` / `rediss://`,
+/// Valkey's `valkey://` / `valkeys://`, and `zedis://`). The OS hands a
+/// clicked link to the binary this way (the `%u` of the desktop entry, the
+/// `"%1"` of the Windows registry command), and a terminal user can pass one
+/// directly; macOS delivers links through `on_open_urls` instead.
 pub(crate) fn cli_redis_urls() -> Vec<String> {
-    std::env::args().skip(1).filter(|arg| is_connection_uri(arg)).collect()
+    std::env::args()
+        .skip(1)
+        .filter(|arg| is_connection_uri(arg) || is_zedis_deep_link(arg))
+        .collect()
 }
 
 /// A link without its credentials, for the log.
@@ -207,15 +211,31 @@ fn redact_url(url: &str) -> String {
     }
 }
 
-/// Open the first Redis link of `urls` (the rest are ignored — one link is
-/// one connection to land on). Handles links from the OS, a second launch
-/// and the command line alike; an unparsable one becomes a notice.
+/// Open the first Redis or `zedis://` link of `urls` (the rest are ignored —
+/// one link is one target to land on). Handles links from the OS, a second
+/// launch and the command line alike; an unparsable one becomes a notice.
 pub(crate) fn open_redis_urls(urls: Vec<String>, cx: &mut App) {
-    let Some(url) = urls.into_iter().find(|url| is_connection_uri(url)) else {
+    let Some(url) = urls
+        .into_iter()
+        .find(|url| is_connection_uri(url) || is_zedis_deep_link(url))
+    else {
         return;
     };
-    info!(url = %redact_url(&url), "opening redis link");
     let store = cx.global::<ZedisGlobalStore>().clone();
+    if is_zedis_deep_link(&url) {
+        info!(url = %redact_url(&url), "opening zedis deep link");
+        store.update(cx, |state, cx| match DeepLink::parse(url.trim()) {
+            Ok(link) => state.open_deep_link(link, cx),
+            Err(e) => {
+                warn!(error = %e, url = %redact_url(&url), "zedis deep link rejected");
+                let locale = state.locale().to_string();
+                let message = t!("common.deep_link_invalid", error = e.to_string(), locale = &locale).to_string();
+                cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message.into())));
+            }
+        });
+        return;
+    }
+    info!(url = %redact_url(&url), "opening redis link");
     store.update(cx, |state, cx| match RedisServer::from_import_uri(url.trim()) {
         Ok(server) => state.open_server_from_uri(server, cx),
         Err(e) => {

@@ -53,7 +53,7 @@ use std::sync::Arc;
 #[cfg(target_family = "wasm")]
 use std::time::Duration;
 #[cfg(target_family = "wasm")]
-use tracing::{error, info};
+use tracing::{error, info, warn};
 #[cfg(target_family = "wasm")]
 use tracing_subscriber::prelude::*;
 #[cfg(target_family = "wasm")]
@@ -66,7 +66,9 @@ use zedis_connection::{
 #[cfg(target_family = "wasm")]
 use zedis_gui::helpers::pacing::{PAGE_DATA_REFRESH, PAGE_DATA_RETRY, SERVER_LIST_REFRESH, set_unattended, unattended};
 #[cfg(target_family = "wasm")]
-use zedis_gui::helpers::{PickDone, PickFailure, PickedFile, set_web_command_key, set_web_download, set_web_upload};
+use zedis_gui::helpers::{
+    DeepLink, PickDone, PickFailure, PickedFile, set_web_command_key, set_web_download, set_web_upload,
+};
 #[cfg(target_family = "wasm")]
 use zedis_gui::states::{GlobalEvent, ZedisAppState, ZedisGlobalStore};
 
@@ -286,6 +288,7 @@ fn follow_server_list(transport: Arc<HttpBridgeTransport>, mut requests: Unbound
             Ok(list) => {
                 info!(count = list.len(), "server list from the bridge");
                 apply_server_list(list, cx);
+                apply_initial_web_deep_link(cx);
             }
             Err(e) => error!(error = %e, "the server list could not be fetched"),
         });
@@ -370,6 +373,26 @@ fn apply_server_list(list: Vec<RedisServer>, cx: &mut gpui::App) {
     let store = cx.global::<ZedisGlobalStore>().clone();
     let state = store.state();
     state.update(cx, |_state, cx| cx.emit(GlobalEvent::ServerListUpdated));
+}
+
+/// If the page URL query string carries a deep link (`?server=...&db=...&key=...`
+/// or `?zedis=...`), open that target once the initial server list has arrived.
+#[cfg(target_family = "wasm")]
+fn apply_initial_web_deep_link(cx: &mut gpui::App) {
+    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
+        return;
+    };
+    match DeepLink::from_query_str(&search) {
+        Ok(Some(link)) => {
+            info!(server = %link.server, db = ?link.db, "opening web query deep link");
+            let store = cx.global::<ZedisGlobalStore>().clone();
+            store.update(cx, |state, cx| state.open_deep_link(link, cx));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(error = %e, "web query deep link rejected");
+        }
+    }
 }
 
 /// The page's `visibilitychange`, from `index.html`. A hidden page polls the

@@ -1,6 +1,8 @@
 [common]
 clients_connected_blocked = "已连接 / 阻塞客户端"
 deep_link_invalid = "无法打开该 Redis 链接：%{error}"
+deep_link_unknown_server = "Zedis 中未配置服务器“%{server}”。"
+copied_key_link = "已复制 zedis:// 链接到剪贴板"
 tab_close = "关闭标签页"
 tab_close_others = "关闭其他标签页"
 tab_close_right = "关闭右侧标签页"
@@ -486,6 +488,7 @@ key_timeline_view_snapshot = "完整快照"
 
 [key_tree]
 copy_key_tooltip = "复制 key 名称"
+copy_key_link = "复制 key 链接"
 copy_prefix_tooltip = "复制文件夹前缀"
 rename_key_tooltip = "重命名 key…"
 folder_tags = "标签：%{tags}"

@@ -105,13 +105,18 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - `crates/zedis-core/src/tally.rs`: extended `MonitorTally` with 2D cross-tabulations (`command_prefixes`: `Command × Key prefix`, and `client_commands`: `Client × Command`) alongside the 1D `clients`, `commands`, and `prefixes` tallies.
   - `src/views/monitor.rs`: added command-count-bounded sampling (`1,000`, `5,000`, `10,000` commands with a 60s safety timeout and live progress badge) alongside time-bounded sampling (`5s`, `10s`, `30s`), rendered the 5-column aggregate summary (`Clients`, `Commands`, `Key prefixes`, `Command × Key prefix`, `Client × Command`) with one-click multi-token drill-down into captured lines, and added `Summary (CSV)` / `Summary (JSON)` exports (`build_summary_csv` / `build_summary_json`).
 
-### B3. `zedis://` Deep Links & Sharing
+### B3. `zedis://` Deep Links & Sharing — **Done (2026-10-31)**
 - **Why**: A teammate pastes `zedis://open?server=<name>&db=3&key=order:42` into chat or a ticket, and one click opens that key. The web build supports this naturally with URLs.
 - **Builds on**: Server config / groups, the key tree's "reveal key" path, the command palette.
 - **Scope**:
   - Desktop: register the URL scheme (macOS `Info.plist`, Windows registry in the MSI, Linux `.desktop` `MimeType`). Parse the link in `zedis-core` (pure, unit-tested). Match the server by name or id, never by embedding credentials.
   - "Copy link to key" in the key menu. Web build: the same deep link as a page URL (no root-absolute paths; respect `--base-path`).
 - **Constraints**: Links never carry passwords or values. An unknown server shows a "not configured here" prompt instead of a silent failure.
+- **Implemented**:
+  - `crates/zedis-core/src/deep_link.rs`: `DeepLink`, `DeepLinkError`, `is_zedis_deep_link`, `DeepLink::parse`, `DeepLink::from_query_str`, `DeepLink::to_zedis_uri`, and `DeepLink::to_web_query` with RFC 3986 percent-encoding/decoding and strict rejection of embedded userinfo or secret query parameters.
+  - Packaging & URL registration: registered `zedis://` alongside `redis://`/`rediss://` in `Cargo.toml` (`osx_url_schemes`), `assets/zedis.desktop`, `flatpak/io.github.vicanso.zedis.desktop`, and `wix/main.wxs` (`UrlSchemeZedis`).
+  - Desktop & Web navigation: `cli_redis_urls` and `open_redis_urls` in `src/startup.rs` forward and handle `zedis://` links; `ZedisAppState::open_deep_link` in `src/states/app/servers.rs` resolves the server by ID or name (case-insensitive fallback), shows `common.deep_link_unknown_server` if not configured, and routes to the target DB, view, and key (`ZedisKeyTree::new` expands parent folders and scrolls to a pre-selected key); `zedis-web/src/lib.rs` applies `window.location.search` deep links once the initial server list arrives.
+  - UI entry points: added **Copy link to key** (`key_tree.copy_key_link`) to the key tree right-click context menu (`src/views/key_tree/row_menu.rs`) and the value editor's `…` menu (`src/views/editor/more_menu.rs`).
 
 ### B4. Plugin Decoders (WASM)
 - **Why**: The Custom Script Viewer already lets users decode values with a script. Opening that up as sandboxed WASM plugins would let companies decode in-house serialization formats and would grow a community ecosystem.
@@ -132,5 +137,5 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | Done (rate limiting, pause/resume across export/import/copy, post-copy verification) |
 | B1 | Performance | Built-in benchmark with charts and run comparison | Done (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) |
 | B2 | Performance | MONITOR recording & aggregate analysis | Done (time + command-count sampling, Command×Prefix & Client×Command cross-tabs, multi-token drill-down, CSV/JSON summary export) |
-| B3 | Workflow | `zedis://` deep links & "copy link to key" | Proposed |
+| B3 | Workflow | `zedis://` deep links & "copy link to key" | Done (`zedis://open?server=&db=&key=&view=`, web query links, OS URL scheme registration, Copy link to key in tree & editor) |
 | B4 | Extensibility | WASM plugin decoders | Proposed |

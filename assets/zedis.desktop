@@ -6,8 +6,8 @@ Exec=zedis %u
 Icon=zedis
 Type=Application
 Categories=Development;Database;
-# redis:// / rediss:// links open in Zedis (the link arrives as the %u argument).
-MimeType=x-scheme-handler/redis;x-scheme-handler/rediss;
+# redis:// / rediss:// / zedis:// links open in Zedis (the link arrives as the %u argument).
+MimeType=x-scheme-handler/redis;x-scheme-handler/rediss;x-scheme-handler/zedis;
 Comment=A High-Performance Redis Client
 Terminal=false
 StartupWMClass=zedis

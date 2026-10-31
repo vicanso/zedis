@@ -230,6 +230,8 @@ pub enum EditorAction {
     Rename,
     /// Open the cross-server "copy to…" dialog for the selected key.
     CopyTo,
+    /// Copy a `zedis://open?...` deep link for the selected key to the clipboard.
+    CopyKeyLink,
     /// Open the cross-server "diff with…" dialog for the selected key.
     DiffWithServer,
     /// Open the TTL editor expecting a duration (`EXPIRE`) — what the TTL

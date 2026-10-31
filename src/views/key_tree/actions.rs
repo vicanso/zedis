@@ -88,6 +88,8 @@ pub(super) enum KeyTreeAction {
     BatchTagSelectedKeys,
     /// Copy the full key name to the clipboard.
     CopyKeyName(SharedString),
+    /// Copy a `zedis://open?...` deep link for the key to the clipboard.
+    CopyKeyLink(SharedString),
     /// Copy the folder prefix (with trailing separator) to the clipboard.
     CopyFolderPrefix(SharedString),
     /// Select the key and open the editor's rename dialog.
@@ -271,6 +273,25 @@ fn on_tree_action(this: &mut ZedisKeyTree, e: &KeyTreeAction, window: &mut Windo
         KeyTreeAction::CopyKeyName(key) => {
             cx.write_to_clipboard(ClipboardItem::new_string(key.to_string()));
             window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+        }
+        KeyTreeAction::CopyKeyLink(key) => {
+            let (server, db) = {
+                let state = this.server_state.read(cx);
+                let server_id = state.server_id();
+                let name = get_server(server_id)
+                    .map(|s| s.name)
+                    .unwrap_or_else(|_| server_id.to_string());
+                (name, state.db())
+            };
+            let uri = DeepLink {
+                server,
+                db: Some(db),
+                key: Some(key.to_string()),
+                view: None,
+            }
+            .to_zedis_uri();
+            cx.write_to_clipboard(ClipboardItem::new_string(uri));
+            window.push_notification(Notification::info(i18n_common(cx, "copied_key_link")), cx);
         }
         KeyTreeAction::CopyFolderPrefix(id) => {
             // The folder's scan prefix, from the same function

@@ -1090,6 +1090,28 @@ impl Render for ZedisEditor {
                 EditorAction::CopyTo => {
                     this.open_copy_dialog(window, cx);
                 }
+                EditorAction::CopyKeyLink => {
+                    let (server, db, key) = {
+                        let state = this.server_state.read(cx);
+                        let Some(key) = state.key().filter(|k| !k.is_empty()) else {
+                            return;
+                        };
+                        let server_id = state.server_id();
+                        let name = get_server(server_id)
+                            .map(|s| s.name)
+                            .unwrap_or_else(|_| server_id.to_string());
+                        (name, state.db(), key.to_string())
+                    };
+                    let uri = DeepLink {
+                        server,
+                        db: Some(db),
+                        key: Some(key),
+                        view: None,
+                    }
+                    .to_zedis_uri();
+                    cx.write_to_clipboard(ClipboardItem::new_string(uri));
+                    window.push_notification(Notification::info(i18n_common(cx, "copied_key_link")), cx);
+                }
                 EditorAction::DiffWithServer => {
                     this.open_diff_with_server_dialog(window, cx);
                 }

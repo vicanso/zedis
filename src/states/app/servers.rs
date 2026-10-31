@@ -18,6 +18,8 @@
 //! `ZedisAppState`'s as before.
 
 use super::*;
+use crate::helpers::DeepLink;
+use rust_i18n::t;
 use zedis_db::get_alert_rules_manager;
 
 impl ZedisAppState {
@@ -288,6 +290,63 @@ impl ZedisAppState {
                 cx,
             );
         });
+    }
+
+    /// Navigate to a `zedis://open?...` deep link (or browser query link).
+    ///
+    /// Resolves `link.server` against saved connections by exact ID first,
+    /// then exact name, then case-insensitive name. If no server matches,
+    /// shows a localized warning notification instead of failing silently.
+    pub fn open_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
+        let target = link.server.trim();
+        let found = get_servers().ok().and_then(|servers| {
+            servers
+                .iter()
+                .find(|s| s.id == target)
+                .or_else(|| servers.iter().find(|s| s.name == target))
+                .or_else(|| servers.iter().find(|s| s.name.eq_ignore_ascii_case(target)))
+                .cloned()
+        });
+        let Some(found) = found else {
+            let locale = self.locale().to_string();
+            let message = t!("common.deep_link_unknown_server", server = target, locale = &locale).to_string();
+            cx.emit(GlobalEvent::Notification(NotificationAction::new_warning(
+                message.into(),
+            )));
+            return;
+        };
+
+        let db = link.db.unwrap_or_else(|| self.open_db_for(&found.id));
+        let view = link
+            .view
+            .as_deref()
+            .and_then(|v| ServerView::from_name(&v.trim().to_ascii_lowercase()))
+            .filter(|v| v.in_this_build())
+            .unwrap_or(ServerView::Editor);
+
+        if let Some(key) = link.key.filter(|k| !k.is_empty()) {
+            self.set_multi_search_pending_key(found.id.clone(), db, key);
+        }
+
+        let same_as_active = self
+            .selected_server()
+            .is_some_and(|(id, active_db)| id == &found.id && *active_db == db);
+        let multi_tab = self.open_tabs().len() > 1;
+        if multi_tab && !same_as_active && view == ServerView::Editor {
+            self.reveal_or_open_server_tab(found.id, db, cx);
+        } else {
+            self.last_db.insert(found.id.clone(), db);
+            self.selected_server = Some((found.id.clone(), db));
+            cx.emit(GlobalEvent::ServerSelected(found.id.clone().into(), db));
+            self.go_to(
+                Route::Server {
+                    id: found.id.into(),
+                    db,
+                    view,
+                },
+                cx,
+            );
+        }
     }
 
     pub fn upsert_server(&mut self, server: RedisServer, cx: &mut Context<Self>) {
