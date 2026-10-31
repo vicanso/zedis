@@ -27,13 +27,13 @@
 //! (`UNKILLABLE`): only `SHUTDOWN NOSAVE` ends it, and that is left to the
 //! operator on purpose.
 
-// Reaching a `BUSY` server means dialling around the stuck pool, and the
-// browser dials nothing; what it keeps are the names the buttons use.
 #[cfg(not(target_family = "wasm"))]
 use crate::async_connection::open_multiplexed_connection;
+#[cfg(target_family = "wasm")]
+use crate::bridge::kill_on_bridge;
+use crate::config::RedisServer;
 #[cfg(not(target_family = "wasm"))]
-use crate::config::{RedisServer, SERVER_TYPE_SENTINEL};
-#[cfg(not(target_family = "wasm"))]
+use crate::config::SERVER_TYPE_SENTINEL;
 use crate::error::Error;
 #[cfg(not(target_family = "wasm"))]
 use crate::manager::get_connection_manager;
@@ -43,16 +43,18 @@ use crate::sentinel::sentinel_masters;
 use futures::future::join_all;
 #[cfg(not(target_family = "wasm"))]
 use redis::cmd;
+use serde::{Deserialize, Serialize};
 #[cfg(not(target_family = "wasm"))]
 use zedis_core::string::format_host_port;
 
-#[cfg(not(target_family = "wasm"))]
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Which engine's running code to stop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KillTarget {
     /// `SCRIPT KILL` — an `EVAL` / `EVALSHA` script.
+    #[default]
     Script,
     /// `FUNCTION KILL` — a `FCALL` function.
     Function,
@@ -68,7 +70,8 @@ impl KillTarget {
 }
 
 /// What one node answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "error", rename_all = "snake_case")]
 pub enum KillOutcome {
     /// `OK`: the script was stopped.
     Killed,
@@ -81,7 +84,7 @@ pub enum KillOutcome {
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KillReply {
     /// `host:port` of the data node.
     pub node: String,
@@ -107,6 +110,15 @@ pub async fn kill_running(server: &RedisServer, target: KillTarget) -> Result<Ve
         KillReply { node: addr, outcome }
     });
     Ok(join_all(runs).await)
+}
+
+/// Ask the bridge to send the kill to every data node of `server`
+/// (`POST /v1/servers/{id}/kill-script`).
+#[cfg(target_family = "wasm")]
+pub async fn kill_running(server: &RedisServer, target: KillTarget) -> Result<Vec<KillReply>> {
+    kill_on_bridge(server.id.clone(), target)
+        .await
+        .map_err(|e| Error::from(redis::RedisError::from(e)))
 }
 
 /// The nodes to dial: the pooled client's masters when one is cached (no

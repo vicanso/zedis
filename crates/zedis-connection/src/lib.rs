@@ -120,7 +120,7 @@ pub use bridge::{
     BridgePageRow, BridgePageSeed, BridgeReply, BridgeRequest, BridgeRole, BridgeScript, BridgeServerStore,
     BridgeSignup, BridgeStorage, BridgeToken, BridgeTransport, BridgeTrashEntry, DESCRIBED_COMMANDS, PipelineSpec,
     WatchBatch, WatchItem, WatchKind, WatchOpened, bridge_accounts, bridge_page_data, bridge_server_store,
-    bridge_storage, bridge_transport, describe_commands, describe_packed_command, diagnose_on_bridge,
+    bridge_storage, bridge_transport, describe_commands, describe_packed_command, diagnose_on_bridge, kill_on_bridge,
     set_bridge_accounts, set_bridge_page_data, set_bridge_server_store, set_bridge_storage, set_bridge_transport,
     sign_out_of_bridge, signed_in_to_bridge,
 };
@@ -231,9 +231,7 @@ pub use readable_import::{
 #[cfg(not(target_family = "wasm"))]
 pub use readable_import::{detect_import_format, preview_import_conflicts};
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
-#[cfg(not(target_family = "wasm"))]
-pub use script_kill::kill_running;
-pub use script_kill::{KillOutcome, KillReply, KillTarget};
+pub use script_kill::{KillOutcome, KillReply, KillTarget, kill_running};
 #[cfg(not(target_family = "wasm"))]
 pub use sentinel::{
     SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,

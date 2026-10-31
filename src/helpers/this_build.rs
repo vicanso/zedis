@@ -109,16 +109,15 @@ pub const fn value_write_limit() -> Option<usize> {
 }
 
 /// Stopping a runaway script (`SCRIPT KILL` / `FUNCTION KILL`), which has to
-/// dial around the pool a `BUSY` server has stuck. Only the bridge could do
-/// that on a page's behalf, and it does not yet, so a page draws no Kill
-/// button.
+/// dial around the pool a `BUSY` server has stuck: directly on the desktop,
+/// and through the bridge (`POST /v1/servers/{id}/kill-script`) in a page.
 #[cfg(not(target_family = "wasm"))]
 pub const fn kills_runaway_scripts() -> bool {
     true
 }
 #[cfg(target_family = "wasm")]
-pub const fn kills_runaway_scripts() -> bool {
-    false
+pub fn kills_runaway_scripts() -> bool {
+    crate::connection::signed_in_to_bridge()
 }
 
 /// Asking the configured AI endpoint for advice. That is a request this

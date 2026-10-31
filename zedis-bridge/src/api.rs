@@ -50,8 +50,8 @@ use tower_http::compression::{CompressionLayer, predicate::SizeAbove};
 use uuid::Uuid;
 use zedis_connection::string::{decrypt_bytes, encrypt_bytes};
 use zedis_connection::{
-    BRIDGE_MAX_REQUEST_BYTES, DiagReportRow, DiagStage, DiagStatus, PipelineSpec, RedisServer, get_connection_manager,
-    get_server, get_servers, run_diagnostics,
+    BRIDGE_MAX_REQUEST_BYTES, DiagReportRow, DiagStage, DiagStatus, KillReply, KillTarget, PipelineSpec, RedisServer,
+    get_connection_manager, get_server, get_servers, kill_running, run_diagnostics,
 };
 
 mod commands;
@@ -64,7 +64,9 @@ mod watch_routes;
 
 pub(crate) use commands::{ExecRequest, forward_values};
 use commands::{close_session, exec, open_session};
-use entries::{add_server, delete_server, diagnose_server, lock_writes, servers, unlock_writes, update_server};
+use entries::{
+    add_server, delete_server, diagnose_server, kill_script, lock_writes, servers, unlock_writes, update_server,
+};
 pub use page::normalize_base_path;
 use page::web_asset;
 use sign_in::{login, logout};
@@ -154,6 +156,7 @@ pub fn router(state: AppState) -> Router {
         .route(&at("/v1/servers/{id}"), delete(delete_server).put(update_server))
         .route(&at("/v1/servers/{id}/unlock"), post(unlock_writes).delete(lock_writes))
         .route(&at("/v1/servers/{id}/diagnose"), post(diagnose_server))
+        .route(&at("/v1/servers/{id}/kill-script"), post(kill_script))
         .route(&at("/v1/servers/{id}/trash"), get(list_trash).post(put_trash))
         .route(&at("/v1/servers/{id}/metrics"), get(metrics_since).post(put_metrics))
         .route(

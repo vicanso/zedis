@@ -43,8 +43,8 @@ use zedis_connection::{
     BridgeDisposition, BridgeError, BridgeErrorKind, BridgeInvite, BridgeInviteKind, BridgeKeyNote, BridgeNewInvite,
     BridgeOrphans, BridgeOwnAccount, BridgeOwned, BridgeOwnedItem, BridgePageData, BridgePageRow, BridgePageSeed,
     BridgeReply, BridgeRequest, BridgeRole, BridgeScript, BridgeServerStore, BridgeSignup, BridgeStorage, BridgeToken,
-    BridgeTransport, BridgeTrashEntry, DiagReportRow, RedisServer, WatchBatch, WatchItem, WatchKind, WatchOpened,
-    describe_commands, get_servers, set_account_read_only_on,
+    BridgeTransport, BridgeTrashEntry, DiagReportRow, KillReply, KillTarget, RedisServer, WatchBatch, WatchItem,
+    WatchKind, WatchOpened, describe_commands, get_servers, set_account_read_only_on,
 };
 
 mod accounts;
@@ -276,7 +276,7 @@ mod tests {
     use super::storage::TrashBody;
     use super::*;
     use gpui::http_client::FakeHttpClient;
-    use zedis_connection::set_servers_cache;
+    use zedis_connection::{KillOutcome, set_servers_cache};
 
     /// One request a fake bridge was sent: method, address, body.
     type Sent = (String, String, String);
@@ -924,6 +924,27 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].stage, zedis_connection::DiagStage::Tcp);
         assert_eq!(rows[1].outcome().error.as_deref(), Some("refused"));
+    }
+
+    #[test]
+    fn kill_running_posts_target_and_parses_node_outcomes() {
+        let (transport, seen) = transport_recording(
+            200,
+            r#"{"replies":[{"node":"127.0.0.1:6379","outcome":{"status":"killed"}}]}"#,
+        );
+        let replies =
+            futures::executor::block_on(transport.kill_running("srv 1".to_string(), KillTarget::Function)).expect("ok");
+        assert_eq!(
+            replies,
+            vec![KillReply {
+                node: "127.0.0.1:6379".to_string(),
+                outcome: KillOutcome::Killed,
+            }]
+        );
+        let seen = seen.lock().expect("lock");
+        assert_eq!(seen[0].0, "POST");
+        assert_eq!(seen[0].1, "http://bridge:7379/zedis/v1/servers/srv%201/kill-script");
+        assert_eq!(seen[0].2, r#"{"target":"function"}"#);
     }
 
     /// A value the bridge would refuse is not sent: the page says how large

@@ -527,6 +527,58 @@ pub(super) async fn diagnose_server(
     Ok(Json(DiagnoseReply { stages }))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct KillScriptRequest {
+    target: KillTarget,
+}
+
+#[derive(Serialize)]
+pub(super) struct KillScriptReply {
+    replies: Vec<KillReply>,
+}
+
+/// Send `SCRIPT KILL` / `FUNCTION KILL` to every data node of `server` over
+/// fresh connections that bypass a `BUSY` pool. Refused for an account that
+/// may not write on the server, and recorded as an administrative command in
+/// the audit log.
+pub(super) async fn kill_script(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<KillScriptRequest>,
+) -> ApiResult<Json<KillScriptReply>> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
+    let server = visible_server(&state.accounts, &id, &account)?;
+    refuse_read_only_on(&state, &account, &server, &origin, "kill_script")?;
+    note_server(&state, &origin, &server.id);
+    let command = match req.target {
+        KillTarget::Script => "SCRIPT",
+        KillTarget::Function => "FUNCTION",
+    };
+    let result = kill_running(&server, req.target).await;
+    state.audit.record(
+        &account,
+        &origin,
+        Event::Command(audit::CommandLine {
+            server: ServerRef::from(&server),
+            db: 0,
+            command: command.to_string(),
+            args: vec!["KILL".to_string()],
+            count: 1,
+            outcome: audit::Outcome::Allowed,
+            kind: None,
+            confirm: None,
+            error: result.as_ref().err().map(ToString::to_string),
+        }),
+    );
+    let replies = result.map_err(|e| ApiError::Upstream(e.to_string()))?;
+    tracing::info!(account, server = %server.id, command = req.target.command(), "kill script");
+    Ok(Json(KillScriptReply { replies }))
+}
+
 #[cfg(test)]
 mod id_tests {
     use super::is_plain_id;
@@ -828,5 +880,66 @@ mod diagnose_tests {
         assert!(reply.stages[1].error.is_some(), "the refusal is said");
 
         assert!(matches!(diagnose("diag-bobs").await, Err(ApiError::UnknownServer(_))));
+    }
+
+    #[tokio::test]
+    async fn kill_script_requires_write_access_and_dials_visible_entry() {
+        override_config_dir(std::env::temp_dir().join(format!("zedis-bridge-kill-{}", std::process::id())));
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = closed.local_addr().expect("address").port();
+        drop(closed);
+        let entry = |id: &str, owner: Option<&str>| RedisServer {
+            id: id.to_string(),
+            name: id.to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            owner: owner.map(str::to_string),
+            ..Default::default()
+        };
+        crate::store::LocalServers
+            .put(entry("kill-shared", None))
+            .await
+            .expect("server");
+        crate::store::LocalServers
+            .put(entry("kill-bobs", Some("bob")))
+            .await
+            .expect("server");
+        let state = crate::api::mcp_auth_tests::state(
+            "[[users]]\nname = \"viewer\"\npassword = \"look\"\nread_only = true\n\n\
+             [[users]]\nname = \"bob\"\npassword = \"bobs-password\"",
+        );
+        let peer: SocketAddr = "10.0.0.7:5000".parse().expect("address");
+        let call = |auth_pair: &str, id: &str| {
+            let mut headers = HeaderMap::new();
+            let basic = format!("Basic {}", B64.encode(auth_pair));
+            headers.insert("authorization", basic.parse().expect("header"));
+            kill_script(
+                State(state.clone()),
+                ConnectInfo(peer),
+                headers,
+                Path(id.to_string()),
+                Json(KillScriptRequest {
+                    target: KillTarget::Script,
+                }),
+            )
+        };
+
+        assert!(matches!(
+            call("viewer:look", "kill-shared").await,
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            call("viewer:look", "kill-bobs").await,
+            Err(ApiError::UnknownServer(_))
+        ));
+
+        let Ok(Json(reply)) = call("bob:bobs-password", "kill-shared").await else {
+            panic!("a write-capable account may send SCRIPT KILL to an entry it sees");
+        };
+        assert_eq!(reply.replies.len(), 1);
+        assert!(matches!(
+            reply.replies[0].outcome,
+            zedis_connection::KillOutcome::Failed(_)
+        ));
     }
 }

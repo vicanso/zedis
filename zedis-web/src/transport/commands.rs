@@ -257,6 +257,29 @@ impl BridgeTransport for HttpBridgeTransport {
                 .map_err(|e| BridgeError::transport(format!("the bridge's diagnosis is not JSON: {e}")))
         })
     }
+
+    fn kill_running(
+        &self,
+        server_id: String,
+        target: KillTarget,
+    ) -> BoxFuture<'static, Result<Vec<KillReply>, BridgeError>> {
+        let client = self.client.clone();
+        let url = format!("{}/v1/servers/{}/kill-script", self.base_url, segment(&server_id));
+        Box::pin(async move {
+            let body = serde_json::json!({ "target": target }).to_string();
+            let (status, bytes) = Self::post(client, url, body).await?;
+            if status != 200 {
+                return Err(failure(status, &bytes));
+            }
+            #[derive(Deserialize)]
+            struct Body {
+                replies: Vec<KillReply>,
+            }
+            serde_json::from_slice::<Body>(&bytes)
+                .map(|body| body.replies)
+                .map_err(|e| BridgeError::transport(format!("the bridge's kill-script reply is not JSON: {e}")))
+        })
+    }
 }
 
 /// How long a watch's poll may wait on the bridge for something to arrive:

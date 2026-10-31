@@ -44,6 +44,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::command::{command_group, is_known_command};
 use crate::diagnosis::DiagReportRow;
+use crate::script_kill::{KillReply, KillTarget};
 
 /// Why a bridge call failed, in terms the UI can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,6 +505,14 @@ pub trait BridgeTransport: Send + Sync + 'static {
     /// that dials it, and so the only one that can say which stage fails.
     /// Every stage, answered together.
     fn diagnose(&self, server_id: String) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>>;
+
+    /// Send `SCRIPT KILL` / `FUNCTION KILL` to every data node of `server_id`
+    /// from the bridge, over fresh connections that bypass a `BUSY` pool.
+    fn kill_running(
+        &self,
+        server_id: String,
+        target: KillTarget,
+    ) -> BoxFuture<'static, Result<Vec<KillReply>, BridgeError>>;
 }
 
 /// The transport every bridge connection in this process uses.
@@ -546,6 +555,12 @@ pub async fn sign_out_of_bridge() -> Result<(), BridgeError> {
 pub async fn diagnose_on_bridge(server_id: String) -> Result<Vec<DiagReportRow>, BridgeError> {
     let transport = bridge_transport().ok_or_else(|| BridgeError::transport("no bridge transport"))?;
     transport.diagnose(server_id).await
+}
+
+/// Stop a runaway script on `server_id` from the bridge ([`BridgeTransport::kill_running`]).
+pub async fn kill_on_bridge(server_id: String, target: KillTarget) -> Result<Vec<KillReply>, BridgeError> {
+    let transport = bridge_transport().ok_or_else(|| BridgeError::transport("no bridge transport"))?;
+    transport.kill_running(server_id, target).await
 }
 
 /// How the browser persists the server list.
@@ -1516,6 +1531,14 @@ mod tests {
         fn release_watch(&self, _token: String) {}
 
         fn diagnose(&self, _server_id: String) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn kill_running(
+            &self,
+            _server_id: String,
+            _target: KillTarget,
+        ) -> BoxFuture<'static, Result<Vec<KillReply>, BridgeError>> {
             Box::pin(async { Ok(Vec::new()) })
         }
     }
