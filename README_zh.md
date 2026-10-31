@@ -97,24 +97,11 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 ## 📸 截图
 
-<!--
-  方案 A —— 图片托管在 GitHub:把每张截图拖进任意 issue/PR 评论(或 release),
-  得到 https://github.com/user-attachments/assets/... 链接,然后替换下面的
-  REPLACE-* 占位符。点击缩略图打开原图;width="260" 让三列网格约占一屏。
-  建议截图(按重要性):
-    1. key-browser     —— 命名空间树 + JSON / 语法高亮的值编辑器
-    2. memory-analyzer —— Top-N 表 + TTL 直方图 + 体检建议
-    3. live-metrics    —— 实时 GPU 图表(CPU / 内存 / 网络)
-    4. geo-map         —— sorted set 画在雷达上
-    5. vector-set      —— 向量集 + KNN(VSIM)结果
-    6. command-palette —— ⌘K 命令面板
--->
-
 <table>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"><img src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f" width="260" alt="键浏览与数据查看"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"><img src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8" width="260" alt="内存分析器"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"><img src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d" width="260" alt="实时指标"></a></td>
+    <td><a href="docs/images/key-browser.png"><img src="docs/images/key-browser.png" width="260" alt="键浏览与数据查看"></a></td>
+    <td><a href="docs/images/memory-analyzer.png"><img src="docs/images/memory-analyzer.png" width="260" alt="内存分析器"></a></td>
+    <td><a href="docs/images/live-metrics.png"><img src="docs/images/live-metrics.png" width="260" alt="实时指标"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>键浏览与数据查看</sub></td>
@@ -122,9 +109,9 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
     <td align="center"><sub>实时指标</sub></td>
   </tr>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"><img src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f" width="260" alt="地理地图"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"><img src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513" width="260" alt="向量集 + KNN"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"><img src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5" width="260" alt="命令面板"></a></td>
+    <td><a href="docs/images/geo-map.png"><img src="docs/images/geo-map.png" width="260" alt="地理地图"></a></td>
+    <td><a href="docs/images/vector-set.png"><img src="docs/images/vector-set.png" width="260" alt="向量集 + KNN"></a></td>
+    <td><a href="docs/images/command-palette.png"><img src="docs/images/command-palette.png" width="260" alt="命令面板"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>地理地图</sub></td>

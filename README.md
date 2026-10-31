@@ -97,26 +97,11 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 ## 📸 Screenshots
 
-<!--
-  Approach A — host images on GitHub: drag-and-drop each screenshot into any
-  issue/PR comment (or a release) to get a
-  https://github.com/user-attachments/assets/... URL, then replace each
-  REPLACE-* placeholder below. Clicking a thumbnail opens the full-resolution
-  image; width="260" keeps the 3-wide grid to ~one screen.
-  Suggested shots (most important first):
-    1. key-browser     — namespace tree + JSON/syntax-highlighted value editor
-    2. memory-analyzer — Top-N table + TTL histogram + recommendations
-    3. live-metrics    — real-time GPU charts (CPU / memory / network)
-    4. geo-map         — a sorted set plotted on the radar
-    5. vector-set      — Vector Set + KNN (VSIM) results
-    6. command-palette — the ⌘K palette
--->
-
 <table>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f"><img src="https://github.com/user-attachments/assets/c06e4d80-7607-4d6c-807e-2a62a2ee556f" width="260" alt="Key browser & data viewer"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8"><img src="https://github.com/user-attachments/assets/88091f50-ec77-41d5-acda-047a835079f8" width="260" alt="Memory analyzer"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d"><img src="https://github.com/user-attachments/assets/d5801a8c-da94-461b-83b6-6c9b70e2007d" width="260" alt="Live metrics"></a></td>
+    <td><a href="docs/images/key-browser.png"><img src="docs/images/key-browser.png" width="260" alt="Key browser & data viewer"></a></td>
+    <td><a href="docs/images/memory-analyzer.png"><img src="docs/images/memory-analyzer.png" width="260" alt="Memory analyzer"></a></td>
+    <td><a href="docs/images/live-metrics.png"><img src="docs/images/live-metrics.png" width="260" alt="Live metrics"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Key browser & data viewer</sub></td>
@@ -124,9 +109,9 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
     <td align="center"><sub>Live metrics</sub></td>
   </tr>
   <tr>
-    <td><a href="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f"><img src="https://github.com/user-attachments/assets/2525cec9-5dd6-4049-9ea9-60fcb4cc249f" width="260" alt="Geo map"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513"><img src="https://github.com/user-attachments/assets/b4733051-2965-40ff-9d49-6bb909551513" width="260" alt="Vector Set + KNN"></a></td>
-    <td><a href="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5"><img src="https://github.com/user-attachments/assets/4335c12b-cbca-467e-abd9-7b50ffd568c5" width="260" alt="Command palette"></a></td>
+    <td><a href="docs/images/geo-map.png"><img src="docs/images/geo-map.png" width="260" alt="Geo map"></a></td>
+    <td><a href="docs/images/vector-set.png"><img src="docs/images/vector-set.png" width="260" alt="Vector Set + KNN"></a></td>
+    <td><a href="docs/images/command-palette.png"><img src="docs/images/command-palette.png" width="260" alt="Command palette"></a></td>
   </tr>
   <tr>
     <td align="center"><sub>Geo map</sub></td>
