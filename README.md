@@ -21,9 +21,7 @@
   <a href="https://zedis.net">Website</a>
 </p>
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/d7007ecf-bbfd-4e68-bbaf-437091f711e7" autoplay loop muted playsinline width="100%"></video>
-</p>
+https://github.com/user-attachments/assets/d7007ecf-bbfd-4e68-bbaf-437091f711e7
 
 ---
 
