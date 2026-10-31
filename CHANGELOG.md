@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.15.2](https://github.com/vicanso/zedis/compare/v0.15.1..v0.15.2) - 2026-10-31
+
+### ⛰️  Features
+
+- *(updater, title-bar, locales, docs)* Open the update chip's notes in a popover with Skip and Update and restart - ([ab25111](https://github.com/vicanso/zedis/commit/ab25111797be886291d39b430c2cd554941c36b5))
+
+### 🐛 Bug Fixes
+
+- *(title-bar)* Keep a double-click zoom from snapping back - ([5ce8756](https://github.com/vicanso/zedis/commit/5ce8756c8eefb4cf7f5a0b3fa007b1d592e2ead6))
+
+### 🚜 Refactor
+
+- Add audit ignore - ([5462855](https://github.com/vicanso/zedis/commit/5462855e659cd2a43883ccf2457191e454ee6627))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(audit)* Run rustsec/audit-check only on schedule and dispatch to avoid check-run 404 race - ([1bf24b8](https://github.com/vicanso/zedis/commit/1bf24b8b1fc59c8cfc50efadd1bbb0d7c0e520f7))
+- Bump rust-version MSRV to 1.98.0 and add AGENTS.md - ([ff9b010](https://github.com/vicanso/zedis/commit/ff9b010bf622343d930c4c5cfa2e40133ded4fe4))
+
 ## [0.15.1](https://github.com/vicanso/zedis/compare/v0.15.0..v0.15.1) - 2026-10-26
 
 ### ⛰️  Features
