@@ -33,6 +33,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste           (gpui-component, metal, ...)
     "RUSTSEC-2024-0370", # proc-macro-error (build-time-only proc-macro dep)
     "RUSTSEC-2025-0134", # rustls-pemfile  (rustls ecosystem)
+    "RUSTSEC-2025-0141", # bincode         (gpui-component → syntect)
     "RUSTSEC-2026-0192", # ttf-parser      (gpui: fontdb <- usvg 0.46)
     # rustybuzz unmaintained (RUSTSEC-2026-0206). Only path:
     #   zedis → gpui (zed pin) → usvg 0.46 / resvg 0.46 → rustybuzz 0.20

@@ -12,9 +12,8 @@ on:
       - "deny.toml"
       - ".cargo/audit.toml"
       - ".github/workflows/audit.yml"
-  # PRs are gated by the cargo-deny job below (a Dependabot bump, a new
-  # crate); the rustsec check-run job stays on push / schedule, where the
-  # token can write check runs and open issues.
+  # PRs and pushes are gated by the cargo-deny job below (a Dependabot bump,
+  # a new crate); the rustsec issue-reporting job runs on schedule / dispatch.
   pull_request:
     paths:
       - "**/Cargo.toml"
@@ -44,9 +43,11 @@ jobs:
           command: check advisories bans licenses sources
 
   security-audit:
-    # Check runs and issues need a token that can write; a pull request from
-    # a fork has none, and cargo-deny above already gates the PR.
-    if: github.event_name != 'pull_request'
+    # cargo-deny above already gates every push and PR in <1m. Keep
+    # rustsec/audit-check for the daily schedule (where it opens issues for
+    # new advisories) and manual dispatch, avoiding its 3m source build of
+    # cargo-audit and its Check Run POST→PATCH 404 race on push events.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       # rustsec/audit-check posts results as a Check Run. That API requires
       # a GitHub App token — the automatic GITHUB_TOKEN qualifies; a classic
