@@ -56,6 +56,7 @@ use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 use web_time::Instant;
 use write_lock::WriteLock;
+use zedis_core::alerts::{AlertEvaluator, AlertRule, AlertSample, TriggeredAlert};
 use zedis_core::change_log::ChangeEntry;
 use zedis_core::report::Section;
 
@@ -342,6 +343,14 @@ impl ZedisServerState {
     /// Create a new server state instance
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(server_id: impl Into<SharedString>) -> Self {
+        Self {
+            server_id: server_id.into(),
+            ..Self::default()
+        }
     }
 
     /// Mark this state as belonging to an inactive (background) workspace tab

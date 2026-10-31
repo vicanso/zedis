@@ -201,6 +201,8 @@ struct StatusBarServerState {
     /// Mirrors `ZedisServerState::features()` — the probed command matrix.
     /// Drives the "Limited" badge, disabled Tools entries and metric chips.
     features: Arc<ServerFeatures>,
+    /// Number of currently active threshold alerts on this server.
+    active_alert_count: usize,
 }
 
 /// DB-dropdown row geometry, shared by the row renderer and the menu-width
@@ -312,6 +314,7 @@ impl ZedisStatusBar {
                     let s = server_state.read(cx);
                     this.state.server_state.health = s.connection_health();
                     this.state.server_state.last_connection_error = s.last_connection_error();
+                    this.state.server_state.active_alert_count = s.active_alerts().len();
                 }
                 ServerEvent::ServerInfoUpdated => {
                     this.readonly = server_state.read(cx).readonly();
@@ -556,6 +559,7 @@ impl ZedisStatusBar {
             supports_topology,
             is_replica: redis_info.meta.role == "slave",
             features: state.features(),
+            active_alert_count: state.active_alerts().len(),
         };
         // Per-db key counts for the DB dropdown (#116). Rebuild the select
         // items only on an actual change so the 2s heartbeat doesn't churn

@@ -38,6 +38,7 @@ pub mod error;
 #[cfg(not(target_family = "wasm"))]
 mod backup;
 
+mod alerts;
 mod history_manager;
 mod key_metadata_manager;
 mod lua_scripts;
@@ -57,6 +58,7 @@ mod protos;
 mod scripts;
 mod trash;
 
+pub use alerts::*;
 #[cfg(not(target_family = "wasm"))]
 pub use backup::*;
 pub use history_manager::{
@@ -97,6 +99,8 @@ const KEY_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ke
 // pruned to the retention window, so the table stays small (~10k rows per
 // server) — see `states/server/stat.rs` for the write policy.
 const METRICS_HISTORY_TABLE: TableDefinition<(&str, i64), &[u8]> = TableDefinition::new("metrics_history");
+// Per-server threshold alert configuration (opt-in `enabled` flag + rules).
+const ALERT_RULES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("alert_rules");
 // Local recycle bin for soft-deleted keys: key (server_id, id) where id is
 // "{deleted_at_ms:020}:{db}:{key}"; value = framed meta JSON + DUMP payload
 // (see `db/trash.rs`). Entries are purged after 24h.
@@ -183,6 +187,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
         write_txn.open_table(METRICS_HISTORY_TABLE)?;
+        write_txn.open_table(ALERT_RULES_TABLE)?;
         write_txn.open_table(TRASH_TABLE)?;
         write_txn
             .open_table(META_TABLE)?
@@ -364,6 +369,7 @@ mod schema_tests {
         assert_eq!(
             found,
             vec![
+                "alert_rules",
                 "cmd_history",
                 "favority",
                 "key_metadata",

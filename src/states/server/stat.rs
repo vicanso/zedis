@@ -15,17 +15,22 @@
 use crate::connection::{
     ReplicationInfo, ServerDb, dbsize, forget_client, get_server, heartbeat_probe, master_infos, slow_logs,
 };
+use crate::db::get_alert_rules_manager;
 use crate::helpers::{pacing, unix_ts, unix_ts_millis};
-use crate::states::{ServerEvent, ServerTask, ZedisServerState, i18n_status_bar};
-use gpui::SharedString;
+use crate::states::{
+    ConnectionHealth, ServerEvent, ServerTask, ZedisGlobalStore, ZedisServerState, i18n_metrics, i18n_status_bar,
+};
 use gpui::prelude::*;
+use gpui::{App, SharedString};
 use parking_lot::RwLock;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 use web_time::Instant;
+use zedis_core::alerts::{AlertMetric, AlertSample, TriggeredAlert};
 
 // The Metrics history, written and read back: the local database on the
 // desktop, the bridge in the browser, whose page keeps nothing past a reload.
@@ -694,7 +699,122 @@ fn parse_keyspace_value(v: &str) -> Result<RedisKeySpaceStats, ()> {
     Ok(stats)
 }
 
+pub fn alert_metric_label(cx: &App, metric: AlertMetric) -> SharedString {
+    let key = match metric {
+        AlertMetric::MemoryPercent => "alert_metric_memory_percent",
+        AlertMetric::BlockedClients => "alert_metric_blocked_clients",
+        AlertMetric::ConnectedClients => "alert_metric_connected_clients",
+        AlertMetric::LatencyMs => "alert_metric_latency_ms",
+        AlertMetric::EvictedKeysPerSec => "alert_metric_evicted_keys_per_sec",
+        AlertMetric::ReplicationLagMb => "alert_metric_replication_lag_mb",
+        AlertMetric::InstantaneousOps => "alert_metric_instantaneous_ops",
+        AlertMetric::LinkOffline => "alert_metric_link_offline",
+    };
+    i18n_metrics(cx, key)
+}
+
 impl ZedisServerState {
+    /// Whether threshold alerts are enabled for the currently selected server.
+    /// Off by default unless opted in via the connection settings or the
+    /// Metrics Alerts dialog.
+    pub fn alerts_enabled(&self) -> bool {
+        let server_flag = get_server(&self.server_id).ok().and_then(|s| s.alerts_enabled);
+        get_alert_rules_manager().is_enabled(self.server_id.as_str(), server_flag)
+    }
+
+    /// Currently active threshold breaches on the selected server.
+    pub fn active_alerts(&self) -> &[TriggeredAlert] {
+        self.readings.active_alerts()
+    }
+
+    /// Alerts triggered in this session on the selected server (newest first).
+    pub fn recent_alerts(&self) -> &VecDeque<TriggeredAlert> {
+        self.readings.recent_alerts()
+    }
+
+    /// Clear the in-memory list of recently triggered alerts.
+    pub fn clear_recent_alerts(&mut self, cx: &mut Context<Self>) {
+        self.readings.clear_recent_alerts();
+        cx.emit(ServerEvent::ServerRedisInfoUpdated);
+        cx.notify();
+    }
+
+    /// Notify state after the user saves alert settings in the dialog.
+    pub fn notify_alert_config_changed(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if !enabled {
+            self.readings.reset_alert_evaluator();
+        }
+        cx.emit(ServerEvent::ServerRedisInfoUpdated);
+        cx.notify();
+    }
+
+    fn evaluate_server_alerts(&mut self, has_info: bool, link_offline: bool, cx: &mut Context<Self>) {
+        if !self.alerts_enabled() {
+            self.readings.reset_alert_evaluator();
+            return;
+        }
+        let sample = if link_offline {
+            AlertSample {
+                timestamp_ms: unix_ts_millis(),
+                link_offline: true,
+                ..Default::default()
+            }
+        } else if has_info && let Some(info) = self.readings.redis_info() {
+            let max_replica_lag_bytes = info
+                .replicas
+                .iter()
+                .map(|r| r.lag_bytes.max(0) as u64)
+                .max()
+                .unwrap_or(0);
+            AlertSample {
+                timestamp_ms: info.metrics.timestamp_ms,
+                used_memory: info.metrics.used_memory,
+                maxmemory: info.meta.maxmemory,
+                connected_clients: info.metrics.connected_clients,
+                blocked_clients: info.metrics.blocked_clients,
+                max_replica_lag_bytes,
+                evicted_keys: info.metrics.evicted_keys,
+                instantaneous_ops_per_sec: info.metrics.instantaneous_ops_per_sec,
+                latency_ms: info.metrics.latency_ms,
+                link_offline: false,
+            }
+        } else {
+            return;
+        };
+
+        let rules = get_alert_rules_manager().rules_for(self.server_id.as_str());
+        let fired = self.readings.evaluate_alerts(&rules, sample);
+        if fired.is_empty() {
+            return;
+        }
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+        let server_name = get_server(&self.server_id)
+            .ok()
+            .map(|s| s.name)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.server_id.to_string());
+        let title: SharedString = t!("metrics.alert_triggered_title", server = server_name, locale = &locale)
+            .to_string()
+            .into();
+        for alert in fired {
+            let metric_name = alert_metric_label(cx, alert.metric);
+            let body = if alert.metric == AlertMetric::LinkOffline {
+                metric_name.to_string()
+            } else {
+                t!(
+                    "metrics.alert_triggered_body",
+                    metric = metric_name.as_ref(),
+                    observed = alert.metric.format_value(alert.observed),
+                    comparator = alert.comparator.symbol(),
+                    threshold = alert.metric.format_value(alert.threshold),
+                    locale = &locale
+                )
+                .to_string()
+            };
+            self.emit_warning_notification_with_title(body.into(), title.clone(), cx);
+        }
+    }
+
     /// Fold a heartbeat `PING` outcome into the health ([`Link::note_ping`]),
     /// announcing a transition and only a transition.
     fn note_ping_result(&mut self, ok: bool, cx: &mut Context<Self>) {
@@ -704,6 +824,9 @@ impl ZedisServerState {
             if outcome.restored {
                 self.on_link_restored(cx);
             }
+        }
+        if !ok && self.connection_health() == ConnectionHealth::Offline {
+            self.evaluate_server_alerts(false, true, cx);
         }
     }
 
@@ -941,6 +1064,7 @@ impl ZedisServerState {
                         if let Some(slow_logs) = slow_logs {
                             this.readings.note_slow_logs(slow_logs, last_slow_logs_checked_at);
                         }
+                        this.evaluate_server_alerts(has_info, false, cx);
                         cx.emit(ServerEvent::ServerRedisInfoUpdated);
                         this.note_ping_result(true, cx);
                         // Last, because it resets the state it runs on: the

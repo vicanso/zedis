@@ -108,6 +108,8 @@ A built-in, GPU-accelerated dashboard for monitoring your instances.
 
 Eight headline stat cards (memory · clients · OPS · latency · hit rate · net in / out · evicted keys) sit above GPU-accelerated time-series charts for CPU usage, memory usage, latency, connected clients, total commands processed, output KB/s, key hit rate and evictions. Samples are also persisted locally (one per minute, kept for 7 days), so the **Live / 1h / 24h / 7d** ranges answer "did memory grow overnight?" even across app restarts. The history **exports to CSV**, and network throughput is charted alongside the client count, so a traffic spike can be read against the connections behind it.
 
+An **Alerts** dialog on the same page (or the **Threshold Alerts** checkbox on the server's Safety tab) turns on **opt-in per-server threshold alerts** — off by default, so no rule runs until you enable it for that server. Eight rules cover memory usage (% of `maxmemory`), blocked clients, connected clients, ping latency, eviction rate, replication lag, instantaneous ops/s and link offline, each with its own threshold, sustained duration and cooldown, plus a recent-alerts log.
+
 ### Memory Analyzer + Recommendations
 **Hunt BigKeys, see the TTL distribution, get instant offline health checks plus optional AI tips.**
 

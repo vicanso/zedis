@@ -466,6 +466,18 @@ impl ZedisServerState {
             cx.emit(GlobalEvent::Notification(NotificationAction::new_warning(message)));
         });
     }
+    pub fn emit_warning_notification_with_title(
+        &self,
+        message: SharedString,
+        title: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+            cx.emit(GlobalEvent::Notification(
+                NotificationAction::new_warning(message).with_title(title),
+            ));
+        });
+    }
     pub fn emit_error_notification(&self, message: SharedString, cx: &mut Context<Self>) {
         cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
             cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message)));

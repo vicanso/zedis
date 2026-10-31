@@ -18,6 +18,7 @@
 //! `ZedisAppState`'s as before.
 
 use super::*;
+use zedis_db::get_alert_rules_manager;
 
 impl ZedisAppState {
     pub fn selected_server(&self) -> Option<&(String, usize)> {
@@ -312,6 +313,7 @@ impl ZedisAppState {
                         message: "Server name is required".to_string(),
                     });
                 }
+                let _ = get_alert_rules_manager().set_enabled(&server.id, server.alerts_enabled.unwrap_or(false));
                 let mut servers = get_servers()?;
                 if let Some(existing_server) = servers.iter_mut().find(|s| s.id == server.id) {
                     // Preserve the existing sort_order on update unless

@@ -246,7 +246,11 @@ impl ZedisStatusBar {
                         icon: CustomIconName::Activity,
                         label: latency_text,
                         label_color: latency_color,
-                        icon_color: status_text,
+                        icon_color: if server_state.active_alert_count > 0 {
+                            cx.theme().yellow
+                        } else {
+                            status_text
+                        },
                         tooltip: SharedString::from(format!(
                             "{} · {}",
                             i18n_status_bar(cx, "metric_latency_hint"),

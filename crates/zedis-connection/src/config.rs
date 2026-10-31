@@ -285,6 +285,10 @@ pub struct RedisServer {
     pub tag: Option<String>,
     pub tag_color: Option<String>,
     pub require_confirm_writes: Option<bool>,
+    /// Whether threshold alerts are enabled for this server. Off by default
+    /// (`None` / `Some(false)`): no rule is evaluated unless the user opts in
+    /// on this connection.
+    pub alerts_enabled: Option<bool>,
     /// Whether writes start locked, to be unlocked for a while at a time
     /// (`WRITE_UNLOCK_SECS`). `None` follows the tag: a Prod entry is
     /// locked, any other is not — see [`Self::write_locked`].

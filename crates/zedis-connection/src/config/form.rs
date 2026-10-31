@@ -213,6 +213,7 @@ impl RedisServer {
                 .map(String::from),
             tag_color: tag_color_from_form_value(get_str("tag_color").as_deref()),
             require_confirm_writes: get_bool("require_confirm_writes"),
+            alerts_enabled: get_bool("alerts_enabled"),
             write_lock,
             group: get_str("group"),
             // sort_order is owned by reorder buttons / drag-drop, not

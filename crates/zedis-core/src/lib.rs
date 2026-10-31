@@ -16,6 +16,7 @@
 //! dependency, so they compile and test without the UI stack. UI strings stay
 //! in the app crate (rust-i18n is per-crate) — modules here return data only.
 
+pub mod alerts;
 pub mod capability;
 pub mod change_log;
 pub mod codec;

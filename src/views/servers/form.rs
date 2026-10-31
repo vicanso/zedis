@@ -19,6 +19,7 @@
 
 use super::*;
 use crate::connection::{SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL};
+use zedis_db::get_alert_rules_manager;
 
 /// The server types a Sentinel's settings apply to: named outright, or Auto,
 /// which discovers one. Standalone and Cluster entries have no master name.
@@ -439,6 +440,18 @@ fn safety_fields(redis_server: &RedisServer, cx: &App) -> Vec<ZedisFormField> {
             .placeholder(i18n_servers(cx, "require_confirm_writes_check_label"))
             .tab_index(4)
             .field_type(ZedisFormFieldType::Checkbox),
+        ZedisFormField::new("alerts_enabled", i18n_servers(cx, "alerts_enabled"))
+            .default_value(
+                if redis_server.id.is_empty() {
+                    redis_server.alerts_enabled.unwrap_or(false)
+                } else {
+                    get_alert_rules_manager().is_enabled(&redis_server.id, redis_server.alerts_enabled)
+                }
+                .to_string(),
+            )
+            .placeholder(i18n_servers(cx, "alerts_enabled_check_label"))
+            .tab_index(4)
+            .field_type(ZedisFormFieldType::Checkbox),
     ]
 }
 
@@ -688,6 +701,7 @@ mod tests {
             tag_color: Some("purple".into()),
             write_lock: Some(true),
             require_confirm_writes: Some(true),
+            alerts_enabled: Some(true),
             key_separator: Some("/".into()),
             key_scan_count: Some(2000),
             max_key_tree_depth: Some(4),

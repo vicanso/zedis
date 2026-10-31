@@ -18,6 +18,8 @@
 
 use super::*;
 
+const MAX_RECENT_ALERTS: usize = 50;
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct Readings {
     redis_info: Option<RedisInfo>,
@@ -51,6 +53,13 @@ pub(super) struct Readings {
     /// bar on a server that does not report pauses — Redis; Valkey 8.1+
     /// says so in `INFO clients` and is believed instead.
     client_pause: Option<(String, Instant)>,
+
+    /// Stateful threshold alert evaluator for the current server.
+    alert_evaluator: AlertEvaluator,
+
+    /// Recently triggered alerts in this session (newest first), capped at
+    /// [`MAX_RECENT_ALERTS`].
+    recent_alerts: VecDeque<TriggeredAlert>,
 }
 
 impl Readings {
@@ -67,6 +76,8 @@ impl Readings {
         self.last_slow_log_count = 0;
         self.slow_logs.clear();
         self.slow_logs_generation += 1;
+        self.alert_evaluator.reset();
+        self.recent_alerts.clear();
     }
 
     pub(super) fn redis_info(&self) -> Option<&RedisInfo> {
@@ -190,5 +201,32 @@ impl Readings {
                 .map(|(actions, until)| (actions.as_str(), *until)),
             Instant::now(),
         )
+    }
+
+    pub(super) fn evaluate_alerts(&mut self, rules: &[AlertRule], sample: AlertSample) -> Vec<TriggeredAlert> {
+        let fired = self.alert_evaluator.evaluate(rules, sample);
+        for alert in &fired {
+            if self.recent_alerts.len() >= MAX_RECENT_ALERTS {
+                self.recent_alerts.pop_back();
+            }
+            self.recent_alerts.push_front(alert.clone());
+        }
+        fired
+    }
+
+    pub(super) fn active_alerts(&self) -> &[TriggeredAlert] {
+        self.alert_evaluator.active_alerts()
+    }
+
+    pub(super) fn recent_alerts(&self) -> &VecDeque<TriggeredAlert> {
+        &self.recent_alerts
+    }
+
+    pub(super) fn clear_recent_alerts(&mut self) {
+        self.recent_alerts.clear();
+    }
+
+    pub(super) fn reset_alert_evaluator(&mut self) {
+        self.alert_evaluator.reset();
     }
 }

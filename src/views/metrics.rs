@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod alerts_dialog;
+
 use crate::assets::CustomIconName;
 use crate::connection::{ServerCommand, get_server};
 use crate::helpers::saves_files;
@@ -24,6 +26,7 @@ use crate::views::{
     ChartParams, ChartSeries, ServerReport, ValueLabel, export_to_file, make_line_chart, make_series_chart,
     open_server_report_dialog,
 };
+use alerts_dialog::open_server_alerts_dialog;
 use core::f64;
 use gpui::{
     App, Entity, Pixels, SharedString, Subscription, Task, Window, div, linear_color_stop, linear_gradient, prelude::*,
@@ -38,8 +41,11 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use rust_i18n::t;
 use std::sync::Arc;
 use zedis_ui::ZedisSkeletonLoading;
+
+pub(crate) const METRICS_ALERTS_BTN_ID: &str = "metrics-alerts-btn";
 
 const TIME_FORMAT: &str = "%H:%M:%S";
 const CHART_CARD_HEIGHT: Pixels = px(300.);
@@ -907,6 +913,22 @@ impl Render for ZedisMetrics {
             .read(cx)
             .command_block(ServerCommand::MemoryDoctor)
             .is_none();
+        let alerts_enabled = self.server_state.read(cx).alerts_enabled();
+        let active_alert_count = self.server_state.read(cx).active_alerts().len();
+        let alerts_label: SharedString = if active_alert_count > 0 {
+            let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+            t!(
+                "metrics.alerts_button_active",
+                count = active_alert_count,
+                locale = locale
+            )
+            .to_string()
+            .into()
+        } else if alerts_enabled {
+            i18n_metrics(cx, "alerts_button_on")
+        } else {
+            i18n_metrics(cx, "alerts_button_off")
+        };
         div()
             .size_full()
             .font_family(get_mono_font_family())
@@ -966,6 +988,23 @@ impl Render for ZedisMetrics {
                                                     )
                                                 })),
                                         )
+                                    })
+                                    .child({
+                                        let btn = Button::new(METRICS_ALERTS_BTN_ID)
+                                            .small()
+                                            .icon(IconName::Bell)
+                                            .label(alerts_label)
+                                            .tooltip(i18n_metrics(cx, "alerts_button_tooltip"));
+                                        let btn = if active_alert_count > 0 {
+                                            btn.danger()
+                                        } else if alerts_enabled {
+                                            btn.outline()
+                                        } else {
+                                            btn.ghost()
+                                        };
+                                        btn.on_click(cx.listener(|this, _, window, cx| {
+                                            open_server_alerts_dialog(this.server_state.clone(), window, cx);
+                                        }))
                                     })
                                     .when(saves_files(), |this| {
                                         this.child(
@@ -1090,6 +1129,12 @@ fn net_rate_label(input_kbps: f64, output_kbps: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::init_ui;
+    use alerts_dialog::{ALERTS_MASTER_CHECKBOX_ID, ALERTS_RESET_BTN_ID, ZedisServerAlertsDialog};
+    use gpui::{AppContext, TestAppContext, size};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt;
+    use zedis_db::get_alert_rules_manager;
 
     #[test]
     fn a_rate_the_server_does_not_measure_is_not_shown_as_minus_one() {
@@ -1168,5 +1213,47 @@ mod tests {
         assert!(lines[0].starts_with("time,timestamp_ms,latency_ms,connected_clients,blocked_clients"));
         assert!(lines[1].contains(",1700000000000,0,0,2,0,1024,0,1.25,"), "{}", lines[1]);
         assert!(lines[2].contains(",1700000060000,0,0,0,0,2048,0,0,"), "{}", lines[2]);
+    }
+
+    #[gpui::test]
+    fn alerts_are_off_by_default_and_can_be_opted_in_from_the_dialog(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_id = "metrics-alert-test-srv";
+        assert!(
+            !get_alert_rules_manager().is_enabled(server_id, None),
+            "alerts must be off by default"
+        );
+        let server_state = cx.new(|_| ZedisServerState::new_for_test(server_id));
+        let mut dialog_entity = None;
+        let handle = cx.open_window(size(px(800.), px(700.)), |window, cx| {
+            let view = cx.new(|cx| ZedisServerAlertsDialog::new(server_state.clone(), window, cx));
+            dialog_entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let dialog_entity = dialog_entity.expect("dialog view created");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(ALERTS_MASTER_CHECKBOX_ID).is_some());
+            assert!(window.try_find(ALERTS_RESET_BTN_ID).is_some());
+            let (enabled, rules) = dialog_entity.read(cx).collect_config(cx);
+            assert!(!enabled, "dialog starts unchecked when server has not opted in");
+            assert!(!rules.is_empty());
+
+            window.click(ALERTS_MASTER_CHECKBOX_ID, cx);
+        })
+        .expect("window open");
+        cx.run_until_parked();
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let (enabled, rules) = dialog_entity.read(cx).collect_config(cx);
+            assert!(enabled, "clicking master checkbox opts in");
+            get_alert_rules_manager()
+                .save_config(server_id, enabled, rules)
+                .expect("save alert config");
+            assert!(get_alert_rules_manager().is_enabled(server_id, None));
+        })
+        .expect("window open");
     }
 }

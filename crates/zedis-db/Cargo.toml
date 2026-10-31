@@ -26,6 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 snafu = { workspace = true }
 tracing = { workspace = true }
+zedis-core = { workspace = true }
 
 # The file half. redb is a file database, a proto schema can name a file on
 # disk and the script viewer writes a temp file for the interpreter it spawns
@@ -34,10 +35,6 @@ tracing = { workspace = true }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 redb = { workspace = true }
 tempfile = { workspace = true }
-# Only for `zedis_core::fs`: the config directory the database file lives in,
-# and the path resolution the proto manager does. A browser tab reaches
-# neither, so this crate does not need zedis-core there at all.
-zedis-core = { workspace = true }
 
 [lints.clippy]
 # Match the root crate: no unwrap anywhere, tests included.
