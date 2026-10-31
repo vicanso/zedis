@@ -144,8 +144,8 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 | 2.1 | Web Parity | Enable single-key copy & Compare *Copy to target* in browser | Done |
 | 2.2 | Web Parity | Enable JSON/CSV readable key import in browser | Done |
 | 2.3 | Web Parity | Enable `SCRIPT KILL` / `FUNCTION KILL` in browser via bridge | Done |
-| 3.1 | MCP Server | Add `troubleshooting_report` (10th MCP tool) in `zedis-bridge` | Pending |
-| 3.2 | MCP Server | Update stale `WRITE_ACCOUNT_REFUSAL` hint in `zedis-bridge/src/mcp.rs` | Pending |
+| 3.1 | MCP Server | Add `troubleshooting_report` (10th MCP tool) in `zedis-bridge` | Done |
+| 3.2 | MCP Server | Update stale `WRITE_ACCOUNT_REFUSAL` hint in `zedis-bridge/src/mcp.rs` | Done |
 | 3.3 | MCP Server | Share client presence across multi-bridge SQL deployments | Optional |
 | 4.1 | CI Security | Scope `GITHUB_TOKEN` to only steps that need it in `lint.yml` / `publish.yml` | Pending |
 | 4.2 | Dependencies | Update yanked `crypto-bigint` (`0.7.6 -> 0.7.10`) in `Cargo.lock` | Pending |

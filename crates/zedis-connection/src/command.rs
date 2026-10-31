@@ -68,10 +68,37 @@ pub fn init_commands_json(bytes: Vec<u8>) {
 
 /// Whether `name sub` is a subcommand the table lists (`CONFIG SET`,
 /// `XINFO STREAM`), in any case and whatever version the server is: how a
-/// logged command line is split into its name and its arguments. False
-/// until the table is in — in the browser it arrives after the first frame.
+/// logged command line is split into its name and its arguments. When the
+/// table has not been loaded (in `zedis-bridge`, or in the browser before the
+/// first frame), standard Redis container commands are recognised directly.
 pub fn is_subcommand(name: &str, sub: &str) -> bool {
-    is_known_command(&format!("{} {}", name.to_ascii_uppercase(), sub.to_ascii_uppercase()))
+    let upper_name = name.to_ascii_uppercase();
+    let upper_sub = sub.to_ascii_uppercase();
+    if COMMANDS_JSON.get().is_some() {
+        return is_known_command(&format!("{upper_name} {upper_sub}"));
+    }
+    !upper_sub.is_empty()
+        && matches!(
+            upper_name.as_str(),
+            "ACL"
+                | "CLIENT"
+                | "CLUSTER"
+                | "COMMAND"
+                | "CONFIG"
+                | "DEBUG"
+                | "FUNCTION"
+                | "HOTKEYS"
+                | "LATENCY"
+                | "MEMORY"
+                | "MODULE"
+                | "OBJECT"
+                | "PUBSUB"
+                | "SCRIPT"
+                | "SENTINEL"
+                | "SLOWLOG"
+                | "XGROUP"
+                | "XINFO"
+        )
 }
 
 /// The group `commands.json` files `name` under (`"string"`, `"server"`, …),

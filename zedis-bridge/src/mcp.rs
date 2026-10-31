@@ -49,7 +49,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zedis_connection::{
-    HotkeyEntry, HotkeysReport, RedisServer, floors, get_connection_manager, get_servers, redact_secrets,
+    HotkeyEntry, HotkeysReport, RedisServer, ServerDb, SlowLogEntry, TroubleshootingSnapshot, floors,
+    get_connection_manager, get_servers, is_subcommand, redact_secrets, troubleshooting_snapshot,
 };
 use zedis_core::tally::{memory_by_prefix, totals_by_command};
 
@@ -96,22 +97,26 @@ const MEMORY_BATCH: usize = 250;
 /// Prefixes and keys `memory_summary` lists.
 const MEMORY_TOP_PREFIXES: usize = 30;
 const MEMORY_TOP_KEYS: usize = 10;
+/// Slow log entries `troubleshooting_report` lists, and where a command's
+/// first argument is cut.
+const REPORT_SLOWLOG_ROWS: usize = 20;
+const REPORT_ARG_CHARS: usize = 80;
 
 /// What a full account is told at this door.
-const WRITE_ACCOUNT_REFUSAL: &str =
-    "the MCP entry point is for read-only accounts: give this account read_only = true (or :ro) in the users file";
+const WRITE_ACCOUNT_REFUSAL: &str = "the MCP entry point is for read-only accounts: set this account's role to read-only on the Account page (or give it read_only = true in the users file)";
 
 const INSTRUCTIONS: &str = "Read-only access to the Redis and Valkey servers this zedis-bridge holds, as the \
 signed-in account sees them. Start with list_servers; the other tools take a server by its name or id. \
 scan_keys pages through keys (pass next_cursor back to continue), inspect_key describes one key with a \
 short preview, server_info and slowlog read INFO and SLOWLOG GET on every master, slowlog_summary ranks the \
 slow log by command, hotkeys reads the report of a HOTKEYS collection already running (Redis 8.6+), \
-memory_summary measures a sample of keys and groups their memory by prefix, and read_command runs any other \
-read-only command. Writes and administration are refused, results are cut to a size that fits \
-a context, and every call is written to the bridge's audit log.";
+memory_summary measures a sample of keys and groups their memory by prefix, troubleshooting_report gathers a \
+single-shot diagnostic snapshot (summary, INFO, MEMORY DOCTOR, LATENCY DOCTOR, LATENCY LATEST, redacted slow log, \
+and key server settings), and read_command runs any other read-only command. Writes and administration are refused, \
+results are cut to a size that fits a context, and every call is written to the bridge's audit log.";
 
 /// The tools, in the order `tools/list` names them.
-const TOOLS: [&str; 9] = [
+const TOOLS: [&str; 10] = [
     "list_servers",
     "scan_keys",
     "inspect_key",
@@ -120,6 +125,7 @@ const TOOLS: [&str; 9] = [
     "slowlog_summary",
     "hotkeys",
     "memory_summary",
+    "troubleshooting_report",
     "read_command",
 ];
 
@@ -418,6 +424,21 @@ fn tool_list() -> Vec<Json> {
             "annotations": read_only,
         }),
         json!({
+            "name": "troubleshooting_report",
+            "title": "Troubleshooting report",
+            "description": "Collect a single-shot, value-free diagnostic snapshot of the server across every master (ADR 19): server summary (flavor, version, topology, dbsize), INFO per node, MEMORY DOCTOR, LATENCY DOCTOR, LATENCY LATEST events, the newest slow log entries (redacted to command and first argument only, plus command totals), and the 12 core memory/client/persistence/slowlog/latency settings. Parts that a managed server refuses are reported individually without failing the snapshot.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "server": server,
+                    "db": db
+                },
+                "required": ["server"],
+                "additionalProperties": false
+            },
+            "annotations": read_only,
+        }),
+        json!({
             "name": "read_command",
             "title": "Run a read-only command",
             "description": format!("Run one read-only Redis command, given as its words (for example [\"HGETALL\", \"user:42\"]). Refused: writes, scripts other than EVAL_RO / EVALSHA_RO / FCALL_RO, administration, reads that return credentials (CONFIG GET of a password, ACL GETUSER / LIST), and commands that change or hold the connection the tools share (SELECT — pass db instead — AUTH, HELLO, MULTI / EXEC / WATCH, blocking reads such as BLPOP and XREAD BLOCK, SUBSCRIBE, MONITOR, WAIT). On a cluster a command with a key is routed to its node; set every_master to run it on each master instead. Strings over {MAX_STRING_CHARS} characters and arrays or maps over {MAX_ITEMS} items are cut, with what was dropped counted in place."),
@@ -586,6 +607,7 @@ async fn run_tool(
         "slowlog_summary" => slowlog_summary(state, server, parse(arguments)?).await,
         "hotkeys" => hotkeys(state, server, parse(arguments)?).await,
         "memory_summary" => memory_summary(state, server, parse(arguments)?).await,
+        "troubleshooting_report" => troubleshooting_report(server, parse(arguments)?).await,
         "read_command" => read_command(state, server, parse(arguments)?).await,
         other => Err(format!("unknown tool {other:?}")),
     }
@@ -1260,6 +1282,179 @@ fn pair_measurements(
 }
 
 #[derive(Deserialize)]
+struct TroubleshootArgs {
+    #[serde(default)]
+    db: usize,
+}
+
+async fn troubleshooting_report(server: &RedisServer, args: TroubleshootArgs) -> Result<Json, String> {
+    let snapshot = troubleshooting_snapshot(&ServerDb::new(&server.id, args.db)).await;
+    Ok(format_troubleshooting_snapshot(server, args.db, &snapshot))
+}
+
+fn format_troubleshooting_snapshot(server: &RedisServer, db: usize, snapshot: &TroubleshootingSnapshot) -> Json {
+    let summary = match &snapshot.summary {
+        Ok(summary) => json!({
+            "version": summary.version,
+            "flavor": summary.description.flavor.label(),
+            "flavor_version": summary.description.flavor_version,
+            "server_type": summary.description.server_type,
+            "masters": summary.nodes.0,
+            "total_nodes": summary.nodes.1,
+            "dbsize": summary.dbsize,
+        }),
+        Err(reason) => json!({ "error": reason }),
+    };
+    let nodes = match &snapshot.info {
+        Ok(infos) => json!(
+            infos
+                .iter()
+                .map(|(node, text)| json!({ "node": node, "info": parse_info(text) }))
+                .collect::<Vec<_>>()
+        ),
+        Err(reason) => json!({ "error": reason }),
+    };
+    let memory_doctor = match &snapshot.memory_doctor {
+        Ok(replies) => json!(
+            replies
+                .iter()
+                .map(|r| json!({ "node": r.node, "report": cut_text(&r.value) }))
+                .collect::<Vec<_>>()
+        ),
+        Err(reason) => json!({ "error": reason }),
+    };
+    let latency_doctor = match &snapshot.latency_doctor {
+        Ok(replies) => json!(
+            replies
+                .iter()
+                .map(|r| json!({ "node": r.node, "report": cut_text(&r.value) }))
+                .collect::<Vec<_>>()
+        ),
+        Err(reason) => json!({ "error": reason }),
+    };
+    let latency = match &snapshot.latency {
+        Ok(listing) => json!({
+            "unsupported": listing.unsupported,
+            "events": listing.events.iter().map(|e| json!({
+                "event": e.event,
+                "timestamp": e.timestamp,
+                "latest_ms": e.latest_ms,
+                "max_ms": e.max_ms,
+                "avg_ms": e.avg_ms,
+                "avg_samples": e.avg_samples,
+            })).collect::<Vec<_>>(),
+        }),
+        Err(reason) => json!({ "error": reason }),
+    };
+    let slow_log = match &snapshot.slow_log {
+        Ok(entries) => {
+            let upper: Vec<(String, u64)> = entries
+                .iter()
+                .map(|entry| {
+                    let cmd = entry.args.first().map(|s| s.to_ascii_uppercase()).unwrap_or_default();
+                    (cmd, entry.duration.as_micros() as u64)
+                })
+                .collect();
+            let totals = totals_by_command(upper.iter().map(|(cmd, micros)| (cmd.as_str(), *micros)));
+            let by_command: Vec<Json> = totals
+                .iter()
+                .take(SUMMARY_COMMANDS)
+                .map(|total| {
+                    json!({
+                        "command": total.command,
+                        "count": total.count,
+                        "total_us": total.total,
+                        "max_us": total.max,
+                        "avg_us": total.total / total.count.max(1) as u64,
+                        "share_pct": (total.share_pct * 10.0).round() / 10.0,
+                    })
+                })
+                .collect();
+            let mut newest: Vec<&SlowLogEntry> = entries.iter().collect();
+            newest.sort_by_key(|entry| std::cmp::Reverse(entry.timestamp));
+            newest.truncate(REPORT_SLOWLOG_ROWS);
+            let recent: Vec<Json> = newest
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "id": entry.id,
+                        "unix_time": entry.timestamp,
+                        "duration_us": entry.duration.as_micros() as u64,
+                        "command": redact_slow_command(entry),
+                        "client": entry.client_addr,
+                        "client_name": entry.client_name,
+                    })
+                })
+                .collect();
+            json!({
+                "total_entries": entries.len(),
+                "by_command": by_command,
+                "newest": recent,
+            })
+        }
+        Err(reason) => json!({ "error": reason }),
+    };
+    let config = match &snapshot.config {
+        Ok(pairs) => {
+            let mut map = Map::new();
+            for (name, value) in pairs {
+                map.insert(
+                    name.clone(),
+                    value.as_ref().map_or(Json::Null, |v| Json::String(cut_text(v))),
+                );
+            }
+            Json::Object(map)
+        }
+        Err(reason) => json!({ "error": reason }),
+    };
+    json!({
+        "server": {
+            "id": server.id,
+            "name": server.name,
+            "address": format!("{}:{}", server.host, server.port),
+            "db": db,
+        },
+        "summary": summary,
+        "nodes": nodes,
+        "memory_doctor": memory_doctor,
+        "latency_doctor": latency_doctor,
+        "latency": latency,
+        "slow_log": slow_log,
+        "config": config,
+    })
+}
+
+/// A slow command as ADR 19's troubleshooting report shows it: its name (and
+/// subcommand where applicable) plus its first argument capped at
+/// [`REPORT_ARG_CHARS`], with credentials blanked via [`redact_secrets`] and
+/// values omitted.
+fn redact_slow_command(entry: &SlowLogEntry) -> String {
+    let Some((name, args)) = entry.args.split_first() else {
+        return String::new();
+    };
+    let args = redact_secrets(name, args);
+    let mut shown = name.to_ascii_uppercase();
+    let mut rest = args.as_slice();
+    if let Some((sub, after)) = rest.split_first()
+        && is_subcommand(name, sub)
+    {
+        shown = format!("{shown} {}", sub.to_ascii_uppercase());
+        rest = after;
+    }
+    if let Some(first) = rest.first() {
+        shown.push(' ');
+        shown.extend(first.chars().take(REPORT_ARG_CHARS));
+        if first.chars().count() > REPORT_ARG_CHARS {
+            shown.push('…');
+        }
+    }
+    if rest.len() > 1 {
+        shown.push_str(&format!(" … (+{})", rest.len() - 1));
+    }
+    shown
+}
+
+#[derive(Deserialize)]
 struct CommandArgs {
     #[serde(default)]
     db: usize,
@@ -1634,5 +1829,91 @@ mod tests {
     fn a_hash_preview_is_pairs() {
         let flat = json!(["name", "ann", "age", "7"]);
         assert_eq!(pairs(flat), json!({ "name": "ann", "age": "7" }));
+    }
+
+    #[test]
+    fn troubleshooting_snapshot_redacts_secrets_and_preserves_partial_parts() {
+        let server = RedisServer {
+            id: "prod-1".to_string(),
+            name: "prod".to_string(),
+            host: "10.0.0.1".to_string(),
+            port: 6379,
+            ..Default::default()
+        };
+        let snapshot = TroubleshootingSnapshot {
+            summary: Ok(zedis_connection::ServerSummary {
+                version: "7.2.4".to_string(),
+                description: zedis_connection::RedisClientDescription {
+                    server_type: "standalone".to_string(),
+                    flavor: zedis_core::features::ServerFlavor::Valkey,
+                    flavor_version: "9.0.0".to_string(),
+                    ..Default::default()
+                },
+                nodes: (1, 2),
+                dbsize: 42,
+                databases: 16,
+                access_mode: zedis_connection::AccessMode::ReadWrite,
+                supports_rejson: false,
+                supports_search: false,
+            }),
+            info: Ok(vec![(
+                "10.0.0.1:6379".to_string(),
+                "# Memory\r\nused_memory:2048\r\n".to_string(),
+            )]),
+            memory_doctor: Err("ERR unknown command 'MEMORY'".to_string()),
+            latency_doctor: Ok(vec![zedis_connection::NodeReply {
+                node: "10.0.0.1:6379".to_string(),
+                value: "No latency spikes".to_string(),
+            }]),
+            latency: Ok(Default::default()),
+            slow_log: Ok(vec![
+                SlowLogEntry {
+                    id: 1,
+                    timestamp: 1_790_000_010,
+                    duration: Duration::from_micros(4500),
+                    amount: 4500,
+                    args: vec![
+                        "CONFIG".to_string(),
+                        "SET".to_string(),
+                        "requirepass".to_string(),
+                        "super-secret-password".to_string(),
+                    ],
+                    client_addr: Some("10.0.0.8:5000".to_string()),
+                    client_name: Some("admin".to_string()),
+                },
+                SlowLogEntry {
+                    id: 2,
+                    timestamp: 1_790_000_020,
+                    duration: Duration::from_micros(9000),
+                    amount: 9000,
+                    args: vec![
+                        "HSET".to_string(),
+                        "user:42".to_string(),
+                        "token".to_string(),
+                        "private-value".to_string(),
+                    ],
+                    client_addr: None,
+                    client_name: None,
+                },
+            ]),
+            config: Ok(vec![
+                ("maxmemory".to_string(), Some("0".to_string())),
+                ("maxmemory-policy".to_string(), Some("noeviction".to_string())),
+            ]),
+        };
+
+        let out = format_troubleshooting_snapshot(&server, 0, &snapshot);
+        let serialized = out.to_string();
+        assert!(!serialized.contains("super-secret-password"), "{serialized}");
+        assert!(!serialized.contains("private-value"), "{serialized}");
+        assert_eq!(out["summary"]["flavor"], "Valkey");
+        assert_eq!(out["summary"]["dbsize"], 42);
+        assert_eq!(out["nodes"][0]["info"]["memory"]["used_memory"], 2048);
+        assert_eq!(out["memory_doctor"]["error"], "ERR unknown command 'MEMORY'");
+        assert_eq!(out["latency_doctor"][0]["report"], "No latency spikes");
+        assert_eq!(out["slow_log"]["newest"][0]["command"], "HSET user:42 … (+2)");
+        assert_eq!(out["slow_log"]["newest"][1]["command"], "CONFIG SET requirepass … (+1)");
+        assert_eq!(out["config"]["maxmemory-policy"], "noeviction");
+        assert!(WRITE_ACCOUNT_REFUSAL.contains("Account page"));
     }
 }
