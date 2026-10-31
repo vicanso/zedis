@@ -90,7 +90,9 @@ pub use i18n::key_tree_no_scan_body;
 pub use i18n::save_ui_locale;
 pub use i18n::{command_status_label, command_unavailable_message, server_view_title};
 #[cfg(not(target_family = "wasm"))]
-pub use migration::{ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState};
+pub use migration::{
+    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, MigrationThrottle,
+};
 #[cfg(test)]
 pub(crate) use page_data::pretend_account_read_only;
 pub use page_data::{account_is_read_only, ask_for_fresh_page_data};

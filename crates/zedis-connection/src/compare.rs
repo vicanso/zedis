@@ -301,6 +301,71 @@ pub async fn compare_prefix(
     Ok(report)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CopyVerificationReport {
+    pub checked: u64,
+    pub matched: u64,
+    pub missing_on_target: Vec<String>,
+    pub differing: Vec<DifferingKey>,
+    pub cancelled: bool,
+}
+
+/// Verifies an explicit list of copied keys between `source` and `target` in chunks,
+/// checking that each source key exists on `target` with the same type and value.
+pub async fn verify_copied_keys(
+    source: &ServerDb,
+    target: &ServerDb,
+    keys: &[String],
+    cancel: &AtomicBool,
+) -> Result<CopyVerificationReport> {
+    let mut report = CopyVerificationReport::default();
+    for chunk in keys.chunks(COMPARE_CHUNK) {
+        if cancel.load(Ordering::Acquire) {
+            report.cancelled = true;
+            break;
+        }
+        let source_entries = index_entries(read_readable_chunk(source, chunk, ReadLimits::default()).await?);
+        let target_entries = index_entries(read_readable_chunk(target, chunk, ReadLimits::default()).await?);
+        for key in chunk {
+            report.checked += 1;
+            match (source_entries.get(key), target_entries.get(key)) {
+                (Some(a), Some(b)) => {
+                    if a.key_type != b.key_type {
+                        report.differing.push(DifferingKey {
+                            key: key.clone(),
+                            key_type: a.key_type.clone(),
+                            difference: KeyDifference::Type {
+                                source: a.key_type.clone(),
+                                target: b.key_type.clone(),
+                            },
+                        });
+                    } else {
+                        match compare_entries(a, b) {
+                            Some(true) => report.matched += 1,
+                            Some(false) => report.differing.push(DifferingKey {
+                                key: key.clone(),
+                                key_type: a.key_type.clone(),
+                                difference: KeyDifference::Value,
+                            }),
+                            None => report.differing.push(DifferingKey {
+                                key: key.clone(),
+                                key_type: a.key_type.clone(),
+                                difference: KeyDifference::Unchecked,
+                            }),
+                        }
+                    }
+                }
+                (Some(_), None) => report.missing_on_target.push(key.clone()),
+                (None, _) => {
+                    // Key expired or vanished from source before verification.
+                    report.matched += 1;
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
 fn index_entries(entries: Vec<ReadableEntry>) -> BTreeMap<String, ReadableEntry> {
     entries.into_iter().map(|entry| (entry.key.clone(), entry)).collect()
 }

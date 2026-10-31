@@ -1207,3 +1207,77 @@ fn standalone_copy_preflight_says_what_a_copy_would_leave_behind() {
         cmd("DEL").arg(&plain).exec_async(&mut there).await.expect("cleanup");
     });
 }
+
+#[test]
+#[ignore]
+fn standalone_verify_copied_keys_reports_matched_missing_and_differing() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let src = ServerDb::new(&id, 0);
+        let dst = ServerDb::new(&id, 1);
+        let mut c0 = conn(&id, 0).await;
+        let mut c1 = conn(&id, 1).await;
+
+        let k_same = unique("verify-same");
+        let k_diff = unique("verify-diff");
+        let k_missing = unique("verify-missing");
+
+        cmd("SET")
+            .arg(&k_same)
+            .arg("v1")
+            .exec_async(&mut c0)
+            .await
+            .expect("set");
+        cmd("SET")
+            .arg(&k_same)
+            .arg("v1")
+            .exec_async(&mut c1)
+            .await
+            .expect("set");
+
+        cmd("SET")
+            .arg(&k_diff)
+            .arg("v1")
+            .exec_async(&mut c0)
+            .await
+            .expect("set");
+        cmd("SET")
+            .arg(&k_diff)
+            .arg("v2")
+            .exec_async(&mut c1)
+            .await
+            .expect("set");
+
+        cmd("SET")
+            .arg(&k_missing)
+            .arg("v1")
+            .exec_async(&mut c0)
+            .await
+            .expect("set");
+
+        let keys = vec![k_same.clone(), k_diff.clone(), k_missing.clone()];
+        let cancel = AtomicBool::new(false);
+        let report = verify_copied_keys(&src, &dst, &keys, &cancel)
+            .await
+            .expect("verify_copied_keys");
+        assert_eq!(report.checked, 3);
+        assert_eq!(report.matched, 1);
+        assert_eq!(report.missing_on_target, vec![k_missing.clone()]);
+        assert_eq!(report.differing.len(), 1);
+        assert_eq!(report.differing[0].key, k_diff);
+
+        cmd("DEL")
+            .arg(&k_same)
+            .arg(&k_diff)
+            .arg(&k_missing)
+            .exec_async(&mut c0)
+            .await
+            .expect("del c0");
+        cmd("DEL")
+            .arg(&k_same)
+            .arg(&k_diff)
+            .exec_async(&mut c1)
+            .await
+            .expect("del c1");
+    });
+}

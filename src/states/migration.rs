@@ -34,11 +34,14 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tracing::{debug, error, info};
+use web_time::Instant;
 
 const DUMP_BATCH_SIZE: usize = 64;
 const RESTORE_BATCH_SIZE: usize = 64;
 const LOG_RING_CAPACITY: usize = 500;
+const PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -48,9 +51,47 @@ pub enum MigrationPhase {
     #[default]
     Idle,
     Running,
+    Paused,
     Finished,
     Failed(SharedString),
     Cancelled,
+}
+
+/// Optional throughput cap (keys/s) so a bulk export, import, or copy does
+/// not saturate a shared or production server.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationThrottle {
+    #[default]
+    Unlimited,
+    Rate1000,
+    Rate200,
+    Rate50,
+}
+
+impl MigrationThrottle {
+    pub const ALL: [MigrationThrottle; 4] = [
+        MigrationThrottle::Unlimited,
+        MigrationThrottle::Rate1000,
+        MigrationThrottle::Rate200,
+        MigrationThrottle::Rate50,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&t| t == self).unwrap_or(0)
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(MigrationThrottle::Unlimited)
+    }
+
+    pub fn keys_per_sec(self) -> u32 {
+        match self {
+            Self::Unlimited => 0,
+            Self::Rate1000 => 1000,
+            Self::Rate200 => 200,
+            Self::Rate50 => 50,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,12 +173,14 @@ pub enum MigrationJob {
         keys: Vec<SharedString>,
         output_path: PathBuf,
         format: ExportFormat,
+        throttle: MigrationThrottle,
     },
     Import {
         server_id: SharedString,
         db: usize,
         input_path: PathBuf,
         conflict: ConflictMode,
+        throttle: MigrationThrottle,
     },
     /// Straight from one server / db to another: `DUMP` on the source,
     /// `RESTORE` on the target, no file in between.
@@ -148,6 +191,7 @@ pub enum MigrationJob {
         target_db: usize,
         keys: Vec<SharedString>,
         conflict: ConflictMode,
+        throttle: MigrationThrottle,
     },
 }
 
@@ -157,6 +201,7 @@ pub struct MigrationState {
     progress: MigrationProgress,
     log: VecDeque<LogLine>,
     cancel: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     worker: Option<Task<()>>,
 }
 
@@ -177,11 +222,31 @@ impl MigrationState {
         &self.log
     }
 
+    pub fn is_paused(&self) -> bool {
+        matches!(self.phase, MigrationPhase::Paused)
+    }
+
+    /// Toggles pause/resume while a job is active.
+    pub fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        match self.phase {
+            MigrationPhase::Running => {
+                self.paused.store(true, Ordering::Release);
+                self.set_phase(MigrationPhase::Paused, cx);
+            }
+            MigrationPhase::Paused => {
+                self.paused.store(false, Ordering::Release);
+                self.set_phase(MigrationPhase::Running, cx);
+            }
+            _ => {}
+        }
+    }
+
     /// Cancels the current job. The worker checks the flag between batches.
     pub fn cancel(&mut self, _cx: &mut Context<Self>) {
-        if !matches!(self.phase, MigrationPhase::Running) {
+        if !matches!(self.phase, MigrationPhase::Running | MigrationPhase::Paused) {
             return;
         }
+        self.paused.store(false, Ordering::Release);
         self.cancel.store(true, Ordering::Release);
     }
 
@@ -190,11 +255,13 @@ impl MigrationState {
         // Drop any previous worker handle so the old task is not retained.
         self.worker = None;
         self.cancel = Arc::new(AtomicBool::new(false));
+        self.paused = Arc::new(AtomicBool::new(false));
         self.progress = MigrationProgress::default();
         self.log.clear();
         self.set_phase(MigrationPhase::Running, cx);
 
         let cancel = self.cancel.clone();
+        let paused = self.paused.clone();
 
         let worker = cx.spawn(async move |handle, cx| match job {
             MigrationJob::Export {
@@ -203,6 +270,7 @@ impl MigrationState {
                 keys,
                 output_path,
                 format,
+                throttle,
             } => {
                 let spec = ExportSpec {
                     server_id,
@@ -210,6 +278,8 @@ impl MigrationState {
                     keys,
                     output_path,
                     format,
+                    throttle,
+                    paused,
                 };
                 run_export(handle, cx, spec, cancel).await;
             }
@@ -218,8 +288,14 @@ impl MigrationState {
                 db,
                 input_path,
                 conflict,
+                throttle,
             } => {
-                run_import(handle, cx, server_id, db, input_path, conflict, cancel).await;
+                let ctl = WorkerControl {
+                    throttle,
+                    paused,
+                    cancel,
+                };
+                run_import(handle, cx, server_id, db, input_path, conflict, ctl).await;
             }
             MigrationJob::Copy {
                 source_id,
@@ -228,6 +304,7 @@ impl MigrationState {
                 target_db,
                 keys,
                 conflict,
+                throttle,
             } => {
                 let spec = CopySpec {
                     source_id,
@@ -236,6 +313,8 @@ impl MigrationState {
                     target_db,
                     keys,
                     conflict,
+                    throttle,
+                    paused,
                 };
                 run_copy(handle, cx, spec, cancel).await;
             }
@@ -247,6 +326,11 @@ impl MigrationState {
         self.phase = phase;
         cx.emit(MigrationEvent::PhaseChanged);
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn set_phase_for_test(&mut self, phase: MigrationPhase, cx: &mut Context<Self>) {
+        self.set_phase(phase, cx);
     }
 
     /// Pushes a batch of log lines and notifies the view exactly once.
@@ -274,6 +358,36 @@ impl EventEmitter<MigrationEvent> for MigrationState {}
 // Worker bodies
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+struct WorkerControl {
+    throttle: MigrationThrottle,
+    paused: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+/// Waits while `paused` is set (waking promptly if `cancel` is triggered),
+/// and enforces the optional per-batch rate limit (`throttle`).
+async fn pace_and_wait_if_paused(
+    paused: &AtomicBool,
+    cancel: &AtomicBool,
+    throttle: MigrationThrottle,
+    batch_keys: usize,
+    batch_started_at: Instant,
+    cx: &gpui::AsyncApp,
+) {
+    let rate = throttle.keys_per_sec();
+    if rate > 0 && batch_keys > 0 && !cancel.load(Ordering::Acquire) {
+        let target_dur = Duration::from_secs_f64(batch_keys as f64 / rate as f64);
+        let elapsed = batch_started_at.elapsed();
+        if let Some(rem) = target_dur.checked_sub(elapsed) {
+            cx.background_executor().timer(rem).await;
+        }
+    }
+    while paused.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire) {
+        cx.background_executor().timer(PAUSE_POLL_INTERVAL).await;
+    }
+}
+
 /// Export parameters, grouped so the worker signatures stay under
 /// clippy's argument limit.
 struct ExportSpec {
@@ -282,6 +396,8 @@ struct ExportSpec {
     keys: Vec<SharedString>,
     output_path: PathBuf,
     format: ExportFormat,
+    throttle: MigrationThrottle,
+    paused: Arc<AtomicBool>,
 }
 
 async fn run_export(
@@ -331,6 +447,8 @@ async fn export_worker(
         db,
         keys,
         output_path,
+        throttle,
+        paused,
         ..
     } = spec;
     let server_name = get_server(server_id.as_str())
@@ -363,6 +481,7 @@ async fn export_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
+        let batch_started_at = Instant::now();
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
         let entries = dump_keys_chunk(&at, &chunk).await?;
         let chunk_total = chunk.len();
@@ -415,6 +534,7 @@ async fn export_worker(
                 s.extend_log(log_lines, cx);
             })
             .map_err(|e| Error::Invalid { message: e.to_string() })?;
+        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk_total, batch_started_at, cx).await;
     }
 
     smol::unblock(move || writer.finish().map(|_| ())).await?;
@@ -439,6 +559,8 @@ async fn readable_export_worker(
         keys,
         output_path,
         format,
+        throttle,
+        paused,
     } = spec;
     let at = ServerDb::new(server_id.as_str(), db);
 
@@ -459,6 +581,7 @@ async fn readable_export_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
+        let batch_started_at = Instant::now();
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
         let entries = read_readable_chunk(&at, &chunk, ReadLimits::default()).await?;
 
@@ -524,6 +647,7 @@ async fn readable_export_worker(
                 s.extend_log(log_lines, cx);
             })
             .map_err(|e| Error::Invalid { message: e.to_string() })?;
+        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
     }
 
     smol::unblock(move || -> Result<()> {
@@ -545,9 +669,10 @@ async fn run_import(
     db: usize,
     input_path: PathBuf,
     conflict: ConflictMode,
-    cancel: Arc<AtomicBool>,
+    ctl: WorkerControl,
 ) {
-    match import_worker(handle.clone(), cx, server_id, db, input_path, conflict, cancel.clone()).await {
+    let cancel = ctl.cancel.clone();
+    match import_worker(handle.clone(), cx, server_id, db, input_path, conflict, ctl).await {
         Ok(()) => {
             let phase = if cancel.load(Ordering::Acquire) {
                 MigrationPhase::Cancelled
@@ -576,12 +701,12 @@ async fn import_worker(
     db: usize,
     input_path: PathBuf,
     conflict: ConflictMode,
-    cancel: Arc<AtomicBool>,
+    ctl: WorkerControl,
 ) -> Result<()> {
     let path_for_sniff = input_path.clone();
     let format = smol::unblock(move || detect_import_format(&path_for_sniff)).await?;
     match format {
-        ImportFormat::Binary => import_binary_worker(handle, cx, server_id, db, input_path, conflict, cancel).await,
+        ImportFormat::Binary => import_binary_worker(handle, cx, server_id, db, input_path, conflict, ctl).await,
         ImportFormat::Json | ImportFormat::Csv => {
             let spec = ReadableImportSpec {
                 server_id,
@@ -589,8 +714,9 @@ async fn import_worker(
                 input_path,
                 format,
                 conflict,
+                ctl,
             };
-            import_readable_worker(handle, cx, spec, cancel).await
+            import_readable_worker(handle, cx, spec).await
         }
     }
 }
@@ -603,6 +729,7 @@ struct ReadableImportSpec {
     input_path: PathBuf,
     format: ImportFormat,
     conflict: ConflictMode,
+    ctl: WorkerControl,
 }
 
 async fn import_binary_worker(
@@ -612,8 +739,13 @@ async fn import_binary_worker(
     db: usize,
     input_path: PathBuf,
     conflict: ConflictMode,
-    cancel: Arc<AtomicBool>,
+    ctl: WorkerControl,
 ) -> Result<()> {
+    let WorkerControl {
+        throttle,
+        paused,
+        cancel,
+    } = ctl;
     let at = ServerDb::new(server_id.as_str(), db);
 
     // Open + parse the header on a blocking thread (sync I/O).
@@ -634,6 +766,7 @@ async fn import_binary_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
+        let batch_started_at = Instant::now();
         // Read up to RESTORE_BATCH_SIZE entries on a blocking thread, hand the reader back.
         let (returned_reader, mut batch, eof) =
             smol::unblock(move || -> Result<(DumpReader<BufReader<File>>, Vec<DumpEntry>, bool)> {
@@ -655,6 +788,7 @@ async fn import_binary_worker(
         if batch.is_empty() {
             break;
         }
+        let batch_len = batch.len();
         // The TTLs are as `PTTL` said at the export: count them down to now,
         // and leave out a key that would have expired since — restoring it
         // with its old TTL brought it back to life.
@@ -686,6 +820,7 @@ async fn import_binary_worker(
                 .map_err(|e| Error::Invalid { message: e.to_string() })?;
         }
         flush_restore_batch(&handle, cx, None, &at, &mut batch, conflict).await?;
+        pace_and_wait_if_paused(&paused, &cancel, throttle, batch_len, batch_started_at, cx).await;
         if eof {
             break;
         }
@@ -700,7 +835,6 @@ async fn import_readable_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
     spec: ReadableImportSpec,
-    cancel: Arc<AtomicBool>,
 ) -> Result<()> {
     let ReadableImportSpec {
         server_id,
@@ -708,6 +842,11 @@ async fn import_readable_worker(
         input_path,
         format,
         conflict,
+        ctl: WorkerControl {
+            throttle,
+            paused,
+            cancel,
+        },
     } = spec;
     let entries = smol::unblock(move || -> Result<Vec<ReadableEntry>> {
         let text = fs::read_to_string(&input_path)?;
@@ -727,6 +866,7 @@ async fn import_readable_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
+        let batch_started_at = Instant::now();
         let statuses = write_readable_chunk(&at, chunk, conflict).await?;
         let mut written = 0u64;
         let mut skipped = 0u64;
@@ -779,6 +919,7 @@ async fn import_readable_worker(
                 s.extend_log(log_lines, cx);
             })
             .map_err(|e| Error::Invalid { message: e.to_string() })?;
+        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
     }
     Ok(())
 }
@@ -791,6 +932,8 @@ struct CopySpec {
     target_db: usize,
     keys: Vec<SharedString>,
     conflict: ConflictMode,
+    throttle: MigrationThrottle,
+    paused: Arc<AtomicBool>,
 }
 
 async fn run_copy(
@@ -835,6 +978,8 @@ async fn copy_worker(
         target_db,
         keys,
         conflict,
+        throttle,
+        paused,
     } = spec;
     let total = keys.len() as u64;
     let _ = handle.update(cx, |s, cx| {
@@ -848,6 +993,7 @@ async fn copy_worker(
         if cancel.load(Ordering::Acquire) {
             break;
         }
+        let batch_started_at = Instant::now();
         let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
         let mut entries = dump_keys_chunk(&src, &chunk).await?;
         // Keys gone from the source since they were listed.
@@ -873,6 +1019,7 @@ async fn copy_worker(
                 })
                 .map_err(|e| Error::Invalid { message: e.to_string() })?;
         }
+        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
     }
     info!(source = %source_id, source_db, target = %target_id, target_db, total, "copy finished");
     Ok(())

@@ -147,8 +147,8 @@ pub use cluster_ops::{
     node_stabilize_slot,
 };
 pub use compare::{
-    CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, DifferingKey, KeyDifference,
-    compare_prefix, prefix_pattern, values_equal,
+    CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, CopyVerificationReport, DifferingKey,
+    KeyDifference, compare_prefix, prefix_pattern, values_equal, verify_copied_keys,
 };
 pub use config::set_servers_cache;
 pub use config::{

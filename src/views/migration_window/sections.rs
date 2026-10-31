@@ -23,6 +23,7 @@ use gpui::{AnyElement, Hsla};
 pub(super) struct JobLook {
     pub(super) phase: MigrationPhase,
     pub(super) is_running: bool,
+    pub(super) is_paused: bool,
     pub(super) is_import: bool,
     pub(super) is_copy: bool,
     pub(super) target_is_source: bool,
@@ -54,8 +55,13 @@ impl ZedisMigrationWindow {
     }
 
     /// Where the job is, and how far it got.
-    pub(super) fn status_section(&self, look: &JobLook, cx: &App) -> impl IntoElement + use<> {
-        let &JobLook { ref phase, muted, .. } = look;
+    pub(super) fn status_section(&self, look: &JobLook, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let &JobLook {
+            ref phase,
+            is_running,
+            muted,
+            ..
+        } = look;
         let state = self.state.read(cx);
         let progress = state.progress().clone();
 
@@ -70,6 +76,13 @@ impl ZedisMigrationWindow {
         } else {
             "—".into()
         };
+
+        let throttle_labels = vec![
+            i18n_migration(cx, "throttle_unlimited").to_string(),
+            "1000 keys/s".to_string(),
+            "200 keys/s".to_string(),
+            "50 keys/s".to_string(),
+        ];
 
         div()
             .px_6()
@@ -86,6 +99,23 @@ impl ZedisMigrationWindow {
                     .pt_1()
                     .child(Label::new(i18n_migration(cx, "progress_label")).text_sm())
                     .child(Label::new(progress_text).text_sm().text_color(muted)),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .pt_2()
+                    .items_center()
+                    .child(Label::new(i18n_migration(cx, "throttle_label")).text_sm())
+                    .child(
+                        RadioGroup::horizontal("migration-throttle")
+                            .children(throttle_labels)
+                            .selected_index(Some(self.throttle.index()))
+                            .disabled(is_running)
+                            .on_click(cx.listener(|this, index, _window, cx| {
+                                this.throttle = MigrationThrottle::from_index(*index);
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 
@@ -247,6 +277,10 @@ impl ZedisMigrationWindow {
                     })),
             )
             .child(Label::new(preview_summary).text_xs().text_color(muted))
+            .when_some(self.verify_summary(cx), |this, (text, ok)| {
+                let color = if ok { theme.green } else { theme.yellow };
+                this.child(Label::new(text).text_xs().text_color(color))
+            })
             .when(!sample_lines.is_empty(), |this| {
                 this.child(
                     Label::new(i18n_migration(cx, "preview_sample_label"))
@@ -371,6 +405,7 @@ impl ZedisMigrationWindow {
         let &JobLook {
             ref phase,
             is_running,
+            is_paused,
             is_import,
             is_copy,
             target_is_source,
@@ -397,7 +432,20 @@ impl ZedisMigrationWindow {
                     .on_click(cx.listener(|this, _, _window, cx| this.handle_reveal(cx))),
             );
         }
-        if is_running || self.preview_running {
+        if is_running || self.preview_running || self.verify_running {
+            if is_running && !self.preview_running && !self.verify_running {
+                let pause_label = if is_paused {
+                    i18n_migration(cx, "resume")
+                } else {
+                    i18n_migration(cx, "pause")
+                };
+                row = row.child(
+                    Button::new("migration-pause")
+                        .outline()
+                        .label(pause_label)
+                        .on_click(cx.listener(|this, _, _, cx| this.handle_toggle_pause(cx))),
+                );
+            }
             row = row.child(
                 Button::new("migration-cancel")
                     .danger()
@@ -405,6 +453,8 @@ impl ZedisMigrationWindow {
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.preview_running {
                             this.preview_cancel.store(true, Ordering::Release);
+                        } else if this.verify_running {
+                            this.verify_cancel.store(true, Ordering::Release);
                         } else {
                             this.handle_cancel(cx);
                         }
@@ -452,6 +502,13 @@ impl ZedisMigrationWindow {
                         .disabled(!can_copy)
                         .label(i18n_migration(cx, "preview_conflicts"))
                         .on_click(cx.listener(|this, _, _, cx| this.handle_preview(cx))),
+                )
+                .child(
+                    Button::new("migration-verify")
+                        .outline()
+                        .disabled(!can_copy)
+                        .label(i18n_migration(cx, "verify_copy"))
+                        .on_click(cx.listener(|this, _, _, cx| this.verify_copy(cx))),
                 )
                 .child(
                     Button::new("migration-start")
@@ -510,6 +567,28 @@ impl ZedisMigrationWindow {
             .as_ref()
             .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
             .unwrap_or_default()
+    }
+
+    fn verify_summary(&self, cx: &App) -> Option<(SharedString, bool)> {
+        if self.verify_running {
+            Some((i18n_migration(cx, "verify_running"), false))
+        } else if let Some(err) = &self.verify_error {
+            Some((format!("{}: {err}", i18n_migration(cx, "verify_failed")).into(), false))
+        } else if let Some(r) = &self.verify_report {
+            if r.cancelled {
+                Some((i18n_migration(cx, "preview_cancelled"), false))
+            } else {
+                let all_ok = r.missing_on_target.is_empty() && r.differing.is_empty();
+                let text = i18n_migration(cx, "verify_summary")
+                    .replace("{checked}", &r.checked.to_string())
+                    .replace("{matched}", &r.matched.to_string())
+                    .replace("{missing}", &r.missing_on_target.len().to_string())
+                    .replace("{differing}", &r.differing.len().to_string());
+                Some((text.into(), all_ok))
+            }
+        } else {
+            None
+        }
     }
 }
 

@@ -61,9 +61,9 @@ use zedis_connection::{
     set_scan, set_ttl_matching, slow_logs, snapshot_key, sniff_import_format, split_acl_rules, stream_ack, stream_add,
     stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_page, stream_set_id, stream_trim,
     string_get, string_prefix, string_set, test_connection, troubleshooting_snapshot, ts_add, ts_alter, ts_create_rule,
-    ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, vset_info, vset_remove, vset_set_attr,
-    vset_sim, write_hash_field, write_readable_chunk, zset_card, zset_count_by_score, zset_looks_geo, zset_put,
-    zset_range, zset_range_by_score, zset_remove, zset_scan,
+    ts_delete_rule, ts_mrange, ts_window, unassigned_slot_ranges, value_preview, verify_copied_keys, vset_info,
+    vset_remove, vset_set_attr, vset_sim, write_hash_field, write_readable_chunk, zset_card, zset_count_by_score,
+    zset_looks_geo, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
 };
 use zedis_connection::{
     AggregateOptions, CreateFieldSpec, CreateIndexOptions, FunctionRestorePolicy, ReducerFn, ReducerSpec, acl_list,

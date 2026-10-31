@@ -19,12 +19,13 @@
 
 use super::export::{CopyPreset, ExportSource, dirs_default_directory};
 use crate::connection::{
-    ConflictMode, ConflictPreview, get_server, get_servers, preview_import_conflicts, preview_key_conflicts,
+    ConflictMode, ConflictPreview, CopyVerificationReport, ServerDb, get_server, get_servers, preview_import_conflicts,
+    preview_key_conflicts, verify_copied_keys,
 };
 use crate::helpers::with_app_identity;
 use crate::states::{
-    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, ZedisGlobalStore, i18n_copy,
-    i18n_migration,
+    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, MigrationThrottle,
+    ZedisGlobalStore, i18n_copy, i18n_migration,
 };
 use chrono::Utc;
 use gpui::{
@@ -108,6 +109,13 @@ pub struct ZedisMigrationWindow {
     preview_running: bool,
     preview_error: Option<SharedString>,
     preview_cancel: Arc<AtomicBool>,
+    /// Optional throughput rate cap (keys/s).
+    throttle: MigrationThrottle,
+    /// Copy only: post-copy verification result.
+    verify_report: Option<CopyVerificationReport>,
+    verify_running: bool,
+    verify_error: Option<SharedString>,
+    verify_cancel: Arc<AtomicBool>,
     _subs: Vec<Subscription>,
 }
 
@@ -184,6 +192,11 @@ impl ZedisMigrationWindow {
             preview_running: false,
             preview_error: None,
             preview_cancel: Arc::new(AtomicBool::new(false)),
+            throttle: MigrationThrottle::Unlimited,
+            verify_report: None,
+            verify_running: false,
+            verify_error: None,
+            verify_cancel: Arc::new(AtomicBool::new(false)),
             _subs: subs,
         }
     }
@@ -247,9 +260,13 @@ impl ZedisMigrationWindow {
         if keys.is_empty() {
             return;
         }
-        // Cancel any in-flight preview so it doesn't fight the worker.
+        // Cancel any in-flight preview or verification so it doesn't fight the worker.
         self.preview_cancel.store(true, Ordering::Release);
         self.preview_running = false;
+        self.verify_cancel.store(true, Ordering::Release);
+        self.verify_running = false;
+        self.verify_report = None;
+        self.verify_error = None;
         let job = MigrationJob::Copy {
             source_id: server_id.clone(),
             source_db: *db,
@@ -257,8 +274,64 @@ impl ZedisMigrationWindow {
             target_db: self.target_db(cx),
             keys,
             conflict: self.conflict_mode,
+            throttle: self.throttle,
         };
         self.state.update(cx, |s, cx| s.start(job, cx));
+    }
+
+    /// Post-copy verification: checks that each filtered key exists on the
+    /// target with the same type and value.
+    fn verify_copy(&mut self, cx: &mut Context<Self>) {
+        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+            return;
+        };
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        if self.verify_running || self.target_is_source(cx) {
+            return;
+        }
+        let keys: Vec<String> = self
+            .filtered_export_keys(cx)
+            .iter()
+            .map(|key| key.to_string())
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let source_at = ServerDb::new(server_id.as_str(), *db);
+        let target_at = ServerDb::new(target_id.as_str(), self.target_db(cx));
+        self.verify_cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.verify_cancel.clone();
+        let superseded = self.verify_cancel.clone();
+        self.verify_running = true;
+        self.verify_error = None;
+        self.verify_report = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { verify_copied_keys(&source_at, &target_at, &keys, &cancel).await })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if superseded.load(Ordering::Acquire) {
+                    return;
+                }
+                view.verify_running = false;
+                match result {
+                    Ok(report) => {
+                        view.verify_report = Some(report);
+                        view.verify_error = None;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "copy verification failed");
+                        view.verify_report = None;
+                        view.verify_error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Dry run of a copy: `EXISTS` for the filtered keys on the target.
@@ -335,6 +408,10 @@ impl ZedisMigrationWindow {
         self.preview_running = false;
         self.preview = None;
         self.preview_error = None;
+        self.verify_cancel.store(true, Ordering::Release);
+        self.verify_running = false;
+        self.verify_report = None;
+        self.verify_error = None;
     }
 
     fn source_summary(&self, cx: &App) -> SharedString {
@@ -454,6 +531,7 @@ impl ZedisMigrationWindow {
     }
 
     fn start_with_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let throttle = self.throttle;
         let job = match &self.mode {
             MigrationWindowMode::Export { server_id, db, .. } => MigrationJob::Export {
                 server_id: server_id.clone(),
@@ -461,12 +539,14 @@ impl ZedisMigrationWindow {
                 keys: self.filtered_export_keys(cx),
                 output_path: path,
                 format: self.export_format,
+                throttle,
             },
             MigrationWindowMode::Import { server_id, db, .. } => MigrationJob::Import {
                 server_id: server_id.clone(),
                 db: *db,
                 input_path: path,
                 conflict: self.conflict_mode,
+                throttle,
             },
         };
         self.state.update(cx, |s, cx| s.start(job, cx));
@@ -542,6 +622,10 @@ impl ZedisMigrationWindow {
         self.state.update(cx, |s, cx| s.cancel(cx));
     }
 
+    fn handle_toggle_pause(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| s.toggle_pause(cx));
+    }
+
     fn handle_close(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         window.remove_window();
     }
@@ -563,6 +647,7 @@ fn phase_label(phase: &MigrationPhase, cx: &App) -> SharedString {
     match phase {
         MigrationPhase::Idle => i18n_migration(cx, "phase_idle"),
         MigrationPhase::Running => i18n_migration(cx, "phase_running"),
+        MigrationPhase::Paused => i18n_migration(cx, "phase_paused"),
         MigrationPhase::Finished => i18n_migration(cx, "phase_finished"),
         MigrationPhase::Failed(msg) => format!("{}: {}", i18n_migration(cx, "phase_failed"), msg).into(),
         MigrationPhase::Cancelled => i18n_migration(cx, "phase_cancelled"),
@@ -578,7 +663,8 @@ impl Render for ZedisMigrationWindow {
         let muted = theme.muted_foreground;
         let state = self.state.read(cx);
         let phase = state.phase().clone();
-        let is_running = matches!(phase, MigrationPhase::Running);
+        let is_running = matches!(phase, MigrationPhase::Running | MigrationPhase::Paused);
+        let is_paused = state.is_paused();
         let is_import = matches!(self.mode, MigrationWindowMode::Import { .. });
         let filtered_count = self.export_keys(cx).count();
         let total_count = match &self.mode {
@@ -590,6 +676,7 @@ impl Render for ZedisMigrationWindow {
         let look = JobLook {
             phase,
             is_running,
+            is_paused,
             is_import,
             is_copy,
             target_is_source,
@@ -993,5 +1080,54 @@ mod tests {
             window.press("escape", cx);
         });
         assert!(cx.update_window(handle, |_, _, _| ()).is_err(), "Esc closes the window");
+    }
+
+    #[gpui::test]
+    fn throttle_pause_and_verify_controls_follow_job_state(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _list = hold_the_server_list();
+        let _restore = own_servers();
+        let preset = CopyPreset {
+            target_id: "migtest-b".into(),
+            target_db: 1,
+            conflict: ConflictMode::Skip,
+        };
+        let (handle, view) = open(cx, export_mode(Some(preset)));
+
+        frame(cx, handle, |window, cx| {
+            assert_eq!(radios(window, "migration-throttle"), 4);
+            assert!(window.try_find("migration-pause").is_none());
+            assert!(window.try_find("migration-verify").is_some());
+            window.within("migration-throttle").click(2usize, cx);
+        });
+        assert_eq!(view.read_with(cx, |view, _| view.throttle), MigrationThrottle::Rate200);
+
+        let mig_state = view.read_with(cx, |view, _| view.state.clone());
+        mig_state.update(cx, |s, cx| s.set_phase_for_test(MigrationPhase::Running, cx));
+
+        frame(cx, handle, |window, cx| {
+            assert!(window.try_find("migration-verify").is_none());
+            assert_eq!(
+                label(window, "migration-pause").as_deref(),
+                Some(i18n_migration(cx, "pause").as_ref())
+            );
+            window.click("migration-pause", cx);
+        });
+        assert!(mig_state.read_with(cx, |s, _| s.is_paused()));
+
+        frame(cx, handle, |window, cx| {
+            assert_eq!(
+                label(window, "migration-pause").as_deref(),
+                Some(i18n_migration(cx, "resume").as_ref())
+            );
+            window.click("migration-pause", cx);
+        });
+        assert!(!mig_state.read_with(cx, |s, _| s.is_paused()));
+
+        mig_state.update(cx, |s, cx| s.set_phase_for_test(MigrationPhase::Finished, cx));
+        frame(cx, handle, |window, _| {
+            assert!(window.try_find("migration-pause").is_none());
+            assert!(window.try_find("migration-verify").is_some());
+        });
     }
 }
