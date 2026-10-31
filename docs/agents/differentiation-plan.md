@@ -28,9 +28,10 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - Editor gutter breakpoints, a step / continue / abort toolbar, a locals pane and a "Redis calls" log.
   - `KEYS` / `ARGV` input form, remembered per script in `lua_scripts.rs`.
 - **Constraints & open questions**:
-  - LDB blocks the connection for the whole session and is unavailable on Redis Cluster proxies and on many managed clouds. Probe it through `ServerCommand` and grey it out with a reason when missing.
-  - Valkey keeps LDB; Dragonfly and Garnet do not. Record this in `floors.rs` / the capability matrix.
-  - Web build: requires a long-lived bridge session similar to the terminal. Decide whether to ship desktop-only first.
+  - **Implemented 2026-10-31**: `crates/zedis-connection/src/lua_debug.rs` (`LuaDebugSession`) on a new `raw_connection.rs` (`RawConnection`: TCP / TLS / Unix / SSH, replies read frame by frame). Two protocol facts found by probing Redis 8.6 shaped it: the last step is answered with two replies (log ending `<endsession>`, then the script result) and the server then closes the connection, which redis-rs's multiplexed connection cannot receive; and nothing may be pipelined while paused, because LDB reads the socket itself and never sees bytes already in the query buffer. `e` runs in its own call frame (globals only). UI: `src/views/lua_script_library/debugger.rs`, opened from a script card's **Debug** button.
+  - Follow-ups: cluster support (connect to the master owning `KEYS[1]`'s slot), source syntax highlighting, keyboard shortcuts (F10/F5), remembering breakpoints per script, and a `ServerCommand` probe on managed clouds where `SCRIPT DEBUG` is disabled.
+  - Valkey keeps LDB; Dragonfly and Garnet do not.
+  - Web build: currently desktop-only (`this_build::debugs_lua_scripts()`); web support requires a long-lived bridge session similar to the terminal.
 
 ### A2. Key Timeline / Watch
 - **Why**: "Who changed this value, and when?" is a common production question. Recording every change to a key (or a prefix) as a diffable timeline turns Zedis into a debugging tool, not just a viewer.
@@ -55,6 +56,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - Rule model in `zedis-core` (pure logic, unit-tested): metric, comparator, threshold, sustained duration, cooldown. Example metrics: used memory % of `maxmemory`, evicted keys/s, connected / blocked clients, replication lag, slow log growth, instantaneous ops, link offline.
   - Rules stored per server in `zedis-db`. Evaluation reuses the samples the metrics history already collects; it adds no extra polling unless the server's panel is closed (then it polls at a pacing interval from `pacing.rs`).
   - Desktop: OS notification + status-bar / tray badge, and clicking it opens the relevant panel. Web build: in-app toast, with an optional webhook on `zedis-bridge` as a follow-up.
+- **Opt-in (decided 2026-10-31)**: Alerts are **off by default**. The user enables them per server connection with a checkbox (connection settings or the alerts panel). `INFO` metrics are instance-wide, so the switch is per server, not per logical db. No rule is evaluated and no extra connection is opened for a server whose switch is off.
 - **Constraints**:
   - Must not keep idle connections to servers the user never opened in this session unless the user explicitly marked them "monitor in background".
   - Respect `keep-alive` limits on managed clouds and back off like the heartbeat (ADR 5).
@@ -116,7 +118,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 
 | Step | Area | Summary | Status |
 |---|---|---|---|
-| A1 | Scripting | Lua script debugger (`SCRIPT DEBUG` / LDB) | Proposed |
+| A1 | Scripting | Lua script debugger (`SCRIPT DEBUG` / LDB) | Done (desktop, standalone/Sentinel; cluster is a follow-up) |
 | A2 | Debugging | Key timeline / watch via keyspace notifications | Proposed |
 | A3 | Monitoring | Background alert rules + desktop notifications | Proposed |
 | A4 | Insight | Keyspace schema inference & data dictionary export | Proposed |

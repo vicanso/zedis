@@ -21,7 +21,10 @@
 //! spot scripts that keep getting flushed out of Redis's cache.
 //! Server cache status is probed via `SCRIPT EXISTS` / `SCRIPT LOAD`.
 
-use crate::helpers::{kills_runaway_scripts, reads_clipboard_on_demand};
+#[cfg(not(target_family = "wasm"))]
+mod debugger;
+
+use crate::helpers::{debugs_lua_scripts, kills_runaway_scripts, reads_clipboard_on_demand};
 use crate::views::unavailable_chip;
 use crate::{
     assets::CustomIconName,
@@ -39,7 +42,7 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{AnyView, ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 #[cfg(target_family = "wasm")]
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{
@@ -151,6 +154,9 @@ pub struct ZedisLuaScriptLibrary {
     cache_status: AHashMap<String, bool>,
     filter: Entity<InputState>,
     edit_form: Option<EditForm>,
+    /// The Lua debugger, drawn in place of the list while it is open. A
+    /// view rather than its type, which exists on the desktop only.
+    debugger: Option<AnyView>,
     error: Option<SharedString>,
     running: Option<String>,
     saving: bool,
@@ -165,6 +171,9 @@ impl ZedisLuaScriptLibrary {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| {
             if let ServerEvent::ServerSelected(_) = event {
+                // Its session belongs to the server it was opened on;
+                // dropping it closes that connection and aborts the script.
+                this.debugger = None;
                 this.run_forms.clear();
                 this.run_expanded.clear();
                 this.code_viewers.clear();
@@ -193,6 +202,7 @@ impl ZedisLuaScriptLibrary {
             cache_status: AHashMap::new(),
             filter,
             edit_form: None,
+            debugger: None,
             error: None,
             running: None,
             saving: false,
@@ -862,6 +872,14 @@ impl gpui::Render for ZedisLuaScriptLibrary {
         let muted = cx.theme().muted_foreground;
         let header = self.render_header(cx).into_any_element();
 
+        if let Some(debugger) = self.debugger.clone() {
+            return v_flex()
+                .size_full()
+                .overflow_hidden()
+                .child(debugger)
+                .into_any_element();
+        }
+
         if self.edit_form.is_some() {
             let form_panel = self.render_form_panel(cx).into_any_element();
             return v_flex()
@@ -1115,6 +1133,7 @@ impl ZedisLuaScriptLibrary {
         let id_run_btn = id.clone();
         let id_dup = id.clone();
         let id_warm = id.clone();
+        let id_debug = id.clone();
         let script_for_edit = script.clone();
         let id_for_edit = id.clone();
         let name_for_delete = SharedString::from(script.name.clone());
@@ -1367,6 +1386,23 @@ impl ZedisLuaScriptLibrary {
                                     cx.listener(move |this, _, w, cx| this.toggle_run(id_run_toggle.clone(), w, cx)),
                                 ),
                         )
+                        .when(debugs_lua_scripts(), |this| {
+                            let on_cluster = self.server_state.read(cx).is_cluster();
+                            this.child(
+                                Button::new(("lua-debug", card_hash))
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Inspector)
+                                    .label(i18n_lua_scripts(cx, "debug"))
+                                    .tooltip(if on_cluster {
+                                        i18n_lua_scripts(cx, "debug_cluster_unavailable")
+                                    } else {
+                                        i18n_lua_scripts(cx, "debug_tooltip")
+                                    })
+                                    .disabled(on_cluster)
+                                    .on_click(cx.listener(move |this, _, w, cx| this.open_debugger(&id_debug, w, cx))),
+                            )
+                        })
                     })
                     .when(may_edit, |this| {
                         this.child(
@@ -1404,6 +1440,32 @@ impl ZedisLuaScriptLibrary {
             .when_some(run_block, |this, block| this.child(block))
             .when_some(code_block, |this, block| this.child(block))
     }
+
+    /// Open the Lua debugger on a saved script, in place of the list.
+    #[cfg(not(target_family = "wasm"))]
+    fn open_debugger(&mut self, id: &str, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::EvalScript) {
+            return;
+        }
+        let script = match LuaScriptManager::get(id) {
+            Ok(script) => script,
+            Err(e) => {
+                self.error = Some(e.to_string().into());
+                cx.notify();
+                return;
+            }
+        };
+        let library = cx.entity().downgrade();
+        let server_state = self.server_state.clone();
+        let view = cx.new(|cx| debugger::LuaDebugger::new(library, server_state, &script, window, cx));
+        self.debugger = Some(view.into());
+        cx.notify();
+    }
+
+    /// The browser has no debugger (`debugs_lua_scripts`), so nothing draws
+    /// the button that would call this.
+    #[cfg(target_family = "wasm")]
+    fn open_debugger(&mut self, _id: &str, _window: &mut Window, _cx: &mut gpui::Context<Self>) {}
 
     /// The page's *Shared* box: on the bridge a script is the saver's unless
     /// it is shared with every account (ADR 17). The desktop has no accounts.

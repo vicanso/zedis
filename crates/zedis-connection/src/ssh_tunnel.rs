@@ -312,7 +312,7 @@ pub async fn open_single_ssh_tunnel_push_connection(
 }
 
 /// A forwarded stream, with TLS on it when the entry asks for TLS.
-trait TunnelIo: AsyncRead + AsyncWrite + Unpin + Send {}
+pub(crate) trait TunnelIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> TunnelIo for T {}
 
 /// What reaching an entry's endpoint through its tunnel takes, read from the
@@ -394,6 +394,14 @@ impl TunnelDial {
         debug!("TLS handshake over SSH tunnel succeeded");
         Ok(Box::new(tls_stream))
     }
+}
+
+/// The entry's endpoint through its SSH tunnel as a plain byte stream, TLS
+/// negotiated when the entry asks for it — for a connection that reads the
+/// server's replies itself (`raw_connection.rs`). Must run on the tokio
+/// runtime, like everything russh does.
+pub(crate) async fn open_tunnel_stream(config: &RedisServer) -> Result<Box<dyn TunnelIo>> {
+    TunnelDial::new(config)?.open().await
 }
 
 async fn open_single_ssh_tunnel_connection_inner(

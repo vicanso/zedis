@@ -1221,6 +1221,12 @@ impl ZedisServerState {
         )
     }
 
+    /// Whether the server is a Cluster: many nodes, so what needs one
+    /// connection to one node (the Lua debugger) is not offered.
+    pub fn is_cluster(&self) -> bool {
+        self.nodes_description().server_type == "Cluster"
+    }
+
     /// Get the currently selected server id
     pub fn server_id(&self) -> &str {
         &self.server_id

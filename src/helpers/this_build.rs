@@ -132,6 +132,19 @@ pub const fn has_ai_assistant() -> bool {
     false
 }
 
+/// Debugging a Lua script step by step (`SCRIPT DEBUG`). The debugger holds
+/// one connection for the whole session and reads two replies to one
+/// command at its end; a page reaches Redis one request at a time through
+/// the bridge, which has no such connection to hold.
+#[cfg(not(target_family = "wasm"))]
+pub const fn debugs_lua_scripts() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub const fn debugs_lua_scripts() -> bool {
+    false
+}
+
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
@@ -148,5 +161,6 @@ mod tests {
         assert_eq!(value_write_limit(), None, "the desktop writes a value of any size");
         assert!(kills_runaway_scripts());
         assert!(has_ai_assistant());
+        assert!(debugs_lua_scripts());
     }
 }

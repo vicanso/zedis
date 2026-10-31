@@ -24,6 +24,8 @@
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::manager::{RedisClient, get_connection_manager};
+#[cfg(not(target_family = "wasm"))]
+use crate::raw_connection::RawConnection;
 
 /// One database of one configured server, by id — and, when the caller
 /// has just had a confirm dialog answered, the answer, so that the bridge
@@ -92,5 +94,17 @@ impl ServerDb {
     pub(crate) async fn dedicated_connection(&self) -> Result<RedisAsyncConn, Error> {
         let conn = Box::pin(get_connection_manager().open_dedicated_connection(&self.server_id, self.db)).await?;
         Ok(conn.with_confirmation(self.confirm.clone()))
+    }
+
+    /// A connection of the caller's own whose replies it reads itself
+    /// (`RawConnection`), to the node the pooled client talks to. `None` on
+    /// a cluster. Desktop only: it dials.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) async fn raw_connection(&self) -> Result<Option<RawConnection>, Error> {
+        let client = self.client().await?;
+        let Some(node) = client.single_node_config() else {
+            return Ok(None);
+        };
+        Ok(Some(RawConnection::open(&node, self.db).await?))
     }
 }

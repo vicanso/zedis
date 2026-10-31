@@ -62,6 +62,17 @@ impl RedisClient {
         get_async_connection(&self.client, self.db, false).await
     }
 
+    /// The one node this client talks to — the entry itself, or the master
+    /// its Sentinel named — for a connection that is not redis-rs's own
+    /// (`RawConnection`). `None` on a cluster, which is many nodes.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn single_node_config(&self) -> Option<RedisServer> {
+        match &self.client {
+            RClient::Single(config) => Some(config.as_ref().clone()),
+            RClient::Cluster(_) | RClient::SshCluster(_) => None,
+        }
+    }
+
     /// The browser's dedicated connection: a bridge *session*, which is the
     /// same promise over HTTP — one backend connection, this caller's alone,
     /// so connection-scoped state stays where it was typed (ADR 4).

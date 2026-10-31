@@ -111,6 +111,7 @@ const WRITES: &[&str] = &[
     "TS.CREATERULE",
     "TS.DELETERULE",
     // Scripting: may write whatever the script says.
+    "EVAL",
     "FUNCTION",
     "FUNCTION DELETE",
     "SCRIPT",

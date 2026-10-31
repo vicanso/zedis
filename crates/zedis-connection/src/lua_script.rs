@@ -189,7 +189,7 @@ fn is_no_script(err: &redis::RedisError) -> bool {
 /// Stringify a Redis reply for the result panel. Kept intentionally
 /// simple — the goal is a readable preview for the common cases
 /// (numbers, strings, arrays of those), not a full pretty-printer.
-fn format_value(v: &Value) -> String {
+pub(crate) fn format_value(v: &Value) -> String {
     match v {
         Value::Nil => "(nil)".to_string(),
         Value::Int(n) => format!("(integer) {n}"),

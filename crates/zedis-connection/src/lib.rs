@@ -42,6 +42,7 @@ native_only!(
     async_connection,
     diagnostics,
     master_key,
+    raw_connection,
     ssh_cluster_connection,
     ssh_stream,
     ssh_tunnel,
@@ -70,6 +71,9 @@ mod keyspace;
 mod latency;
 mod list_ops;
 mod logical_copy;
+/// The Lua debugger holds a connection for its whole session (desktop only).
+#[cfg(not(target_family = "wasm"))]
+mod lua_debug;
 mod lua_script;
 mod manager;
 mod module_ops;
@@ -198,6 +202,8 @@ pub use list_ops::{list_len, list_push, list_range, list_set_if_unchanged, remov
 pub use logical_copy::{
     CopyLoss, CopyPreflight, copy_key_logically, copy_preflight, is_foreign_payload, restore_or_recreate_chunk,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use lua_debug::{DebugCommand, DebugEnd, DebugLine, DebugMode, DebugStep, LuaDebugSession, LuaLocal};
 pub use lua_script::{
     ScriptRunOutcome, max_keys_index, run_script, script_exists, script_flush, script_load, script_sha1, script_show,
 };

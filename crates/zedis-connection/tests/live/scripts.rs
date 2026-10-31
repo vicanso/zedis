@@ -321,3 +321,108 @@ fn standalone_functions_list_call_dump_and_restore() {
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
 }
+
+/// The script the debugger tests step through: a write on line 2, a
+/// `redis.debug` on line 3, a table returned on line 4.
+const DEBUGGED: &str = "local a = 1\nredis.call('SET', KEYS[1], ARGV[1])\nredis.debug('seen', a)\nreturn {a, ARGV[1]}";
+
+/// A forked debugging session (`SCRIPT DEBUG YES`): stops before line 1,
+/// runs to a breakpoint set at the start, shows the locals there, evaluates
+/// an expression, and ends with the script's return value — while the write
+/// it made is thrown away with the child.
+#[test]
+#[ignore]
+fn standalone_lua_debugger_steps_a_forked_session() {
+    smol::block_on(async {
+        let id = register(server("it-lua-debug", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        let key = unique("lua-debug");
+        let keys = vec![key.clone()];
+        let args = vec!["v1".to_string()];
+
+        let (session, first) = LuaDebugSession::start(&at, DEBUGGED, &keys, &args, &[3], DebugMode::Forked)
+            .await
+            .expect("start");
+        assert_eq!(first.stopped_at, Some(1), "{first:?}");
+        assert!(first.end.is_none());
+
+        let at_break = session.send(&DebugCommand::Continue).await.expect("continue");
+        assert_eq!(at_break.stopped_at, Some(3), "{at_break:?}");
+        assert_eq!(at_break.stop_reason.as_deref(), Some("break point"));
+        assert!(
+            at_break.locals.iter().any(|l| l.name == "a" && l.value == "1"),
+            "{:?}",
+            at_break.locals
+        );
+
+        // `e` runs in a call frame of its own: the script's globals (KEYS,
+        // ARGV) are there, its locals are not.
+        let eval = session
+            .send(&DebugCommand::Eval("#KEYS + 41".to_string()))
+            .await
+            .expect("eval");
+        assert!(
+            eval.log.contains(&DebugLine::RetVal("42".to_string())),
+            "{:?}",
+            eval.log
+        );
+        assert_eq!(eval.stopped_at, None, "an eval does not move the script");
+
+        let end = session.send(&DebugCommand::Continue).await.expect("finish");
+        assert!(
+            end.log
+                .iter()
+                .any(|l| matches!(l, DebugLine::Debug(text) if text.contains("seen"))),
+            "{:?}",
+            end.log
+        );
+        let finished = end.end.expect("the script finished");
+        assert!(!finished.error, "{}", finished.result);
+        assert!(finished.result.contains("v1"), "{}", finished.result);
+        assert!(!session.is_live());
+        assert!(session.send(&DebugCommand::Step).await.is_err(), "the session is over");
+
+        let exists: i64 = cmd("EXISTS").arg(&key).query_async(&mut c).await.expect("exists");
+        assert_eq!(exists, 0, "a forked session rolls its writes back");
+    });
+}
+
+/// `SCRIPT DEBUG SYNC` keeps what the script wrote; an abort ends the
+/// session with the server's error; a script that does not compile ends
+/// before its first line.
+#[test]
+#[ignore]
+fn standalone_lua_debugger_sync_keeps_writes_and_reports_failures() {
+    smol::block_on(async {
+        let id = register(server("it-lua-debug-sync", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+        let key = unique("lua-debug-sync");
+        let keys = vec![key.clone()];
+        let args = vec!["kept".to_string()];
+
+        let (session, _) = LuaDebugSession::start(&at, DEBUGGED, &keys, &args, &[], DebugMode::Sync)
+            .await
+            .expect("start");
+        let end = session.send(&DebugCommand::Continue).await.expect("finish");
+        assert!(end.end.is_some_and(|e| !e.error));
+        let value: Option<String> = cmd("GET").arg(&key).query_async(&mut c).await.expect("get");
+        assert_eq!(value.as_deref(), Some("kept"), "a sync session keeps its writes");
+
+        let (session, _) = LuaDebugSession::start(&at, DEBUGGED, &keys, &args, &[], DebugMode::Forked)
+            .await
+            .expect("start");
+        let aborted = session.send(&DebugCommand::Abort).await.expect("abort");
+        let aborted = aborted.end.expect("an abort ends the session");
+        assert!(aborted.error && aborted.result.contains("abort"), "{}", aborted.result);
+
+        let (_, broken) = LuaDebugSession::start(&at, "return (", &[], &[], &[], DebugMode::Forked)
+            .await
+            .expect("start");
+        let broken = broken.end.expect("a script that does not compile never stops");
+        assert!(broken.error, "{}", broken.result);
+
+        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
+    });
+}
