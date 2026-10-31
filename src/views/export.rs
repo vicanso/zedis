@@ -116,6 +116,32 @@ pub fn open_key_copy(
     super::key_export::open_key_copy_dialog(server_id, server_name, db, keys, preset, window, cx);
 }
 
+/// Open the key import view targeting `server_id` / `db`: the migration
+/// window on the desktop (`.zedis-dump`, JSON or CSV)…
+#[cfg(not(target_family = "wasm"))]
+pub fn open_key_import(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    _window: &mut Window,
+    cx: &mut App,
+) {
+    super::open_migration_import_window(server_id, server_name, db, cx);
+}
+
+/// …and in a page, a dialog that picks a JSON or CSV export file and writes
+/// its entries through the bridge.
+#[cfg(target_family = "wasm")]
+pub fn open_key_import(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    super::key_export::open_key_import_dialog(server_id, server_name, db, window, cx);
+}
+
 /// Where a save dialog opens: the platform's Downloads directory when that
 /// folder exists, else home, else wherever the process is. A configured
 /// Downloads path that is not on disk is skipped so the dialog does not

@@ -142,7 +142,7 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 |---|---|---|---|
 | 1.1 | Desktop UX | Fix filtered key-tree refresh (`⌘R`) blanking & lazy folder reset (#148) | Done |
 | 2.1 | Web Parity | Enable single-key copy & Compare *Copy to target* in browser | Done |
-| 2.2 | Web Parity | Enable JSON/CSV readable key import in browser | Pending |
+| 2.2 | Web Parity | Enable JSON/CSV readable key import in browser | Done |
 | 2.3 | Web Parity | Enable `SCRIPT KILL` / `FUNCTION KILL` in browser via bridge | Pending |
 | 3.1 | MCP Server | Add `troubleshooting_report` (10th MCP tool) in `zedis-bridge` | Pending |
 | 3.2 | MCP Server | Update stale `WRITE_ACCOUNT_REFUSAL` hint in `zedis-bridge/src/mcp.rs` | Pending |

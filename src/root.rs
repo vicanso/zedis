@@ -49,13 +49,11 @@ use crate::states::{
 // The window placement is written to `zedis.toml`; a tab has no file (ADR 9).
 #[cfg(not(target_family = "wasm"))]
 use crate::states::{WindowPlacement, save_app_state};
-#[cfg(not(target_family = "wasm"))]
-use crate::views::open_migration_import_window;
 use crate::views::{
     ExportSource, ZedisCommandPalette, ZedisContent, ZedisMultiSearch, ZedisRecentKeysPalette, ZedisShortcutsOverlay,
     ZedisSidebar, ZedisTitleBar, confirm_dangerous_command, confirm_remove_server, open_account, open_compare,
-    open_connection_diagnostics, open_features_dialog, open_key_export, open_new_group_dialog, open_settings,
-    open_trash_dialog, open_troubleshoot_report,
+    open_connection_diagnostics, open_features_dialog, open_key_export, open_key_import, open_new_group_dialog,
+    open_settings, open_trash_dialog, open_troubleshoot_report,
 };
 use crate::window_setup::*;
 use gpui::{

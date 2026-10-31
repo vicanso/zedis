@@ -21,8 +21,6 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-pub(crate) const MAGIC_HEADER: &[u8; 4] = b"ZDIS";
-
 const MAGIC_FOOTER: &[u8; 4] = b"ZEND";
 
 const FORMAT_VERSION: u16 = 1;

@@ -165,19 +165,17 @@ pub(super) fn on_server_tool(this: &mut Zedis, e: &ServerToolsAction, window: &m
             open_troubleshoot_report(server_state, window, cx);
             return;
         }
-        // Dump import into the active server / db (not a
-        // key-tree prefix). Opens a dedicated window.
+        // Import keys into the active server / db (not a
+        // key-tree prefix).
         ServerToolsAction::ImportKeys => {
-            #[cfg(not(target_family = "wasm"))]
-            {
-                let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned() else {
-                    return;
-                };
-                let server_name: gpui::SharedString = get_server(&server_id)
-                    .map(|s| s.name.into())
-                    .unwrap_or_else(|_| server_id.clone().into());
-                open_migration_import_window(server_id.into(), server_name, db, cx);
-            }
+            let Some((server_id, db)) = cx.global::<ZedisGlobalStore>().read(cx).selected_server().cloned() else {
+                return;
+            };
+            let server_name: gpui::SharedString = get_server(&server_id)
+                .map(|s| s.name.into())
+                .unwrap_or_else(|_| server_id.clone().into());
+            this.keep_focus_in_page(window, cx);
+            open_key_import(server_id.into(), server_name, db, window, cx);
             return;
         }
         // Pub/Sub lives inside the editor suite (channel mode),

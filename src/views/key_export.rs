@@ -23,12 +23,14 @@
 //! desktop's JSON / CSV export writes, held in memory, so it stops at
 //! [`MAX_EXPORT_BYTES`] rather than at whatever the tab can take.
 
-use super::export::{CopyPreset, ExportSource, export_filename_with, export_to_file_global};
+use super::export::{CopyPreset, ExportSource, export_filename_with, export_to_file_global, open_file};
 use crate::assets::CustomIconName;
 use crate::connection::{
-    ConflictMode, ConflictPreview, ReadLimits, ReadableDocument, RestoreStatus, ServerDb, dump_keys_chunk, get_server,
-    get_servers, preview_key_conflicts, read_readable_chunk, restore_or_recreate_chunk,
+    ConflictMode, ConflictPreview, ImportFormat, ReadLimits, ReadableDocument, ReadableEntry, ReadableWriteStatus,
+    RestoreStatus, ServerDb, dump_keys_chunk, get_server, get_servers, parse_readable_entries, preview_key_conflicts,
+    read_readable_chunk, restore_or_recreate_chunk, sniff_import_format, write_readable_chunk,
 };
+use crate::helpers::{PickFailure, PickedFile};
 use crate::states::{ZedisGlobalStore, i18n_common, i18n_copy, i18n_migration};
 use gpui::{AnyElement, App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -914,6 +916,451 @@ pub(crate) fn open_key_copy_dialog(
         )
     });
     ZedisDialog::new(i18n_migration(cx, "copy_title"))
+        .w(px(580.))
+        .ok_text(i18n_common(cx, "close"))
+        .child(move || view.clone())
+        .open(window, cx);
+}
+
+struct LoadedImportFile {
+    name: SharedString,
+    entries: Vec<ReadableEntry>,
+}
+
+enum ImportPhase {
+    Idle,
+    Running {
+        done: usize,
+        total: usize,
+        written: u64,
+        skipped: u64,
+        failed: u64,
+    },
+    Finished {
+        written: u64,
+        skipped: u64,
+        failed: u64,
+        cancelled: bool,
+    },
+    Failed(SharedString),
+}
+
+pub struct ZedisKeyImport {
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    conflict_mode: ConflictMode,
+    chosen_file: Option<LoadedImportFile>,
+    preview: Option<ConflictPreview>,
+    preview_running: bool,
+    preview_error: Option<SharedString>,
+    cancel: Arc<AtomicBool>,
+    phase: ImportPhase,
+    _task: Option<Task<()>>,
+}
+
+impl ZedisKeyImport {
+    fn new(server_id: SharedString, server_name: SharedString, db: usize) -> Self {
+        Self {
+            server_id,
+            server_name,
+            db,
+            conflict_mode: ConflictMode::default(),
+            chosen_file: None,
+            preview: None,
+            preview_running: false,
+            preview_error: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            phase: ImportPhase::Idle,
+            _task: None,
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        matches!(self.phase, ImportPhase::Running { .. })
+    }
+
+    fn destination_summary(&self, cx: &App) -> SharedString {
+        i18n_migration(cx, "destination_summary")
+            .replace("{server}", &self.server_name)
+            .replace("{db}", &self.db.to_string())
+            .into()
+    }
+
+    fn drop_preview(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        self.preview_running = false;
+        self.preview = None;
+        self.preview_error = None;
+    }
+
+    fn pick_file(&mut self, cx: &mut Context<Self>) {
+        if self.is_running() || self.preview_running {
+            return;
+        }
+        let pick_task = open_file(cx, ".json,.csv", MAX_EXPORT_BYTES as u64);
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let Some(picked) = pick_task.await else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                view.drop_preview();
+                match picked {
+                    Err(PickFailure::TooLarge { size }) => {
+                        view.chosen_file = None;
+                        view.phase = ImportPhase::Failed(
+                            format!(
+                                "{} (max {})",
+                                format_size(size, DECIMAL),
+                                format_size(MAX_EXPORT_BYTES as u64, DECIMAL)
+                            )
+                            .into(),
+                        );
+                    }
+                    Err(PickFailure::Unreadable(msg)) => {
+                        view.chosen_file = None;
+                        view.phase = ImportPhase::Failed(msg.into());
+                    }
+                    Ok(PickedFile { name, bytes }) => match parse_picked_readable(&bytes) {
+                        Ok(entries) => {
+                            view.chosen_file = Some(LoadedImportFile {
+                                name: name.into(),
+                                entries,
+                            });
+                            view.phase = ImportPhase::Idle;
+                        }
+                        Err(msg) => {
+                            view.chosen_file = None;
+                            view.phase = ImportPhase::Failed(msg.into());
+                        }
+                    },
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn preview_conflicts(&mut self, cx: &mut Context<Self>) {
+        let Some(loaded) = &self.chosen_file else {
+            return;
+        };
+        if self.is_running() || self.preview_running || loaded.entries.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = loaded.entries.iter().map(|e| e.key.clone()).collect();
+        let server_id = self.server_id.to_string();
+        let db = self.db;
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.cancel.clone();
+        let superseded = cancel.clone();
+        self.preview_running = true;
+        self.preview_error = None;
+        self.preview = None;
+        cx.notify();
+
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = preview_key_conflicts(&server_id, db, &keys, PREVIEW_SAMPLE_LIMIT, &cancel).await;
+            let _ = this.update(cx, |view, cx| {
+                if superseded.load(Ordering::Acquire) && !result.as_ref().is_ok_and(|p| p.cancelled) {
+                    return;
+                }
+                view.preview_running = false;
+                match result {
+                    Ok(preview) => {
+                        view.preview = Some(preview);
+                        view.preview_error = None;
+                    }
+                    Err(e) => {
+                        view.preview = None;
+                        view.preview_error = Some(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn start_import(&mut self, cx: &mut Context<Self>) {
+        let Some(loaded) = &self.chosen_file else {
+            return;
+        };
+        if self.is_running() || loaded.entries.is_empty() {
+            return;
+        }
+        let entries = loaded.entries.clone();
+        let total = entries.len();
+        self.drop_preview();
+        let at = ServerDb::new(self.server_id.as_str(), self.db);
+        let conflict = self.conflict_mode;
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.cancel.clone();
+        self.phase = ImportPhase::Running {
+            done: 0,
+            total,
+            written: 0,
+            skipped: 0,
+            failed: 0,
+        };
+        cx.notify();
+
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let mut done = 0usize;
+            let mut written = 0u64;
+            let mut skipped = 0u64;
+            let mut failed = 0u64;
+
+            for chunk in entries.chunks(CHUNK_KEYS) {
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                let statuses = match write_readable_chunk(&at, chunk, conflict).await {
+                    Ok(statuses) => statuses,
+                    Err(e) => {
+                        let _ = this.update(cx, |view, cx| {
+                            view.phase = ImportPhase::Failed(e.to_string().into());
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                for status in statuses {
+                    match status {
+                        ReadableWriteStatus::Written => written += 1,
+                        ReadableWriteStatus::SkippedExists
+                        | ReadableWriteStatus::SkippedTruncated
+                        | ReadableWriteStatus::SkippedUnsupported
+                        | ReadableWriteStatus::SkippedEmpty => skipped += 1,
+                        ReadableWriteStatus::Failed(_) => failed += 1,
+                    }
+                }
+                done += chunk.len();
+                let progressed = this.update(cx, |view, cx| {
+                    view.phase = ImportPhase::Running {
+                        done,
+                        total,
+                        written,
+                        skipped,
+                        failed,
+                    };
+                    cx.notify();
+                });
+                if progressed.is_err() {
+                    return;
+                }
+            }
+
+            let cancelled = cancel.load(Ordering::Acquire);
+            let _ = this.update(cx, |view, cx| {
+                view.phase = ImportPhase::Finished {
+                    written,
+                    skipped,
+                    failed,
+                    cancelled,
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn preview_summary(&self, cx: &App) -> SharedString {
+        if self.preview_running {
+            i18n_migration(cx, "preview_running")
+        } else if let Some(err) = &self.preview_error {
+            format!("{}: {err}", i18n_migration(cx, "preview_failed")).into()
+        } else if let Some(p) = &self.preview {
+            if p.cancelled {
+                i18n_migration(cx, "preview_cancelled")
+            } else {
+                i18n_migration(cx, "preview_summary")
+                    .replace("{total}", &p.total.to_string())
+                    .replace("{conflicts}", &p.conflicting.to_string())
+                    .replace("{free}", &p.free.to_string())
+                    .into()
+            }
+        } else {
+            i18n_migration(cx, "preview_idle")
+        }
+    }
+
+    fn preview_sample(&self) -> Vec<SharedString> {
+        self.preview
+            .as_ref()
+            .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
+            .unwrap_or_default()
+    }
+}
+
+fn parse_picked_readable(bytes: &[u8]) -> Result<Vec<ReadableEntry>, String> {
+    let format = sniff_import_format(bytes).map_err(|e| e.to_string())?;
+    if format == ImportFormat::Binary {
+        return Err(
+            "binary .zedis-dump bundles are imported in the desktop app; choose a JSON or CSV export".to_string(),
+        );
+    }
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    parse_readable_entries(text, format).map_err(|e| e.to_string())
+}
+
+impl Render for ZedisKeyImport {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let danger = theme.danger;
+        let is_running = self.is_running();
+        let has_file = self.chosen_file.is_some();
+
+        let conflict_labels = vec![
+            i18n_migration(cx, "conflict_skip").to_string(),
+            i18n_migration(cx, "conflict_overwrite").to_string(),
+            i18n_migration(cx, "conflict_abort").to_string(),
+        ];
+        let file_label: SharedString = match &self.chosen_file {
+            Some(loaded) => format!("{} ({})", loaded.name, loaded.entries.len()).into(),
+            None => i18n_migration(cx, "no_file_chosen"),
+        };
+        let pick_label = if has_file {
+            i18n_migration(cx, "pick_file_again")
+        } else {
+            i18n_migration(cx, "pick_file")
+        };
+        let sample_lines = self.preview_sample();
+
+        let status = match &self.phase {
+            ImportPhase::Idle => None,
+            ImportPhase::Running {
+                done,
+                total,
+                written,
+                skipped,
+                failed,
+            } => {
+                let share = if *total == 0 {
+                    0.
+                } else {
+                    *done as f32 * 100. / *total as f32
+                };
+                let text = format!(
+                    "{}: {done} / {total} · written {written}, skipped {skipped}, failed {failed}",
+                    i18n_migration(cx, "phase_running"),
+                );
+                Some(
+                    v_flex()
+                        .gap_1()
+                        .child(Progress::new("key-import-progress").value(share))
+                        .child(Label::new(text).text_xs().text_color(muted))
+                        .into_any_element(),
+                )
+            }
+            ImportPhase::Finished {
+                written,
+                skipped,
+                failed,
+                cancelled,
+            } => {
+                let phase_name = if *cancelled {
+                    i18n_migration(cx, "phase_cancelled")
+                } else {
+                    i18n_migration(cx, "phase_finished")
+                };
+                let text = format!("{phase_name}: {written} · skipped {skipped} · failed {failed}");
+                Some(Label::new(text).text_sm().into_any_element())
+            }
+            ImportPhase::Failed(err) => Some(Label::new(err.clone()).text_xs().text_color(danger).into_any_element()),
+        };
+
+        let mut action_row = h_flex().w_full().gap_2().justify_end();
+        if is_running || self.preview_running {
+            action_row = action_row.child(
+                Button::new("key-import-cancel")
+                    .small()
+                    .danger()
+                    .label(i18n_migration(cx, "cancel"))
+                    .on_click(cx.listener(|this, _, _window, _cx| {
+                        this.cancel.store(true, Ordering::Release);
+                    })),
+            );
+        } else {
+            action_row = action_row
+                .child(
+                    Button::new("key-import-pick")
+                        .small()
+                        .outline()
+                        .label(pick_label)
+                        .on_click(cx.listener(|this, _, _window, cx| this.pick_file(cx))),
+                )
+                .child(
+                    Button::new("key-import-preview")
+                        .small()
+                        .outline()
+                        .disabled(!has_file)
+                        .label(i18n_migration(cx, "preview_conflicts"))
+                        .on_click(cx.listener(|this, _, _window, cx| this.preview_conflicts(cx))),
+                )
+                .child(
+                    Button::new("key-import-start")
+                        .small()
+                        .primary()
+                        .disabled(!has_file)
+                        .label(i18n_migration(cx, "start_import"))
+                        .on_click(cx.listener(|this, _, _window, cx| this.start_import(cx))),
+                );
+        }
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(Label::new(self.destination_summary(cx)).text_sm())
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(Label::new(i18n_migration(cx, "conflict_label")).text_sm())
+                    .child(
+                        Label::new(i18n_migration(cx, "conflict_hint"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .child(
+                        RadioGroup::horizontal("key-import-conflict")
+                            .children(conflict_labels)
+                            .selected_index(Some(self.conflict_mode.index()))
+                            .disabled(is_running)
+                            .on_click(cx.listener(|this, index, _window, cx| {
+                                this.conflict_mode = ConflictMode::from_index(*index);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Label::new(i18n_migration(cx, "file_label")).text_sm())
+                    .child(Label::new(file_label).text_xs().text_color(muted).text_ellipsis()),
+            )
+            .child(Label::new(self.preview_summary(cx)).text_xs().text_color(muted))
+            .when(!sample_lines.is_empty(), |this| {
+                this.child(
+                    Label::new(i18n_migration(cx, "preview_sample_label"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(sample_block(sample_lines, cx))
+            })
+            .children(status)
+            .child(action_row)
+    }
+}
+
+/// Open the JSON/CSV key import dialog over the page.
+pub(crate) fn open_key_import_dialog(
+    server_id: SharedString,
+    server_name: SharedString,
+    db: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|_| ZedisKeyImport::new(server_id, server_name, db));
+    ZedisDialog::new(i18n_migration(cx, "import_title"))
         .w(px(580.))
         .ok_text(i18n_common(cx, "close"))
         .child(move || view.clone())

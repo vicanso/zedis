@@ -42,7 +42,6 @@ native_only!(
     async_connection,
     diagnostics,
     master_key,
-    readable_import,
     ssh_cluster_connection,
     ssh_stream,
     ssh_tunnel,
@@ -80,6 +79,7 @@ mod probabilistic;
 mod probe;
 mod read_only;
 mod readable_export;
+mod readable_import;
 mod search;
 mod server_config;
 mod server_db;
@@ -225,11 +225,11 @@ pub use readable_export::{
     ReadLimits, ReadableDocument, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json,
     next_stream_id, read_readable_chunk,
 };
-#[cfg(not(target_family = "wasm"))]
 pub use readable_import::{
-    ImportFormat, ReadableWriteStatus, detect_import_format, parse_readable_entries, preview_import_conflicts,
-    sniff_import_format, write_readable_chunk,
+    ImportFormat, ReadableWriteStatus, parse_readable_entries, sniff_import_format, write_readable_chunk,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use readable_import::{detect_import_format, preview_import_conflicts};
 pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_json};
 #[cfg(not(target_family = "wasm"))]
 pub use script_kill::kill_running;

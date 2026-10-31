@@ -53,10 +53,10 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 // `RESTORE`, `EXISTS`) are what copy-key runs, and those travel through the
 // bridge like any other (ADR 9). One gated module rather than a gate per
 // item (CLAUDE.md, *Desktop first*).
+pub(crate) const MAGIC_HEADER: &[u8; 4] = b"ZDIS";
+
 #[cfg(not(target_family = "wasm"))]
 mod file;
-#[cfg(not(target_family = "wasm"))]
-pub(crate) use file::MAGIC_HEADER;
 #[cfg(not(target_family = "wasm"))]
 pub use file::{DumpHeader, DumpReader, DumpWriter, preview_dump_conflicts};
 

@@ -120,7 +120,7 @@ pub use danger_confirm::{
 };
 pub use editor::ZedisEditor;
 pub use expire_at_dialog::ZedisExpireAtDialog;
-pub use export::{CopyPreset, ExportSource, open_key_copy, open_key_export};
+pub use export::{CopyPreset, ExportSource, open_key_copy, open_key_export, open_key_import};
 pub(crate) use export::{export_filename, export_filename_with, export_to_file, export_to_file_global, open_file};
 pub use export_servers_dialog::ZedisExportServersDialog;
 pub use function_editor::ZedisFunctionEditor;

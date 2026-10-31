@@ -22,17 +22,26 @@
 //! the streaming, full-fidelity path for big migrations.
 
 use crate::conn::RedisAsyncConn;
-use crate::dump_restore::{ConflictMode, ConflictPreview, keys_exist, preview_dump_conflicts};
+use crate::dump_restore::ConflictMode;
+#[cfg(not(target_family = "wasm"))]
+use crate::dump_restore::{ConflictPreview, keys_exist, preview_dump_conflicts};
 use crate::error::Error;
-use crate::server_db::ServerDb;
+#[cfg(not(target_family = "wasm"))]
 use crate::manager::get_connection_manager;
 use crate::readable_export::{ReadableEntry, ReadableValue};
+use crate::server_db::ServerDb;
+#[cfg(target_family = "wasm")]
+use crate::{BridgePipeline, BridgeQuery};
 use futures::future::try_join_all;
 use redis::{cmd, pipe};
 use serde_json::Value;
+#[cfg(not(target_family = "wasm"))]
 use std::fs;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Read;
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_family = "wasm"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use zedis_core::csv::parse_csv;
 
@@ -44,6 +53,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 const WRITE_PAGE: usize = 1_000;
 
 /// Bytes read from the head of a file to sniff its format.
+#[cfg(not(target_family = "wasm"))]
 const SNIFF_LEN: usize = 4 * 1024;
 
 /// On-disk format of an import file. Sniffed from content, never from
@@ -83,6 +93,7 @@ pub fn sniff_import_format(head: &[u8]) -> Result<ImportFormat> {
 }
 
 /// Sniff the format of the file at `path` (reads at most the first 4 KiB).
+#[cfg(not(target_family = "wasm"))]
 pub fn detect_import_format(path: &Path) -> Result<ImportFormat> {
     let mut head = vec![0u8; SNIFF_LEN];
     let mut file = fs::File::open(path)?;
@@ -468,6 +479,7 @@ async fn write_value(conn: &mut RedisAsyncConn, key: &str, value: &ReadableValue
 /// Format-aware dry-run conflict scan for the import window: binary
 /// bundles stream through [`preview_dump_conflicts`]; readable files are
 /// parsed and their keys batch-`EXISTS`-checked.
+#[cfg(not(target_family = "wasm"))]
 pub async fn preview_import_conflicts(
     server_id: &str,
     db: usize,

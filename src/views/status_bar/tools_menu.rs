@@ -236,10 +236,9 @@ impl ZedisStatusBar {
             &[],
             false,
         ));
-        // Import opens a window of its own over a file it streams: desktop
-        // only. RESTORE: disabled, not hidden, on a read-only connection so
-        // the user knows where it lives.
-        #[cfg(not(target_family = "wasm"))]
+        // Import: the migration window on the desktop, a JSON/CSV dialog in
+        // a page. Disabled, not hidden, on a read-only connection so the user
+        // knows where it lives.
         data.extend(tool(
             i18n_status_bar(cx, "import_keys_menu"),
             Icon::new(CustomIconName::Upload),
