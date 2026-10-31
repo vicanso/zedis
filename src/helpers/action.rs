@@ -243,6 +243,8 @@ pub enum EditorAction {
     FindReplace,
     /// Open the session change log for the selected collection key.
     ChangeLog,
+    /// Open the live Key Timeline / Watch dialog for the selected key.
+    WatchTimeline,
     /// Re-indent the JSON in the value editor.
     FormatJson,
     /// Put the JSON in the value editor on one line.

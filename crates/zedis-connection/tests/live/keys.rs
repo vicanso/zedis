@@ -1103,3 +1103,38 @@ pub(super) async fn check_batch_ttl_conditions(id: &str) {
         .await
         .expect("del");
 }
+
+#[test]
+#[ignore]
+fn standalone_key_timeline_snapshot_captures_hash_and_missing_key() {
+    smol::block_on(async {
+        let id = register(server("it-standalone", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+
+        let hash_key = unique("timeline-hash");
+        let _: () = cmd("HSET")
+            .arg(&hash_key)
+            .arg("b_field")
+            .arg("2")
+            .arg("a_field")
+            .arg("1")
+            .query_async(&mut c)
+            .await
+            .expect("hset");
+
+        let probe = capture_key_timeline_snapshot(&at, &hash_key)
+            .await
+            .expect("timeline snapshot");
+        assert!(probe.exists);
+        assert_eq!(probe.key_type, "hash");
+        assert_eq!(probe.snapshot_text, "a_field: 1\nb_field: 2");
+
+        cmd("DEL").arg(&hash_key).exec_async(&mut c).await.expect("del");
+        let after_del = capture_key_timeline_snapshot(&at, &hash_key)
+            .await
+            .expect("timeline snapshot after del");
+        assert!(!after_del.exists);
+        assert_eq!(after_del.key_type, "none");
+    });
+}

@@ -151,6 +151,11 @@ impl MoreActions {
                 move |_, cx| Label::new(i18n_editor(cx, "change_log")),
             );
         }
+        menu = menu.menu_element_with_icon(
+            CustomIconName::Activity,
+            Box::new(EditorAction::WatchTimeline),
+            move |_, cx| Label::new(i18n_editor(cx, "key_timeline_title")),
+        );
         menu
     }
 

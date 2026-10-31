@@ -105,6 +105,14 @@ pub const HOTKEYS_POLL_SECS: u64 = 2;
 #[cfg(target_family = "wasm")]
 pub const HOTKEYS_POLL_SECS: u64 = 10;
 
+/// The Key Timeline dialog's change-detection poll, while that dialog is open
+/// and not paused. Complements keyspace push notifications so mutations are
+/// still captured on servers where `notify-keyspace-events` is disabled.
+#[cfg(not(target_family = "wasm"))]
+pub const KEY_TIMELINE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(target_family = "wasm")]
+pub const KEY_TIMELINE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
 /// The Live Monitor's `CLIENT LIST`, while it runs: which addresses are
 /// Zedis's own connections, so their commands can be left out of the feed.
 /// Our connections come and go — a pooled one expires after five idle
@@ -226,6 +234,7 @@ mod tests {
         assert_eq!(TRAY_REFRESH_INTERVAL, Duration::from_secs(5));
         assert_eq!(SERVER_LOAD_POLL_SECS, 3);
         assert_eq!(HOTKEYS_POLL_SECS, 2);
+        assert_eq!(KEY_TIMELINE_POLL_INTERVAL, Duration::from_secs(2));
         assert_eq!(MONITOR_OWN_CLIENTS_REFRESH, Duration::from_secs(10));
         assert_eq!(HOUSEKEEPING_TICK, Duration::from_secs(30));
         assert_eq!(HOUSEKEEPING_HOURLY_TICKS, 120);

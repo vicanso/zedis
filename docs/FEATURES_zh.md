@@ -146,6 +146,8 @@ Redis 无法索引值，所以这种 `O(keyspace)` 的搜索加了几道限制�
 
 持久化面板读取 `INFO persistence`（上次保存、AOF 膨胀、fork 失败），一键 `BGSAVE` / `BGREWRITEAOF`（需确认，Prod 上更严格），Valkey 8.1+ 上还可**取消**进行中的快照（`BGSAVE CANCEL`），集群下逐节点显示状态行，并有 **策略与路径** 卡片展示 `CONFIG GET` 读到的 `save` 规则与 AOF 配置。**FLUSHDB / FLUSHALL** 位于同一个 工具 → 管理 分组，只读连接下置灰，执行前走破坏性命令确认弹窗（Prod 上更严格），清空开发库不必再切到命令行。Keyspace 通知把 keyspace/keyevent 频道解析成可过滤的 `(time, db, key, event, source)` 表格——"刚刚是哪个客户端删了 user:42？"——并提供 `notify-keyspace-events` 一键预设、暂停与导出。
 
+想盯住单个 Key 的实时变化与前后值差异？点击键值编辑器顶部工具栏上的**键时间线**按钮（或在 `…` 更多菜单中选择）即可打开单键实时时间线：同时结合 `__keyspace@<db>__:<key>` 事件推送与自动变更轮询（即使服务端未开启 `notify-keyspace-events` 也能开箱即用），对 String、JSON、Hash、List、Set、ZSet 采集有上限保护的确定性快照，实时高亮任意快照与上一版本之间的逐行 Diff（`+`/`-`），并支持一键复制或导出 Markdown 报告。
+
 ### 原始 INFO 浏览器
 **`INFO everything` 的全部字段，都在一张可过滤的表格里。**
 

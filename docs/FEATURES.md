@@ -146,6 +146,8 @@ On a **standalone** server the same page is the **replication view**: the primar
 
 A persistence panel reads `INFO persistence` (last save, AOF growth, fork failures) with one-click `BGSAVE` / `BGREWRITEAOF` (confirmed, stricter on Prod) and, on Valkey 8.1+, a **Cancel** for the snapshot in progress (`BGSAVE CANCEL`), per-node status rows on clusters, and a **Policy & paths** card showing the configured `save` rules and AOF settings from `CONFIG GET`. **FLUSHDB / FLUSHALL** sit in the same Tools → Administration group, disabled on a read-only connection and routed through the destructive-command confirm (stricter on Prod), so clearing a dev database no longer means dropping into the CLI. Keyspace notifications parse keyspace/keyevent channels into a filterable `(time, db, key, event, source)` table — "which client just deleted user:42?" — with one-click `notify-keyspace-events` presets, pause, and export.
 
+Want to watch a single key mutate in real time? Click **Key Timeline** on the value editor's key bar (or in its `…` menu) to open a live timeline for that key: it combines `__keyspace@<db>__:<key>` push notifications with automatic change-detection polling (so it works out of the box even when `notify-keyspace-events` is disabled), records bounded snapshots across Strings, JSON, Hashes, Lists, Sets, and Sorted Sets, highlights unified line diffs (`+`/`-`) between any snapshot and its predecessor, and exports the timeline to Markdown.
+
 ### Raw INFO Browser
 **Every `INFO everything` field in one filterable table.**
 

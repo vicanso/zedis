@@ -527,6 +527,163 @@ pub async fn probe_pattern_fields(
     results
 }
 
+/// A bounded, deterministic snapshot of a key's state for the live Key Timeline / Watch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyTimelineProbe {
+    pub exists: bool,
+    pub key_type: String,
+    pub ttl_secs: i64,
+    pub snapshot_text: String,
+}
+
+/// Capture a bounded, deterministically-ordered text snapshot of `key` for
+/// the Key Timeline / Watch feature.
+///
+/// - Strings / JSON are capped at 64 KiB and pretty-printed when valid JSON.
+/// - Hashes and Sets are sampled via `HSCAN` / `SSCAN` (up to 200 items) and sorted
+///   lexicographically so two snapshots of an unchanged collection produce an identical string.
+/// - Lists and ZSets are sampled via `LRANGE` / `ZRANGE` (up to 200 items).
+pub async fn capture_key_timeline_snapshot(at: &ServerDb, key: &str) -> Result<KeyTimelineProbe> {
+    let mut conn = at.connection().await?;
+    let (key_type, ttl_secs): (String, i64) = pipe()
+        .cmd("TYPE")
+        .arg(key)
+        .cmd("TTL")
+        .arg(key)
+        .query_async(&mut conn)
+        .await?;
+    if key_type == "none" || ttl_secs == -2 {
+        return Ok(KeyTimelineProbe {
+            exists: false,
+            key_type: "none".to_string(),
+            ttl_secs: -2,
+            snapshot_text: String::new(),
+        });
+    }
+
+    const MAX_BYTES: isize = 65_535;
+    const MAX_ITEMS: isize = 200;
+
+    let snapshot_text = match key_type.as_str() {
+        "string" => {
+            let bytes: Vec<u8> = cmd("GETRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(MAX_BYTES)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            let raw = String::from_utf8_lossy(&bytes).into_owned();
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                serde_json::to_string_pretty(&json_val).unwrap_or(raw)
+            } else {
+                raw
+            }
+        }
+        "ReJSON-RL" | "json" => {
+            let bytes: Vec<u8> = cmd("JSON.GET")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            let capped = if bytes.len() > MAX_BYTES as usize {
+                &bytes[..MAX_BYTES as usize]
+            } else {
+                &bytes[..]
+            };
+            let raw = String::from_utf8_lossy(capped).into_owned();
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                serde_json::to_string_pretty(&json_val).unwrap_or(raw)
+            } else {
+                raw
+            }
+        }
+        "hash" => {
+            let (_, items): (u64, Vec<Vec<u8>>) = cmd("HSCAN")
+                .arg(key)
+                .arg(0)
+                .arg("COUNT")
+                .arg(MAX_ITEMS)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            let mut pairs: Vec<(String, String)> = items
+                .chunks(2)
+                .filter_map(|pair| {
+                    if pair.len() == 2 {
+                        Some((
+                            String::from_utf8_lossy(&pair[0]).into_owned(),
+                            String::from_utf8_lossy(&pair[1]).into_owned(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            pairs
+                .into_iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "list" => {
+            let items: Vec<Vec<u8>> = cmd("LRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(MAX_ITEMS - 1)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            items
+                .iter()
+                .enumerate()
+                .map(|(idx, v)| format!("[{idx}] {}", String::from_utf8_lossy(v)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "set" => {
+            let (_, members): (u64, Vec<Vec<u8>>) = cmd("SSCAN")
+                .arg(key)
+                .arg(0)
+                .arg("COUNT")
+                .arg(MAX_ITEMS)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            let mut list: Vec<String> = members
+                .into_iter()
+                .map(|m| String::from_utf8_lossy(&m).into_owned())
+                .collect();
+            list.sort();
+            list.join("\n")
+        }
+        "zset" => {
+            let items: Vec<(Vec<u8>, f64)> = cmd("ZRANGE")
+                .arg(key)
+                .arg(0)
+                .arg(MAX_ITEMS - 1)
+                .arg("WITHSCORES")
+                .query_async(&mut conn)
+                .await
+                .unwrap_or_default();
+            items
+                .into_iter()
+                .map(|(m, s)| format!("{}: {s}", String::from_utf8_lossy(&m)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        other => format!("(type: {other})"),
+    };
+
+    Ok(KeyTimelineProbe {
+        exists: true,
+        key_type,
+        ttl_secs,
+        snapshot_text,
+    })
+}
+
 #[cfg(test)]
 mod expire_seconds_tests {
     use super::expire_seconds;

@@ -133,6 +133,17 @@ impl ZedisEditor {
             btns.push(self.ttl_control(ttl, expires_at, actions_locked, cx));
         }
         btns.push(self.reload_button(actions_locked, cx));
+        btns.push(
+            Button::new("zedis-editor-key-timeline")
+                .ghost()
+                .disabled(actions_locked)
+                .tooltip(i18n_editor(cx, "key_timeline_tooltip"))
+                .icon(CustomIconName::Activity)
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    open_key_timeline_dialog(this.server_state.clone(), window, cx);
+                }))
+                .into_any_element(),
+        );
 
         // Lower-frequency actions live behind one "…" menu so the bar
         // stays compact: bitmap view, value file export / import, diff,
@@ -967,6 +978,7 @@ mod tests {
                 "zedis-editor-favorite-key",
                 "zedis-editor-ttl-btn",
                 "zedis-editor-reload-now",
+                "zedis-editor-key-timeline",
                 "zedis-editor-more",
             ] {
                 assert!(window.try_find(id).is_some(), "{id}");
@@ -998,6 +1010,7 @@ mod tests {
                 "ExportValue",
                 "ImportValue",
                 "FindReplace",
+                "WatchTimeline",
                 "-",
                 "-",
                 "Rename",
@@ -1037,7 +1050,7 @@ mod tests {
         .expect("the window is open");
         assert_eq!(
             menu_items(cx, handle, &sent, more_menu),
-            ["ExportValue", "-", "CopyTo", "DiffWithServer"]
+            ["ExportValue", "WatchTimeline", "-", "CopyTo", "DiffWithServer"]
         );
     }
 
@@ -1064,7 +1077,10 @@ mod tests {
             menu_items(cx, handle, &sent, ttl_menu),
             ["EditTtlDuration", "EditTtlAbsolute"]
         );
-        assert_eq!(menu_items(cx, handle, &sent, more_menu), ["Rename", "CopyTo", "Delete"]);
+        assert_eq!(
+            menu_items(cx, handle, &sent, more_menu),
+            ["WatchTimeline", "Rename", "CopyTo", "Delete"]
+        );
 
         let loading = RedisValue {
             status: RedisValueStatus::Loading,

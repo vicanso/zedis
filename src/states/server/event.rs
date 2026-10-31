@@ -435,9 +435,10 @@ impl ZedisServerState {
             EditorAction::CopyTo => Capability::CopyKeyToServer,
             EditorAction::ExportValue => Capability::ExportValue,
             // Reading what was changed is a read, like any other diff.
-            EditorAction::DiffHistory(_) | EditorAction::DiffWithServer | EditorAction::ChangeLog => {
-                Capability::DiffValues
-            }
+            EditorAction::DiffHistory(_)
+            | EditorAction::DiffWithServer
+            | EditorAction::ChangeLog
+            | EditorAction::WatchTimeline => Capability::DiffValues,
             EditorAction::LoadHistory(_) => Capability::LoadHistory,
             EditorAction::Reload | EditorAction::ViewBitmap => Capability::ReloadValue,
             EditorAction::ReloadKeyTree => Capability::RefreshKeys,
