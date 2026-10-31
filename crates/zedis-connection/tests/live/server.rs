@@ -996,3 +996,79 @@ fn busy_server_flushes_empty_what_they_name() {
         }
     });
 }
+
+/// Built-in benchmark presets (`SET`, `GET`, `INCR`, `LPUSH`, `HSET`, `ZADD`),
+/// pipelined batches, and mid-run cancellation all clean up their throwaway
+/// keys (`zedis:bench:<id>:*`) before returning.
+#[test]
+#[ignore]
+fn benchmark_presets_and_cleanup_leave_zero_throwaway_keys() {
+    smol::block_on(async {
+        let id = register(server("it-benchmark", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+
+        for (preset, pipeline, keyspace_size) in [
+            (BenchmarkPreset::Set, 1, 16),
+            (BenchmarkPreset::Get, 4, 1_000),
+            (BenchmarkPreset::Incr, 1, 16),
+            (BenchmarkPreset::Lpush, 4, 16),
+            (BenchmarkPreset::Hset, 1, 16),
+            (BenchmarkPreset::Zadd, 4, 16),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let cfg = BenchmarkConfig {
+                preset,
+                concurrency: 2,
+                payload_size: 64,
+                keyspace_size,
+                duration_secs: 1,
+                pipeline,
+            };
+            let prefix = new_benchmark_prefix();
+            let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {})
+                .await
+                .expect("benchmark run");
+            assert!(result.summary.total_ops > 0, "{preset:?}");
+            assert_eq!(result.summary.errors, 0, "{preset:?}");
+            assert!(result.summary.ops_per_sec > 0.0, "{preset:?}");
+            assert!(result.summary.p99_us >= result.summary.p50_us, "{preset:?}");
+            assert!(result.summary.cleaned_keys > 0, "{preset:?}");
+            if preset == BenchmarkPreset::Get {
+                assert_eq!(
+                    result.summary.cleaned_keys, 256,
+                    "GET only touches and cleans its pre-seeded keyspace"
+                );
+            }
+            assert!(!result.summary.cancelled, "{preset:?}");
+
+            let leftover = count_keys_matching(&at, &format!("{prefix}*"))
+                .await
+                .expect("count leftover keys");
+            assert_eq!(leftover.keys, 0, "{preset:?} left throwaway keys under {prefix}");
+        }
+
+        // Mid-run cancellation: stop on the first progress callback and confirm
+        // throwaway keys are still cleaned up.
+        let cancel = AtomicBool::new(false);
+        let cfg = BenchmarkConfig {
+            preset: BenchmarkPreset::Set,
+            concurrency: 2,
+            payload_size: 128,
+            keyspace_size: 32,
+            duration_secs: 10,
+            pipeline: 4,
+        };
+        let prefix = new_benchmark_prefix();
+        let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+        .await
+        .expect("cancelled benchmark run");
+        assert!(result.summary.cancelled);
+        assert!(result.summary.total_ops > 0);
+        let leftover = count_keys_matching(&at, &format!("{prefix}*"))
+            .await
+            .expect("count leftover keys after cancel");
+        assert_eq!(leftover.keys, 0, "cancelled run left throwaway keys under {prefix}");
+    });
+}

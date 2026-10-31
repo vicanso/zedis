@@ -142,6 +142,7 @@ pub enum ServerToolsAction {
     Hotkeys,
     ValueSearch,
     ServerInfo,
+    Benchmark,
     TimeSeriesExplorer,
     /// Opens the local recycle-bin dialog (soft-deleted keys) instead of a
     /// sub-route — handled specially in `main.rs`.

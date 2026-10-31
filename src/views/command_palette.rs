@@ -431,7 +431,7 @@ impl ZedisCommandPalette {
         };
         // (i18n key, target, available) — order defines empty-query
         // display order.
-        let commands: [(&str, Option<Route>, bool); 20] = [
+        let commands: [(&str, Option<Route>, bool); 21] = [
             ("cmd_home", Some(Route::Home), true),
             ("cmd_editor", view_route(ServerView::Editor), true),
             ("cmd_metrics", view_route(ServerView::Metrics), true),
@@ -453,6 +453,7 @@ impl ZedisCommandPalette {
                 true,
             ),
             ("cmd_server_info", view_route(ServerView::ServerInfo), true),
+            ("cmd_benchmark", view_route(ServerView::Benchmark), true),
             ("cmd_topology", view_route(ServerView::Topology), supports_topology),
             ("cmd_config", view_route(ServerView::Config), true),
             ("cmd_acl", view_route(ServerView::Acl), supports_acl),

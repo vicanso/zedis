@@ -19,10 +19,10 @@ use crate::{
         update_app_state_and_save_quiet_debounced,
     },
     views::{
-        ZedisAclManager, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor, ZedisHotkeys,
-        ZedisKeyTree, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisPersistence, ZedisSearchManager,
-        ZedisServerInfo, ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar, ZedisTerminal,
-        ZedisTimeSeriesExplorer, ZedisUnsupportedPanel, ZedisValueSearch,
+        ZedisAclManager, ZedisBenchmark, ZedisClientsManager, ZedisConfigEditor, ZedisEditor, ZedisFunctionEditor,
+        ZedisHotkeys, ZedisKeyTree, ZedisLuaScriptLibrary, ZedisMemoryAnalysis, ZedisMetrics, ZedisPersistence,
+        ZedisSearchManager, ZedisServerInfo, ZedisServerLoad, ZedisServers, ZedisSlowlogEditor, ZedisStatusBar,
+        ZedisTerminal, ZedisTimeSeriesExplorer, ZedisUnsupportedPanel, ZedisValueSearch,
     },
 };
 // Push streams (MONITOR, keyspace events), node administration (Topology) and
@@ -527,6 +527,7 @@ impl ZedisContent {
             ServerView::TimeSeriesExplorer => cx.new(|cx| ZedisTimeSeriesExplorer::new(state, window, cx)).into(),
             ServerView::ValueSearch => cx.new(|cx| ZedisValueSearch::new(state, window, cx)).into(),
             ServerView::ServerInfo => cx.new(|cx| ZedisServerInfo::new(state, window, cx)).into(),
+            ServerView::Benchmark => cx.new(|cx| ZedisBenchmark::new(state, window, cx)).into(),
         };
         self.tool_views.insert(view, created.clone());
         Some(created)

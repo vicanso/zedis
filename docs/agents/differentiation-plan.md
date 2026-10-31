@@ -86,11 +86,15 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 
 ## B. Medium-Effort Reputation Builders
 
-### B1. Built-in Benchmark
+### B1. Built-in Benchmark — **Done (2026-10-31)**
 - **Why**: A GUI `redis-benchmark` with charts, plus side-by-side comparison of two servers or two configs, fits the existing "why does prod differ from staging?" tooling (CONFIG diff).
 - **Builds on**: `src/views/charts.rs`, `crates/zedis-connection/src/compare.rs`, connection pool in `manager/`.
 - **Scope**: Presets (GET/SET/INCR/LPUSH/HSET/ZADD/pipeline N), concurrency, payload size, key-space size, duration. Results: ops/s, p50/p95/p99 latency, histogram. Keys use a random throwaway prefix that is cleaned up afterwards. Results can be compared across runs and exported to CSV.
 - **Constraints**: Refused on Prod unless the write window is open. Writes go to a configurable db. Web build: run in the bridge or disable it (decide; the browser cannot open raw sockets).
+- **Implemented**:
+  - `crates/zedis-core/src/benchmark.rs`: `BenchmarkPreset` (`GET`, `SET`, `INCR`, `LPUSH`, `HSET`, `ZADD`), `BenchmarkConfig`, `LatencyBucket`, `ThroughputPoint`, `BenchmarkProgress`, `BenchmarkSummary`, `BenchmarkComparison`, exact percentile calculation (`p50`/`p95`/`p99`), adaptive log-scale latency histogram bucketing, baseline relative-delta comparison (`compare_summaries`), and latency formatters.
+  - `crates/zedis-connection/src/benchmark.rs`: `run_benchmark` / `run_benchmark_with_prefix` with configurable concurrency (`1..=64`), pipeline depth (`P=1..=64`), payload size, keyspace cardinality, duration (`1..=60s`), and target `db`. Uses random throwaway prefix `zedis:bench:<12-hex>:` (with 16-way cluster hash tags `{s0}`..`{s15}` when `pipeline > 1` to avoid `CROSSSLOT` errors while spreading across slots), tracks all touched key indices via atomic bitset, and cleans them up in chunks of 1,000 on completion or cancellation.
+  - `src/views/benchmark.rs` (`ServerView::Benchmark`): accessible from **Tools → Benchmark** and the command palette (`⌘K`). Enforces `Capability::CreateKey` (respecting read-only mode and the ADR 14 Prod write window) plus `confirm_dangerous_command`, renders headline metric cards, latency distribution bar chart + throughput timeline line chart, session run history with cross-run / cross-server baseline pinning (`Δ%`), and CSV export.
 
 ### B2. MONITOR Recording & Aggregate Analysis
 - **Why**: Live `MONITOR` already exists, and Slow Log already has a Top Commands view. Recording a bounded MONITOR window and aggregating it by command, key prefix and client answers "who is hammering what", which neither of them shows.
@@ -123,7 +127,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | A3 | Monitoring | Background alert rules + desktop notifications | Done (opt-in per server via Safety tab or Metrics Alerts dialog) |
 | A4 | Insight | Keyspace schema inference & data dictionary export | Done (online SCAN + offline RDB pattern collapsing, field type inference, Markdown/JSON export) |
 | A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | Done (rate limiting, pause/resume across export/import/copy, post-copy verification) |
-| B1 | Performance | Built-in benchmark with charts and run comparison | Proposed |
+| B1 | Performance | Built-in benchmark with charts and run comparison | Done (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) |
 | B2 | Performance | MONITOR recording & aggregate analysis | Proposed |
 | B3 | Workflow | `zedis://` deep links & "copy link to key" | Proposed |
 | B4 | Extensibility | WASM plugin decoders | Proposed |

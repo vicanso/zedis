@@ -176,6 +176,13 @@ impl ZedisStatusBar {
                 ServerView::ServerInfo.required_commands(),
                 false,
             ),
+            tool(
+                i18n_benchmark(cx, "title"),
+                Icon::new(CustomIconName::Zap),
+                ServerToolsAction::Benchmark,
+                ServerView::Benchmark.required_commands(),
+                false,
+            ),
         ]
         .into_iter()
         .flatten()

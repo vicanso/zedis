@@ -66,6 +66,9 @@ pub enum ServerView {
     /// this answers "what did all of these do", which is the question a
     /// label-organised series set exists for.
     TimeSeriesExplorer,
+    /// Built-in interactive Redis benchmark (`GET`, `SET`, `INCR`, `LPUSH`,
+    /// `HSET`, `ZADD` with pipelining, latency histogram, and run comparison).
+    Benchmark,
 }
 
 impl Route {
@@ -133,6 +136,7 @@ impl ServerView {
             ServerView::ValueSearch => "valuesearch",
             ServerView::ServerInfo => "serverinfo",
             ServerView::TimeSeriesExplorer => "timeseriesexplorer",
+            ServerView::Benchmark => "benchmark",
         }
     }
     /// The probed commands this panel cannot function without — when one is
@@ -160,7 +164,8 @@ impl ServerView {
             | ServerView::MemoryAnalysis
             | ServerView::Search
             | ServerView::LuaScripts
-            | ServerView::Topology => &[],
+            | ServerView::Topology
+            | ServerView::Benchmark => &[],
         }
     }
 
@@ -176,7 +181,10 @@ impl ServerView {
     /// the editor, and opening the first one threw the rest away. Such a
     /// panel resets itself when the server or database under it changes.
     pub const fn survives_navigation(self) -> bool {
-        matches!(self, ServerView::MemoryAnalysis | ServerView::ValueSearch)
+        matches!(
+            self,
+            ServerView::MemoryAnalysis | ServerView::ValueSearch | ServerView::Benchmark
+        )
     }
 
     /// Whether this build has the panel.
@@ -218,6 +226,7 @@ impl ServerView {
             "valuesearch" => ServerView::ValueSearch,
             "serverinfo" => ServerView::ServerInfo,
             "timeseriesexplorer" => ServerView::TimeSeriesExplorer,
+            "benchmark" => ServerView::Benchmark,
             _ => return None,
         })
     }
@@ -251,13 +260,14 @@ mod tests {
             "valuesearch",
             "serverinfo",
             "timeseriesexplorer",
+            "benchmark",
         ] {
             let view = ServerView::from_name(name).expect(name);
             assert_eq!(view.as_str(), name);
             assert!(view.in_this_build(), "{name}");
             // A result the user ran is kept across navigation; a panel that
             // only shows what the server says now is rebuilt.
-            let ran_by_the_user = matches!(name, "memoryanalysis" | "valuesearch");
+            let ran_by_the_user = matches!(name, "memoryanalysis" | "valuesearch" | "benchmark");
             assert_eq!(view.survives_navigation(), ran_by_the_user, "{name}");
         }
     }

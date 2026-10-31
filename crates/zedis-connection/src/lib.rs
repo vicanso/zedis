@@ -31,6 +31,7 @@ pub mod time;
 
 mod acl;
 mod audit;
+mod benchmark;
 /// Native-only: dialing, the local key store and the local files.
 ///
 /// Excluded from the browser build, where Redis is reached through the HTTP
@@ -115,6 +116,9 @@ pub use async_connection::{
     set_redis_response_timeout,
 };
 pub use audit::{is_administration_command, redact_command_line, redact_secrets};
+pub use benchmark::{
+    BenchmarkRunResult, benchmark_key_name, new_benchmark_prefix, run_benchmark, run_benchmark_with_prefix,
+};
 pub use bitmap::{BitOpKind, BitmapInfo, bit_field, bit_op, bitmap_info, set_bit};
 pub use bridge::{
     BRIDGE_MAX_REQUEST_BYTES, BRIDGE_MAX_VALUE_BYTES, BridgeAccount, BridgeAccountChange, BridgeAccountError,

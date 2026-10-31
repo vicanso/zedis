@@ -15,6 +15,7 @@
 mod about;
 mod account;
 mod acl_manager;
+mod benchmark;
 mod bitmap_editor;
 mod bytes_editor;
 mod change_log_dialog;
@@ -104,6 +105,7 @@ mod zset_editor;
 pub use about::open_about_window;
 pub use account::open_account;
 pub use acl_manager::ZedisAclManager;
+pub use benchmark::ZedisBenchmark;
 pub use bitmap_editor::{BitmapEvent, ZedisBitmapEditor};
 pub(crate) use bitmap_editor::{bitmap_eligible, looks_like_bitmap};
 pub(crate) use bytes_editor::past_write_limit;

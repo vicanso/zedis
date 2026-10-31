@@ -129,6 +129,11 @@ The Performance panel cross-links **Slow Log** entries with `LATENCY` events (±
 
 Start a collection (CPU time and/or network bytes, top 10/20/50), watch the two ranked lists fill live, stop, read, reset. Each entry carries its share of the totals as a bar and a percentage, and a click copies the key name. On a cluster the tracking runs on every master at once and the lists merge — slots are disjoint, so nothing double-counts. Start/stop/reset need write access (a read-only connection can still read the report), and on servers without the command the panel shows an explanation instead.
 
+### Built-in Benchmark
+**Interactive `redis-benchmark` with latency histograms, throughput timelines, baseline comparison, and automatic key cleanup.**
+
+Run workload presets (**GET**, **SET**, **INCR**, **LPUSH**, **HSET**, **ZADD**) with configurable concurrency (`1–64`), pipeline depth (`P=1, 4, 8, 16, 64`), payload size, keyspace cardinality, duration (`1–60 s`), and target database. Results report throughput (**ops/s**) and **min / avg / p50 / p95 / p99 / max** latencies alongside a GPU-accelerated latency distribution histogram and a per-second throughput timeline. Pin any completed run as a **baseline** to compare subsequent runs across different parameters or even different servers (e.g., staging vs. prod after a `CONFIG` change) with relative Δ% badges, and export any run to CSV. Every benchmark writes exclusively under a random throwaway prefix (`zedis:bench:<hex>:`) and deletes all touched keys automatically when the run finishes or is stopped; runs are refused on read-only connections and on write-locked **Prod** servers until the 15-minute write window is unlocked, and require confirmation before starting.
+
 ### Value Search
 **Find which key *contains* some text (a guarded, sampled scan).**
 

@@ -345,3 +345,70 @@ fn cluster_latency_and_function_stats_read_every_node() {
         );
     });
 }
+
+/// Pipelined benchmarks (`P=16`, `P=64`) on a multi-master Redis Cluster use
+/// 16-way `{s0}`..`{s15}` hash tags so every batch routes cleanly without
+/// `CROSSSLOT` errors, and `cleanup_touched_keys` (`unlike_keys_scattered`)
+/// removes all throwaway keys across all cluster shards on completion and on
+/// mid-run cancellation.
+#[test]
+#[ignore]
+fn cluster_benchmark_pipelined_and_cancel_leave_zero_throwaway_keys() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-benchmark", addr)).await;
+        let at = ServerDb::new(&id, 0);
+
+        for (preset, pipeline) in [
+            (BenchmarkPreset::Set, 16),
+            (BenchmarkPreset::Get, 16),
+            (BenchmarkPreset::Hset, 16),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let cfg = BenchmarkConfig {
+                preset,
+                concurrency: 2,
+                payload_size: 64,
+                keyspace_size: 64,
+                duration_secs: 1,
+                pipeline,
+            };
+            let prefix = new_benchmark_prefix();
+            let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {})
+                .await
+                .expect("cluster pipelined benchmark");
+            assert!(result.summary.total_ops > 0, "{preset:?}");
+            assert_eq!(result.summary.errors, 0, "{preset:?} had CROSSSLOT or cluster errors");
+            assert!(result.summary.cleaned_keys > 0, "{preset:?}");
+            assert!(!result.summary.cancelled, "{preset:?}");
+
+            let leftover = count_keys_matching(&at, &format!("{prefix}*"))
+                .await
+                .expect("count cluster leftover keys");
+            assert_eq!(leftover.keys, 0, "{preset:?} left throwaway keys on cluster");
+        }
+
+        // Mid-run cancellation with P=64 across cluster shards
+        let cancel = AtomicBool::new(false);
+        let cfg = BenchmarkConfig {
+            preset: BenchmarkPreset::Set,
+            concurrency: 2,
+            payload_size: 128,
+            keyspace_size: 128,
+            duration_secs: 10,
+            pipeline: 64,
+        };
+        let prefix = new_benchmark_prefix();
+        let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+        .await
+        .expect("cancelled cluster benchmark");
+        assert!(result.summary.cancelled);
+        assert_eq!(result.summary.errors, 0);
+        let leftover = count_keys_matching(&at, &format!("{prefix}*"))
+            .await
+            .expect("count cluster leftover keys after cancel");
+        assert_eq!(leftover.keys, 0, "cancelled P=64 run left throwaway keys on cluster");
+    });
+}

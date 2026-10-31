@@ -79,8 +79,10 @@ use zedis_connection::{DebugCommand, DebugLine, DebugMode, LuaDebugSession};
 use zedis_connection::{
     MonitorFeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, command_stats, copy_key,
     copy_key_logically, function_delete, function_load, function_stats, is_foreign_payload, is_zedis_client_name,
-    migrate_slot, restore_or_recreate_chunk, slowlog_settings, zedis_client_addrs,
+    migrate_slot, new_benchmark_prefix, restore_or_recreate_chunk, run_benchmark_with_prefix, slowlog_settings,
+    zedis_client_addrs,
 };
+use zedis_core::benchmark::{BenchmarkConfig, BenchmarkPreset};
 use zedis_core::json::JsonPathOp;
 use zedis_core::keysizes::KeysizesUnit;
 use zedis_core::search_params::{ParamKind, encode_param};
