@@ -209,13 +209,16 @@ impl Tally {
 }
 
 /// What a `MONITOR` sample saw: each command once, under the client that
-/// sent it, the command's name and — where its first argument is a key —
-/// that key's prefix.
+/// sent it, the command's name, — where its first argument is a key —
+/// that key's prefix, plus cross-tabulations (`command × prefix` and
+/// `client × command`) to answer "who is hammering what".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MonitorTally {
     pub clients: Tally,
     pub commands: Tally,
     pub prefixes: Tally,
+    pub command_prefixes: Tally,
+    pub client_commands: Tally,
 }
 
 impl MonitorTally {
@@ -223,8 +226,11 @@ impl MonitorTally {
     pub fn add(&mut self, client: &str, command: &str, key: Option<&str>, separator: &str) {
         self.clients.add(client);
         let command = command.to_ascii_uppercase();
+        self.client_commands.add(&format!("{client} {command}"));
         if let Some(key) = key.filter(|_| first_arg_is_key(&command)) {
-            self.prefixes.add(&key_prefix(key, separator));
+            let prefix = key_prefix(key, separator);
+            self.command_prefixes.add(&format!("{command} {prefix}"));
+            self.prefixes.add(&prefix);
         }
         self.commands.add(&command);
     }
@@ -312,6 +318,17 @@ mod tests {
             tally.prefixes.top(5),
             [("user:*".to_string(), 2), ("order:*".to_string(), 1)],
             "a cursor is not a key"
+        );
+        assert_eq!(
+            tally.command_prefixes.top(5),
+            [("GET user:*".to_string(), 2), ("HGETALL order:*".to_string(), 1)]
+        );
+        assert_eq!(
+            tally.client_commands.top(2),
+            [
+                ("10.0.0.1:5000 GET".to_string(), 2),
+                ("10.0.0.2:6000 HGETALL".to_string(), 1)
+            ]
         );
     }
 

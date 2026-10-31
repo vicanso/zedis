@@ -96,11 +96,14 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - `crates/zedis-connection/src/benchmark.rs`: `run_benchmark` / `run_benchmark_with_prefix` with configurable concurrency (`1..=64`), pipeline depth (`P=1..=64`), payload size, keyspace cardinality, duration (`1..=60s`), and target `db`. Uses random throwaway prefix `zedis:bench:<12-hex>:` (with 16-way cluster hash tags `{s0}`..`{s15}` when `pipeline > 1` to avoid `CROSSSLOT` errors while spreading across slots), tracks all touched key indices via atomic bitset, and cleans them up in chunks of 1,000 on completion or cancellation.
   - `src/views/benchmark.rs` (`ServerView::Benchmark`): accessible from **Tools → Benchmark** and the command palette (`⌘K`). Enforces `Capability::CreateKey` (respecting read-only mode and the ADR 14 Prod write window) plus `confirm_dangerous_command`, renders headline metric cards, latency distribution bar chart + throughput timeline line chart, session run history with cross-run / cross-server baseline pinning (`Δ%`), and CSV export.
 
-### B2. MONITOR Recording & Aggregate Analysis
+### B2. MONITOR Recording & Aggregate Analysis — **Done (2026-10-31)**
 - **Why**: Live `MONITOR` already exists, and Slow Log already has a Top Commands view. Recording a bounded MONITOR window and aggregating it by command, key prefix and client answers "who is hammering what", which neither of them shows.
 - **Builds on**: `src/views/monitor.rs`, `open_monitor_feeds` in `zedis-connection`, `key_segments` / `tally` in `zedis-core`.
 - **Scope**: Record for N seconds or N commands (hard caps, since MONITOR costs throughput), aggregate into command × prefix × client tables with counts and share, export as CSV/JSON. Optional replay of the read-only subset against a test server (write replay only to non-Prod targets, behind confirmation).
 - **Constraints**: Show the MONITOR performance warning up front. Not available on most managed clouds (probe through `ServerCommand`).
+- **Implemented**:
+  - `crates/zedis-core/src/tally.rs`: extended `MonitorTally` with 2D cross-tabulations (`command_prefixes`: `Command × Key prefix`, and `client_commands`: `Client × Command`) alongside the 1D `clients`, `commands`, and `prefixes` tallies.
+  - `src/views/monitor.rs`: added command-count-bounded sampling (`1,000`, `5,000`, `10,000` commands with a 60s safety timeout and live progress badge) alongside time-bounded sampling (`5s`, `10s`, `30s`), rendered the 5-column aggregate summary (`Clients`, `Commands`, `Key prefixes`, `Command × Key prefix`, `Client × Command`) with one-click multi-token drill-down into captured lines, and added `Summary (CSV)` / `Summary (JSON)` exports (`build_summary_csv` / `build_summary_json`).
 
 ### B3. `zedis://` Deep Links & Sharing
 - **Why**: A teammate pastes `zedis://open?server=<name>&db=3&key=order:42` into chat or a ticket, and one click opens that key. The web build supports this naturally with URLs.
@@ -128,6 +131,6 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | A4 | Insight | Keyspace schema inference & data dictionary export | Done (online SCAN + offline RDB pattern collapsing, field type inference, Markdown/JSON export) |
 | A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | Done (rate limiting, pause/resume across export/import/copy, post-copy verification) |
 | B1 | Performance | Built-in benchmark with charts and run comparison | Done (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) |
-| B2 | Performance | MONITOR recording & aggregate analysis | Proposed |
+| B2 | Performance | MONITOR recording & aggregate analysis | Done (time + command-count sampling, Command×Prefix & Client×Command cross-tabs, multi-token drill-down, CSV/JSON summary export) |
 | B3 | Workflow | `zedis://` deep links & "copy link to key" | Proposed |
 | B4 | Extensibility | WASM plugin decoders | Proposed |

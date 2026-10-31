@@ -69,8 +69,18 @@ const RATE_WINDOW_SECS: f64 = 5.0;
 const AUTO_STOP_EVENTS_PER_SEC: f64 = 5000.0;
 /// How long a sample may run, in seconds: what the Sample menu offers.
 const SAMPLE_SECONDS: [u64; 3] = [5, 10, 30];
+/// How many commands a count-bounded sample may capture before stopping.
+const SAMPLE_COUNTS: [u64; 3] = [1_000, 5_000, 10_000];
+/// Safety wall-clock cap for a count-bounded sample on an idle server.
+const MAX_SAMPLE_COUNT_WAIT_SECS: u64 = 60;
 /// Rows each list of a sample's summary shows.
 const SUMMARY_ROWS: usize = 15;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SampleCap {
+    Seconds(u64),
+    Commands(u64),
+}
 
 // ── Parsed MONITOR line ──────────────────────────────────────────────
 
@@ -299,11 +309,11 @@ pub struct ZedisMonitor {
     _subscriptions: Vec<Subscription>,
 }
 
-/// A sample being taken: its counts, how long it was asked to run, and the
-/// timer that ends it (dropped, and so cancelled, when it ends early).
+/// A sample being taken: its counts, its duration or command-count cap, and
+/// the timer that ends it (dropped, and so cancelled, when it ends early).
 struct Sampling {
     tally: MonitorTally,
-    seconds: u64,
+    cap: SampleCap,
     started: Instant,
     _timer: Task<()>,
 }
@@ -312,8 +322,79 @@ struct Sampling {
 struct SampleResult {
     tally: MonitorTally,
     elapsed: Duration,
-    /// Ended before its time — Stop, the rate guard, a dropped link.
+    /// Ended before its time or command budget — Stop, the rate guard, a dropped link.
     cut_short: bool,
+}
+
+const SUMMARY_EXPORT_MAX_ROWS: usize = 200;
+
+fn build_summary_csv(sample: &SampleResult) -> String {
+    let total = sample.tally.total();
+    let headers = ["dimension", "name", "count", "share_pct"];
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut append_dim = |dim: &str, tally: &Tally| {
+        for (name, count) in tally.top(SUMMARY_EXPORT_MAX_ROWS) {
+            rows.push(vec![dim.to_string(), name, count.to_string(), share_of(count, total)]);
+        }
+        if tally.other() > 0 {
+            rows.push(vec![
+                dim.to_string(),
+                "(other)".to_string(),
+                tally.other().to_string(),
+                share_of(tally.other(), total),
+            ]);
+        }
+    };
+    append_dim("command_prefix", &sample.tally.command_prefixes);
+    append_dim("client_command", &sample.tally.client_commands);
+    append_dim("client", &sample.tally.clients);
+    append_dim("command", &sample.tally.commands);
+    append_dim("prefix", &sample.tally.prefixes);
+    build_csv(&headers, &rows)
+}
+
+fn build_summary_json(sample: &SampleResult) -> String {
+    let total = sample.tally.total();
+    let elapsed_secs = sample.elapsed.as_secs_f64();
+    let rate_per_sec = if elapsed_secs > 0.0 {
+        total as f64 / elapsed_secs
+    } else {
+        0.0
+    };
+    let dim_to_json = |tally: &Tally| -> serde_json::Value {
+        let mut items: Vec<serde_json::Value> = tally
+            .top(SUMMARY_EXPORT_MAX_ROWS)
+            .into_iter()
+            .map(|(name, count)| {
+                serde_json::json!({
+                    "name": name,
+                    "count": count,
+                    "share_pct": if total == 0 { 0.0 } else { (count as f64 * 1000.0 / total as f64).round() / 10.0 },
+                })
+            })
+            .collect();
+        if tally.other() > 0 {
+            let count = tally.other();
+            items.push(serde_json::json!({
+                "name": "(other)",
+                "count": count,
+                "share_pct": if total == 0 { 0.0 } else { (count as f64 * 1000.0 / total as f64).round() / 10.0 },
+            }));
+        }
+        serde_json::Value::Array(items)
+    };
+    let doc = serde_json::json!({
+        "total_commands": total,
+        "elapsed_secs": (elapsed_secs * 100.0).round() / 100.0,
+        "rate_per_sec": (rate_per_sec * 10.0).round() / 10.0,
+        "cut_short": sample.cut_short,
+        "command_prefixes": dim_to_json(&sample.tally.command_prefixes),
+        "client_commands": dim_to_json(&sample.tally.client_commands),
+        "clients": dim_to_json(&sample.tally.clients),
+        "commands": dim_to_json(&sample.tally.commands),
+        "prefixes": dim_to_json(&sample.tally.prefixes),
+    });
+    serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
 /// A share of the sample, in percent.
@@ -431,8 +512,22 @@ impl ZedisMonitor {
 
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
         let keyword = self.keyword_state.read(cx).value().to_string();
+        let terms: Vec<String> = keyword.split_whitespace().map(|s| s.to_ascii_lowercase()).collect();
         self.table_state.update(cx, |state, _| {
-            state.delegate_mut().set_filter(&keyword);
+            let delegate = state.delegate_mut();
+            if terms.len() <= 1 {
+                delegate.set_row_filter(None);
+                delegate.set_filter(&keyword);
+            } else {
+                delegate.set_filter("");
+                delegate.set_row_filter(Some(Rc::new(move |row| {
+                    terms.iter().all(|term| {
+                        row.iter()
+                            .skip(1)
+                            .any(|cell| cell.to_ascii_lowercase().contains(term.as_str()))
+                    })
+                })));
+            }
         });
         self.row_count = self.table_state.read(cx).delegate().visible_len();
         cx.notify();
@@ -446,7 +541,7 @@ impl ZedisMonitor {
     /// drop from one attached client. On a cluster we attach to every master, so
     /// each node pays it. Cheap servers start straight away; production gets one
     /// sentence explaining the cost before anything is attached.
-    fn confirm_start(&mut self, sample_seconds: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_start(&mut self, sample_cap: Option<SampleCap>, window: &mut Window, cx: &mut Context<Self>) {
         if self.monitoring || !self.server_state.read(cx).can(Capability::Observe) {
             return;
         }
@@ -473,15 +568,13 @@ impl ZedisMonitor {
             let entity = cx.entity();
             let answer = server.name.clone();
             confirm_dangerous_command(&server, db, &kind, Some("MONITOR"), window, cx, move |_window, cx| {
-                entity.update(cx, |this, cx| {
-                    this.handle_start(sample_seconds, Some(answer.clone()), cx)
-                });
+                entity.update(cx, |this, cx| this.handle_start(sample_cap, Some(answer.clone()), cx));
             });
             return;
         }
         let high_risk = get_server(&server_id).map(|s| s.is_high_risk_tag()).unwrap_or(false);
         if !high_risk {
-            self.handle_start(sample_seconds, None, cx);
+            self.handle_start(sample_cap, None, cx);
             return;
         }
 
@@ -493,18 +586,18 @@ impl ZedisMonitor {
         ZedisDialog::new_alert(i18n_monitor(cx, "start_confirm_title"), body)
             .button_props(button_props)
             .on_ok(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.handle_start(sample_seconds, None, cx));
+                entity.update(cx, |this, cx| this.handle_start(sample_cap, None, cx));
                 window.close_dialog(cx);
                 true
             })
             .open(window, cx);
     }
 
-    /// Attach MONITOR. With `sample_seconds`, it is a sample: the table starts
+    /// Attach MONITOR. With `sample_cap`, it is a sample: the table starts
     /// empty, every line is counted, and the stream ends by itself when the
-    /// time is up — then the summary is shown. `confirm` is the answer to
-    /// the bridge's question ([`bridge_monitor_question`]), when it asked.
-    fn handle_start(&mut self, sample_seconds: Option<u64>, confirm: Option<String>, cx: &mut Context<Self>) {
+    /// time or command budget is up — then the summary is shown. `confirm` is
+    /// the answer to the bridge's question ([`bridge_monitor_question`]), when it asked.
+    fn handle_start(&mut self, sample_cap: Option<SampleCap>, confirm: Option<String>, cx: &mut Context<Self>) {
         // Observe is a read-class capability (allowed on read-only
         // connections); routed through the matrix so a stricter future mode
         // can turn observation off in one place.
@@ -521,17 +614,21 @@ impl ZedisMonitor {
         self.paused = false;
         self.auto_stopped = false;
         self.rate_ticks.clear();
-        if let Some(seconds) = sample_seconds {
+        if let Some(cap) = sample_cap {
             self.handle_clear(cx);
             self.sample = None;
             self.show_summary = false;
+            let wait_secs = match cap {
+                SampleCap::Seconds(seconds) => seconds,
+                SampleCap::Commands(_) => MAX_SAMPLE_COUNT_WAIT_SECS,
+            };
             let timer = cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs(seconds)).await;
+                cx.background_executor().timer(Duration::from_secs(wait_secs)).await;
                 let _ = this.update(cx, |this, cx| this.handle_stop(cx));
             });
             self.sampling = Some(Sampling {
                 tally: MonitorTally::default(),
-                seconds,
+                cap,
                 started: Instant::now(),
                 _timer: timer,
             });
@@ -688,12 +785,34 @@ impl ZedisMonitor {
                     if !this.show_own {
                         batch.retain(|entry| !this.is_own(entry));
                     }
+                    let mut sample_reached_cap = false;
                     if let Some(sampling) = this.sampling.as_mut() {
                         let separator = this.server_state.read(cx).key_separator().to_string();
+                        let max_cmds = match sampling.cap {
+                            SampleCap::Commands(max) => Some(max),
+                            SampleCap::Seconds(_) => None,
+                        };
+                        let mut kept = 0usize;
                         for entry in &batch {
+                            if let Some(max) = max_cmds
+                                && sampling.tally.total() >= max
+                            {
+                                sample_reached_cap = true;
+                                break;
+                            }
                             sampling
                                 .tally
                                 .add(&entry.client, &entry.command, entry.key.as_deref(), &separator);
+                            kept += 1;
+                            if let Some(max) = max_cmds
+                                && sampling.tally.total() >= max
+                            {
+                                sample_reached_cap = true;
+                                break;
+                            }
+                        }
+                        if sample_reached_cap {
+                            batch.truncate(kept);
                         }
                     }
                     // Through the keyword the table already holds (the input
@@ -706,12 +825,12 @@ impl ZedisMonitor {
                     });
                     this.row_count = table_state.read(cx).delegate().visible_len();
                     let auto_stop = this.record_rate(n);
-                    if auto_stop {
+                    if auto_stop && !sample_reached_cap {
                         this.auto_stopped = true;
                         this.notify_auto_stopped(cx);
                     }
                     cx.notify();
-                    auto_stop
+                    auto_stop || sample_reached_cap
                 });
                 match result {
                     // Rate guard tripped — fall through to the shared
@@ -750,11 +869,15 @@ impl ZedisMonitor {
             return;
         };
         let elapsed = sampling.started.elapsed();
+        let cut_short = match sampling.cap {
+            // A little short of the time is the timer's own scheduling.
+            SampleCap::Seconds(seconds) => elapsed + Duration::from_millis(500) < Duration::from_secs(seconds),
+            SampleCap::Commands(max_cmds) => sampling.tally.total() < max_cmds,
+        };
         self.sample = Some(SampleResult {
             tally: sampling.tally,
             elapsed,
-            // A little short of the time is the timer's own scheduling.
-            cut_short: elapsed + Duration::from_millis(500) < Duration::from_secs(sampling.seconds),
+            cut_short,
         });
         self.show_summary = true;
     }
@@ -846,6 +969,22 @@ impl ZedisMonitor {
             .collect();
         let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
         self.save_export(json.into_bytes(), "monitor.json", false, cx);
+    }
+
+    fn export_summary_csv(&mut self, cx: &mut Context<Self>) {
+        let Some(sample) = &self.sample else {
+            return;
+        };
+        let csv = build_summary_csv(sample);
+        self.save_export(csv.into_bytes(), "monitor-summary.csv", true, cx);
+    }
+
+    fn export_summary_json(&mut self, cx: &mut Context<Self>) {
+        let Some(sample) = &self.sample else {
+            return;
+        };
+        let json = build_summary_json(sample);
+        self.save_export(json.into_bytes(), "monitor-summary.json", false, cx);
     }
 
     /// Shared save flow for the exports — mirrors the slow-log panel.
@@ -957,6 +1096,16 @@ impl ZedisMonitor {
                 "summary-prefix",
                 i18n_monitor(cx, "summary_prefixes"),
                 &sample.tally.prefixes,
+            ))
+            .child(column(
+                "summary-command-prefix",
+                i18n_monitor(cx, "summary_command_prefixes"),
+                &sample.tally.command_prefixes,
+            ))
+            .child(column(
+                "summary-client-command",
+                i18n_monitor(cx, "summary_client_commands"),
+                &sample.tally.client_commands,
             ));
         div()
             .id("monitor-summary")
@@ -1009,13 +1158,24 @@ impl Render for ZedisMonitor {
         };
         let paused = self.paused;
         let sampling = self.sampling.is_some();
+        let has_sample = self.sample.is_some();
         let sampling_label = self.sampling.as_ref().map(|sampling| {
             let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-            SharedString::from(
-                rust_i18n::t!("monitor.sampling_badge", secs = sampling.seconds, locale = locale).to_string(),
-            )
+            let text = match sampling.cap {
+                SampleCap::Seconds(seconds) => {
+                    rust_i18n::t!("monitor.sampling_badge", secs = seconds, locale = locale).to_string()
+                }
+                SampleCap::Commands(max_cmds) => rust_i18n::t!(
+                    "monitor.sampling_count_badge",
+                    done = group_thousands(sampling.tally.total()),
+                    max = group_thousands(max_cmds),
+                    locale = locale
+                )
+                .to_string(),
+            };
+            SharedString::from(text)
         });
-        let show_summary = self.show_summary && self.sample.is_some();
+        let show_summary = self.show_summary && has_sample;
         let rate = self.events_per_sec();
         let rate_label: Option<SharedString> = if self.monitoring && !paused && rate > 0.05 {
             Some(format!("{rate:.1}/s").into())
@@ -1171,7 +1331,7 @@ impl Render for ZedisMonitor {
                                         .tooltip(i18n_monitor(cx, "sample_tooltip"))
                                         .dropdown_menu(move |menu, _window, cx| {
                                             let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-                                            SAMPLE_SECONDS.iter().fold(menu, |menu, seconds| {
+                                            let menu = SAMPLE_SECONDS.iter().fold(menu, |menu, seconds| {
                                                 let label = rust_i18n::t!(
                                                     "monitor.sample_secs",
                                                     secs = seconds,
@@ -1179,6 +1339,15 @@ impl Render for ZedisMonitor {
                                                 )
                                                 .to_string();
                                                 menu.menu(label, Box::new(MonitorAction::Sample(*seconds)))
+                                            });
+                                            SAMPLE_COUNTS.iter().fold(menu.separator(), |menu, cmds| {
+                                                let label = rust_i18n::t!(
+                                                    "monitor.sample_cmds",
+                                                    cmds = group_thousands(*cmds),
+                                                    locale = locale
+                                                )
+                                                .to_string();
+                                                menu.menu(label, Box::new(MonitorAction::SampleCount(*cmds)))
                                             })
                                         }),
                                 )
@@ -1211,7 +1380,7 @@ impl Render for ZedisMonitor {
                                         })),
                                 )
                             })
-                            .when(saves_files() && total > 0, |this| {
+                            .when(saves_files() && (total > 0 || has_sample), |this| {
                                 this.child(
                                     Button::new("monitor-export")
                                         .outline()
@@ -1219,11 +1388,31 @@ impl Render for ZedisMonitor {
                                         .icon(Icon::new(CustomIconName::Download))
                                         .label(i18n_common(cx, "export"))
                                         .dropdown_menu(move |menu, _window, cx| {
-                                            menu.menu(i18n_common(cx, "export_csv"), Box::new(MonitorAction::ExportCsv))
+                                            let menu = if total > 0 {
+                                                menu.menu(
+                                                    i18n_common(cx, "export_csv"),
+                                                    Box::new(MonitorAction::ExportCsv),
+                                                )
                                                 .menu(
                                                     i18n_common(cx, "export_json"),
                                                     Box::new(MonitorAction::ExportJson),
                                                 )
+                                            } else {
+                                                menu
+                                            };
+                                            if has_sample {
+                                                let menu = if total > 0 { menu.separator() } else { menu };
+                                                menu.menu(
+                                                    i18n_monitor(cx, "export_summary_csv"),
+                                                    Box::new(MonitorAction::ExportSummaryCsv),
+                                                )
+                                                .menu(
+                                                    i18n_monitor(cx, "export_summary_json"),
+                                                    Box::new(MonitorAction::ExportSummaryJson),
+                                                )
+                                            } else {
+                                                menu
+                                            }
                                         }),
                                 )
                             })
@@ -1272,7 +1461,10 @@ impl Render for ZedisMonitor {
             .on_action(cx.listener(|this, event: &MonitorAction, window, cx| match event {
                 MonitorAction::ExportCsv => this.export_csv(cx),
                 MonitorAction::ExportJson => this.export_json(cx),
-                MonitorAction::Sample(seconds) => this.confirm_start(Some(*seconds), window, cx),
+                MonitorAction::ExportSummaryCsv => this.export_summary_csv(cx),
+                MonitorAction::ExportSummaryJson => this.export_summary_json(cx),
+                MonitorAction::Sample(seconds) => this.confirm_start(Some(SampleCap::Seconds(*seconds)), window, cx),
+                MonitorAction::SampleCount(cmds) => this.confirm_start(Some(SampleCap::Commands(*cmds)), window, cx),
             }))
             .into_any_element()
     }
@@ -1280,7 +1472,8 @@ impl Render for ZedisMonitor {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_monitor_line;
+    use super::{MonitorTally, SampleResult, build_summary_csv, build_summary_json, parse_monitor_line};
+    use std::time::Duration;
 
     #[test]
     fn a_line_splits_into_its_columns() {
@@ -1307,5 +1500,28 @@ mod tests {
         assert_eq!((entry.db.as_ref(), entry.client.as_ref()), ("3", "[::1]:60866"));
         assert_eq!(entry.command.as_ref(), "SET");
         assert_eq!(entry.args.as_ref(), r#"k a\"b c"#);
+    }
+
+    #[test]
+    fn summary_exports_include_1d_and_2d_dimensions() {
+        let mut tally = MonitorTally::default();
+        tally.add("10.0.0.1:5000", "GET", Some("user:42"), ":");
+        tally.add("10.0.0.1:5000", "GET", Some("user:43"), ":");
+        tally.add("10.0.0.2:6000", "SET", Some("session:1"), ":");
+        let sample = SampleResult {
+            tally,
+            elapsed: Duration::from_secs(2),
+            cut_short: false,
+        };
+
+        let csv = build_summary_csv(&sample);
+        assert!(csv.contains("dimension,name,count,share_pct"));
+        assert!(csv.contains("command_prefix,GET user:*,2,66.7%"));
+        assert!(csv.contains("client_command,10.0.0.1:5000 GET,2,66.7%"));
+
+        let json: serde_json::Value = serde_json::from_str(&build_summary_json(&sample)).expect("valid json");
+        assert_eq!(json["total_commands"], 3);
+        assert_eq!(json["command_prefixes"][0]["name"], "GET user:*");
+        assert_eq!(json["client_commands"][0]["name"], "10.0.0.1:5000 GET");
     }
 }
