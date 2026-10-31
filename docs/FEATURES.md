@@ -117,6 +117,8 @@ Sort the Top-N table by **Size / Hottest / Coldest** (`OBJECT FREQ`/`IDLETIME` a
 
 Prefer not to touch production at all? **Analyze RDB** parses a local dump file offline — a streaming parser (every value encoding through Redis 8.10 — 8.8 arrays and 8.10 compact hashes included, values length-skipped so multi-GB files parse at I/O speed) feeds the same tables, TTL histogram, and rule engine, with zero commands sent to any server. Sizes are the keys' serialized bytes in the file: not equal to live memory, but a faithful ranking for big-key and prefix hunting. Both the live scan and the file parse show a progress bar, and the prefix / top-key tables export to CSV.
 
+Every run (live or offline RDB) also builds a **Data Dictionary**: variable key segments are collapsed automatically (`user:10042:profile` → `user:{id}:profile`, plus `{uuid}`, `{date}`, `{hash}` and `{token}`), with estimated key count and memory, size percentiles (`p50`/`p95`/`max`), TTL policy (Permanent, Fixed, Range, or Mixed), and — for live scans — best-effort inferred field names and scalar/JSON types (`integer`, `float`, `boolean`, `timestamp`, `uuid`, `json`, `string`, `array`, `object`, `binary`) with zero raw business values ever retained or exported. Inspect the schema in the **Data Dictionary** modal, copy it as Markdown, or export it as Markdown or JSON.
+
 ### Performance Diagnostics
 **Slow Log ↔ Latency, live MONITOR, clients, and command stats.**
 

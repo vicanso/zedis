@@ -317,6 +317,8 @@ pub(super) struct AnalysisAccumulators {
     pub(super) type_map: HashMap<(String, String), TypeStats>,
     pub(super) single_groups: SingleKeyTopGroups,
     pub(super) ttl_histogram: TtlHistogram,
+    /// Collapsed key-pattern schema inference accumulator.
+    pub(super) schema: zedis_core::schema::SchemaAccumulator,
 }
 
 impl AnalysisAccumulators {
@@ -326,6 +328,7 @@ impl AnalysisAccumulators {
             type_map: HashMap::new(),
             single_groups: SingleKeyTopGroups::new(TOP_N),
             ttl_histogram: TtlHistogram::default(),
+            schema: zedis_core::schema::SchemaAccumulator::new(),
         }
     }
 
@@ -343,6 +346,8 @@ impl AnalysisAccumulators {
         } = sample;
 
         self.ttl_histogram.add(ttl);
+        self.schema
+            .record_key(key, key_type, encoding, memory, ttl, key_separator);
 
         let typed = !key_type.is_empty() && key_type != "none";
         if typed {

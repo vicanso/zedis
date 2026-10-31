@@ -45,6 +45,7 @@ pub mod monogram;
 pub mod rdb;
 pub mod replication;
 pub mod report;
+pub mod schema;
 pub mod search_params;
 pub mod ssh_config;
 pub mod string;

@@ -351,6 +351,10 @@ pub enum MemoryAnalysisAction {
     ExportPrefixesCsv,
     /// Export the single-key Top-N table to a CSV file.
     ExportKeysCsv,
+    /// Export the inferred Data Dictionary to a Markdown file.
+    ExportDataDictionaryMd,
+    /// Export the inferred Data Dictionary to a JSON file.
+    ExportDataDictionaryJson,
 }
 
 /// The value-search panel's type choice, dispatched by its type dropdown

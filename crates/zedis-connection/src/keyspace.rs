@@ -460,6 +460,73 @@ pub async fn publish(at: &ServerDb, channel: &str, message: &str, sharded: bool)
         .await?)
 }
 
+/// Best-effort read-only structure probe for a list of `(pattern, primary_type, example_key)`
+/// targets produced by `SchemaAccumulator::top_probe_targets`.
+///
+/// Only field names and inferred scalar/JSON types (`integer`, `float`, `boolean`,
+/// `timestamp`, `uuid`, `json`, `string`, `array`, `object`, `binary`) are returned —
+/// raw values never leave this function.
+pub async fn probe_pattern_fields(
+    at: &ServerDb,
+    targets: Vec<(String, String, String)>,
+) -> Vec<(String, Vec<(String, String)>)> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut conn) = at.connection().await else {
+        return Vec::new();
+    };
+    let mut results = Vec::new();
+    for (pattern, primary_type, key) in targets {
+        let fields: Vec<(String, String)> = match primary_type.as_str() {
+            "hash" => {
+                let res: redis::RedisResult<(u64, Vec<Vec<u8>>)> = cmd("HSCAN")
+                    .arg(&key)
+                    .arg(0)
+                    .arg("COUNT")
+                    .arg(50)
+                    .query_async(&mut conn)
+                    .await;
+                match res {
+                    Ok((_, items)) => items
+                        .chunks(2)
+                        .filter_map(|pair| {
+                            if pair.len() == 2 {
+                                let name = String::from_utf8_lossy(&pair[0]).into_owned();
+                                let vtype = zedis_core::schema::infer_scalar_type(&pair[1]).to_string();
+                                Some((name, vtype))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            }
+            "string" => {
+                let res: redis::RedisResult<Vec<u8>> =
+                    cmd("GETRANGE").arg(&key).arg(0).arg(8191).query_async(&mut conn).await;
+                match res {
+                    Ok(bytes) if !bytes.is_empty() => zedis_core::schema::infer_json_object_fields(&bytes),
+                    _ => Vec::new(),
+                }
+            }
+            "ReJSON-RL" | "json" => {
+                let res: redis::RedisResult<Vec<u8>> = cmd("JSON.GET").arg(&key).query_async(&mut conn).await;
+                match res {
+                    Ok(bytes) if !bytes.is_empty() => zedis_core::schema::infer_json_object_fields(&bytes),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        if !fields.is_empty() {
+            results.push((pattern, fields));
+        }
+    }
+    results
+}
+
 #[cfg(test)]
 mod expire_seconds_tests {
     use super::expire_seconds;

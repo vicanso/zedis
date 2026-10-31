@@ -15,7 +15,8 @@
 use crate::assets::CustomIconName;
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::connection::{
-    HeatMetric, HeatProbe, KeyMemoryUsage, ServerDb, key_size_distributions, maxmemory_policy, sample_memory_usage,
+    HeatMetric, HeatProbe, KeyMemoryUsage, ServerDb, key_size_distributions, maxmemory_policy, probe_pattern_fields,
+    sample_memory_usage,
 };
 use crate::error::Error;
 #[cfg(not(target_family = "wasm"))]
@@ -64,16 +65,19 @@ use tracing::{debug, error};
 use web_time::Instant;
 use zedis_core::keysizes::{KeysizesDist, KeysizesUnit};
 use zedis_core::rdb::RdbParser;
+use zedis_core::schema::{DataDictionary, SchemaAccumulator};
 use zedis_ui::ZedisTextTable;
 use zedis_ui::{ZedisDivider, fitted_table, help_popover, hint_banner};
 
 mod render;
 mod report;
 mod rules;
+mod schema_dialog;
 mod stats;
 mod tables;
 
 use rules::*;
+use schema_dialog::*;
 use stats::*;
 use tables::*;
 
@@ -441,6 +445,10 @@ pub struct ZedisMemoryAnalysis {
     /// The fragmentation chart's series, rebuilt when a new sample lands
     /// rather than on every paint.
     frag_series: Option<FragSeries>,
+    /// Collapsed key-pattern schema inference accumulator.
+    schema: SchemaAccumulator,
+    /// Background task probing top Hash/JSON/String pattern fields after an online scan.
+    schema_probe_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -640,6 +648,8 @@ impl ZedisMemoryAnalysis {
                 .read(cx)
                 .hint_dismissed(HINT_MEMORY_ANALYSIS),
             frag_series: None,
+            schema: SchemaAccumulator::new(),
+            schema_probe_task: None,
             _subscriptions: subscriptions,
         };
         this.update_est_commands();
@@ -687,12 +697,42 @@ impl ZedisMemoryAnalysis {
     }
     fn stop_analysis(&mut self, cx: &mut gpui::Context<Self>) {
         self.analysis_task.take();
-        self.status = if self.prefix_count > 0 || self.single_count > 0 {
+        self.status = if self.prefix_count > 0 || self.single_count > 0 || !self.schema.is_empty() {
             AnalysisStatus::Finished
         } else {
             AnalysisStatus::Idle
         };
+        if self.rdb_file.is_none() && self.status == AnalysisStatus::Finished {
+            self.spawn_schema_probe(cx);
+        }
         cx.notify();
+    }
+
+    fn spawn_schema_probe(&mut self, cx: &mut gpui::Context<Self>) {
+        let probe_targets = self.schema.top_probe_targets(25);
+        if probe_targets.is_empty() {
+            return;
+        }
+        let state = self.server_state.read(cx);
+        let probe_server_id = state.server_id().to_string();
+        if probe_server_id.is_empty() {
+            return;
+        }
+        let db = state.db();
+        self.schema_probe_task = Some(cx.spawn(async move |handle, cx| {
+            let probed = cx
+                .background_spawn(async move {
+                    probe_pattern_fields(&ServerDb::new(&*probe_server_id, db), probe_targets).await
+                })
+                .await;
+            let _ = handle.update(cx, |this, cx| {
+                this.schema_probe_task = None;
+                for (pattern, fields) in probed {
+                    this.schema.record_structure_fields(&pattern, &fields);
+                }
+                cx.notify();
+            });
+        }));
     }
 
     /// Drop the AI result panel and cancel any in-flight request.
@@ -814,6 +854,8 @@ impl ZedisMemoryAnalysis {
         self.type_rows.clear();
         self.prefix_rows.clear();
         self.single_rows.clear();
+        self.schema = SchemaAccumulator::new();
+        self.schema_probe_task.take();
         self.prefix_table.update(cx, |s, _| s.delegate_mut().clear());
         self.single_table.update(cx, |s, _| s.delegate_mut().clear());
     }
@@ -1007,7 +1049,7 @@ impl ZedisMemoryAnalysis {
                 // the prefix rows are rebuilt from the whole map each round
                 // (up to 100k prefixes), which on the UI thread stalled every
                 // round's repaint.
-                let (next_acc, prefix_rows, groups_snapshot, ttl_snapshot, type_snapshot) = cx
+                let (next_acc, prefix_rows, groups_snapshot, ttl_snapshot, type_snapshot, schema_snapshot) = cx
                     .background_spawn({
                         let key_separator = key_separator.clone();
                         let mut acc = acc;
@@ -1033,7 +1075,8 @@ impl ZedisMemoryAnalysis {
                             let groups = acc.single_groups.clone();
                             let ttl = acc.ttl_histogram.clone();
                             let types = acc.type_map.clone();
-                            (acc, prefix_rows, groups, ttl, types)
+                            let schema = acc.schema.clone();
+                            (acc, prefix_rows, groups, ttl, types, schema)
                         }
                     })
                     .await;
@@ -1054,6 +1097,7 @@ impl ZedisMemoryAnalysis {
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
                     this.type_map = type_snapshot;
+                    this.schema = schema_snapshot;
                     this.rebuild_type_rows(cx);
                     let mode = this.sort_mode;
                     let single_rows = this.single_groups.rows_for(mode);
@@ -1086,6 +1130,7 @@ impl ZedisMemoryAnalysis {
             let final_histogram = acc.ttl_histogram;
             let final_prefix_map = acc.prefix_map;
             let final_type_map = acc.type_map;
+            let final_schema = acc.schema;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(err) = scan_error {
                     // Surface the failure instead of a fake "100% / Finished".
@@ -1117,6 +1162,8 @@ impl ZedisMemoryAnalysis {
                 this.ttl_histogram = final_histogram;
                 this.prefix_map = final_prefix_map;
                 this.type_map = final_type_map;
+                this.schema = final_schema;
+                this.spawn_schema_probe(cx);
                 this.rebuild_type_rows(cx);
                 // The map is on the view now, so rows can be drilled into.
                 this.drillable.set(true);
@@ -1340,11 +1387,13 @@ impl ZedisMemoryAnalysis {
                 let groups_snapshot = acc.single_groups.clone();
                 let ttl_snapshot = acc.ttl_histogram.clone();
                 let type_snapshot = acc.type_map.clone();
+                let schema_snapshot = acc.schema.clone();
                 let updated = handle.update(cx, |this, cx| {
                     this.progress = progress_text;
                     this.progress_value = pct;
                     this.prefix_count = pc;
                     this.type_map = type_snapshot;
+                    this.schema = schema_snapshot;
                     this.rebuild_type_rows(cx);
                     this.single_groups = groups_snapshot;
                     this.ttl_histogram = ttl_snapshot;
@@ -1376,6 +1425,7 @@ impl ZedisMemoryAnalysis {
             let final_histogram = acc.ttl_histogram;
             let final_prefix_map = acc.prefix_map;
             let final_type_map = acc.type_map;
+            let final_schema = acc.schema;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(err) = parse_error {
                     // Keep whatever parsed before the corruption point.
@@ -1401,6 +1451,7 @@ impl ZedisMemoryAnalysis {
                 this.ttl_histogram = final_histogram;
                 this.prefix_map = final_prefix_map;
                 this.type_map = final_type_map;
+                this.schema = final_schema;
                 this.rebuild_type_rows(cx);
                 this.drillable.set(true);
                 let mode = this.sort_mode;
@@ -1512,6 +1563,54 @@ impl ZedisMemoryAnalysis {
             success,
             error,
         );
+    }
+
+    pub(super) fn has_schema_data(&self) -> bool {
+        !self.schema.is_empty()
+    }
+
+    pub(super) fn schema_context_label(&self, cx: &gpui::App) -> String {
+        let state = self.server_state.read(cx);
+        if let Some(rdb) = &self.rdb_file {
+            rdb.to_string()
+        } else {
+            let id = state.server_id();
+            let name = crate::connection::get_server(id)
+                .map(|s| s.name)
+                .unwrap_or_else(|_| id.to_string());
+            format!("{name} (db {})", state.db())
+        }
+    }
+
+    pub(super) fn build_data_dictionary(&self) -> DataDictionary {
+        self.schema.finish(self.row_ratio(), 50)
+    }
+
+    pub(super) fn export_data_dictionary_md(&mut self, cx: &mut gpui::Context<Self>) {
+        if !self.has_schema_data() {
+            return;
+        }
+        let label = self.schema_context_label(cx);
+        let md = self.build_data_dictionary().to_markdown(&label);
+        self.save_export(md, "data-dictionary.md", cx);
+    }
+
+    pub(super) fn export_data_dictionary_json(&mut self, cx: &mut gpui::Context<Self>) {
+        if !self.has_schema_data() {
+            return;
+        }
+        let label = self.schema_context_label(cx);
+        let json = self.build_data_dictionary().to_json_pretty(&label);
+        self.save_export(json, "data-dictionary.json", cx);
+    }
+
+    pub(super) fn open_schema_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if !self.has_schema_data() {
+            return;
+        }
+        let label = self.schema_context_label(cx);
+        let dict = self.build_data_dictionary();
+        open_data_dictionary_dialog(dict, label, self.server_state.clone(), window, cx);
     }
 }
 
@@ -1863,5 +1962,39 @@ mod tests {
             None,
         );
         assert!(recs.is_empty(), "unexpected findings: {recs:?}");
+    }
+
+    #[test]
+    fn accumulators_feed_schema_and_build_data_dictionary() {
+        let mut acc = AnalysisAccumulators::new();
+        for (key, bytes) in [("user:1001:profile", 256), ("user:1002:profile", 512)] {
+            acc.add(
+                KeySample {
+                    key,
+                    memory_bytes: bytes,
+                    ttl: 3600,
+                    key_type: "hash",
+                    encoding: "listpack",
+                    heat: HeatMetric::None,
+                },
+                HeatProbe::None,
+                ":",
+            );
+        }
+        acc.schema.record_structure_fields(
+            "user:{id}:profile",
+            &[
+                ("uid".to_string(), "integer".to_string()),
+                ("email".to_string(), "string".to_string()),
+            ],
+        );
+        let dict = acc.schema.finish(0.5, 20);
+        assert_eq!(dict.patterns.len(), 1);
+        assert_eq!(dict.patterns[0].pattern, "user:{id}:profile");
+        assert_eq!(dict.patterns[0].estimated_keys, 4);
+        assert_eq!(dict.patterns[0].fields.len(), 2);
+        let md = dict.to_markdown("prod-redis (db 0)");
+        assert!(md.contains("`user:{id}:profile`"));
+        assert!(md.contains("uid: integer"));
     }
 }

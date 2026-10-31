@@ -117,6 +117,8 @@ Top-N 表按 **大小 / 最热 / 最冷** 排序（按 `maxmemory-policy` 自动
 
 完全不想碰生产环境？**分析 RDB** 可离线解析本地备份文件 —— 流式解析器（支持到 Redis 8.10 的全部取值编码，含 8.8 的 Array 与 8.10 的 compact hash，值按长度跳过，多 GB 文件以 I/O 速度解析）把结果交给同一套表格、TTL 直方图和规则引擎，全程不向任何服务器发送命令。大小为 key 在文件中的序列化字节数：不等于在线内存，但用于大 key 与前缀排查的排序完全可信。在线扫描与文件解析都有进度条，前缀分组与 Top key 两张表均可导出 CSV。
 
+每次分析（无论在线扫描还是离线 RDB）还会自动生成一份**数据字典**：键名中的动态分段会自动聚合成模板（如 `user:10042:profile` → `user:{id}:profile`，并识别 `{uuid}`、`{date}`、`{hash}`、`{token}`），汇总每个模式的估算键数、内存占用、体积分位数（`p50`/`p95`/`max`）与 TTL 策略（永不过期、固定 TTL、区间分布或混合）；在线扫描结束后还会对高频 Hash / JSON / String 模式做只读结构探针，推断字段名与值类型（`integer`、`float`、`boolean`、`timestamp`、`uuid`、`json`、`string`、`array`、`object`、`binary`），全程不保留也不导出任何原始业务数据。可在工具栏打开**数据字典**弹窗预览、一键复制 Markdown，或导出为 Markdown / JSON 文件。
+
 ### 性能诊断
 **慢日志 ↔ Latency、实时 MONITOR、客户端、命令统计。**
 

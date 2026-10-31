@@ -182,7 +182,20 @@ impl ZedisMemoryAnalysis {
                                 })),
                         )
                     })
-                    // Export the finished tables (prefix groups / top keys).
+                    // Inferred Data Dictionary modal (pattern collapsing + field schema).
+                    .child(
+                        Button::new(SCHEMA_BTN_ID)
+                            .outline()
+                            .small()
+                            .icon(IconName::BookOpen)
+                            .disabled(is_running || !self.has_schema_data())
+                            .label(i18n_memory_analysis(cx, "schema_button"))
+                            .tooltip(i18n_memory_analysis(cx, "schema_button_tooltip"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_schema_dialog(window, cx);
+                            })),
+                    )
+                    // Export the finished tables (prefix groups / top keys / data dictionary).
                     .when(
                         saves_files() && !is_running && (self.prefix_count > 0 || self.single_count > 0),
                         |this| {
@@ -200,6 +213,15 @@ impl ZedisMemoryAnalysis {
                                         .menu(
                                             i18n_memory_analysis(cx, "export_top_keys"),
                                             Box::new(MemoryAnalysisAction::ExportKeysCsv),
+                                        )
+                                        .separator()
+                                        .menu(
+                                            i18n_memory_analysis(cx, "export_data_dictionary_md"),
+                                            Box::new(MemoryAnalysisAction::ExportDataDictionaryMd),
+                                        )
+                                        .menu(
+                                            i18n_memory_analysis(cx, "export_data_dictionary_json"),
+                                            Box::new(MemoryAnalysisAction::ExportDataDictionaryJson),
                                         )
                                     }),
                             )
@@ -1367,6 +1389,8 @@ impl gpui::Render for ZedisMemoryAnalysis {
                 cx.listener(|this, event: &MemoryAnalysisAction, _window, cx| match event {
                     MemoryAnalysisAction::ExportPrefixesCsv => this.export_prefixes_csv(cx),
                     MemoryAnalysisAction::ExportKeysCsv => this.export_keys_csv(cx),
+                    MemoryAnalysisAction::ExportDataDictionaryMd => this.export_data_dictionary_md(cx),
+                    MemoryAnalysisAction::ExportDataDictionaryJson => this.export_data_dictionary_json(cx),
                 }),
             )
             .into_any_element()

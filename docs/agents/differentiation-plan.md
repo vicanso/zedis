@@ -121,7 +121,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | A1 | Scripting | Lua script debugger (`SCRIPT DEBUG` / LDB) | Done (desktop, standalone/Sentinel; cluster is a follow-up) |
 | A2 | Debugging | Key timeline / watch via keyspace notifications | Proposed |
 | A3 | Monitoring | Background alert rules + desktop notifications | Done (opt-in per server via Safety tab or Metrics Alerts dialog) |
-| A4 | Insight | Keyspace schema inference & data dictionary export | Proposed |
+| A4 | Insight | Keyspace schema inference & data dictionary export | Done (online SCAN + offline RDB pattern collapsing, field type inference, Markdown/JSON export) |
 | A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | Proposed |
 | B1 | Performance | Built-in benchmark with charts and run comparison | Proposed |
 | B2 | Performance | MONITOR recording & aggregate analysis | Proposed |
