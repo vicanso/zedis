@@ -146,11 +146,10 @@ jobs:
   # bundle: what breaks is compilation, and a wasm-opt run would cost ten
   # minutes to tell us the same thing.
   #
-  # zedis-web pins its own nightly toolchain (see its rust-toolchain.toml —
+  # zedis-web pins its own dated nightly toolchain (see its rust-toolchain.toml —
   # gpui's browser backend needs wasm atomics), and rustup installs it on
-  # `cd zedis-web`. That channel is unpinned by date, so this job can go red
-  # on a nightly regression nobody here caused — it is still the right
-  # signal, because that same nightly is what builds the shipped image.
+  # `cd zedis-web`. The Dockerfile reads the same file so CI and the shipped
+  # image always build with the exact same compiler snapshot.
   wasm:
     name: wasm32 (browser build)
     runs-on: ubuntu-22.04

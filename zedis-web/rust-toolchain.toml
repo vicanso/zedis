@@ -6,11 +6,14 @@
 # the same way (`crates/story-web/rust-toolchain.toml` in longbridge/gpui-kit),
 # because browser threads need wasm atomics.
 #
-# The rest of the repo stays on the stable channel pinned at the root. Build
-# this crate from *this* directory so rustup reads the file:
+# The rest of the repo stays on the stable channel pinned at the root. Pinned
+# by date so a daily rustc regression (e.g. nightly-2026-11-01's E0391 cycle in
+# `needs_async_drop` on `gpui-pre-scheduler`) cannot break CI or Docker image
+# builds behind our back. Build this crate from *this* directory so rustup
+# reads the file:
 #
 #   cd zedis-web && cargo build --target wasm32-unknown-unknown
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-10-07"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]
