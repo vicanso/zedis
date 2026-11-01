@@ -981,6 +981,32 @@ be changed back (`BGSAVE`, `CONFIG SET`, a copy, starting `MONITOR`, an
 import that never overwrites). What is left is listed under *Progress* as
 findings: they are behaviour — Return would answer Cancel — not structure.
 
+#### `kv_table.rs`, `memory_analysis.rs`, `slowlog_editor.rs`, `terminal.rs` (2026-11-01)
+
+The four view files over ~1,800 lines split along their natural seams while
+keeping each parent `.rs` file as the module root:
+
+| Parent / Submodule | Responsibility | Lines |
+|---|---|---|
+| `kv_table.rs` (was 2,268) | `ZedisKvTable`, `ZedisKvDelegate` (`TableDelegate`), `define_kv_editor!`, unit & UI tests | 970 |
+| `kv_table/entry_panel.rs` | `PreviewMode`, JSON/tree preview helpers, row selection and right-hand edit/add panel | 563 |
+| `kv_table/operations.rs` | `parse_bulk_rows`, CSV export, bulk add, row add/remove/filter, key operation dialogs, row context menu | 415 |
+| `kv_table/toolbar.rs` | footer toolbar (`KEYWORD_INPUT_WIDTH`, `render_footer`) | 263 |
+| `kv_table/layout.rs` | pane split math, width probe, column sizing (`fit_columns`, `new_columns`, `estimated_width`) | 171 |
+| `memory_analysis.rs` (was 2,003) | `ZedisMemoryAnalysis`, construction, subscriptions, unit tests | 904 |
+| `memory_analysis/sampler.rs` | `RdbSource`, `fetch_keysizes`, live scan loop, schema probe, RDB file picker and offline RDB parser | 674 |
+| `memory_analysis/tables.rs` (was 195) | `PrefixRow`, `SingleKeyRow`, sort modes, prefix breadcrumb, type/encoding table rebuilds, table builders | 431 |
+| `memory_analysis/export.rs` | AI memory diagnosis, CSV exports, data dictionary (Markdown / JSON) and schema dialog launcher | 235 |
+| `slowlog_editor.rs` (was 2,030) | `PerformanceTab`, `ZedisSlowlogEditor`, settings banner, `Render`, unit tests | 774 |
+| `slowlog_editor/table.rs` | `SlowLogRow`, latency correlation chips, `SCRIPT SHOW` dialog, window filter pill, row filtering | 668 |
+| `slowlog_editor/latency.rs` (was 600) | `LATENCY LATEST` / `HISTORY` polling, event expansion, sparkline detail, tracking enable/reset | 666 |
+| `slowlog_editor/top_commands.rs` | `CommandAggRow`, per-command aggregation, toolbar actions, CSV/JSON export, `SLOWLOG`/`COMMANDLOG RESET` | 571 |
+| `slowlog_editor/commandlog.rs` | Valkey 8.1 `COMMANDLOG` size-log switch and 30s polling | 173 |
+| `terminal.rs` (was 1,830) | `ZedisTerminal`, banner constants, `Render`, unit tests | 864 |
+| `terminal/execution.rs` | command execution, blocking/stream command refusals, write-gate & danger confirms, `?` AI assistant, Batch mode | 478 |
+| `terminal/transcript.rs` | `TranscriptEntry`, `Block`, reply format rendering, `MULTI`/`EXEC` folding, scrollback cap, copy/save output | 340 |
+| `terminal/completion.rs` | `ReverseSearchState`, command auto-completion, history navigation, `Ctrl+R` reverse search | 215 |
+
 ### Phase 7 — the browser entry and the helpers
 
 - `zedis-web/src/transport.rs` (1.6k without tests): one module per trait it
@@ -1108,6 +1134,7 @@ a wire field or a test name CI selects by.
 | 6 | status bar | done: four submodules, two UI tests first; UI tests reduce motion | `2ffdd87` |
 | 6 | root | done: the tab strip into `root/tabs.rs`, `new` into named parts, three UI tests first | `b54fde5` |
 | 6 | panels, administration tools | checked: the grids and loops follow the rules; five confirms listed as findings | `b54fde5` |
+| 6 | `kv_table.rs`, `memory_analysis.rs`, `slowlog_editor.rs`, `terminal.rs` split | done: 11 new submodules + 2 extended, all 4 parent files under 1,000 lines | (pending) |
 | 7 | transport | done: one submodule per trait, three tests first | `2d90e1f` |
 | 7 | updater | done: check, manifest, download, install; two tests first | `c78ad4e` |
 | 8 | core, db pass | done: two dead helpers gone, no duplication, `KeyMetadata` given its container default | `52facc6` |

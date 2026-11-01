@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Row → cell conversion and table builders for the prefix-group and
-//! single-key result tables. Payload cells carry the raw numbers the
-//! sortable columns order by and the CSV exports write out.
+//! Row types, sort options, cell conversions, drill-down state, and table
+//! builders for the prefix-group and single-key result tables. Payload cells
+//! carry the raw numbers the sortable columns order by and the CSV exports
+//! write out.
 
 use super::*;
 use gpui::WeakEntity;
@@ -35,6 +36,19 @@ const TTL_KEY_WIDTH: f32 = 120.;
 const HEAT_KEY_WIDTH: f32 = 130.;
 const PERM_KEY_WIDTH: f32 = 130.;
 
+// ─── Column constants ────────────────────────────────────────────────────────
+
+pub(super) const COL_PREFIX: &str = "prefix";
+pub(super) const COL_KEY_COUNT: &str = "key_count";
+pub(super) const COL_MEMORY: &str = "memory";
+pub(super) const COL_TYPES: &str = "types";
+pub(super) const COL_AVG_TTL: &str = "avg_ttl";
+pub(super) const COL_PERM_COUNT: &str = "perm_count";
+pub(super) const COL_KEY: &str = "key";
+pub(super) const COL_KEY_TYPE: &str = "key_type";
+pub(super) const COL_TTL: &str = "ttl";
+pub(super) const COL_HEAT: &str = "heat";
+
 /// Payload cells of a prefix row, after its six columns.
 pub(super) const PREFIX_CELL_KEY_COUNT: usize = 6;
 pub(super) const PREFIX_CELL_MEMORY_BYTES: usize = 7;
@@ -49,6 +63,137 @@ pub(super) const PREFIX_CELL_HAS_CHILDREN: usize = 11;
 pub(super) const KEY_CELL_MEMORY_BYTES: usize = 5;
 pub(super) const KEY_CELL_TTL_SECS: usize = 6;
 pub(super) const KEY_CELL_HEAT: usize = 7;
+
+// ─── Row types ───────────────────────────────────────────────────────────────
+
+/// A row in the prefix-group table.
+#[derive(Clone, Debug)]
+pub(super) struct PrefixRow {
+    /// The prefix path without the wildcard ("user:session") — what a
+    /// drill-down takes as its new root.
+    pub(super) path: SharedString,
+    /// Whether the map holds a level below this path, i.e. whether the row
+    /// can be drilled into.
+    pub(super) has_children: bool,
+    /// e.g. "user:*"
+    pub(super) prefix: SharedString,
+    /// Estimated key count (sampled × 1/ratio)
+    pub(super) key_count: u64,
+    /// Display key count (with "~" prefix)
+    pub(super) display_key_count: SharedString,
+    /// Estimated memory in bytes
+    pub(super) memory_bytes: u64,
+    /// Human-readable estimated memory (with "~" prefix)
+    pub(super) memory: SharedString,
+    /// Comma-separated key types
+    pub(super) types: SharedString,
+    /// Display average TTL (with "~" prefix)
+    pub(super) avg_ttl: SharedString,
+    /// Average TTL in seconds (-1 means no expiry)
+    pub(super) avg_ttl_secs: f64,
+    /// Estimated count of keys with no expiry (TTL == -1) under this prefix.
+    /// A high value on a cache prefix is a memory-leak red flag.
+    pub(super) perm_count: u64,
+    /// Display permanent-key count (with "~" prefix when sampled)
+    pub(super) perm_display: SharedString,
+}
+
+/// A row in the single-key table.
+#[derive(Clone, Debug)]
+pub(super) struct SingleKeyRow {
+    /// Full key name
+    pub(super) key: SharedString,
+    /// Actual memory in bytes
+    pub(super) memory_bytes: u64,
+    /// Human-readable memory
+    pub(super) memory: SharedString,
+    /// Key type
+    pub(super) key_type: SharedString,
+    /// TTL display string
+    pub(super) ttl: SharedString,
+    /// TTL in seconds for sorting (-1 = no expiry, -2 = not exists)
+    pub(super) ttl_secs: i64,
+    /// Heat metric (FREQ counter / IDLETIME seconds / unknown).
+    pub(super) heat: HeatMetric,
+    /// Pre-formatted heat cell (e.g. "12 hits", "3m idle", "—").
+    pub(super) heat_display: SharedString,
+}
+
+/// Comparable signed key for the heat metric — higher = hotter so the
+/// default descending sort puts hot keys at the top regardless of which
+/// metric is in play.
+pub(super) fn heat_sort_key(heat: HeatMetric) -> i64 {
+    match heat {
+        HeatMetric::Freq(v) => v as i64,
+        HeatMetric::IdleTime(v) => -(v as i64),
+        HeatMetric::None => i64::MIN,
+    }
+}
+
+pub(super) fn format_heat(heat: HeatMetric) -> SharedString {
+    match heat {
+        HeatMetric::None => "—".into(),
+        HeatMetric::Freq(v) => format!("{v} hits").into(),
+        HeatMetric::IdleTime(secs) => {
+            if secs == 0 {
+                "0s idle".into()
+            } else {
+                format!("{} idle", format_duration(Duration::from_secs(secs))).into()
+            }
+        }
+    }
+}
+
+/// What to sort the TopN single-key list by. Hot/Cold only meaningful when
+/// the heat metric is available; the toggle hides those when it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(super) enum SortMode {
+    #[default]
+    Size,
+    /// FREQ desc (LFU) or IDLETIME asc (LRU) — most-active first.
+    Hot,
+    /// Inverse of Hot. Cold keys = eviction candidates.
+    Cold,
+}
+
+/// One entry of the "rank by" dropdown.
+#[derive(Clone, Debug)]
+pub(super) struct SortOption {
+    pub(super) label: SharedString,
+    pub(super) mode: SortMode,
+}
+
+impl SelectItem for SortOption {
+    type Value = SortMode;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.mode
+    }
+}
+
+/// Ranking choices for the single-key table. Hot/Cold need a heat metric
+/// (`maxmemory-policy` must be LFU or LRU), so they are simply absent when the
+/// server exposes neither: a `Select` cannot grey out one of its items, and an
+/// option that silently does nothing is worse than one that isn't offered.
+pub(super) fn sort_options(heat_available: bool, cx: &gpui::App) -> Vec<SortOption> {
+    let mut options = vec![SortOption {
+        label: i18n_memory_analysis(cx, "rank_size"),
+        mode: SortMode::Size,
+    }];
+    if heat_available {
+        options.push(SortOption {
+            label: i18n_memory_analysis(cx, "rank_hot"),
+            mode: SortMode::Hot,
+        });
+        options.push(SortOption {
+            label: i18n_memory_analysis(cx, "rank_cold"),
+            mode: SortMode::Cold,
+        });
+    }
+    options
+}
 
 impl PrefixRow {
     pub(super) fn cells(&self) -> Vec<SharedString> {
@@ -85,6 +230,97 @@ impl SingleKeyRow {
             self.ttl_secs.to_string().into(),
             heat_sort_key(self.heat).to_string().into(),
         ]
+    }
+}
+
+impl ZedisMemoryAnalysis {
+    /// What the displayed numbers must be scaled by: the run's sample ratio
+    /// online, 1.0 for an RDB file (every key in it was read).
+    pub(super) fn row_ratio(&self) -> f32 {
+        if self.rdb_file.is_some() {
+            1.0
+        } else {
+            self.run_ratio.unwrap_or(self.ratio)
+        }
+    }
+
+    /// Show the children of `root` in the prefix table (empty = top level).
+    pub(super) fn set_prefix_root(&mut self, root: SharedString, cx: &mut gpui::Context<Self>) {
+        self.prefix_root = root;
+        let separator = self.server_state.read(cx).key_separator().to_string();
+        let rows = build_prefix_rows(&self.prefix_map, self.row_ratio(), &separator, &self.prefix_root);
+        self.prefix_count = rows.len();
+        self.prefix_table.update(cx, |state, _| {
+            state
+                .delegate_mut()
+                .set_rows(rows.iter().map(PrefixRow::cells).collect());
+        });
+        self.prefix_rows = rows;
+        cx.notify();
+    }
+
+    /// The breadcrumb's steps: every ancestor of the current root, each with
+    /// the path that returns to it. Empty at the top level.
+    pub(super) fn prefix_breadcrumb(&self, cx: &gpui::App) -> Vec<(SharedString, SharedString)> {
+        if self.prefix_root.is_empty() {
+            return Vec::new();
+        }
+        let separator = self.server_state.read(cx).key_separator().to_string();
+        if separator.is_empty() {
+            return vec![(self.prefix_root.clone(), self.prefix_root.clone())];
+        }
+        let mut steps = Vec::new();
+        let mut path = String::new();
+        for segment in self.prefix_root.split(separator.as_str()) {
+            if !path.is_empty() {
+                path.push_str(&separator);
+            }
+            path.push_str(segment);
+            steps.push((
+                SharedString::from(segment.to_string()),
+                SharedString::from(path.clone()),
+            ));
+        }
+        steps
+    }
+
+    /// Whether the sample carries encodings at all: a server whose probe
+    /// found `OBJECT ENCODING` missing or denied leaves every one empty, and
+    /// then there is no second cut to offer.
+    pub(super) fn has_encodings(&self) -> bool {
+        self.type_map.keys().any(|(_, encoding)| !encoding.is_empty())
+    }
+
+    /// Rebuild the breakdown rows — after a scan round, or when the card's
+    /// type / encoding toggle flips.
+    pub(super) fn rebuild_type_rows(&mut self, cx: &gpui::App) {
+        let unknown = i18n_memory_analysis(cx, "types_unknown");
+        let by_encoding = self.type_by_encoding && self.has_encodings();
+        self.type_rows = build_type_rows(&self.type_map, self.row_ratio(), by_encoding, &unknown);
+    }
+
+    pub(super) fn set_type_by_encoding(&mut self, by_encoding: bool, cx: &mut gpui::Context<Self>) {
+        if self.type_by_encoding == by_encoding {
+            return;
+        }
+        self.type_by_encoding = by_encoding;
+        self.rebuild_type_rows(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_sort_mode(&mut self, mode: SortMode, cx: &mut gpui::Context<Self>) {
+        if self.sort_mode == mode {
+            return;
+        }
+        self.sort_mode = mode;
+        let rows = self.single_groups.rows_for(mode);
+        self.single_count = rows.len();
+        self.single_table.update(cx, |s, _| {
+            s.delegate_mut()
+                .set_rows(rows.iter().map(SingleKeyRow::cells).collect())
+        });
+        self.single_rows = rows;
+        cx.notify();
     }
 }
 

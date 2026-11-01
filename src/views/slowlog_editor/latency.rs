@@ -188,6 +188,72 @@ impl ZedisSlowlogEditor {
         }
     }
 
+    fn open_enable_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let title = i18n_slowlog_editor(cx, "enable_tracking_confirm_title");
+        let body = i18n_slowlog_editor(cx, "enable_tracking_confirm_body");
+        let editor = cx.entity().downgrade();
+        ZedisDialog::new_alert(title, body.to_string())
+            .button_props(dialog_button_props(cx).ok_text(i18n_common(cx, "confirm")))
+            .on_ok(move |_, window, cx| {
+                if let Some(editor) = editor.upgrade() {
+                    editor.update(cx, |this, cx| this.run_enable_latency_tracking(cx));
+                }
+                window.close_dialog(cx);
+                true
+            })
+            .open(window, cx);
+    }
+
+    /// Drill into a single event — toggles expand on/off and fetches
+    /// detail (GPU sparkline source data) the first time an event is
+    /// expanded. Called from the chip on each Latency row.
+    fn expand_event(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        if self.expanded_event.as_ref() == Some(&event) {
+            // Toggle off.
+            self.expanded_event = None;
+            cx.notify();
+            return;
+        }
+        self.expanded_event = Some(event.clone());
+        self.fetch_event_detail(event, cx);
+    }
+
+    /// Fetch `LATENCY HISTORY` for `event` if we don't have it cached
+    /// yet. Used by both `expand_event` (manual toggle) and
+    /// `jump_to_latency_event` (chip-driven navigation) so neither path
+    /// has to duplicate the spawn logic.
+    fn fetch_event_detail(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        if self.event_histories.contains_key(&event) {
+            cx.notify();
+            return;
+        }
+        self.load_event_detail(event, cx);
+    }
+
+    /// `LATENCY HISTORY` for `event`, whether or not one is already held —
+    /// which stays on screen until the new one lands.
+    fn load_event_detail(&mut self, event: SharedString, cx: &mut gpui::Context<Self>) {
+        let server_id = self.server_state.read(cx).server_id().to_string();
+        let db = self.server_state.read(cx).db();
+        if server_id.is_empty() {
+            return;
+        }
+        let event_for_task = event.clone();
+        self._event_detail_task = Some(cx.spawn(async move |handle, cx| {
+            let task = cx.background_spawn(async move {
+                let history = latency_history(&ServerDb::new(server_id, db), event_for_task.as_ref()).await?;
+                Ok::<_, Error>(history)
+            });
+            let result = task.await;
+            let _ = handle.update(cx, |this, cx| {
+                if let Ok(history) = result {
+                    this.event_histories.insert(event, history);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(super) fn run_enable_latency_tracking(&mut self, cx: &mut gpui::Context<Self>) {
         let server_id = self.server_state.read(cx).server_id().to_string();
         let db = self.server_state.read(cx).db();
