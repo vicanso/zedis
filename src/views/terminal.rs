@@ -34,7 +34,9 @@ use crate::{
 };
 #[cfg(not(target_family = "wasm"))]
 use chrono::Local;
-use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+#[cfg(not(target_family = "wasm"))]
+use gpui::Task;
+use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
@@ -218,6 +220,7 @@ enum TranscriptEntry {
         elapsed_ms: u128,
     },
     /// A `?` request in flight; replaced by its answer.
+    #[cfg(not(target_family = "wasm"))]
     AiPending,
 }
 
@@ -286,6 +289,7 @@ fn render_entry(entry: &TranscriptEntry, format: ReplyFormat) -> String {
         } => {
             let _ = writeln!(out, "── batch: {commands} commands · {errors} errors · {elapsed_ms} ms");
         }
+        #[cfg(not(target_family = "wasm"))]
         TranscriptEntry::AiPending => {
             let _ = writeln!(out, "{AI_WAITING_MSG}");
         }
@@ -381,6 +385,7 @@ const MAX_OUTPUT_CHARS: usize = 200_000;
 /// Placeholder line shown in the output while a `?` AI request is in
 /// flight; removed when the reply (or error) lands. Distinctive on
 /// purpose so [`remove_last_line`] can't clip user output.
+#[cfg(not(target_family = "wasm"))]
 const AI_WAITING_MSG: &str = "AI> … thinking — this can take a few seconds; you can keep running commands meanwhile";
 
 /// Drop the oldest output once the scrollback buffer exceeds
@@ -437,6 +442,7 @@ pub struct ZedisTerminal {
     should_focus_input: bool,
     /// In-flight `?` AI request; dropping it (server switch, panel
     /// teardown) cancels the foreground update.
+    #[cfg(not(target_family = "wasm"))]
     ai_task: Option<Task<()>>,
     /// AI-suggested command waiting to be placed into the input box —
     /// consumed by `render`, which has the `Window` that `set_value`
@@ -596,6 +602,7 @@ impl ZedisTerminal {
             cmd_suggestion_index: None,
             cmd_history_index: None,
             should_focus_input: false,
+            #[cfg(not(target_family = "wasm"))]
             ai_task: None,
             pending_ai_fill: None,
             session: TerminalSession::default(),

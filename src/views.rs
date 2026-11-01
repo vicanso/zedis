@@ -138,7 +138,7 @@ pub use key_op_dialog::{
     title_key as key_op_title_key,
 };
 pub use key_tag_dialog::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog};
-pub use key_timeline_dialog::open_key_timeline_dialog;
+pub use key_timeline_dialog::{open_key_timeline_dialog, open_key_timeline_dialog_for_key};
 pub use key_tree::ZedisKeyTree;
 pub use keyspace_notifications::ZedisKeyspaceNotifications;
 pub use kv_table::ZedisKvTable;

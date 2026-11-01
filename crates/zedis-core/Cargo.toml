@@ -7,7 +7,6 @@ categories.workspace = true
 keywords = ["redis"]
 description = "GUI-free core logic for Zedis (fuzzy match, hex/csv/diff, JSONPath, TTL helpers)."
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 documentation.workspace = true
 exclude = []

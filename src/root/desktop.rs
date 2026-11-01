@@ -32,6 +32,8 @@ pub(crate) struct DesktopOnly {
     pub(crate) update_task: Option<Task<()>>,
     /// The in-flight installer download, if any — guards against re-entry.
     pub(crate) download_task: Option<Task<()>>,
+    /// The debounced window-placement save task.
+    pub(crate) save_task: Option<Task<()>>,
     /// The crash report the previous run left behind, if it ended in a panic.
     /// Consumed in `render` (which has the `Window` needed for the dialog).
     pub(crate) pending_crash: Option<CrashReport>,
@@ -51,6 +53,7 @@ impl DesktopOnly {
         Self {
             update_task: None,
             download_task: None,
+            save_task: None,
             pending_crash: None,
             idle_task: None,
             _activation: activation,
@@ -425,6 +428,6 @@ impl Zedis {
             })
             .await;
         });
-        self.save_task = Some(task);
+        self.desktop.save_task = Some(task);
     }
 }

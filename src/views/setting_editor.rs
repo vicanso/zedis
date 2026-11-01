@@ -17,20 +17,19 @@ use super::export::dirs_default_directory;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{
     ensure_keybindings_file, export_local_data_json, get_or_create_config_dir, import_local_data_file,
-    is_app_store_build, is_valid_proxy_setting, write_local_data_file,
+    is_app_store_build, is_valid_proxy_setting, parse_duration, write_local_data_file,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::states::update_app_state_and_save_quiet;
 #[cfg(not(target_family = "wasm"))]
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use crate::{
     connection::{DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT},
     helpers::{
         DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_fonts,
-        date_format_sample, parse_duration, set_datetime_prefs,
+        date_format_sample, set_datetime_prefs,
     },
-    states::{
-        JsonView, ZedisGlobalStore, i18n_editor, i18n_settings, save_ui_locale, update_app_state_and_save,
-        update_app_state_and_save_quiet,
-    },
+    states::{JsonView, ZedisGlobalStore, i18n_editor, i18n_settings, save_ui_locale, update_app_state_and_save},
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui::PathPromptOptions;
@@ -60,7 +59,9 @@ use zedis_ui::{ZedisSelect, ZedisSelectEvent};
 
 mod fields;
 
-use fields::{AiFields, AppearanceFields, DateTimeFields, KeyBehaviorFields, RedisFields, SystemFields};
+#[cfg(not(target_family = "wasm"))]
+use fields::{AiFields, RedisFields, SystemFields};
+use fields::{AppearanceFields, DateTimeFields, KeyBehaviorFields};
 
 /// The Settings dialog of the browser build: as wide as the desktop's
 /// window plus the dialog's own padding, as tall as that window when the
@@ -172,9 +173,13 @@ enum SettingsSection {
     DateTime,
     KeyBehavior,
     Tabs,
+    #[cfg(not(target_family = "wasm"))]
     Redis,
+    #[cfg(not(target_family = "wasm"))]
     Ai,
+    #[cfg(not(target_family = "wasm"))]
     System,
+    #[cfg(not(target_family = "wasm"))]
     LocalData,
 }
 
@@ -187,9 +192,13 @@ impl SettingsSection {
             Self::DateTime => "section_datetime",
             Self::KeyBehavior => "section_key_behavior",
             Self::Tabs => "section_tabs",
+            #[cfg(not(target_family = "wasm"))]
             Self::Redis => "section_redis",
+            #[cfg(not(target_family = "wasm"))]
             Self::Ai => "section_ai",
+            #[cfg(not(target_family = "wasm"))]
             Self::System => "section_system",
+            #[cfg(not(target_family = "wasm"))]
             Self::LocalData => "section_local_data",
         }
     }
@@ -249,27 +258,11 @@ fn config_dir_text() -> String {
     }
 }
 
-/// A page keeps them in the browser's own storage: there is no directory to
-/// name, and no System section to name it in — asking for one only logged a
-/// warning every time Settings was opened.
-#[cfg(target_family = "wasm")]
-fn config_dir_text() -> String {
-    String::new()
-}
-
 /// Whether a proxy typed into Settings may be saved: only one `app_proxy`
 /// can act on.
 #[cfg(not(target_family = "wasm"))]
 fn proxy_setting_accepted(text: &str) -> bool {
     is_valid_proxy_setting(text)
-}
-
-/// The proxy is for this process's own HTTP (updater, AI), which the browser
-/// build has none of: a page's requests go through the browser's proxy, not a
-/// setting here. Only clearing the field is accepted there.
-#[cfg(target_family = "wasm")]
-fn proxy_setting_accepted(text: &str) -> bool {
-    text.is_empty()
 }
 
 pub struct ZedisSettingEditor {
@@ -295,23 +288,33 @@ pub struct ZedisSettingEditor {
     mono_font: Option<String>,
     max_key_tree_depth_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     config_dir_state: Entity<InputState>,
     key_scan_count_state: Entity<InputState>,
     value_search_scan_cap_state: Entity<InputState>,
     value_search_time_budget_state: Entity<InputState>,
     value_search_max_matches_state: Entity<InputState>,
     auto_expand_threshold_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     redis_connection_timeout_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     redis_response_timeout_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     ai_base_url_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     ai_api_key_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     ai_model_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     http_proxy_state: Entity<InputState>,
+    #[cfg(not(target_family = "wasm"))]
     tray_enabled: bool,
     show_key_tree_ttl: bool,
     soft_delete: bool,
     sidebar_click_new_tab: bool,
+    #[cfg(not(target_family = "wasm"))]
     auto_update_check: bool,
+    #[cfg(not(target_family = "wasm"))]
     update_prerelease: bool,
     font_size_state: Entity<InputState>,
     locale_select: Entity<ZedisSelect>,
@@ -360,11 +363,14 @@ impl ZedisSettingEditor {
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
+        #[cfg(not(target_family = "wasm"))]
         let tray_enabled = store.tray_enabled();
         let show_key_tree_ttl = store.show_key_tree_ttl();
         let soft_delete = store.soft_delete();
         let sidebar_click_new_tab = store.sidebar_click_new_tab();
+        #[cfg(not(target_family = "wasm"))]
         let auto_update_check = store.auto_update_check();
+        #[cfg(not(target_family = "wasm"))]
         let update_prerelease = store.update_prerelease();
         let mut subscriptions = Vec::new();
         let AppearanceFields {
@@ -391,15 +397,18 @@ impl ZedisSettingEditor {
             value_search_max_matches_state,
             json_view_select,
         } = Self::key_behavior_fields(window, cx, &mut subscriptions);
+        #[cfg(not(target_family = "wasm"))]
         let RedisFields {
             redis_connection_timeout_state,
             redis_response_timeout_state,
         } = Self::redis_fields(window, cx, &mut subscriptions);
+        #[cfg(not(target_family = "wasm"))]
         let AiFields {
             ai_base_url_state,
             ai_api_key_state,
             ai_model_state,
         } = Self::ai_fields(window, cx, &mut subscriptions);
+        #[cfg(not(target_family = "wasm"))]
         let SystemFields {
             http_proxy_state,
             config_dir_state,
@@ -420,21 +429,31 @@ impl ZedisSettingEditor {
             value_search_scan_cap_state,
             value_search_time_budget_state,
             value_search_max_matches_state,
+            #[cfg(not(target_family = "wasm"))]
             config_dir_state,
             auto_expand_threshold_state,
             max_truncate_length_state,
             max_key_tree_depth_state,
+            #[cfg(not(target_family = "wasm"))]
             redis_response_timeout_state,
+            #[cfg(not(target_family = "wasm"))]
             redis_connection_timeout_state,
+            #[cfg(not(target_family = "wasm"))]
             ai_base_url_state,
+            #[cfg(not(target_family = "wasm"))]
             ai_api_key_state,
+            #[cfg(not(target_family = "wasm"))]
             ai_model_state,
+            #[cfg(not(target_family = "wasm"))]
             http_proxy_state,
+            #[cfg(not(target_family = "wasm"))]
             tray_enabled,
             show_key_tree_ttl,
             soft_delete,
             sidebar_click_new_tab,
+            #[cfg(not(target_family = "wasm"))]
             auto_update_check,
+            #[cfg(not(target_family = "wasm"))]
             update_prerelease,
             font_size_state,
             locale_select,

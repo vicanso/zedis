@@ -17,10 +17,8 @@ use crate::assets::Assets;
 // What only the desktop's menu lists: the application's own chores (settings,
 // updates, logs, diagnostics).
 #[cfg(not(target_family = "wasm"))]
-use crate::helpers::{DiagnosticsAction, is_app_store_build};
-use crate::helpers::{
-    MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, UpdateAction, get_mono_font_family,
-};
+use crate::helpers::{DiagnosticsAction, UpdateAction, is_app_store_build};
+use crate::helpers::{MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, get_mono_font_family};
 use crate::states::i18n_shortcuts;
 use crate::views::update_prompt;
 use crate::{

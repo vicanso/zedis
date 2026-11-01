@@ -820,7 +820,10 @@ impl ZedisMemoryAnalysis {
     /// No HTTP client in the browser build; the button is not offered.
     #[cfg(target_family = "wasm")]
     fn start_ai_analysis(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        let _ = (window, cx);
+        let _ = window;
+        self.ai_status = AiStatus::Error;
+        self.ai_output = Some("The AI assistant is not available in the browser build.".into());
+        cx.notify();
     }
 
     /// Shared reset for both analysis sources (online SCAN / RDB file):

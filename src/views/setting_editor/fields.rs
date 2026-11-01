@@ -44,17 +44,20 @@ pub(super) struct KeyBehaviorFields {
     pub(super) json_view_select: Entity<ZedisSelect>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) struct RedisFields {
     pub(super) redis_connection_timeout_state: Entity<InputState>,
     pub(super) redis_response_timeout_state: Entity<InputState>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) struct AiFields {
     pub(super) ai_base_url_state: Entity<InputState>,
     pub(super) ai_api_key_state: Entity<InputState>,
     pub(super) ai_model_state: Entity<InputState>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) struct SystemFields {
     pub(super) http_proxy_state: Entity<InputState>,
     pub(super) config_dir_state: Entity<InputState>,
@@ -489,6 +492,7 @@ impl ZedisSettingEditor {
     }
 
     /// The Redis connection section: the connection and response timeouts.
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn redis_fields(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -543,6 +547,7 @@ impl ZedisSettingEditor {
 
     /// The AI section: the endpoint, its key and the model, saved without a
     /// window refresh.
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn ai_fields(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -587,6 +592,7 @@ impl ZedisSettingEditor {
 
     /// The System section's fields: the HTTP proxy, and the configuration
     /// directory to read.
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn system_fields(
         window: &mut Window,
         cx: &mut Context<Self>,

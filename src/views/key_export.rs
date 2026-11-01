@@ -32,7 +32,7 @@ use crate::connection::{
 };
 use crate::helpers::{PickFailure, PickedFile};
 use crate::states::{ZedisGlobalStore, i18n_common, i18n_copy, i18n_migration};
-use gpui::{AnyElement, App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, Entity, SharedString, Subscription, Task, Window, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},

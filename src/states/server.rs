@@ -214,6 +214,10 @@ pub struct ZedisServerState {
     /// change — and dies with the session on server switch (`reset`).
     info_snapshot: Option<InfoSnapshot>,
 
+    /// Pending key prefix handed from the key tree's "Watch This Prefix"
+    /// folder action to `ZedisKeyspaceNotifications`.
+    pending_keyspace_prefix: Option<SharedString>,
+
     /// Whether the terminal is open
     terminal: bool,
 
@@ -450,6 +454,7 @@ impl ZedisServerState {
         // An INFO snapshot from the previous connection would only produce
         // a meaningless all-changed diff on the next server.
         self.info_snapshot = None;
+        self.pending_keyspace_prefix = None;
     }
 
     /// Add new keys with their types to the loaded ones ([`KeyScan::extend`]).
@@ -1216,6 +1221,25 @@ impl ZedisServerState {
     /// batch-TTL dialog; see [`floors::EXPIRE_CONDITIONS`].
     pub fn supports_expire_conditions(&self) -> bool {
         self.supports(floors::EXPIRE_CONDITIONS)
+    }
+
+    /// Whether `view` is available in this build and supported by the
+    /// connected server's probed command set and version floor.
+    pub fn supports_view(&self, view: ServerView) -> bool {
+        view.in_this_build()
+            && self.panel_block(view).is_none()
+            && (!matches!(view, ServerView::Hotkeys) || self.supports(floors::HOTKEYS))
+    }
+
+    /// Queue a key prefix for the Keyspace Notifications view to pick up
+    /// when it opens.
+    pub fn set_pending_keyspace_prefix(&mut self, prefix: SharedString) {
+        self.pending_keyspace_prefix = Some(prefix);
+    }
+
+    /// Take the queued keyspace notification prefix, if any.
+    pub fn take_pending_keyspace_prefix(&mut self) -> Option<SharedString> {
+        self.pending_keyspace_prefix.take()
     }
 
     /// Whether the Topology panel has something to show: Cluster and

@@ -114,6 +114,7 @@ impl RedisClient {
 
     /// Build the structured slot map consumed by Topology's slot bar and
     /// reshard planner. Only populated in cluster mode.
+    #[cfg(not(target_family = "wasm"))]
     fn build_slot_map(&self) -> ClusterSlotMap {
         if self.server_type != ServerType::Cluster {
             return ClusterSlotMap::default();
@@ -245,6 +246,11 @@ impl RedisClient {
         }
     }
 
+    #[cfg(target_family = "wasm")]
+    fn build_slot_map(&self) -> ClusterSlotMap {
+        ClusterSlotMap::default()
+    }
+
     /// Build the structured topology consumed by the status-bar tooltip.
     ///
     /// Cluster mode groups replicas under their master via `master_cluster_id`
@@ -257,6 +263,7 @@ impl RedisClient {
                 NodeRole::Master => "●",
                 NodeRole::Slave => "↳",
                 NodeRole::Fail => "✗",
+                #[cfg(not(target_family = "wasm"))]
                 NodeRole::Unknown => "?",
             }
             .into()

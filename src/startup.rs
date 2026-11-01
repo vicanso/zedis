@@ -42,9 +42,12 @@ use tracing::error;
 use tracing::{info, warn};
 
 pub(crate) const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
 /// RFC 3339 build time (vergen), what a nightly is compared against.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const BUILD_TIMESTAMP: &str = env!("VERGEN_BUILD_TIMESTAMP");
 /// `ZEDIS_BUILD_CHANNEL` at build time: `nightly` for the rolling build
 /// publish.yml makes from main, else stable. A nightly build follows the

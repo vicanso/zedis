@@ -38,6 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::error;
 
 /// File name prefix of every report; the logs pruner matches on it.
+#[cfg(not(target_family = "wasm"))]
 pub const CRASH_REPORT_PREFIX: &str = "crash-";
 #[cfg(not(target_family = "wasm"))]
 const PENDING_MARKER: &str = "crash.pending";

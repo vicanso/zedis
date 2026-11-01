@@ -7,7 +7,6 @@ categories.workspace = true
 keywords = ["gui", "gpui"]
 description = "Reusable GPUI widgets for Zedis: cards, dialogs, forms and a read-only text table."
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 documentation.workspace = true
 exclude = []

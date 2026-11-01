@@ -92,6 +92,8 @@ pub(super) enum KeyTreeAction {
     CopyKeyLink(SharedString),
     /// Copy the folder prefix (with trailing separator) to the clipboard.
     CopyFolderPrefix(SharedString),
+    /// Open Keyspace Notifications filtered to this folder's prefix.
+    WatchFolderPrefix(SharedString),
     /// Select the key and open the editor's rename dialog.
     RenameKey(SharedString),
     /// Add / remove the key from the local favorites list.
@@ -300,6 +302,17 @@ fn on_tree_action(this: &mut ZedisKeyTree, e: &KeyTreeAction, window: &mut Windo
             let prefix = this.server_state.read(cx).folder_prefix(id.as_str());
             cx.write_to_clipboard(ClipboardItem::new_string(prefix));
             window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
+        }
+        KeyTreeAction::WatchFolderPrefix(id) => {
+            let prefix: SharedString = this.server_state.read(cx).folder_prefix(id.as_str()).into();
+            this.server_state.update(cx, |state, _cx| {
+                state.set_pending_keyspace_prefix(prefix);
+            });
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| {
+                    state.go_to_view(ServerView::KeyspaceNotifications, cx);
+                });
+            });
         }
         KeyTreeAction::RenameKey(key) => {
             // Select first so the editor's rename dialog prefills this

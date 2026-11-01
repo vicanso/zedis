@@ -21,10 +21,12 @@ use super::*;
 /// Number of rows from each table included in the AI report. The tables
 /// already hold at most ~20 rows, but cap defensively so the prompt stays
 /// bounded regardless of upstream changes.
+#[cfg(not(target_family = "wasm"))]
 pub(super) const REPORT_ROW_LIMIT: usize = 20;
 
 /// Escape a value for use inside a single Markdown table cell: pipes
 /// would break the column layout and newlines would break the row.
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn md_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
@@ -47,6 +49,7 @@ pub(super) fn ai_markdown_style() -> TextViewStyle {
 /// Render the current analysis into a Markdown report suitable for
 /// submitting to an LLM. Pure over its inputs — no Redis access. Only
 /// key *names*, sizes and TTLs are included (never key values).
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn build_markdown_report(
     dbsize: Option<u64>,
     policy: &str,

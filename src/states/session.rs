@@ -115,6 +115,7 @@ pub struct SessionOption {
     pub last_connected_at: Option<i64>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 struct SessionOptions {
     options: Vec<SessionOption>,

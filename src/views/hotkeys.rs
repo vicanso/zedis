@@ -28,8 +28,8 @@ use crate::connection::{
 use crate::error::Error;
 use crate::helpers::{get_mono_font_family, now_datetime, pacing};
 use crate::states::{
-    ReportFinding, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_hotkeys,
-    i18n_troubleshoot,
+    ReportFinding, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common, i18n_hotkeys,
+    i18n_monitor, i18n_slowlog_editor, i18n_troubleshoot,
 };
 use crate::views::panel_poll::{PanelPoll, summary_chip};
 use crate::views::unavailable_chip;
@@ -538,6 +538,51 @@ impl Render for ZedisHotkeys {
                     )
                     .child(Label::new(i18n_hotkeys(cx, "title")).font_semibold())
                     .child(div().flex_1())
+                    .map(|this| {
+                        let state = self.server_state.read(cx);
+                        let supports_monitor = state.supports_view(ServerView::Monitor);
+                        let supports_slowlog = state.supports_view(ServerView::Slowlog);
+                        if !supports_monitor && !supports_slowlog {
+                            return this;
+                        }
+                        this.child(
+                            Label::new(i18n_common(cx, "see_also"))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .when(supports_monitor, |this| {
+                            this.child(
+                                Button::new("hotkeys-goto-monitor")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(CustomIconName::Activity))
+                                    .label(i18n_monitor(cx, "title"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| {
+                                                state.go_to_view(ServerView::Monitor, cx);
+                                            });
+                                        });
+                                    }),
+                            )
+                        })
+                        .when(supports_slowlog, |this| {
+                            this.child(
+                                Button::new("hotkeys-goto-slowlog")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(CustomIconName::Snail))
+                                    .label(i18n_slowlog_editor(cx, "panel_title"))
+                                    .on_click(|_, _w, cx| {
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| {
+                                                state.go_to_view(ServerView::Slowlog, cx);
+                                            });
+                                        });
+                                    }),
+                            )
+                        })
+                    })
                     .child(
                         Label::new(i18n_hotkeys(cx, "help_hint"))
                             .text_xs()

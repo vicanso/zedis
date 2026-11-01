@@ -15,8 +15,12 @@
 //! Cluster topology parsing + slot reshard planning (pure functions).
 
 use super::*;
+#[cfg(not(target_family = "wasm"))]
+use std::collections::HashSet;
+#[cfg(not(target_family = "wasm"))]
 use zedis_core::string::split_host_port;
 
+#[cfg(not(target_family = "wasm"))]
 fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
     // Split into address part and optional cluster bus port part
     let (addr_part, cport_part) = address_str
@@ -49,6 +53,7 @@ fn parse_address(address_str: &str) -> Result<(String, u16, Option<u16>)> {
 /// Parses one migration marker token from `CLUSTER NODES`
 /// (`[slot->-peer]` or `[slot-<-peer]`). Returns `None` for malformed
 /// tokens so a bad marker never aborts the whole parse.
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn parse_slot_migration_token(raw: &str) -> Option<SlotMigration> {
     let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
     if let Some((slot_s, peer)) = inner.split_once("->-") {
@@ -86,6 +91,7 @@ pub(super) fn parse_slot_migration_token(raw: &str) -> Option<SlotMigration> {
 ///  4..7: ping-sent / pong-recv / config-epoch / link-state
 ///  8..: slot ranges (`N` / `N-M`) and migration markers
 ///        (`[N->-id]` migrating, `[N-<-id]` importing).
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn parse_cluster_nodes(raw_data: &str) -> Result<Vec<ClusterNodeInfo>> {
     let mut nodes = Vec::new();
 

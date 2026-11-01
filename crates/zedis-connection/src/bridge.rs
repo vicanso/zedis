@@ -1288,10 +1288,6 @@ impl BridgeConn {
         let replies = self.send_pipeline(pipeline, spec.offset, spec.count).await?;
         pipeline.query(&mut Replayed(Some(replies)))
     }
-
-    fn db(&self) -> i64 {
-        self.db as i64
-    }
 }
 
 /// On the host the enum variant is reached through redis-rs's own trait, so
@@ -1312,7 +1308,7 @@ impl ConnectionLike for BridgeConn {
     }
 
     fn get_db(&self) -> i64 {
-        self.db()
+        self.db as i64
     }
 }
 

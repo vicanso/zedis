@@ -78,6 +78,7 @@ pub fn encrypt(plain_text: &str) -> Result<String> {
 
 /// Core of [`encrypt`], parameterized by key so tests can produce ciphertext
 /// under the legacy key and exercise the migration fallback in [`decrypt`].
+#[cfg(not(target_family = "wasm"))]
 fn encrypt_with_key(key: &[u8; 32], plain_text: &str) -> Result<String> {
     let cipher = Aes256Gcm::new(key.into());
 
@@ -137,6 +138,7 @@ pub fn decrypt(cipher_text: &str) -> Result<String> {
 }
 
 /// Decrypt `data` (`[nonce (12 bytes)][ciphertext]`) under a specific key.
+#[cfg(not(target_family = "wasm"))]
 fn decrypt_with_key(key: &[u8; 32], data: &[u8]) -> Result<String> {
     let plaintext_bytes = open_with_key(key, data)?;
 
@@ -145,6 +147,7 @@ fn decrypt_with_key(key: &[u8; 32], data: &[u8]) -> Result<String> {
 }
 
 /// The bytes inside `data` (`[nonce (12 bytes)][ciphertext]`) under `key`.
+#[cfg(not(target_family = "wasm"))]
 fn open_with_key(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(key.into());
 

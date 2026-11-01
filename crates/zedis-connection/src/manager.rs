@@ -34,12 +34,7 @@ use redis::{aio::MultiplexedConnection, cluster};
 use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::{
-    cmp::Reverse,
-    collections::{HashMap, HashSet},
-    sync::LazyLock,
-    time::Duration,
-};
+use std::{cmp::Reverse, collections::HashMap, sync::LazyLock, time::Duration};
 use tracing::{debug, info};
 use zedis_core::features::ServerFlavor;
 use zedis_core::string::format_host_port;
@@ -353,6 +348,7 @@ pub enum NodeRole {
     Master,
     Slave,
     Fail,
+    #[cfg(not(target_family = "wasm"))]
     Unknown, // e.g. "handshake", "noaddr"
 }
 
@@ -381,6 +377,7 @@ pub enum NodeHealth {
 /// where port 0 means exactly that; an entry of the user's own keeps its
 /// port whatever it is. The full list stays in `nodes` for the topology
 /// page, and `fail?` — one node's suspicion — still joins.
+#[cfg(not(target_family = "wasm"))]
 fn joins_fan_out(role: &NodeRole, health: NodeHealth, port: u16, cluster: bool) -> bool {
     *role == NodeRole::Master && health != NodeHealth::Failing && !(cluster && port == 0)
 }
@@ -399,6 +396,7 @@ struct RedisNode {
     /// Slot ranges owned by this master node (cluster mode only).
     slots: Vec<(u16, u16)>,
     /// In-flight slot migrations reported on this node (`CLUSTER NODES`).
+    #[cfg(not(target_family = "wasm"))]
     migrations: Vec<SlotMigration>,
     /// `fail?` / `fail` from `CLUSTER NODES`; `Ok` outside cluster mode.
     health: NodeHealth,
@@ -412,6 +410,7 @@ impl RedisNode {
 }
 
 /// Direction of an in-flight slot migration reported by `CLUSTER NODES`.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotMigrationKind {
     /// This node owns the slot and is migrating it *to* `peer_id`.
@@ -422,6 +421,7 @@ pub enum SlotMigrationKind {
 
 /// One migrating/importing marker from a `CLUSTER NODES` line
 /// (e.g. `[12345->-target_id]` / `[12345-<-source_id]`).
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotMigration {
     pub slot: u16,
@@ -430,6 +430,7 @@ pub struct SlotMigration {
 }
 
 // Information parsed from `CLUSTER NODES` command
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone)]
 pub struct ClusterNodeInfo {
     pub id: String,
@@ -640,6 +641,7 @@ impl FromRedisValue for SlowLogEntry {
 // is exactly the intended multiplexing behaviour (no per-clone socket).
 /// What node discovery found for a server entry (private to this module
 /// and the pool / pub-sub submodules that run discovery).
+#[cfg(not(target_family = "wasm"))]
 struct NodeDiscovery {
     nodes: Vec<RedisNode>,
     server_type: ServerType,
@@ -648,6 +650,7 @@ struct NodeDiscovery {
     sentinel_master_names: Vec<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl NodeDiscovery {
     fn new(nodes: Vec<RedisNode>, server_type: ServerType) -> Self {
         Self {
@@ -792,8 +795,8 @@ pub use slot_migration::{
     AtomicSlotMigration, SlotMigrationDialect, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
     cluster_migrate_slots,
 };
-#[allow(unused_imports)]
-use slots::*;
+#[cfg(not(target_family = "wasm"))]
+use slots::parse_cluster_nodes;
 pub use slots::{
     REBALANCE_THRESHOLD_PCT, RebalanceMove, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots,
     slots_in_ranges, unassigned_slot_ranges,

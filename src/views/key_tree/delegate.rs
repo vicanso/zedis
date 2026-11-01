@@ -1007,6 +1007,7 @@ mod tests {
             menu_actions(cx, handle, 2, &dispatched),
             [
                 A::RefreshFolder(id("f")),
+                A::WatchFolderPrefix(id("f")),
                 A::DeleteFolder(id("f")),
                 A::SetTtlFolder(id("f")),
                 A::PersistFolder(id("f")),
@@ -1055,6 +1056,7 @@ mod tests {
             menu_actions(cx, handle, 2, &dispatched),
             [
                 A::RefreshFolder(id("f")),
+                A::WatchFolderPrefix(id("f")),
                 A::ExportFolder(id("f")),
                 A::CopyFolderPrefix(id("f")),
             ]

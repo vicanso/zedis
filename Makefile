@@ -20,12 +20,8 @@ lint-fast:
 # clean locally and only fails when someone builds the page. Run from
 # zedis-web/, whose rust-toolchain.toml selects the nightly GPUI's web backend
 # needs; `rustup target add wasm32-unknown-unknown` once.
-#
-# Compile-only, not `--deny=warnings`: `zedis-web` does not yet depend on
-# `zedis-gui`, so the app's unused items are warnings that say "not wired in
-# yet", not "this is wrong". Tighten it to clippy once it does.
 check-web:
-	cd zedis-web && cargo check --target wasm32-unknown-unknown \
+	cd zedis-web && RUSTFLAGS="-D warnings" cargo check --target wasm32-unknown-unknown \
 		-p zedis-core -p zedis-ui -p zedis-connection -p zedis-db -p zedis-gui -p zedis-web
 
 # The browser bundle (ADR 9): the kit's icons copied beside the page and the

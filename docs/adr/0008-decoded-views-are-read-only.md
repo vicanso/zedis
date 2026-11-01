@@ -77,3 +77,28 @@ say in the UI that the bytes will differ from the original.
   and lets the application repopulate it, or writes the plain payload
   from the terminal — both are the honest paths until a scenario says
   otherwise.
+
+## Amendment (2026-11-01): User-supplied `encode_command` on Custom Decoders (`DataFormat::Script`)
+
+Built-in serialization projections (MessagePack, BSON, pickle, Java
+serialization, JWT, PHP `serialize()`, Protobuf) and compression
+previews remain read-only for the exact reasons stated above: Zedis does
+not invent an inverse for a lossy projection or guess which variant an
+application expects.
+
+A **Custom Decoder** (`ScriptConfig` / `DataFormat::Script`) has a
+different ownership model: the user (or their team) defines the external
+CLI command that decodes their value. By default (`encode_command`
+empty), a Custom Decoder view remains read-only (`Decode only`). When
+the user explicitly configures an `encode_command` on that rule:
+
+- The decoded text view becomes editable (`RedisBytesValue::script_editable`).
+- Saving pipes the edited UTF-8 text (`{RAW_FILE}` / `{VALUE}`) through
+  the rule's `encode_command` (with the same out-of-band environment
+  variables, temp-file lifecycle, and execution timeout as decoding) and
+  writes its raw `stdout` bytes to Redis (`SET`).
+- If the encoder exits non-zero, times out, or fails to start, the save
+  is aborted immediately with an error toast (`stderr` / exit code) and
+  nothing is written to Redis.
+- After a successful write, Zedis re-runs the decoder on the newly stored
+  bytes so the editor reflects the canonical round-tripped output.

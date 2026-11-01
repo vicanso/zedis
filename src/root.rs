@@ -92,7 +92,6 @@ pub(crate) use tabs::{ContentTab, MAX_TABS, TabAction};
 pub struct Zedis {
     pending_notification: Option<Notification>,
     last_bounds: Bounds<Pixels>,
-    save_task: Option<Task<()>>,
     // views
     sidebar: Entity<ZedisSidebar>,
     /// Workspace tabs (single tab today; the tab bar UI comes later). Only
@@ -203,7 +202,6 @@ impl Zedis {
 
         Self {
             sidebar,
-            save_task: None,
             tabs,
             active_tab,
             tab_scroll: ScrollHandle::new(),

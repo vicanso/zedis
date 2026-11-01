@@ -68,9 +68,6 @@ impl ZedisServers {
         };
         let max_h = (window.bounds().size.height - px(300.0)).min(px(600.0));
 
-        let test_label = i18n_servers(cx, "test_connection");
-        let diagnose_label = i18n_servers(cx, "diagnose_connection");
-
         ZedisFormOptions::new(fields)
             .title(title)
             .tabs(vec![
@@ -86,10 +83,6 @@ impl ZedisServers {
             .cancel_label(i18n_common(cx, "cancel"))
             .dialog_max_height(max_h)
             .foot_actions(move |_window, cx: &mut Context<zedis_ui::ZedisForm>| {
-                let locale = locale.clone();
-                let test_label = test_label.clone();
-                let diagnose_label = diagnose_label.clone();
-
                 // Candidate master names populated by the suffix fetch button.
                 let current_candidates = candidates.read(cx).clone();
                 let candidates_for_foot = candidates.clone();
@@ -111,10 +104,7 @@ impl ZedisServers {
                             .into_any_element(),
                     );
                 }
-                #[cfg(not(target_family = "wasm"))]
-                items.push(test_connection_button(test_label, locale, cx));
-                #[cfg(not(target_family = "wasm"))]
-                items.push(diagnose_button(diagnose_label, cx));
+                items.extend(desktop_foot_actions(cx));
                 items
             })
             .on_dialog_submit(move |values, _window, cx| {
@@ -578,6 +568,22 @@ fn fetch_master_names(
         });
     })
     .detach();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn desktop_foot_actions(cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+    let test_label = i18n_servers(cx, "test_connection");
+    let diagnose_label = i18n_servers(cx, "diagnose_connection");
+    vec![
+        test_connection_button(test_label, locale, cx),
+        diagnose_button(diagnose_label, cx),
+    ]
+}
+
+#[cfg(target_family = "wasm")]
+fn desktop_foot_actions(_cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
+    Vec::new()
 }
 
 /// Test: dial the server as the form describes it, and say how it went.

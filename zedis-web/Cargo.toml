@@ -5,7 +5,6 @@ edition.workspace = true
 authors.workspace = true
 categories.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 keywords = ["redis", "wasm", "web"]
 description = "The browser build of Zedis, talking to Redis through zedis-bridge."

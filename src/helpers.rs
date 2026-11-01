@@ -46,6 +46,7 @@ mod update_info;
 #[cfg(not(target_family = "wasm"))]
 mod updater;
 mod web_files;
+#[cfg(not(target_family = "wasm"))]
 mod zip;
 
 pub use action::*;

@@ -887,6 +887,18 @@ pub fn open_key_timeline_dialog(server_state: Entity<ZedisServerState>, window: 
     let Some(key) = server_state.read(cx).key() else {
         return;
     };
+    open_key_timeline_dialog_for_key(server_state, key, window, cx);
+}
+
+pub fn open_key_timeline_dialog_for_key(
+    server_state: Entity<ZedisServerState>,
+    key: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if key.is_empty() {
+        return;
+    }
     let title = format!("{} — {key}", i18n_editor(cx, "key_timeline_title"));
     let view = cx.new(|cx| ZedisKeyTimelineDialog::new(server_state, key, cx));
     let actions = cx.new(|_| TimelineDialogActions { dialog: view.clone() });

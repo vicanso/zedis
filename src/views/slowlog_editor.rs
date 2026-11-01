@@ -32,7 +32,7 @@ use crate::helpers::saves_files;
 use crate::helpers::{SlowlogAction, build_csv, djb2_hash, format_unix_secs, get_mono_font_family, pacing};
 use crate::states::{
     ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width,
-    dialog_button_props, escalate_dangerous_body, i18n_common, i18n_slowlog_editor,
+    dialog_button_props, escalate_dangerous_body, i18n_common, i18n_hotkeys, i18n_monitor, i18n_slowlog_editor,
 };
 use crate::views::{ChartParams, ValueLabel, format_timestamp_ms, make_line_chart};
 use crate::views::{ServerReport, export_to_file, open_server_report_dialog};
@@ -1507,6 +1507,54 @@ impl gpui::Render for ZedisSlowlogEditor {
                                 Label::new(count_label)
                                     .text_color(cx.theme().muted_foreground)
                                     .text_sm(),
+                            )
+                            .when(
+                                matches!(self.current_tab, PerformanceTab::SlowLog | PerformanceTab::TopCommands),
+                                |this| {
+                                    let state = self.server_state.read(cx);
+                                    let supports_monitor = state.supports_view(ServerView::Monitor);
+                                    let supports_hotkeys = state.supports_view(ServerView::Hotkeys);
+                                    if !supports_monitor && !supports_hotkeys {
+                                        return this;
+                                    }
+                                    this.child(
+                                        Label::new(i18n_common(cx, "see_also"))
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .when(supports_monitor, |this| {
+                                        this.child(
+                                            Button::new("slowlog-goto-monitor")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(CustomIconName::Activity))
+                                                .label(i18n_monitor(cx, "title"))
+                                                .on_click(|_, _w, cx| {
+                                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                        store.update(cx, |state, cx| {
+                                                            state.go_to_view(ServerView::Monitor, cx);
+                                                        });
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                    .when(supports_hotkeys, |this| {
+                                        this.child(
+                                            Button::new("slowlog-goto-hotkeys")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(CustomIconName::Flame))
+                                                .label(i18n_hotkeys(cx, "title"))
+                                                .on_click(|_, _w, cx| {
+                                                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                        store.update(cx, |state, cx| {
+                                                            state.go_to_view(ServerView::Hotkeys, cx);
+                                                        });
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                },
                             ),
                     )
                     .child(div().flex_none().child(self.render_toolbar_actions(cx))),

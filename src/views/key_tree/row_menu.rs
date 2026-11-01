@@ -90,6 +90,13 @@ impl RowMenu {
                     move |_, cx| Label::new(i18n_key_tree(cx, "refresh_folder_tooltip")),
                 );
             }
+            if ServerView::KeyspaceNotifications.in_this_build() {
+                menu = menu.menu_element_with_icon(
+                    CustomIconName::AudioWaveform,
+                    Box::new(KeyTreeAction::WatchFolderPrefix(id.clone())),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "watch_prefix")),
+                );
+            }
             if Capability::DeleteFolder.allowed(readonly) {
                 menu = menu.menu_element_with_icon(
                     CustomIconName::X,

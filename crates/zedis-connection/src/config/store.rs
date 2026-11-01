@@ -19,6 +19,7 @@
 use super::*;
 
 /// Wrapper struct to match the TOML `[[servers]]` structure.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Default, Deserialize, Clone, Serialize)]
 pub(crate) struct RedisServers {
     pub(super) servers: Vec<RedisServer>,
@@ -299,6 +300,7 @@ pub fn servers_toml_redacted() -> Result<String> {
     redact_servers(get_servers()?)
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn redact_servers(mut servers: Vec<RedisServer>) -> Result<String> {
     for server in servers.iter_mut() {
         for name in RedisServer::SECRET_FIELDS {

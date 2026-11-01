@@ -24,6 +24,7 @@
 //! 3. Config banner + Enable presets for `notify-keyspace-events`.
 //! 4. Pause (drop inbound), export filtered rows as CSV, rate hint.
 
+use crate::assets::CustomIconName;
 use crate::connection::{
     Capability, ChannelSubscription, DangerKind, ServerDb, SubscribeKind, config_get_one, config_set, get_server,
 };
@@ -35,7 +36,9 @@ use crate::states::{
     dialog_button_props, i18n_common, i18n_keyspace_notifications,
 };
 use crate::views::unavailable_chip;
-use crate::views::{bridge_asks_first, confirm_dangerous_command, export_to_file, open_key_in_editor};
+use crate::views::{
+    bridge_asks_first, confirm_dangerous_command, export_to_file, open_key_in_editor, open_key_timeline_dialog_for_key,
+};
 use ahash::AHashSet;
 use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -192,27 +195,36 @@ fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: 
         }
     });
 
-    // The key cell is itself the link: click anywhere on it to open the key.
+    // The key cell is itself the link: click anywhere on it to open the key,
+    // or click the clock button to open its single-key timeline.
     let open_key: CellRenderer = Rc::new(move |row_ix, col_ix, cells, _window, cx| {
         if col_ix != KEY_COLUMN {
             return None;
         }
         let key = cells.get(KEY_COLUMN)?.clone();
+        let key_for_timeline = key.clone();
         let server_state = server_state.clone();
+        let server_state_for_timeline = server_state.clone();
         let tooltip = i18n_common(cx, "open_key_tooltip");
+        let timeline_tooltip = i18n_keyspace_notifications(cx, "open_timeline");
         let foreground = cx.theme().foreground;
         Some(
-            div()
+            h_flex()
                 .size_full()
+                .items_center()
+                .justify_between()
+                .gap_1()
                 .paddings(Edges {
                     top: px(2.),
                     bottom: px(2.),
                     left: px(10.),
-                    right: px(10.),
+                    right: px(6.),
                 })
                 .child(
                     div()
                         .id(("ks-open-key", row_ix))
+                        .flex_1()
+                        .min_w_0()
                         .cursor_pointer()
                         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                         .on_click(move |_, _, cx: &mut App| {
@@ -224,6 +236,21 @@ fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: 
                                 .text_sm()
                                 .text_ellipsis(),
                         ),
+                )
+                .child(
+                    Button::new(("ks-open-timeline", row_ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(CustomIconName::Clock3))
+                        .tooltip(timeline_tooltip)
+                        .on_click(move |_, window, cx| {
+                            open_key_timeline_dialog_for_key(
+                                server_state_for_timeline.clone(),
+                                key_for_timeline.clone(),
+                                window,
+                                cx,
+                            );
+                        }),
                 )
                 .into_any_element(),
         )
@@ -296,6 +323,10 @@ pub struct ZedisKeyspaceNotifications {
     selected_dbs: Option<AHashSet<u32>>,
     source_filter: SourceFilter,
     key_filter: String,
+    /// Optional key prefix handed from the key tree's "Watch This Prefix"
+    /// action; narrows the keyspace subscription pattern to
+    /// `__keyspace@<db>__:<prefix>*` while active.
+    prefix_filter: Option<SharedString>,
     key_filter_input: Entity<InputState>,
     /// Timestamps of recent ingests for events/sec.
     rate_ticks: VecDeque<Instant>,
@@ -324,7 +355,11 @@ impl ZedisKeyspaceNotifications {
         subscriptions.push(
             cx.subscribe_in(&key_filter_input, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
-                    this.key_filter = state.read(cx).value().to_string();
+                    let next = state.read(cx).value().to_string();
+                    if this.prefix_filter.as_ref().is_some_and(|p| p.as_ref() != next.as_str()) {
+                        this.prefix_filter = None;
+                    }
+                    this.key_filter = next;
                     this.apply_filter_now(cx);
                 }
             }),
@@ -340,6 +375,7 @@ impl ZedisKeyspaceNotifications {
                 this.selected_events = None;
                 this.selected_dbs = None;
                 this.source_filter = SourceFilter::Both;
+                this.prefix_filter = None;
                 // The table holds the filter a batch is pushed through.
                 this.apply_filter_now(cx);
                 this.paused = false;
@@ -353,7 +389,7 @@ impl ZedisKeyspaceNotifications {
             }
         }));
 
-        Self {
+        let mut this = Self {
             server_state,
             title,
             table_state,
@@ -370,11 +406,33 @@ impl ZedisKeyspaceNotifications {
             selected_dbs: None,
             source_filter: SourceFilter::Both,
             key_filter: String::new(),
+            prefix_filter: None,
             key_filter_input,
             rate_ticks: VecDeque::new(),
             pending_notification: None,
             _subscriptions: subscriptions,
+        };
+        this.apply_pending_prefix(window, cx);
+        this
+    }
+
+    fn apply_pending_prefix(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prefix) = self
+            .server_state
+            .update(cx, |state, _cx| state.take_pending_keyspace_prefix())
+        else {
+            return;
+        };
+        self.prefix_filter = Some(prefix.clone());
+        self.key_filter = prefix.to_string();
+        self.key_filter_input.update(cx, |input, cx| {
+            input.set_value(prefix, window, cx);
+        });
+        self.apply_filter_now(cx);
+        if self.is_subscribed() || self.subscribing {
+            self.stop_subscribe(cx);
         }
+        self.start_subscribe(cx);
     }
 
     fn is_subscribed(&self) -> bool {
@@ -406,13 +464,17 @@ impl ZedisKeyspaceNotifications {
 
         let entity = cx.entity().downgrade();
         let at = ServerDb::new(server_id, self.server_state.read(cx).db());
+        let keyspace_pattern = match &self.prefix_filter {
+            Some(prefix) if !prefix.is_empty() => format!("__keyspace@{}__:{}*", at.db(), prefix),
+            _ => KEYSPACE_PATTERN.to_string(),
+        };
 
         self.refresh_notify_flags(cx);
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             let connect: Result<ChannelSubscription, Error> = cx
                 .background_spawn(async move {
-                    let patterns = [KEYSPACE_PATTERN, KEYEVENT_PATTERN];
+                    let patterns = [keyspace_pattern.as_str(), KEYEVENT_PATTERN];
                     Ok(ChannelSubscription::open(&at, SubscribeKind::KeyspaceEvents, &patterns).await?)
                 })
                 .await;
@@ -1269,6 +1331,7 @@ impl ZedisKeyspaceNotifications {
 
 impl Render for ZedisKeyspaceNotifications {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_pending_prefix(window, cx);
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }

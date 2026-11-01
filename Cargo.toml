@@ -7,7 +7,6 @@ categories.workspace = true
 keywords = ["redis", "redis-manager", "gpui", "redis-client", "gui"]
 description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 documentation.workspace = true
 # Keep the package under crates.io's size cap without dropping anything the
@@ -65,7 +64,6 @@ edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 categories = ["database"]
 license = "Apache-2.0"
-homepage = "https://github.com/vicanso/zedis"
 repository = "https://github.com/vicanso/zedis"
 documentation = "https://github.com/vicanso/zedis"
 # The published MSRV — what `cargo install zedis-gui` users are promised.
@@ -131,10 +129,8 @@ lsp-types = "=0.97.0"
 snap = "1.1.2"
 substring = "1.4.5"
 sys-locale = "0.3.2"
-time = "0.3.55"
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 url = { workspace = true }
 # `v4` for the single-instance token, a secret: a v7 id spends 48 of its bits
 # on the time and 42 on a counter, so it is ordered, not unguessable.
@@ -164,6 +160,8 @@ tray-icon = "0.26.0"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # Provides the `ring` crypto backend for rustls 0.23+ (used transitively by redis TLS)
 rustls = { workspace = true }
+time = "0.3.55"
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 # `tree-sitter` is asked for here, not in `[workspace.dependencies]`, so it
 # reaches only this binary. Two reasons: `zedis-ui` is a widget crate that
 # needs none of it, and gpui-component drops the tree-sitter *dependency* on
