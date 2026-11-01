@@ -157,6 +157,8 @@ pub(crate) use charts::{
     ChartParams, ChartSeries, ValueLabel, make_bar_chart, make_line_chart, make_series_chart, value_range,
 };
 pub use compare_window::open_compare;
+#[cfg(not(target_family = "wasm"))]
+pub use compare_window::open_compare_for_key;
 pub use features_dialog::open_features_dialog;
 pub use metrics::ZedisMetrics;
 pub(crate) use metrics::format_timestamp_ms;

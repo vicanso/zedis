@@ -54,6 +54,91 @@ impl ZedisMigrationWindow {
             })
     }
 
+    /// Resumable checkpoints from `JobManager`: shown when the migration
+    /// window has unfinished jobs from an earlier run.
+    pub(super) fn unfinished_jobs_section(&self, look: &JobLook, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.unfinished_jobs.is_empty() || look.is_running {
+            return None;
+        }
+        let theme = cx.theme();
+        let muted = look.muted;
+        let title =
+            i18n_migration(cx, "unfinished_jobs_title").replace("{count}", &self.unfinished_jobs.len().to_string());
+        let rows: Vec<AnyElement> = self
+            .unfinished_jobs
+            .iter()
+            .enumerate()
+            .map(|(ix, cp)| {
+                let progress_text = i18n_migration(cx, "unfinished_job_progress")
+                    .replace("{count}", &cp.cursor.processed_count.to_string());
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(SharedString::from(cp.summary.clone())).text_xs())
+                            .child(
+                                Label::new(SharedString::from(progress_text))
+                                    .text_xs()
+                                    .text_color(muted),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new(("migration-resume-job", ix))
+                                    .xsmall()
+                                    .primary()
+                                    .label(i18n_migration(cx, "resume"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.resume_checkpoint(ix, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(("migration-discard-job", ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(i18n_migration(cx, "discard_job"))
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.discard_checkpoint(ix, cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        Some(
+            v_flex()
+                .px_6()
+                .pt_3()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .p_2()
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(4.))
+                        .child(
+                            Label::new(SharedString::from(title))
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::BOLD),
+                        )
+                        .child(
+                            Label::new(i18n_migration(cx, "scan_resume_note"))
+                                .text_xs()
+                                .text_color(theme.yellow),
+                        )
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Where the job is, and how far it got.
     pub(super) fn status_section(&self, look: &JobLook, cx: &Context<Self>) -> impl IntoElement + use<> {
         let &JobLook {
@@ -73,6 +158,8 @@ impl ZedisMigrationWindow {
                 format_size(progress.bytes_done, DECIMAL)
             )
             .into()
+        } else if progress.keys_done > 0 {
+            format!("{}   {}", progress.keys_done, format_size(progress.bytes_done, DECIMAL)).into()
         } else {
             "—".into()
         };
@@ -144,6 +231,38 @@ impl ZedisMigrationWindow {
             Destination::File => 0,
             Destination::Server => 1,
         };
+        let source_mode_labels = vec![
+            i18n_migration(cx, "source_mode_keys").to_string(),
+            i18n_migration(cx, "source_mode_patterns").to_string(),
+        ];
+        let is_pattern_mode = self.source_mode == KeySourceMode::ScanPatterns;
+
+        let mut type_chips = h_flex().gap_1().flex_wrap().items_center();
+        let all_selected = self.selected_types.is_empty();
+        let all_btn = Button::new("migration-type-all")
+            .xsmall()
+            .label(i18n_migration(cx, "type_all"))
+            .disabled(is_running);
+        let all_btn = if all_selected {
+            all_btn.primary()
+        } else {
+            all_btn.outline()
+        };
+        type_chips = type_chips.child(all_btn.on_click(cx.listener(|this, _, _window, cx| {
+            this.clear_pattern_types(cx);
+        })));
+        for (redis_ty, label) in PATTERN_KEY_TYPES {
+            let selected = self.selected_types.iter().any(|t| t.as_ref() == redis_ty);
+            let btn = Button::new(SharedString::from(format!("migration-type-{label}")))
+                .xsmall()
+                .label(label)
+                .disabled(is_running);
+            let btn = if selected { btn.primary() } else { btn.outline() };
+            type_chips = type_chips.child(btn.on_click(cx.listener(move |this, _, _window, cx| {
+                this.toggle_pattern_type(redis_ty, cx);
+            })));
+        }
+
         v_flex()
             .px_6()
             .pt_3()
@@ -182,26 +301,61 @@ impl ZedisMigrationWindow {
                             })),
                     )
             })
-            // Optional prefix filter over the handed-in key list, with a
-            // live matched/total count so the effect is visible before
-            // the job starts.
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_3()
                     .items_center()
-                    .child(Label::new(i18n_migration(cx, "prefix_filter")).text_sm())
+                    .child(Label::new(i18n_migration(cx, "source_mode_label")).text_sm())
                     .child(
-                        Input::new(&self.prefix_input_state)
-                            .small()
-                            .w(px(220.))
-                            .disabled(is_running),
-                    )
-                    .child(
-                        Label::new(SharedString::from(format!("{filtered_count}/{total_count}")))
-                            .text_xs()
-                            .text_color(muted),
+                        RadioGroup::horizontal("migration-source-mode")
+                            .children(source_mode_labels)
+                            .selected_index(Some(self.source_mode.index()))
+                            .disabled(is_running)
+                            .on_click(cx.listener(|this, index, _window, cx| {
+                                this.set_source_mode(KeySourceMode::from_index(*index), cx);
+                            })),
                     ),
             )
+            .when(!is_pattern_mode, |this| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_migration(cx, "prefix_filter")).text_sm())
+                        .child(
+                            Input::new(&self.prefix_input_state)
+                                .small()
+                                .w(px(220.))
+                                .disabled(is_running),
+                        )
+                        .child(
+                            Label::new(SharedString::from(format!("{filtered_count}/{total_count}")))
+                                .text_xs()
+                                .text_color(muted),
+                        ),
+                )
+            })
+            .when(is_pattern_mode, |this| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_migration(cx, "patterns_label")).text_sm())
+                        .child(
+                            Input::new(&self.patterns_input_state)
+                                .small()
+                                .w(px(300.))
+                                .disabled(is_running),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(Label::new(i18n_migration(cx, "types_label")).text_sm())
+                        .child(type_chips),
+                )
+            })
     }
 
     /// Copy to a server: the target, the conflict policy and the dry run
@@ -241,6 +395,7 @@ impl ZedisMigrationWindow {
         let preview_summary =
             self.preview_summary("preview_copy_running", "preview_copy_summary", "preview_copy_idle", cx);
         let sample_lines = self.preview_sample();
+        let mismatch_keys = self.verify_mismatch_keys();
         v_flex()
             .px_6()
             .pt_3()
@@ -281,6 +436,14 @@ impl ZedisMigrationWindow {
                 let color = if ok { theme.green } else { theme.yellow };
                 this.child(Label::new(text).text_xs().text_color(color))
             })
+            .when(!mismatch_keys.is_empty(), |this| {
+                this.child(
+                    Label::new(i18n_migration(cx, "verify_mismatches_label"))
+                        .text_xs()
+                        .text_color(muted),
+                )
+                .child(self.mismatch_block(mismatch_keys, cx))
+            })
             .when(!sample_lines.is_empty(), |this| {
                 this.child(
                     Label::new(i18n_migration(cx, "preview_sample_label"))
@@ -294,6 +457,84 @@ impl ZedisMigrationWindow {
                     .text_xs()
                     .text_color(theme.yellow),
             )
+    }
+
+    /// Best-effort live follow controls after a pattern-based copy finishes.
+    pub(super) fn follow_section(&self, look: &JobLook, cx: &Context<Self>) -> Option<AnyElement> {
+        if !look.is_copy || !matches!(look.phase, MigrationPhase::Finished) || self.last_copy_patterns.is_none() {
+            return None;
+        }
+        let theme = cx.theme();
+        let muted = look.muted;
+        let mut row = h_flex().gap_2().items_center();
+        if self.following {
+            let last = self.follow_last_key.as_deref().unwrap_or("—");
+            let status_text = i18n_migration(cx, "follow_status_active")
+                .replace("{synced}", &self.follow_synced_count.to_string())
+                .replace("{last}", last);
+            row = row
+                .child(
+                    Label::new(SharedString::from(status_text))
+                        .text_xs()
+                        .text_color(theme.green),
+                )
+                .child(
+                    Button::new("migration-follow-stop")
+                        .xsmall()
+                        .danger()
+                        .label(i18n_migration(cx, "follow_stop"))
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.stop_follow(cx);
+                        })),
+                );
+        } else {
+            row = row.child(
+                Button::new("migration-follow-start")
+                    .xsmall()
+                    .outline()
+                    .label(i18n_migration(cx, "follow_start"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start_follow(window, cx);
+                    })),
+            );
+        }
+
+        Some(
+            v_flex()
+                .px_6()
+                .pt_2()
+                .gap_1()
+                .child(row)
+                .when(self.follow_needs_enable, |this| {
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Label::new(i18n_migration(cx, "follow_keyspace_disabled_warning"))
+                                    .text_xs()
+                                    .text_color(theme.yellow),
+                            )
+                            .child(
+                                Button::new("migration-follow-enable-source")
+                                    .xsmall()
+                                    .outline()
+                                    .label(i18n_migration(cx, "follow_enable_on_source"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.enable_keyspace_on_source_and_follow(window, cx);
+                                    })),
+                            ),
+                    )
+                })
+                .when(self.follow_disconnected, |this| {
+                    this.child(
+                        Label::new(i18n_migration(cx, "follow_disconnected_notice"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                })
+                .into_any_element(),
+        )
     }
 
     /// An import's conflict policy, its file, and the dry run.
@@ -414,6 +655,7 @@ impl ZedisMigrationWindow {
         } = look;
         let is_finished = matches!(phase, MigrationPhase::Finished);
         let saved_path = self.chosen_path.clone();
+        let has_source = self.source_mode == KeySourceMode::ScanPatterns || filtered_count > 0;
         let mut row = gpui_kit::component::h_flex().gap_2().justify_end().px_6().py_4();
         row = row.child(
             Button::new("migration-close")
@@ -489,7 +731,7 @@ impl ZedisMigrationWindow {
                         .on_click(cx.listener(|this, _, _, cx| this.handle_start_import(cx))),
                 );
         } else if is_copy {
-            let can_copy = self.target_server_id.is_some() && !target_is_source && filtered_count > 0;
+            let can_copy = self.target_server_id.is_some() && !target_is_source && has_source;
             let label_key = if matches!(phase, MigrationPhase::Idle) {
                 "start_copy"
             } else {
@@ -519,7 +761,7 @@ impl ZedisMigrationWindow {
                 );
         } else {
             let (idle_key, again_key, disabled) = match &self.mode {
-                MigrationWindowMode::Export { .. } => ("save_and_export", "save_and_export_again", filtered_count == 0),
+                MigrationWindowMode::Export { .. } => ("save_and_export", "save_and_export_again", !has_source),
                 MigrationWindowMode::Import { .. } => ("pick_file", "pick_file_again", false),
             };
             let label_key = if matches!(phase, MigrationPhase::Idle) {
@@ -567,6 +809,60 @@ impl ZedisMigrationWindow {
             .as_ref()
             .map(|p| p.sample_keys.iter().map(|k| SharedString::from(k.clone())).collect())
             .unwrap_or_default()
+    }
+
+    /// Mismatched or missing keys from the last verification run, capped for display.
+    fn verify_mismatch_keys(&self) -> Vec<SharedString> {
+        let Some(r) = &self.verify_report else {
+            return Vec::new();
+        };
+        r.missing_keys
+            .iter()
+            .chain(r.differing_keys.iter())
+            .take(VERIFY_MISMATCH_DISPLAY_LIMIT)
+            .map(|k| SharedString::from(k.clone()))
+            .collect()
+    }
+
+    fn mismatch_block(&self, keys: Vec<SharedString>, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let long = keys.len() > 4;
+        let open_label = i18n_migration(cx, "open_in_compare");
+        let rows: Vec<AnyElement> = keys
+            .into_iter()
+            .enumerate()
+            .map(|(ix, key)| {
+                let key_click = key.clone();
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(Label::new(key).text_xs().text_color(theme.yellow))
+                    .child(
+                        Button::new(("migration-open-compare", ix))
+                            .xsmall()
+                            .ghost()
+                            .label(open_label.clone())
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.open_key_in_compare(key_click.clone(), cx);
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let block = v_flex()
+            .gap_1()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(4.))
+            .px_2()
+            .py_1()
+            .children(rows);
+        if long {
+            block.h(px(96.)).overflow_y_scrollbar().into_any_element()
+        } else {
+            block.into_any_element()
+        }
     }
 
     fn verify_summary(&self, cx: &App) -> Option<(SharedString, bool)> {

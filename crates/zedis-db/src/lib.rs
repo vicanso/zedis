@@ -40,6 +40,7 @@ mod backup;
 
 mod alerts;
 mod history_manager;
+mod jobs;
 mod key_metadata_manager;
 mod lua_scripts;
 /// The browser's stand-in for redb (ADR 9). Also compiled for `cargo test`
@@ -65,6 +66,7 @@ pub use history_manager::{
     get_cmd_history_manager, get_favorites_manager, get_recent_keys_manager, get_search_history_manager,
     recent_keys_scope,
 };
+pub use jobs::*;
 pub use key_metadata_manager::*;
 pub use lua_scripts::*;
 pub use metrics_history::*;
@@ -101,6 +103,8 @@ const KEY_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ke
 const METRICS_HISTORY_TABLE: TableDefinition<(&str, i64), &[u8]> = TableDefinition::new("metrics_history");
 // Per-server threshold alert configuration (opt-in `enabled` flag + rules).
 const ALERT_RULES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("alert_rules");
+// Generic persisted background job checkpoints (e.g. resumable migrations).
+const JOBS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("jobs");
 // Local recycle bin for soft-deleted keys: key (server_id, id) where id is
 // "{deleted_at_ms:020}:{db}:{key}"; value = framed meta JSON + DUMP payload
 // (see `db/trash.rs`). Entries are purged after 24h.
@@ -188,6 +192,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
         write_txn.open_table(KEY_METADATA_TABLE)?;
         write_txn.open_table(METRICS_HISTORY_TABLE)?;
         write_txn.open_table(ALERT_RULES_TABLE)?;
+        write_txn.open_table(JOBS_TABLE)?;
         write_txn.open_table(TRASH_TABLE)?;
         write_txn
             .open_table(META_TABLE)?
@@ -372,6 +377,7 @@ mod schema_tests {
                 "alert_rules",
                 "cmd_history",
                 "favority",
+                "jobs",
                 "key_metadata",
                 "key_trash",
                 "lua_script",

@@ -78,7 +78,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - Export as Markdown and JSON. Optionally add AI-written one-line descriptions per group through the existing AI assistant (opt-in, values never sent unless the user allows it).
 - **Constraints**: Sampling must honor the Prod safety rules and SCAN pacing. Values are read only to infer structure, and only structure is persisted (in line with ADR 19's "keeps no values").
 
-### A5. Bulk Migration & Sync Wizard (upgrade of the existing prefix copy) — **Done (core)**
+### A5. Bulk Migration & Sync Wizard (upgrade of the existing prefix copy) — **Done (2026-11-01)**
 - **Why**: Zedis already copies a single key, a prefix (streamed `DUMP` / `RESTORE`) and compares servers. Adding throttling, resume, verification and optional live sync covers the "move this data to the new cluster" job that otherwise needs redis-shake or custom scripts.
 - **Builds on**:
   - `src/views/migration_window.rs` (import / export jobs with conflict modes and dry-run preview), `crates/zedis-connection/src/dump_restore.rs`, `logical_copy.rs` (cross-flavor copy, ADR 16), `compare.rs`
@@ -87,11 +87,11 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - Post-copy verification: count, sampled or full value hash comparison, and a report of mismatches.
   - Optional "follow" mode: after the initial copy, apply changes seen via keyspace notifications until the user stops it (best-effort, documented as such).
 - **Constraints**: The target is always a write; follow the Prod write window and `confirm_dangerous_command`. Cluster → cluster must route per slot.
-- **Remaining**:
-  - Pattern-based source (`KeySource::{Keys(Vec), Patterns { patterns, types }}`) streaming `SCAN` directly into copy/export (per-node in cluster).
-  - Job persistence & restart resume in `zedis-db` (generic job table storing per-node/per-pattern `SCAN` cursor or completed key index; banner in migration window to resume with Prod write window + dangerous confirmation).
-  - Best-effort `follow` live sync mode via keyspace notifications after pattern copy completes (`DUMP`/`RESTORE` on writes, `DEL` on `del`/`expired`).
-  - One-click jump from a post-copy verification mismatch to the compare diff window.
+- **Implemented**:
+  - `KeySource::{Keys { keys }, Patterns { patterns, types }}` in `src/states/migration.rs` and `scan_pattern_batch` in `crates/zedis-connection/src/dump_restore.rs`, streaming multi-pattern + optional `TYPE`-filtered `SCAN` batches across standalone and cluster masters.
+  - Generic `jobs` table (`crates/zedis-db/src/jobs.rs`: `StoredJobRecord`, `JobManager`) persisting migration checkpoints after every batch (`completed_offset` or `(pattern_index, type_index, node_cursors, processed_count)`), with an **Unfinished Jobs** banner in `ZedisMigrationWindow` for manual resume (guarded by `confirm_dangerous_command` and Prod write-lock checks) or discard.
+  - Post-copy verification (`verify_copied_keys`) with capped mismatch/missing key samples and one-click **Open in Compare** (`open_compare_for_key`) to inspect diffs side-by-side.
+  - Best-effort **Follow Live Changes** mode after pattern-based copy completion (`__keyspace@<db>__:<pattern>` via `ChannelSubscription`), with a guarded one-click `CONFIG SET notify-keyspace-events KEA` prompt when keyspace events are disabled on the source.
 
 ---
 
@@ -151,7 +151,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 | A2 | Debugging | Key timeline / watch via keyspace notifications | **Done (core)** (live keyspace push + polling, unified diff, Markdown export) | Folder "Watch This Prefix" → Keyspace Notifications + row "Open Timeline"; `zedis-db` snapshot persistence (≤50/key, 7d) |
 | A3 | Monitoring | Background alert rules + desktop notifications | **Done (core)** (opt-in per server via Safety tab or Metrics Alerts dialog) | Desktop alert webhook + system tray / status-bar badge (deferred) |
 | A4 | Insight | Keyspace schema inference & data dictionary export | **Done** (online SCAN + offline RDB pattern collapsing, field type inference, Markdown/JSON export) | — |
-| A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | **Done (core)** (rate limiting, pause/resume across export/import/copy, post-copy verification) | Pattern source (`KeySource::Patterns`), `zedis-db` job persistence & restart resume, `follow` live sync, mismatch → diff jump |
+| A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | **Done** (pattern + type `SCAN`, `zedis-db` job checkpoints & resume, rate limit, verify + Compare jump, best-effort `follow` live sync) | — |
 | B1 | Performance | Built-in benchmark with charts and run comparison | **Done** (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) | — |
 | B2 | Performance | MONITOR recording & aggregate analysis | **Done (core)** (time + command-count sampling, Command×Prefix & Client×Command cross-tabs, CSV/JSON export) | Read-only command subset replay (`is_read_only_command`) to non-Prod target at `1x / 2x / max` with latency summary |
 | B3 | Workflow | `zedis://` deep links & "copy link to key" | **Done** (`zedis://open?server=&db=&key=&view=`, web query links, OS URL scheme registration, Copy link to key in tree & editor) | — |

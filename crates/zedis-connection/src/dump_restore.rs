@@ -110,7 +110,8 @@ pub struct DumpEntry {
 }
 
 /// What to do when `RESTORE` hits an existing key (`BUSYKEY`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConflictMode {
     /// Leave the destination key unchanged (default).
     #[default]
@@ -359,6 +360,57 @@ pub async fn copy_key(
     let target = ServerDb::new(target_id, target_db);
     let mut statuses = restore_or_recreate_chunk(&source, &target, std::slice::from_ref(&entry), conflict).await?;
     Ok(statuses.pop())
+}
+
+/// One cursor-stepped `SCAN` batch across all masters for pattern-based
+/// export or copy. Returns `(keys, next_cursors, done)` where `done` is true
+/// when every master cursor has returned to `0`.
+pub async fn scan_pattern_batch(
+    at: &ServerDb,
+    pattern: &str,
+    key_type: Option<&str>,
+    cursors: Option<Vec<u64>>,
+    count: usize,
+) -> Result<(Vec<String>, Vec<u64>, bool)> {
+    let client = at.client().await?;
+    let count = count.max(1) as u64;
+    let (next_cursors, keys) = match key_type.filter(|t| !t.is_empty()) {
+        Some(t) => {
+            let (next, rows) = client.scan(cursors, pattern, count, false, Some(t)).await?;
+            let keys = rows.into_iter().map(|(k, _, _)| k).collect();
+            (next, keys)
+        }
+        None => {
+            let (next, per_node) = client.scan_nodes(cursors, pattern, count, None).await?;
+            let keys = per_node.into_iter().flatten().collect();
+            (next, keys)
+        }
+    };
+    let done = next_cursors.iter().all(|&c| c == 0);
+    Ok((keys, next_cursors, done))
+}
+
+/// Copies a batch of keys from `source` to `target` using `DUMP`/`RESTORE`
+/// with logical recreation fallback on cross-engine incompatibilities.
+pub async fn copy_keys_batch(
+    source: &ServerDb,
+    target: &ServerDb,
+    keys: &[String],
+    conflict: ConflictMode,
+) -> Result<Vec<RestoreStatus>> {
+    let entries = dump_keys_chunk(source, keys).await?;
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    restore_or_recreate_chunk(source, target, &entries, conflict).await
+}
+
+/// Returns the server's `notify-keyspace-events` configuration string
+/// (empty when disabled).
+pub async fn get_keyspace_events_config(at: &ServerDb) -> Result<String> {
+    Ok(crate::server_config::config_get_one(at, "notify-keyspace-events")
+        .await?
+        .unwrap_or_default())
 }
 
 #[cfg(test)]

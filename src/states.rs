@@ -92,7 +92,9 @@ pub use i18n::save_ui_locale;
 pub use i18n::{command_status_label, command_unavailable_message, server_view_title};
 #[cfg(not(target_family = "wasm"))]
 pub use migration::{
-    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, MigrationThrottle,
+    ExportFormat, KeySource, LogStatus, MigrationCheckpoint, MigrationCheckpointJob, MigrationEvent, MigrationJob,
+    MigrationPhase, MigrationResumeCursor, MigrationState, MigrationThrottle, delete_migration_checkpoint,
+    load_migration_checkpoints, save_migration_checkpoint,
 };
 #[cfg(test)]
 pub(crate) use page_data::pretend_account_read_only;

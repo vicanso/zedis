@@ -152,7 +152,7 @@ pub use cluster_ops::{
 };
 pub use compare::{
     CompareOptions, CompareProgress, CompareReport, CompareSide, CompareStage, CopyVerificationReport, DifferingKey,
-    KeyDifference, compare_prefix, prefix_pattern, values_equal, verify_copied_keys,
+    KeyDifference, VERIFY_SAMPLE_CAP, compare_prefix, prefix_pattern, values_equal, verify_copied_keys,
 };
 pub use config::set_servers_cache;
 pub use config::{
@@ -172,8 +172,8 @@ pub use diagnosis::{DiagHint, DiagOutcome, DiagReportRow, DiagStage, DiagStatus,
 #[cfg(not(target_family = "wasm"))]
 pub use diagnostics::run_diagnostics;
 pub use dump_restore::{
-    ConflictMode, ConflictPreview, DumpEntry, RestoreStatus, copy_key, dump_keys_chunk, preview_key_conflicts,
-    restore_key, restore_keys_chunk, ttl_left,
+    ConflictMode, ConflictPreview, DumpEntry, RestoreStatus, copy_key, copy_keys_batch, dump_keys_chunk,
+    get_keyspace_events_config, preview_key_conflicts, restore_key, restore_keys_chunk, scan_pattern_batch, ttl_left,
 };
 /// The `.zdis` file itself: desktop only, there being no file in a tab.
 #[cfg(not(target_family = "wasm"))]

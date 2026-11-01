@@ -244,6 +244,27 @@ impl ZedisCompareWindow {
         self.target_db_input.read(cx).value().trim().parse().unwrap_or(0)
     }
 
+    /// Pre-populates the target server/db and key prefix, then starts the
+    /// comparison immediately (used when jumping from post-copy verification).
+    #[cfg(not(target_family = "wasm"))]
+    pub fn preset_and_run(
+        &mut self,
+        target_id: SharedString,
+        target_db: usize,
+        key_prefix: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.target_server_id = Some(target_id);
+        self.target_db_input.update(cx, |input, cx| {
+            input.set_value(target_db.to_string(), window, cx);
+        });
+        self.prefix_input.update(cx, |input, cx| {
+            input.set_value(key_prefix, window, cx);
+        });
+        self.run(cx);
+    }
+
     fn target_is_source(&self, cx: &App) -> bool {
         self.target_server_id.as_ref() == Some(&self.source_id) && self.target_db(cx) == self.source_db
     }
@@ -844,6 +865,40 @@ fn open_compare_window(server_id: SharedString, server_name: SharedString, db: u
     });
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| ZedisCompareWindow::new(server_id.clone(), server_name.clone(), db, window, cx));
+        cx.new(|cx| Root::new(view, window, cx))
+    });
+}
+
+/// Opens the compare view pre-populated with a specific source, target, and
+/// key prefix, and triggers a comparison immediately.
+#[cfg(not(target_family = "wasm"))]
+pub fn open_compare_for_key(
+    source_id: SharedString,
+    source_name: SharedString,
+    source_db: usize,
+    target_id: SharedString,
+    target_db: usize,
+    key_prefix: SharedString,
+    cx: &mut App,
+) {
+    let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
+    let title = i18n_compare(cx, "title");
+    let options = with_app_identity(WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
+        titlebar: Some(TitlebarOptions {
+            title: Some(title),
+            ..Default::default()
+        }),
+        is_resizable: true,
+        focus: true,
+        ..Default::default()
+    });
+    let _ = cx.open_window(options, move |window, cx| {
+        let view = cx.new(|cx| {
+            let mut compare = ZedisCompareWindow::new(source_id.clone(), source_name.clone(), source_db, window, cx);
+            compare.preset_and_run(target_id.clone(), target_db, key_prefix.clone(), window, cx);
+            compare
+        });
         cx.new(|cx| Root::new(view, window, cx))
     });
 }

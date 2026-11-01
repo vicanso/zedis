@@ -301,13 +301,37 @@ pub async fn compare_prefix(
     Ok(report)
 }
 
+/// Maximum number of mismatch/missing key names kept in [`CopyVerificationReport`]'s
+/// bounded sample lists (`differing_keys` / `missing_keys`).
+pub const VERIFY_SAMPLE_CAP: usize = 50;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CopyVerificationReport {
     pub checked: u64,
     pub matched: u64,
     pub missing_on_target: Vec<String>,
     pub differing: Vec<DifferingKey>,
+    /// Bounded sample (up to [`VERIFY_SAMPLE_CAP`]) of keys whose values or types differ.
+    pub differing_keys: Vec<String>,
+    /// Bounded sample (up to [`VERIFY_SAMPLE_CAP`]) of keys missing on target.
+    pub missing_keys: Vec<String>,
     pub cancelled: bool,
+}
+
+impl CopyVerificationReport {
+    fn record_differing(&mut self, entry: DifferingKey) {
+        if self.differing_keys.len() < VERIFY_SAMPLE_CAP {
+            self.differing_keys.push(entry.key.clone());
+        }
+        self.differing.push(entry);
+    }
+
+    fn record_missing(&mut self, key: String) {
+        if self.missing_keys.len() < VERIFY_SAMPLE_CAP {
+            self.missing_keys.push(key.clone());
+        }
+        self.missing_on_target.push(key);
+    }
 }
 
 /// Verifies an explicit list of copied keys between `source` and `target` in chunks,
@@ -331,7 +355,7 @@ pub async fn verify_copied_keys(
             match (source_entries.get(key), target_entries.get(key)) {
                 (Some(a), Some(b)) => {
                     if a.key_type != b.key_type {
-                        report.differing.push(DifferingKey {
+                        report.record_differing(DifferingKey {
                             key: key.clone(),
                             key_type: a.key_type.clone(),
                             difference: KeyDifference::Type {
@@ -342,12 +366,12 @@ pub async fn verify_copied_keys(
                     } else {
                         match compare_entries(a, b) {
                             Some(true) => report.matched += 1,
-                            Some(false) => report.differing.push(DifferingKey {
+                            Some(false) => report.record_differing(DifferingKey {
                                 key: key.clone(),
                                 key_type: a.key_type.clone(),
                                 difference: KeyDifference::Value,
                             }),
-                            None => report.differing.push(DifferingKey {
+                            None => report.record_differing(DifferingKey {
                                 key: key.clone(),
                                 key_type: a.key_type.clone(),
                                 difference: KeyDifference::Unchecked,
@@ -355,7 +379,7 @@ pub async fn verify_copied_keys(
                         }
                     }
                 }
-                (Some(_), None) => report.missing_on_target.push(key.clone()),
+                (Some(_), None) => report.record_missing(key.clone()),
                 (None, _) => {
                     // Key expired or vanished from source before verification.
                     report.matched += 1;
@@ -498,5 +522,24 @@ mod tests {
         assert_eq!(prefix_pattern("user:"), "user:*");
         assert_eq!(prefix_pattern(""), "*");
         assert_eq!(prefix_pattern("a*b?[c]"), "a\\*b\\?\\[c\\]*");
+    }
+
+    #[test]
+    fn verification_report_caps_sample_keys_at_verify_sample_cap() {
+        let mut report = CopyVerificationReport::default();
+        for i in 0..80 {
+            report.record_missing(format!("missing:{i}"));
+            report.record_differing(DifferingKey {
+                key: format!("diff:{i}"),
+                key_type: "string".to_string(),
+                difference: KeyDifference::Value,
+            });
+        }
+        assert_eq!(report.missing_on_target.len(), 80);
+        assert_eq!(report.differing.len(), 80);
+        assert_eq!(report.missing_keys.len(), VERIFY_SAMPLE_CAP);
+        assert_eq!(report.differing_keys.len(), VERIFY_SAMPLE_CAP);
+        assert_eq!(report.missing_keys[0], "missing:0");
+        assert_eq!(report.differing_keys[0], "diff:0");
     }
 }

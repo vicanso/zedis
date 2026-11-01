@@ -12,25 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Modal-style window for export / import jobs.
+//! Modal-style window for export / import / server-to-server copy jobs.
 //!
-//! Import supports conflict strategy selection (Skip / Overwrite / Abort)
-//! and an optional dry-run preview (`EXISTS` on destination) before restore.
+//! Supports explicit key lists and streaming `SCAN` by multi-pattern + type
+//! filter, resumable job checkpoints in `zedis-db`, conflict strategy
+//! selection (Skip / Overwrite / Abort), dry-run conflict preview, post-copy
+//! verification with one-click jump to Compare, and best-effort live sync
+//! follow mode via keyspace notifications.
 
 use super::export::{CopyPreset, ExportSource, dirs_default_directory};
 use crate::connection::{
-    ConflictMode, ConflictPreview, CopyVerificationReport, ServerDb, get_server, get_servers, preview_import_conflicts,
-    preview_key_conflicts, verify_copied_keys,
+    ChannelSubscription, ConflictMode, ConflictPreview, CopyVerificationReport, DangerKind, ServerDb, SubscribeKind,
+    config_set, copy_keys_batch, delete_keys, get_keyspace_events_config, get_server, get_servers,
+    preview_import_conflicts, preview_key_conflicts, verify_copied_keys,
 };
 use crate::helpers::with_app_identity;
 use crate::states::{
-    ExportFormat, LogStatus, MigrationEvent, MigrationJob, MigrationPhase, MigrationState, MigrationThrottle,
-    ZedisGlobalStore, i18n_copy, i18n_migration,
+    ExportFormat, KeySource, LogStatus, MigrationCheckpoint, MigrationCheckpointJob, MigrationEvent, MigrationJob,
+    MigrationPhase, MigrationState, MigrationThrottle, ZedisGlobalStore, delete_migration_checkpoint, i18n_copy,
+    i18n_migration, load_migration_checkpoints,
 };
+use crate::views::{confirm_dangerous_command, open_compare_for_key};
 use chrono::Utc;
 use gpui::{
-    App, Bounds, Entity, FocusHandle, Focusable, KeyDownEvent, SharedString, Subscription, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Bounds, Entity, FocusHandle, Focusable, KeyDownEvent, SharedString, Subscription, Task, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_kit::component::{
     ActiveTheme, Disableable, Root, Sizable,
@@ -52,9 +58,21 @@ mod sections;
 
 use sections::JobLook;
 
-const WINDOW_WIDTH: f32 = 720.0;
-const WINDOW_HEIGHT: f32 = 620.0;
+const WINDOW_WIDTH: f32 = 760.0;
+const WINDOW_HEIGHT: f32 = 680.0;
 const PREVIEW_SAMPLE_LIMIT: usize = 40;
+pub(super) const VERIFY_MISMATCH_DISPLAY_LIMIT: usize = 15;
+
+/// Selectable Redis key types for pattern-based export / copy.
+pub(super) const PATTERN_KEY_TYPES: [(&str, &str); 7] = [
+    ("string", "string"),
+    ("hash", "hash"),
+    ("list", "list"),
+    ("set", "set"),
+    ("zset", "zset"),
+    ("stream", "stream"),
+    ("ReJSON-RL", "json"),
+];
 
 /// Where an export goes.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,6 +80,31 @@ enum Destination {
     File,
     /// Another server / db, straight through DUMP / RESTORE.
     Server,
+}
+
+/// Whether Export / Copy operates on the pre-loaded key list or streams via `SCAN`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum KeySourceMode {
+    #[default]
+    LoadedKeys,
+    ScanPatterns,
+}
+
+impl KeySourceMode {
+    pub(super) fn index(self) -> usize {
+        match self {
+            Self::LoadedKeys => 0,
+            Self::ScanPatterns => 1,
+        }
+    }
+
+    pub(super) fn from_index(index: usize) -> Self {
+        if index == 1 {
+            Self::ScanPatterns
+        } else {
+            Self::LoadedKeys
+        }
+    }
 }
 
 /// The newest log lines the progress panel shows.
@@ -91,20 +134,26 @@ pub struct ZedisMigrationWindow {
     state: Entity<MigrationState>,
     /// Path the user picked in the save/open dialog. `None` until they choose.
     chosen_path: Option<PathBuf>,
-    /// Import only: what to do when the destination already has the key.
+    /// Import / Copy: what to do when the destination already has the key.
     conflict_mode: ConflictMode,
     /// Export only: binary DUMP bundle (re-importable) vs readable JSON/CSV.
     export_format: ExportFormat,
+    /// Export / Copy: whether to use the handed-in key list or scan by patterns.
+    pub(super) source_mode: KeySourceMode,
     /// Export only: optional key-prefix filter narrowing the handed-in key
     /// list before the job starts. Empty = export everything.
     prefix_input_state: Entity<InputState>,
+    /// Pattern mode: comma- or whitespace-separated glob patterns.
+    pub(super) patterns_input_state: Entity<InputState>,
+    /// Pattern mode: selected Redis key types (empty = all types).
+    pub(super) selected_types: Vec<SharedString>,
     /// Export only: a file, or another server / db.
     destination: Destination,
     /// Export to a server: `(id, name)` of every configured server.
     servers: Vec<(SharedString, SharedString)>,
     target_server_id: Option<SharedString>,
     target_db_input: Entity<InputState>,
-    /// Import only: last dry-run result (if any).
+    /// Import / Copy: last dry-run result (if any).
     preview: Option<ConflictPreview>,
     preview_running: bool,
     preview_error: Option<SharedString>,
@@ -116,6 +165,17 @@ pub struct ZedisMigrationWindow {
     verify_running: bool,
     verify_error: Option<SharedString>,
     verify_cancel: Arc<AtomicBool>,
+    /// Persisted unfinished migration checkpoints loaded from `JobManager`.
+    pub(super) unfinished_jobs: Vec<MigrationCheckpoint>,
+    /// Patterns of the last pattern-based copy job, enabling live follow mode.
+    pub(super) last_copy_patterns: Option<Vec<SharedString>>,
+    /// Best-effort live follow state after a pattern copy completes.
+    pub(super) following: bool,
+    pub(super) follow_synced_count: u64,
+    pub(super) follow_last_key: Option<SharedString>,
+    pub(super) follow_needs_enable: bool,
+    pub(super) follow_disconnected: bool,
+    follow_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -129,8 +189,12 @@ impl ZedisMigrationWindow {
                 .clean_on_escape()
                 .placeholder(i18n_migration(cx, "prefix_filter_placeholder"))
         });
-        // The copy target: every configured server, the first one that is
-        // not the source picked (the common intent), the db the source's.
+        let patterns_input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .default_value("*")
+                .placeholder(i18n_migration(cx, "patterns_placeholder"))
+        });
         let servers: Vec<(SharedString, SharedString)> = get_servers()
             .unwrap_or_default()
             .into_iter()
@@ -157,8 +221,13 @@ impl ZedisMigrationWindow {
             Destination::File
         };
         let conflict_mode = preset.as_ref().map(|preset| preset.conflict).unwrap_or_default();
+        let unfinished_jobs = load_migration_checkpoints();
+
         let mut subs = Vec::new();
-        subs.push(cx.subscribe(&state, |_view, _state, _event: &MigrationEvent, cx| {
+        subs.push(cx.subscribe(&state, |view, _state, event: &MigrationEvent, cx| {
+            if matches!(event, MigrationEvent::PhaseChanged) {
+                view.unfinished_jobs = load_migration_checkpoints();
+            }
             cx.notify();
         }));
         subs.push(
@@ -168,9 +237,15 @@ impl ZedisMigrationWindow {
                 }
             }),
         );
-        // Re-render on typing so the matched-count chip stays live.
         subs.push(
             cx.subscribe_in(&prefix_input_state, window, |_view, _state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }),
+        );
+        subs.push(
+            cx.subscribe_in(&patterns_input_state, window, |_view, _state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     cx.notify();
                 }
@@ -183,7 +258,10 @@ impl ZedisMigrationWindow {
             chosen_path: None,
             conflict_mode,
             export_format: ExportFormat::Binary,
+            source_mode: KeySourceMode::LoadedKeys,
             prefix_input_state,
+            patterns_input_state,
+            selected_types: Vec::new(),
             destination,
             servers,
             target_server_id,
@@ -197,6 +275,14 @@ impl ZedisMigrationWindow {
             verify_running: false,
             verify_error: None,
             verify_cancel: Arc::new(AtomicBool::new(false)),
+            unfinished_jobs,
+            last_copy_patterns: None,
+            following: false,
+            follow_synced_count: 0,
+            follow_last_key: None,
+            follow_needs_enable: false,
+            follow_disconnected: false,
+            follow_task: None,
             _subs: subs,
         }
     }
@@ -245,10 +331,53 @@ impl ZedisMigrationWindow {
         )
     }
 
-    /// Start the server-to-server copy of the filtered keys.
-    fn start_copy(&mut self, cx: &mut Context<Self>) {
-        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+    pub(super) fn active_key_source(&self, cx: &App) -> KeySource {
+        match self.source_mode {
+            KeySourceMode::LoadedKeys => KeySource::Keys {
+                keys: self.filtered_export_keys(cx),
+            },
+            KeySourceMode::ScanPatterns => {
+                let raw = self.patterns_input_state.read(cx).value();
+                let patterns = KeySource::parse_patterns_input(raw.as_ref());
+                KeySource::Patterns {
+                    patterns,
+                    types: self.selected_types.clone(),
+                }
+            }
+        }
+    }
+
+    pub(super) fn set_source_mode(&mut self, mode: KeySourceMode, cx: &mut Context<Self>) {
+        if self.source_mode == mode {
             return;
+        }
+        self.source_mode = mode;
+        self.drop_preview();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_pattern_type(&mut self, redis_type: &str, cx: &mut Context<Self>) {
+        let ty = SharedString::from(redis_type.to_string());
+        if let Some(pos) = self.selected_types.iter().position(|t| t == &ty) {
+            self.selected_types.remove(pos);
+        } else {
+            self.selected_types.push(ty);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn clear_pattern_types(&mut self, cx: &mut Context<Self>) {
+        if !self.selected_types.is_empty() {
+            self.selected_types.clear();
+            cx.notify();
+        }
+    }
+
+    /// Start the server-to-server copy of the active key source.
+    fn start_copy(&mut self, cx: &mut Context<Self>) {
+        let (server_id, db) = match &self.mode {
+            MigrationWindowMode::Export { server_id, db, .. } => (server_id.clone(), *db),
+            _ => return,
         };
         let Some(target_id) = self.target_server_id.clone() else {
             return;
@@ -256,10 +385,17 @@ impl ZedisMigrationWindow {
         if self.target_is_source(cx) {
             return;
         }
-        let keys = self.filtered_export_keys(cx);
-        if keys.is_empty() {
+        let source = self.active_key_source(cx);
+        if let KeySource::Keys { keys } = &source
+            && keys.is_empty()
+        {
             return;
         }
+        self.stop_follow(cx);
+        self.last_copy_patterns = match &source {
+            KeySource::Patterns { patterns, .. } => Some(patterns.clone()),
+            KeySource::Keys { .. } => None,
+        };
         // Cancel any in-flight preview or verification so it doesn't fight the worker.
         self.preview_cancel.store(true, Ordering::Release);
         self.preview_running = false;
@@ -268,18 +404,333 @@ impl ZedisMigrationWindow {
         self.verify_report = None;
         self.verify_error = None;
         let job = MigrationJob::Copy {
-            source_id: server_id.clone(),
-            source_db: *db,
+            source_id: server_id,
+            source_db: db,
             target_id,
             target_db: self.target_db(cx),
-            keys,
+            source,
             conflict: self.conflict_mode,
             throttle: self.throttle,
+            resume: None,
         };
         self.state.update(cx, |s, cx| s.start(job, cx));
     }
 
-    /// Post-copy verification: checks that each filtered key exists on the
+    /// Resume a persisted checkpoint from `unfinished_jobs`.
+    pub(super) fn resume_checkpoint(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cp) = self.unfinished_jobs.get(index).cloned() else {
+            return;
+        };
+        self.stop_follow(cx);
+        self.drop_preview();
+        match &cp.job {
+            MigrationCheckpointJob::Copy {
+                target_id,
+                target_db,
+                source,
+                conflict,
+                ..
+            } => {
+                self.destination = Destination::Server;
+                self.target_server_id = Some(target_id.clone());
+                self.conflict_mode = *conflict;
+                self.target_db_input
+                    .update(cx, |input, cx| input.set_value(target_db.to_string(), window, cx));
+                if let KeySource::Patterns { patterns, types } = source {
+                    self.source_mode = KeySourceMode::ScanPatterns;
+                    self.selected_types = types.clone();
+                    self.last_copy_patterns = Some(patterns.clone());
+                } else {
+                    self.source_mode = KeySourceMode::LoadedKeys;
+                    self.last_copy_patterns = None;
+                }
+                if let Ok(target_server) = get_server(target_id.as_str()) {
+                    if target_server.readonly.unwrap_or(false) {
+                        return;
+                    }
+                    if target_server.is_high_risk_tag()
+                        || target_server.require_confirm_writes.unwrap_or(false)
+                        || target_server.write_locked()
+                    {
+                        let state = self.state.clone();
+                        let summary = cp.summary.clone();
+                        let target_db = *target_db;
+                        let job = cp.into_migration_job();
+                        confirm_dangerous_command(
+                            &target_server,
+                            target_db,
+                            &DangerKind::GenericWrite,
+                            Some(&summary),
+                            window,
+                            cx,
+                            move |_window, cx| {
+                                state.update(cx, |s, cx| s.start(job.clone(), cx));
+                            },
+                        );
+                        return;
+                    }
+                }
+                let job = cp.into_migration_job();
+                self.state.update(cx, |s, cx| s.start(job, cx));
+            }
+            MigrationCheckpointJob::Export {
+                output_path,
+                format,
+                source,
+                ..
+            } => {
+                self.destination = Destination::File;
+                self.chosen_path = Some(output_path.clone());
+                self.export_format = *format;
+                if let KeySource::Patterns { types, .. } = source {
+                    self.source_mode = KeySourceMode::ScanPatterns;
+                    self.selected_types = types.clone();
+                } else {
+                    self.source_mode = KeySourceMode::LoadedKeys;
+                }
+                let job = cp.into_migration_job();
+                self.state.update(cx, |s, cx| s.start(job, cx));
+            }
+        }
+    }
+
+    /// Discard an unfinished job checkpoint from `JobManager`.
+    pub(super) fn discard_checkpoint(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(cp) = self.unfinished_jobs.get(index) else {
+            return;
+        };
+        let id = cp.id.clone();
+        delete_migration_checkpoint(&id);
+        self.unfinished_jobs.retain(|j| j.id != id);
+        cx.notify();
+    }
+
+    /// Starts best-effort live sync follow mode for a completed pattern copy.
+    pub(super) fn start_follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+            return;
+        };
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        let Some(patterns) = self.last_copy_patterns.clone() else {
+            return;
+        };
+        let source_id = server_id.clone();
+        let source_db = *db;
+        let target_db = self.target_db(cx);
+        let source_at = ServerDb::new(source_id.as_str(), source_db);
+
+        self.follow_needs_enable = false;
+        self.follow_disconnected = false;
+        cx.notify();
+
+        let _ = window;
+        cx.spawn(async move |this, cx| {
+            let flags = cx
+                .background_spawn({
+                    let source_at = source_at.clone();
+                    async move { get_keyspace_events_config(&source_at).await.unwrap_or_default() }
+                })
+                .await;
+            if !flags.contains('K') {
+                let _ = this.update(cx, |view, cx| {
+                    view.follow_needs_enable = true;
+                    cx.notify();
+                });
+                return;
+            }
+            let _ = this.update(cx, |view, cx| {
+                view.spawn_follow_stream(source_id, source_db, target_id, target_db, patterns, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Prompts to enable `CONFIG SET notify-keyspace-events KEA` on the source
+    /// server (guarded by `confirm_dangerous_command`), then starts following.
+    pub(super) fn enable_keyspace_on_source_and_follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
+            return;
+        };
+        let Ok(source_server) = get_server(server_id.as_str()) else {
+            return;
+        };
+        if source_server.readonly.unwrap_or(false) {
+            return;
+        }
+        let source_id = server_id.clone();
+        let source_db = *db;
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        let target_db = self.target_db(cx);
+        let Some(patterns) = self.last_copy_patterns.clone() else {
+            return;
+        };
+        let weak = cx.entity().downgrade();
+        confirm_dangerous_command(
+            &source_server,
+            source_db,
+            &DangerKind::ConfigSet,
+            Some("CONFIG SET notify-keyspace-events KEA"),
+            window,
+            cx,
+            move |_window, cx| {
+                let Some(entity) = weak.upgrade() else {
+                    return;
+                };
+                let source_id = source_id.clone();
+                let target_id = target_id.clone();
+                let patterns = patterns.clone();
+                entity.update(cx, |view, cx| {
+                    view.follow_needs_enable = false;
+                    cx.spawn(async move |this, cx| {
+                        let at = ServerDb::new(source_id.as_str(), source_db);
+                        let res = cx
+                            .background_spawn(async move { config_set(&at, "notify-keyspace-events", "KEA").await })
+                            .await;
+                        if res.is_ok() {
+                            let _ = this.update(cx, |view, cx| {
+                                view.spawn_follow_stream(source_id, source_db, target_id, target_db, patterns, cx);
+                            });
+                        }
+                    })
+                    .detach();
+                });
+            },
+        );
+    }
+
+    fn spawn_follow_stream(
+        &mut self,
+        source_id: SharedString,
+        source_db: usize,
+        target_id: SharedString,
+        target_db: usize,
+        patterns: Vec<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.following = true;
+        self.follow_synced_count = 0;
+        self.follow_last_key = None;
+        self.follow_disconnected = false;
+        cx.notify();
+
+        let source_at = ServerDb::new(source_id.as_str(), source_db);
+        let target_at = ServerDb::new(target_id.as_str(), target_db);
+        let psub_patterns: Vec<String> = patterns
+            .iter()
+            .map(|p| format!("__keyspace@{source_db}__:{p}"))
+            .collect();
+        let prefix_to_strip = format!("__keyspace@{source_db}__:");
+
+        self.follow_task = Some(cx.spawn(async move |this, cx| {
+            let sub = cx
+                .background_spawn({
+                    let source_at = source_at.clone();
+                    let psub_patterns = psub_patterns.clone();
+                    async move {
+                        let refs: Vec<&str> = psub_patterns.iter().map(String::as_str).collect();
+                        ChannelSubscription::open(&source_at, SubscribeKind::KeyspaceEvents, &refs).await
+                    }
+                })
+                .await;
+            let Ok(mut pubsub) = sub else {
+                let _ = this.update(cx, |view, cx| {
+                    view.following = false;
+                    view.follow_disconnected = true;
+                    cx.notify();
+                });
+                return;
+            };
+
+            loop {
+                let (next_msg, returned_pubsub) = cx
+                    .background_spawn(async move {
+                        let msg = pubsub.next_message().await;
+                        (msg, pubsub)
+                    })
+                    .await;
+                pubsub = returned_pubsub;
+                let Some(msg) = next_msg else {
+                    let _ = this.update(cx, |view, cx| {
+                        view.following = false;
+                        view.follow_disconnected = true;
+                        cx.notify();
+                    });
+                    break;
+                };
+                let Some(key) = msg.channel.strip_prefix(&prefix_to_strip).map(str::to_string) else {
+                    continue;
+                };
+                let event = String::from_utf8_lossy(&msg.payload).trim().to_string();
+                let source_at_op = source_at.clone();
+                let target_at_op = target_at.clone();
+                let key_op = key.clone();
+                let event_op = event.clone();
+                let _ = cx
+                    .background_spawn(async move {
+                        if matches!(event_op.as_str(), "del" | "expired" | "evicted") {
+                            let _ = delete_keys(&target_at_op, vec![key_op]).await;
+                        } else {
+                            let _ = copy_keys_batch(
+                                &source_at_op,
+                                &target_at_op,
+                                std::slice::from_ref(&key_op),
+                                ConflictMode::Overwrite,
+                            )
+                            .await;
+                        }
+                    })
+                    .await;
+                let alive = this.update(cx, |view, cx| {
+                    view.follow_synced_count += 1;
+                    view.follow_last_key = Some(format!("{key} ({event})").into());
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub(super) fn stop_follow(&mut self, cx: &mut Context<Self>) {
+        self.follow_task = None;
+        if self.following {
+            self.following = false;
+            cx.notify();
+        }
+    }
+
+    /// Opens the Compare window pre-populated with `key` so the user can
+    /// inspect a verification mismatch in one click.
+    pub(super) fn open_key_in_compare(&self, key: SharedString, cx: &mut App) {
+        let MigrationWindowMode::Export {
+            server_id,
+            server_name,
+            db,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let Some(target_id) = self.target_server_id.clone() else {
+            return;
+        };
+        open_compare_for_key(
+            server_id.clone(),
+            server_name.clone(),
+            *db,
+            target_id,
+            self.target_db(cx),
+            key,
+            cx,
+        );
+    }
+
+    /// Post-copy verification: checks that each copied key exists on the
     /// target with the same type and value.
     fn verify_copy(&mut self, cx: &mut Context<Self>) {
         let MigrationWindowMode::Export { server_id, db, .. } = &self.mode else {
@@ -291,11 +742,20 @@ impl ZedisMigrationWindow {
         if self.verify_running || self.target_is_source(cx) {
             return;
         }
-        let keys: Vec<String> = self
-            .filtered_export_keys(cx)
-            .iter()
-            .map(|key| key.to_string())
-            .collect();
+        let keys: Vec<String> = match self.source_mode {
+            KeySourceMode::LoadedKeys => self
+                .filtered_export_keys(cx)
+                .iter()
+                .map(|key| key.to_string())
+                .collect(),
+            KeySourceMode::ScanPatterns => self
+                .state
+                .read(cx)
+                .copied_keys()
+                .iter()
+                .map(|key| key.to_string())
+                .collect(),
+        };
         if keys.is_empty() {
             return;
         }
@@ -363,8 +823,6 @@ impl ZedisMigrationWindow {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                // The target (or the destination) changed while this ran:
-                // it describes a server the window no longer points at.
                 if superseded.load(Ordering::Acquire) {
                     return;
                 }
@@ -401,8 +859,6 @@ impl ZedisMigrationWindow {
         cx.notify();
     }
 
-    /// Forget the conflict preview, and stop one still running: its answer
-    /// was about the previous target and used to land after the switch.
     fn drop_preview(&mut self) {
         self.preview_cancel.store(true, Ordering::Release);
         self.preview_running = false;
@@ -428,8 +884,6 @@ impl ZedisMigrationWindow {
                     .replace("{server}", server_name)
                     .replace("{db}", &db.to_string())
                     .replace("{count}", &keys.len().to_string());
-                // The key tree only holds what SCAN has paged in, so an
-                // "export what's loaded" run is not a whole-database dump.
                 if *source == ExportSource::Loaded {
                     summary.push_str(" · ");
                     summary.push_str(&i18n_migration(cx, "loaded_subset_note"));
@@ -472,9 +926,6 @@ impl ZedisMigrationWindow {
         self.export_keys(cx).cloned().collect()
     }
 
-    /// The export keys the prefix field lets through, borrowed — the count in
-    /// the window is this iterator's length, where it used to be a copy of
-    /// every key (10,000 and more from a large folder) on every repaint.
     fn export_keys<'a>(&'a self, cx: &App) -> impl Iterator<Item = &'a SharedString> + use<'a> {
         let keys: &[SharedString] = match &self.mode {
             MigrationWindowMode::Export { keys, .. } => keys,
@@ -505,7 +956,6 @@ impl ZedisMigrationWindow {
                 .detach();
             }
             MigrationWindowMode::Import { .. } => {
-                // Import: pick file only — user then previews / starts with strategy.
                 let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
                     files: true,
                     directories: false,
@@ -532,14 +982,16 @@ impl ZedisMigrationWindow {
 
     fn start_with_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let throttle = self.throttle;
+        let source = self.active_key_source(cx);
         let job = match &self.mode {
             MigrationWindowMode::Export { server_id, db, .. } => MigrationJob::Export {
                 server_id: server_id.clone(),
                 db: *db,
-                keys: self.filtered_export_keys(cx),
+                source,
                 output_path: path,
                 format: self.export_format,
                 throttle,
+                resume: None,
             },
             MigrationWindowMode::Import { server_id, db, .. } => MigrationJob::Import {
                 server_id: server_id.clone(),
@@ -556,7 +1008,6 @@ impl ZedisMigrationWindow {
         let Some(path) = self.chosen_path.clone() else {
             return;
         };
-        // Cancel any in-flight preview so it doesn't fight the import worker.
         self.preview_cancel.store(true, Ordering::Release);
         self.preview_running = false;
         self.start_with_path(path, cx);
@@ -686,9 +1137,11 @@ impl Render for ZedisMigrationWindow {
         };
 
         let header = self.header(&look, cx);
+        let unfinished_section = self.unfinished_jobs_section(&look, cx);
         let status_section = self.status_section(&look, cx);
         let format_section = (!is_import).then(|| self.export_section(&look, cx));
         let copy_section = is_copy.then(|| self.copy_section(&look, cx));
+        let follow_section = self.follow_section(&look, cx);
         let conflict_section = is_import.then(|| self.import_section(&look, cx));
         let log_section = self.log_section(&look, cx);
         let footer = self.footer(&look, cx);
@@ -705,9 +1158,11 @@ impl Render for ZedisMigrationWindow {
                 v_flex()
                     .size_full()
                     .child(header)
+                    .children(unfinished_section)
                     .child(status_section)
                     .children(format_section)
                     .children(copy_section)
+                    .children(follow_section)
                     .children(conflict_section)
                     .child(log_section)
                     .child(footer),
@@ -801,7 +1256,8 @@ pub fn open_migration_import_window(server_id: SharedString, server_name: Shared
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection::{RedisServer, set_servers_cache};
+    use crate::connection::{DifferingKey, KeyDifference, RedisServer, set_servers_cache};
+    use crate::states::{MigrationResumeCursor, save_migration_checkpoint};
     use crate::test_support::{hold_the_server_list, init_ui};
     use gpui::{AnyWindowHandle, ElementId, TestAppContext};
     use gpui_kit::test::{TestQueryExt, TestWindowExt};
@@ -816,8 +1272,6 @@ mod tests {
         }
     }
 
-    /// The server list as these tests need it, alone: the source and one
-    /// other connection to copy to.
     fn own_servers() -> Restore {
         let restore = Restore(get_servers().unwrap_or_default());
         let server = |id: &str| RedisServer {
@@ -853,7 +1307,6 @@ mod tests {
         (handle.into(), view.expect("the window built the view"))
     }
 
-    /// `act` on a frame drawn afresh, and what follows from it run.
     fn frame<T>(cx: &mut TestAppContext, handle: AnyWindowHandle, act: impl FnOnce(&mut Window, &mut App) -> T) -> T {
         let out = cx
             .update_window(handle, |_, window, cx| {
@@ -875,9 +1328,6 @@ mod tests {
         window.find(id).label().map(str::to_string)
     }
 
-    /// How many choices the radio group `group` offers, none when it is not
-    /// drawn: the group's own id is not something a test can find, only the
-    /// radios under it are.
     fn radios(window: &Window, group: &'static str) -> usize {
         let group = ElementId::from(group);
         window
@@ -887,12 +1337,6 @@ mod tests {
             .count()
     }
 
-    /// An export goes to a file — in the format picked, of the keys the
-    /// prefix lets through, nothing to save when it lets none — or, the
-    /// other destination, to another server: no format then, the targets,
-    /// the conflict policy and a dry run, neither offered while the target
-    /// is the source on its own database. A dry run on its way has a Cancel
-    /// that stops it, in place of the buttons that would start another.
     #[gpui::test]
     fn an_export_goes_to_a_file_or_to_another_server(cx: &mut TestAppContext) {
         init_ui(cx);
@@ -1002,8 +1446,6 @@ mod tests {
         });
     }
 
-    /// A copy handed its target opens on it: the server, the database and
-    /// the conflict policy the caller chose.
     #[gpui::test]
     fn a_copy_handed_its_target_opens_on_it(cx: &mut TestAppContext) {
         init_ui(cx);
@@ -1032,8 +1474,6 @@ mod tests {
         });
     }
 
-    /// An import asks for its file before it can preview or start; its
-    /// conflict policy is picked beside them, and Esc closes the window.
     #[gpui::test]
     fn an_import_asks_for_its_file_before_it_previews_or_starts(cx: &mut TestAppContext) {
         init_ui(cx);
@@ -1128,6 +1568,97 @@ mod tests {
         frame(cx, handle, |window, _| {
             assert!(window.try_find("migration-pause").is_none());
             assert!(window.try_find("migration-verify").is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn pattern_mode_unfinished_jobs_and_verify_compare_jump_work(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _list = hold_the_server_list();
+        let _restore = own_servers();
+
+        let cp = MigrationCheckpoint {
+            id: "mig-ui-test-cp".to_string(),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_010,
+            summary: "Copy migtest-a/db0 → migtest-b/db1 (user:*)".to_string(),
+            job: MigrationCheckpointJob::Copy {
+                source_id: "migtest-a".into(),
+                source_db: 0,
+                target_id: "migtest-b".into(),
+                target_db: 1,
+                source: KeySource::Patterns {
+                    patterns: vec!["user:*".into()],
+                    types: vec!["hash".into()],
+                },
+                conflict: ConflictMode::Skip,
+                throttle: MigrationThrottle::Unlimited,
+            },
+            cursor: MigrationResumeCursor {
+                processed_count: 128,
+                ..Default::default()
+            },
+        };
+        save_migration_checkpoint(&cp);
+
+        let preset = CopyPreset {
+            target_id: "migtest-b".into(),
+            target_db: 1,
+            conflict: ConflictMode::Skip,
+        };
+        let (handle, view) = open(cx, export_mode(Some(preset)));
+
+        frame(cx, handle, |window, cx| {
+            assert_eq!(radios(window, "migration-source-mode"), 2);
+            assert!(window.try_find(("migration-discard-job", 0usize)).is_some());
+            window.within("migration-source-mode").click(1usize, cx);
+        });
+        assert_eq!(
+            view.read_with(cx, |view, _| view.source_mode),
+            KeySourceMode::ScanPatterns
+        );
+
+        let patterns_input = view.read_with(cx, |view, _| view.patterns_input_state.clone());
+        type_into(cx, handle, &patterns_input, "user:*, session:*");
+        frame(cx, handle, |window, cx| {
+            window.click("migration-type-hash", cx);
+        });
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.active_key_source(cx),
+                KeySource::Patterns {
+                    patterns: vec!["user:*".into(), "session:*".into()],
+                    types: vec!["hash".into()],
+                }
+            );
+        });
+
+        // Discard the unfinished job checkpoint and verify the banner disappears.
+        frame(cx, handle, |window, cx| {
+            window.click(("migration-discard-job", 0usize), cx);
+        });
+        assert!(view.read_with(cx, |view, _| view.unfinished_jobs.is_empty()));
+
+        // Populate a verification report with mismatches and confirm the Open in Compare button renders.
+        view.update(cx, |view, cx| {
+            view.verify_report = Some(CopyVerificationReport {
+                checked: 3,
+                matched: 1,
+                missing_on_target: vec!["user:1".to_string()],
+                differing: vec![DifferingKey {
+                    key: "user:2".to_string(),
+                    key_type: "string".to_string(),
+                    difference: KeyDifference::Value,
+                }],
+                missing_keys: vec!["user:1".to_string()],
+                differing_keys: vec!["user:2".to_string()],
+                cancelled: false,
+            });
+            cx.notify();
+        });
+        frame(cx, handle, |window, _| {
+            assert!(window.try_find(("migration-open-compare", 0usize)).is_some());
+            assert!(window.try_find(("migration-open-compare", 1usize)).is_some());
         });
     }
 }

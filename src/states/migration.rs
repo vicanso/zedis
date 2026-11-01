@@ -12,22 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! State for export / import migration jobs.
+//! State for export / import / copy migration jobs.
 //!
-//! Drives a single background worker that runs a [`MigrationJob`] and
-//! posts incremental progress back to the foreground entity.
+//! Drives a single background worker that runs a [`MigrationJob`], checkpoints
+//! batch progress to [`JobManager`] (`jobs` redb table) so interrupted runs
+//! can be resumed, and posts incremental progress back to the foreground entity.
 
 use crate::connection::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
     ReadableWriteStatus, RestoreStatus, ServerDb, csv_header, detect_import_format, dump_keys_chunk, entry_to_csv,
     entry_to_json, get_server, is_foreign_payload, parse_readable_entries, read_readable_chunk, restore_keys_chunk,
-    restore_or_recreate_chunk, server_summary, ttl_left, write_readable_chunk,
+    restore_or_recreate_chunk, scan_pattern_batch, server_summary, ttl_left, write_readable_chunk,
 };
+use crate::db::{JobManager, StoredJobRecord};
 use crate::error::Error;
+use ahash::AHashSet;
 use chrono::Utc;
 use gpui::SharedString;
 use gpui::prelude::*;
 use gpui::{EventEmitter, Task};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
@@ -35,13 +39,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use web_time::Instant;
 
 const DUMP_BATCH_SIZE: usize = 64;
 const RESTORE_BATCH_SIZE: usize = 64;
 const LOG_RING_CAPACITY: usize = 500;
+const COPIED_KEYS_CAP: usize = 10_000;
 const PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub const MIGRATION_JOB_KIND: &str = "migration";
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -59,7 +65,8 @@ pub enum MigrationPhase {
 
 /// Optional throughput cap (keys/s) so a bulk export, import, or copy does
 /// not saturate a shared or production server.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MigrationThrottle {
     #[default]
     Unlimited,
@@ -92,6 +99,208 @@ impl MigrationThrottle {
             Self::Rate50 => 50,
         }
     }
+}
+
+/// Source of keys for an Export or Copy job: an explicit key list (selection /
+/// loaded tree) or a streaming `SCAN` over one or more glob patterns and
+/// optional Redis types.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KeySource {
+    Keys {
+        keys: Vec<SharedString>,
+    },
+    Patterns {
+        patterns: Vec<SharedString>,
+        /// Optional Redis key types (e.g. `"string"`, `"hash"`, `"list"`,
+        /// `"set"`, `"zset"`, `"stream"`, `"ReJSON-RL"`). Empty means all types.
+        #[serde(default)]
+        types: Vec<SharedString>,
+    },
+}
+
+impl Default for KeySource {
+    fn default() -> Self {
+        Self::Keys { keys: Vec::new() }
+    }
+}
+
+impl KeySource {
+    pub fn keys(keys: Vec<SharedString>) -> Self {
+        Self::Keys { keys }
+    }
+
+    pub fn patterns(patterns: Vec<SharedString>, types: Vec<SharedString>) -> Self {
+        Self::Patterns { patterns, types }
+    }
+
+    pub fn is_patterns(&self) -> bool {
+        matches!(self, Self::Patterns { .. })
+    }
+
+    /// Parses comma- or whitespace-separated glob patterns from a text input.
+    /// Defaults to `["*"]` when the input is blank.
+    pub fn parse_patterns_input(input: &str) -> Vec<SharedString> {
+        let parsed: Vec<SharedString> = input
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| SharedString::from(s.to_string()))
+            .collect();
+        if parsed.is_empty() {
+            vec![SharedString::from("*")]
+        } else {
+            parsed
+        }
+    }
+}
+
+/// Persisted batch cursor for resuming an interrupted Export or Copy job.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MigrationResumeCursor {
+    /// For `KeySource::Keys`: offset into `keys` already processed.
+    pub completed_offset: usize,
+    /// For `KeySource::Patterns`: active pattern index in `patterns`.
+    pub pattern_index: usize,
+    /// For `KeySource::Patterns`: active type index in `types`.
+    pub type_index: usize,
+    /// For `KeySource::Patterns`: per-master SCAN cursors (`empty` means start
+    /// from cursor 0 on `(pattern_index, type_index)`).
+    pub node_cursors: Vec<u64>,
+    /// Total keys processed across completed batches.
+    pub processed_count: usize,
+}
+
+/// Serializable job specification stored inside a [`MigrationCheckpoint`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "job_type", rename_all = "snake_case")]
+pub enum MigrationCheckpointJob {
+    Export {
+        server_id: SharedString,
+        db: usize,
+        source: KeySource,
+        output_path: PathBuf,
+        format: ExportFormat,
+        throttle: MigrationThrottle,
+    },
+    Copy {
+        source_id: SharedString,
+        source_db: usize,
+        target_id: SharedString,
+        target_db: usize,
+        source: KeySource,
+        conflict: ConflictMode,
+        throttle: MigrationThrottle,
+    },
+}
+
+impl Default for MigrationCheckpointJob {
+    fn default() -> Self {
+        Self::Export {
+            server_id: SharedString::default(),
+            db: 0,
+            source: KeySource::default(),
+            output_path: PathBuf::new(),
+            format: ExportFormat::Binary,
+            throttle: MigrationThrottle::Unlimited,
+        }
+    }
+}
+
+/// Complete persisted checkpoint for a migration job in `JOBS_TABLE`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MigrationCheckpoint {
+    pub id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub summary: String,
+    pub job: MigrationCheckpointJob,
+    pub cursor: MigrationResumeCursor,
+}
+
+impl MigrationCheckpoint {
+    pub fn into_migration_job(self) -> MigrationJob {
+        let resume = Some((self.id, self.cursor));
+        match self.job {
+            MigrationCheckpointJob::Export {
+                server_id,
+                db,
+                source,
+                output_path,
+                format,
+                throttle,
+            } => MigrationJob::Export {
+                server_id,
+                db,
+                source,
+                output_path,
+                format,
+                throttle,
+                resume,
+            },
+            MigrationCheckpointJob::Copy {
+                source_id,
+                source_db,
+                target_id,
+                target_db,
+                source,
+                conflict,
+                throttle,
+            } => MigrationJob::Copy {
+                source_id,
+                source_db,
+                target_id,
+                target_db,
+                source,
+                conflict,
+                throttle,
+                resume,
+            },
+        }
+    }
+}
+
+pub fn load_migration_checkpoints() -> Vec<MigrationCheckpoint> {
+    let records = JobManager::list_by_kind(MIGRATION_JOB_KIND);
+    let mut out = Vec::with_capacity(records.len());
+    for record in records {
+        match serde_json::from_str::<MigrationCheckpoint>(&record.payload_json) {
+            Ok(mut cp) => {
+                cp.id = record.id;
+                cp.created_at = record.created_at;
+                cp.updated_at = record.updated_at;
+                if cp.summary.is_empty() {
+                    cp.summary = record.summary;
+                }
+                out.push(cp);
+            }
+            Err(e) => {
+                warn!(id = %record.id, error = %e, "unreadable migration checkpoint payload, skipped");
+            }
+        }
+    }
+    out
+}
+
+pub fn save_migration_checkpoint(cp: &MigrationCheckpoint) {
+    let Ok(payload_json) = serde_json::to_string(cp) else {
+        return;
+    };
+    let record = StoredJobRecord {
+        id: cp.id.clone(),
+        kind: MIGRATION_JOB_KIND.to_string(),
+        created_at: cp.created_at,
+        updated_at: cp.updated_at,
+        summary: cp.summary.clone(),
+        payload_json,
+    };
+    let _ = JobManager::upsert(&record);
+}
+
+pub fn delete_migration_checkpoint(id: &str) {
+    let _ = JobManager::delete(id);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +339,8 @@ pub enum MigrationEvent {
 /// Output format for export jobs. `Binary` is the framed DUMP/RESTORE
 /// bundle (machine migration, re-importable); `Json` / `Csv` are the
 /// human-readable value exports for eyes and downstream tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExportFormat {
     #[default]
     Binary,
@@ -170,10 +380,11 @@ pub enum MigrationJob {
     Export {
         server_id: SharedString,
         db: usize,
-        keys: Vec<SharedString>,
+        source: KeySource,
         output_path: PathBuf,
         format: ExportFormat,
         throttle: MigrationThrottle,
+        resume: Option<(String, MigrationResumeCursor)>,
     },
     Import {
         server_id: SharedString,
@@ -189,9 +400,10 @@ pub enum MigrationJob {
         source_db: usize,
         target_id: SharedString,
         target_db: usize,
-        keys: Vec<SharedString>,
+        source: KeySource,
         conflict: ConflictMode,
         throttle: MigrationThrottle,
+        resume: Option<(String, MigrationResumeCursor)>,
     },
 }
 
@@ -200,6 +412,7 @@ pub struct MigrationState {
     phase: MigrationPhase,
     progress: MigrationProgress,
     log: VecDeque<LogLine>,
+    copied_keys: Vec<SharedString>,
     cancel: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     worker: Option<Task<()>>,
@@ -220,6 +433,10 @@ impl MigrationState {
 
     pub fn log(&self) -> &VecDeque<LogLine> {
         &self.log
+    }
+
+    pub fn copied_keys(&self) -> &[SharedString] {
+        &self.copied_keys
     }
 
     pub fn is_paused(&self) -> bool {
@@ -258,6 +475,7 @@ impl MigrationState {
         self.paused = Arc::new(AtomicBool::new(false));
         self.progress = MigrationProgress::default();
         self.log.clear();
+        self.copied_keys.clear();
         self.set_phase(MigrationPhase::Running, cx);
 
         let cancel = self.cancel.clone();
@@ -267,19 +485,21 @@ impl MigrationState {
             MigrationJob::Export {
                 server_id,
                 db,
-                keys,
+                source,
                 output_path,
                 format,
                 throttle,
+                resume,
             } => {
                 let spec = ExportSpec {
                     server_id,
                     db,
-                    keys,
+                    source,
                     output_path,
                     format,
                     throttle,
                     paused,
+                    resume,
                 };
                 run_export(handle, cx, spec, cancel).await;
             }
@@ -302,19 +522,21 @@ impl MigrationState {
                 source_db,
                 target_id,
                 target_db,
-                keys,
+                source,
                 conflict,
                 throttle,
+                resume,
             } => {
                 let spec = CopySpec {
                     source_id,
                     source_db,
                     target_id,
                     target_db,
-                    keys,
+                    source,
                     conflict,
                     throttle,
                     paused,
+                    resume,
                 };
                 run_copy(handle, cx, spec, cancel).await;
             }
@@ -350,12 +572,21 @@ impl MigrationState {
             cx.notify();
         }
     }
+
+    fn record_copied_keys(&mut self, keys: &[String]) {
+        for key in keys {
+            if self.copied_keys.len() >= COPIED_KEYS_CAP {
+                break;
+            }
+            self.copied_keys.push(SharedString::from(key.clone()));
+        }
+    }
 }
 
 impl EventEmitter<MigrationEvent> for MigrationState {}
 
 // ---------------------------------------------------------------------------
-// Worker bodies
+// Worker bodies & Checkpointing
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -363,6 +594,73 @@ struct WorkerControl {
     throttle: MigrationThrottle,
     paused: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+}
+
+fn new_checkpoint(job: MigrationCheckpointJob, resume: Option<(String, MigrationResumeCursor)>) -> MigrationCheckpoint {
+    let now = Utc::now().timestamp();
+    let summary = match &job {
+        MigrationCheckpointJob::Export {
+            server_id,
+            db,
+            source,
+            output_path,
+            ..
+        } => {
+            let src_name = get_server(server_id.as_str())
+                .map(|s| s.name)
+                .unwrap_or_else(|_| server_id.to_string());
+            let scope = match source {
+                KeySource::Keys { keys } => format!("{} keys", keys.len()),
+                KeySource::Patterns { patterns, .. } => {
+                    patterns.iter().map(|p| p.as_ref()).collect::<Vec<_>>().join(", ")
+                }
+            };
+            format!("Export {src_name}/db{db} ({scope}) → {}", output_path.display())
+        }
+        MigrationCheckpointJob::Copy {
+            source_id,
+            source_db,
+            target_id,
+            target_db,
+            source,
+            ..
+        } => {
+            let src_name = get_server(source_id.as_str())
+                .map(|s| s.name)
+                .unwrap_or_else(|_| source_id.to_string());
+            let dst_name = get_server(target_id.as_str())
+                .map(|s| s.name)
+                .unwrap_or_else(|_| target_id.to_string());
+            let scope = match source {
+                KeySource::Keys { keys } => format!("{} keys", keys.len()),
+                KeySource::Patterns { patterns, .. } => {
+                    patterns.iter().map(|p| p.as_ref()).collect::<Vec<_>>().join(", ")
+                }
+            };
+            format!("Copy {src_name}/db{source_db} → {dst_name}/db{target_db} ({scope})")
+        }
+    };
+    let (id, cursor) = match resume {
+        Some((id, cursor)) => (id, cursor),
+        None => (
+            format!("mig-{}", Utc::now().timestamp_nanos_opt().unwrap_or(now * 1_000_000)),
+            MigrationResumeCursor::default(),
+        ),
+    };
+    MigrationCheckpoint {
+        id,
+        created_at: now,
+        updated_at: now,
+        summary,
+        job,
+        cursor,
+    }
+}
+
+fn update_checkpoint(cp: &mut MigrationCheckpoint, cursor: MigrationResumeCursor) {
+    cp.updated_at = Utc::now().timestamp();
+    cp.cursor = cursor;
+    save_migration_checkpoint(cp);
 }
 
 /// Waits while `paused` is set (waking promptly if `cancel` is triggered),
@@ -388,16 +686,118 @@ async fn pace_and_wait_if_paused(
     }
 }
 
+/// Drives batches from a [`KeySource`] starting at `initial_cursor`, invoking
+/// `process_batch(keys, next_cursor)` for each non-empty batch of keys.
+async fn for_each_source_batch<F, Fut>(
+    at: &ServerDb,
+    source: &KeySource,
+    initial_cursor: MigrationResumeCursor,
+    cancel: &AtomicBool,
+    mut on_checkpoint: impl FnMut(MigrationResumeCursor),
+    mut process_batch: F,
+) -> Result<()>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    match source {
+        KeySource::Keys { keys } => {
+            let mut offset = initial_cursor.completed_offset.min(keys.len());
+            let mut processed = initial_cursor.processed_count;
+            for chunk in keys[offset..].chunks(DUMP_BATCH_SIZE) {
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                let batch: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+                let batch_len = batch.len();
+                process_batch(batch).await?;
+                offset += batch_len;
+                processed += batch_len;
+                on_checkpoint(MigrationResumeCursor {
+                    completed_offset: offset,
+                    processed_count: processed,
+                    ..Default::default()
+                });
+            }
+        }
+        KeySource::Patterns { patterns, types } => {
+            let pat_list: Vec<SharedString> = if patterns.is_empty() {
+                vec![SharedString::from("*")]
+            } else {
+                patterns.clone()
+            };
+            let type_list: Vec<Option<SharedString>> = if types.is_empty() {
+                vec![None]
+            } else {
+                types.iter().cloned().map(Some).collect()
+            };
+            let mut processed = initial_cursor.processed_count;
+            let mut seen: AHashSet<String> = AHashSet::new();
+            let start_pat = initial_cursor.pattern_index.min(pat_list.len());
+
+            for (pat_ix, pattern) in pat_list.iter().enumerate().skip(start_pat) {
+                let start_ty = if pat_ix == initial_cursor.pattern_index {
+                    initial_cursor.type_index.min(type_list.len())
+                } else {
+                    0
+                };
+                for (ty_ix, key_type) in type_list.iter().enumerate().skip(start_ty) {
+                    let mut cursors: Option<Vec<u64>> = if pat_ix == initial_cursor.pattern_index
+                        && ty_ix == initial_cursor.type_index
+                        && !initial_cursor.node_cursors.is_empty()
+                    {
+                        Some(initial_cursor.node_cursors.clone())
+                    } else {
+                        None
+                    };
+                    loop {
+                        if cancel.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
+                        let (scanned, next_cursors, done) = scan_pattern_batch(
+                            at,
+                            pattern.as_ref(),
+                            key_type.as_ref().map(|t| t.as_ref()),
+                            cursors,
+                            DUMP_BATCH_SIZE,
+                        )
+                        .await?;
+                        let batch: Vec<String> = scanned.into_iter().filter(|k| seen.insert(k.clone())).collect();
+                        if !batch.is_empty() {
+                            let batch_len = batch.len();
+                            process_batch(batch).await?;
+                            processed += batch_len;
+                        }
+                        on_checkpoint(MigrationResumeCursor {
+                            completed_offset: 0,
+                            pattern_index: pat_ix,
+                            type_index: ty_ix,
+                            node_cursors: if done { Vec::new() } else { next_cursors.clone() },
+                            processed_count: processed,
+                        });
+                        if done {
+                            break;
+                        }
+                        cursors = Some(next_cursors);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Export parameters, grouped so the worker signatures stay under
 /// clippy's argument limit.
 struct ExportSpec {
     server_id: SharedString,
     db: usize,
-    keys: Vec<SharedString>,
+    source: KeySource,
     output_path: PathBuf,
     format: ExportFormat,
     throttle: MigrationThrottle,
     paused: Arc<AtomicBool>,
+    resume: Option<(String, MigrationResumeCursor)>,
 }
 
 async fn run_export(
@@ -406,21 +806,42 @@ async fn run_export(
     spec: ExportSpec,
     cancel: Arc<AtomicBool>,
 ) {
-    let total = spec.keys.len() as u64;
+    let total = match &spec.source {
+        KeySource::Keys { keys } => keys.len() as u64,
+        KeySource::Patterns { .. } => 0,
+    };
+    let initial_done = spec.resume.as_ref().map(|(_, c)| c.processed_count as u64).unwrap_or(0);
     let _ = handle.update(cx, |s, cx| {
         s.progress.keys_total = total;
+        s.progress.keys_done = initial_done;
         cx.notify();
     });
 
+    let cp_job = MigrationCheckpointJob::Export {
+        server_id: spec.server_id.clone(),
+        db: spec.db,
+        source: spec.source.clone(),
+        output_path: spec.output_path.clone(),
+        format: spec.format,
+        throttle: spec.throttle,
+    };
+    let mut checkpoint = new_checkpoint(cp_job, spec.resume.clone());
+    save_migration_checkpoint(&checkpoint);
+    let job_id = checkpoint.id.clone();
+
     let result = match spec.format {
-        ExportFormat::Binary => export_worker(handle.clone(), cx, spec, cancel.clone()).await,
+        ExportFormat::Binary => export_worker(handle.clone(), cx, spec, &mut checkpoint, cancel.clone()).await,
         ExportFormat::Json | ExportFormat::Csv => {
-            readable_export_worker(handle.clone(), cx, spec, cancel.clone()).await
+            readable_export_worker(handle.clone(), cx, spec, &mut checkpoint, cancel.clone()).await
         }
     };
     match result {
         Ok(()) => {
-            let phase = if cancel.load(Ordering::Acquire) {
+            let cancelled = cancel.load(Ordering::Acquire);
+            if !cancelled {
+                delete_migration_checkpoint(&job_id);
+            }
+            let phase = if cancelled {
                 MigrationPhase::Cancelled
             } else {
                 MigrationPhase::Finished
@@ -440,12 +861,13 @@ async fn export_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
     spec: ExportSpec,
+    checkpoint: &mut MigrationCheckpoint,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
     let ExportSpec {
         server_id,
         db,
-        keys,
+        source,
         output_path,
         throttle,
         paused,
@@ -457,89 +879,114 @@ async fn export_worker(
 
     let at = ServerDb::new(server_id.as_str(), db);
     let redis_version = server_summary(&at).await?.version;
+    let key_count = match &source {
+        KeySource::Keys { keys } => keys.len() as u64,
+        KeySource::Patterns { .. } => 0,
+    };
 
     let header = DumpHeader {
         format_version: 1,
         source_server_name: server_name,
         source_redis_version: redis_version,
         source_db: db as u32,
-        key_count: keys.len() as u64,
+        key_count,
         created_at_ms: Utc::now().timestamp_millis(),
     };
 
-    // Open the file and write the header on a blocking thread — the I/O is sync,
-    // running it on the async executor would stall everything else (including UI).
     let path_for_open = output_path.clone();
     let header_for_open = header.clone();
-    let mut writer = smol::unblock(move || -> Result<DumpWriter<BufWriter<File>>> {
-        let file = File::create(&path_for_open)?;
-        Ok(DumpWriter::new(BufWriter::new(file), &header_for_open)?)
-    })
+    let writer_cell = Arc::new(parking_lot::Mutex::new(Some(
+        smol::unblock(move || -> Result<DumpWriter<BufWriter<File>>> {
+            let file = File::create(&path_for_open)?;
+            Ok(DumpWriter::new(BufWriter::new(file), &header_for_open)?)
+        })
+        .await?,
+    )));
+
+    let initial_cursor = checkpoint.cursor.clone();
+    let writer_for_loop = writer_cell.clone();
+    let cx_ptr: *mut gpui::AsyncApp = cx;
+
+    for_each_source_batch(
+        &at,
+        &source,
+        initial_cursor,
+        &cancel,
+        |next_cursor| update_checkpoint(checkpoint, next_cursor),
+        |chunk| {
+            let writer_for_loop = writer_for_loop.clone();
+            let handle = handle.clone();
+            let paused = paused.clone();
+            let cancel = cancel.clone();
+            let at = at.clone();
+            // SAFETY: `for_each_source_batch` awaits each `process_batch` future sequentially
+            // within the same task before starting the next batch.
+            let cx = unsafe { &mut *cx_ptr };
+            async move {
+                let batch_started_at = Instant::now();
+                let entries = dump_keys_chunk(&at, &chunk).await?;
+                let chunk_total = chunk.len();
+                let dumped_count = entries.len();
+                let bytes_in_chunk: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
+
+                let entries_for_write = entries.clone();
+                let mut writer = writer_for_loop.lock().take().ok_or_else(|| Error::Invalid {
+                    message: "export writer missing".to_string(),
+                })?;
+                writer = smol::unblock(move || -> Result<DumpWriter<BufWriter<File>>> {
+                    for entry in &entries_for_write {
+                        writer.write_entry(entry)?;
+                    }
+                    Ok(writer)
+                })
+                .await?;
+                *writer_for_loop.lock() = Some(writer);
+
+                let mut log_lines: Vec<LogLine> = entries
+                    .iter()
+                    .map(|entry| LogLine {
+                        key: String::from_utf8_lossy(&entry.key).into_owned().into(),
+                        bytes: entry.payload.len() as u64,
+                        status: LogStatus::Ok,
+                        message: None,
+                    })
+                    .collect();
+
+                let skipped = chunk_total - dumped_count;
+                if skipped > 0 {
+                    let dumped_set: AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
+                    for key in chunk.iter().filter(|k| !dumped_set.contains(k.as_str().as_bytes())) {
+                        log_lines.push(LogLine {
+                            key: key.clone().into(),
+                            bytes: 0,
+                            status: LogStatus::Skipped,
+                            message: Some("missing".into()),
+                        });
+                    }
+                }
+
+                handle
+                    .update(cx, |s, cx| {
+                        s.progress.keys_done += dumped_count as u64;
+                        s.progress.keys_skipped += skipped as u64;
+                        s.progress.bytes_done += bytes_in_chunk;
+                        cx.emit(MigrationEvent::Progress);
+                        s.extend_log(log_lines, cx);
+                    })
+                    .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                pace_and_wait_if_paused(&paused, &cancel, throttle, chunk_total, batch_started_at, cx).await;
+                Ok(())
+            }
+        },
+    )
     .await?;
 
-    for chunk in keys.chunks(DUMP_BATCH_SIZE) {
-        if cancel.load(Ordering::Acquire) {
-            break;
-        }
-        let batch_started_at = Instant::now();
-        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let entries = dump_keys_chunk(&at, &chunk).await?;
-        let chunk_total = chunk.len();
-        let dumped_count = entries.len();
-        let bytes_in_chunk: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
-
-        // Move writer + entries onto a blocking thread for the file writes;
-        // hand the writer back so the next chunk can keep using it.
-        let entries_for_write = entries.clone();
-        writer = smol::unblock(move || -> Result<DumpWriter<BufWriter<File>>> {
-            for entry in &entries_for_write {
-                writer.write_entry(entry)?;
-            }
-            Ok(writer)
-        })
-        .await?;
-
-        // Build the full set of log lines for this chunk before crossing into the
-        // foreground update closure — we want exactly one update + one notify per chunk.
-        let mut log_lines: Vec<LogLine> = entries
-            .iter()
-            .map(|entry| LogLine {
-                key: String::from_utf8_lossy(&entry.key).into_owned().into(),
-                bytes: entry.payload.len() as u64,
-                status: LogStatus::Ok,
-                message: None,
-            })
-            .collect();
-
-        // Missing keys (PTTL == -2 / TYPE == none) silently disappear.
-        let skipped = chunk_total - dumped_count;
-        if skipped > 0 {
-            let dumped_set: ahash::AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
-            for key in chunk.iter().filter(|k| !dumped_set.contains(k.as_str().as_bytes())) {
-                log_lines.push(LogLine {
-                    key: key.clone().into(),
-                    bytes: 0,
-                    status: LogStatus::Skipped,
-                    message: Some("missing".into()),
-                });
-            }
-        }
-
-        handle
-            .update(cx, |s, cx| {
-                s.progress.keys_done += dumped_count as u64;
-                s.progress.keys_skipped += skipped as u64;
-                s.progress.bytes_done += bytes_in_chunk;
-                cx.emit(MigrationEvent::Progress);
-                s.extend_log(log_lines, cx);
-            })
-            .map_err(|e| Error::Invalid { message: e.to_string() })?;
-        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk_total, batch_started_at, cx).await;
+    let writer_opt = writer_cell.lock().take();
+    if let Some(writer) = writer_opt {
+        smol::unblock(move || writer.finish().map(|_| ())).await?;
     }
-
-    smol::unblock(move || writer.finish().map(|_| ())).await?;
     debug!(path = %output_path.display(), "export finished");
-    info!(server = %server_id, db, total = keys.len(), "export finished");
+    info!(server = %server_id, db, "export finished");
     Ok(())
 }
 
@@ -551,114 +998,135 @@ async fn readable_export_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
     spec: ExportSpec,
+    checkpoint: &mut MigrationCheckpoint,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
     let ExportSpec {
         server_id,
         db,
-        keys,
+        source,
         output_path,
         format,
         throttle,
         paused,
+        ..
     } = spec;
     let at = ServerDb::new(server_id.as_str(), db);
 
     let path_for_open = output_path.clone();
-    let mut writer = smol::unblock(move || -> Result<BufWriter<File>> {
-        let mut writer = BufWriter::new(File::create(&path_for_open)?);
-        match format {
-            ExportFormat::Json => writer.write_all(b"[")?,
-            ExportFormat::Csv => writer.write_all(csv_header().as_bytes())?,
-            ExportFormat::Binary => unreachable!("binary goes through export_worker"),
-        }
-        Ok(writer)
-    })
-    .await?;
-
-    let mut first_entry = true;
-    for chunk in keys.chunks(DUMP_BATCH_SIZE) {
-        if cancel.load(Ordering::Acquire) {
-            break;
-        }
-        let batch_started_at = Instant::now();
-        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let entries = read_readable_chunk(&at, &chunk, ReadLimits::default()).await?;
-
-        // Serialize on this side so log lines can carry the byte counts.
-        let mut payload = String::new();
-        let mut log_lines: Vec<LogLine> = Vec::with_capacity(chunk.len());
-        for entry in &entries {
-            let before = payload.len();
+    let writer_cell = Arc::new(parking_lot::Mutex::new(Some(
+        smol::unblock(move || -> Result<BufWriter<File>> {
+            let mut writer = BufWriter::new(File::create(&path_for_open)?);
             match format {
-                ExportFormat::Json => {
-                    payload.push_str(if first_entry { "\n" } else { ",\n" });
-                    first_entry = false;
-                    payload.push_str(&entry_to_json(entry).to_string());
-                }
-                ExportFormat::Csv => payload.push_str(&entry_to_csv(entry)),
-                ExportFormat::Binary => unreachable!(),
+                ExportFormat::Json => writer.write_all(b"[")?,
+                ExportFormat::Csv => writer.write_all(csv_header().as_bytes())?,
+                ExportFormat::Binary => unreachable!("binary goes through export_worker"),
             }
-            let (status, message) = if entry.value.is_some() {
-                // A capped collection still exports (marked in the file
-                // itself too) — surface the cut in the job log.
-                let message = entry.truncated.then(|| SharedString::from("truncated"));
-                (LogStatus::Ok, message)
-            } else {
-                // Module types have no generic readable form.
-                (LogStatus::Skipped, Some(SharedString::from(entry.key_type.clone())))
-            };
-            log_lines.push(LogLine {
-                key: entry.key.clone().into(),
-                bytes: (payload.len() - before) as u64,
-                status,
-                message,
-            });
-        }
-        // Keys that vanished between SCAN and the fetch.
-        let fetched: ahash::AHashSet<&str> = entries.iter().map(|e| e.key.as_str()).collect();
-        for key in chunk.iter().filter(|k| !fetched.contains(k.as_str())) {
-            log_lines.push(LogLine {
-                key: key.clone().into(),
-                bytes: 0,
-                status: LogStatus::Skipped,
-                message: Some("missing".into()),
-            });
-        }
-
-        // Done is what carried a value: a module key is in the file with a
-        // null, which its log line already calls skipped, and the counts
-        // should say the same.
-        let done = entries.iter().filter(|entry| entry.value.is_some()).count();
-        let skipped = chunk.len() - done;
-        let bytes_in_chunk = payload.len() as u64;
-        writer = smol::unblock(move || -> Result<BufWriter<File>> {
-            writer.write_all(payload.as_bytes())?;
             Ok(writer)
         })
-        .await?;
+        .await?,
+    )));
 
-        handle
-            .update(cx, |s, cx| {
-                s.progress.keys_done += done as u64;
-                s.progress.keys_skipped += skipped as u64;
-                s.progress.bytes_done += bytes_in_chunk;
-                cx.emit(MigrationEvent::Progress);
-                s.extend_log(log_lines, cx);
-            })
-            .map_err(|e| Error::Invalid { message: e.to_string() })?;
-        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
-    }
+    let first_entry = Arc::new(AtomicBool::new(true));
+    let initial_cursor = checkpoint.cursor.clone();
+    let writer_for_loop = writer_cell.clone();
+    let cx_ptr: *mut gpui::AsyncApp = cx;
 
-    smol::unblock(move || -> Result<()> {
-        if format == ExportFormat::Json {
-            writer.write_all(b"\n]\n")?;
-        }
-        writer.flush()?;
-        Ok(())
-    })
+    for_each_source_batch(
+        &at,
+        &source,
+        initial_cursor,
+        &cancel,
+        |next_cursor| update_checkpoint(checkpoint, next_cursor),
+        |chunk| {
+            let writer_for_loop = writer_for_loop.clone();
+            let first_entry = first_entry.clone();
+            let handle = handle.clone();
+            let paused = paused.clone();
+            let cancel = cancel.clone();
+            let at = at.clone();
+            let cx = unsafe { &mut *cx_ptr };
+            async move {
+                let batch_started_at = Instant::now();
+                let entries = read_readable_chunk(&at, &chunk, ReadLimits::default()).await?;
+
+                let mut payload = String::new();
+                let mut log_lines: Vec<LogLine> = Vec::with_capacity(chunk.len());
+                for entry in &entries {
+                    let before = payload.len();
+                    match format {
+                        ExportFormat::Json => {
+                            let is_first = first_entry.swap(false, Ordering::AcqRel);
+                            payload.push_str(if is_first { "\n" } else { ",\n" });
+                            payload.push_str(&entry_to_json(entry).to_string());
+                        }
+                        ExportFormat::Csv => payload.push_str(&entry_to_csv(entry)),
+                        ExportFormat::Binary => unreachable!(),
+                    }
+                    let (status, message) = if entry.value.is_some() {
+                        let message = entry.truncated.then(|| SharedString::from("truncated"));
+                        (LogStatus::Ok, message)
+                    } else {
+                        (LogStatus::Skipped, Some(SharedString::from(entry.key_type.clone())))
+                    };
+                    log_lines.push(LogLine {
+                        key: entry.key.clone().into(),
+                        bytes: (payload.len() - before) as u64,
+                        status,
+                        message,
+                    });
+                }
+                let fetched: AHashSet<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+                for key in chunk.iter().filter(|k| !fetched.contains(k.as_str())) {
+                    log_lines.push(LogLine {
+                        key: key.clone().into(),
+                        bytes: 0,
+                        status: LogStatus::Skipped,
+                        message: Some("missing".into()),
+                    });
+                }
+
+                let done = entries.iter().filter(|entry| entry.value.is_some()).count();
+                let skipped = chunk.len() - done;
+                let bytes_in_chunk = payload.len() as u64;
+                let mut writer = writer_for_loop.lock().take().ok_or_else(|| Error::Invalid {
+                    message: "readable export writer missing".to_string(),
+                })?;
+                writer = smol::unblock(move || -> Result<BufWriter<File>> {
+                    writer.write_all(payload.as_bytes())?;
+                    Ok(writer)
+                })
+                .await?;
+                *writer_for_loop.lock() = Some(writer);
+
+                handle
+                    .update(cx, |s, cx| {
+                        s.progress.keys_done += done as u64;
+                        s.progress.keys_skipped += skipped as u64;
+                        s.progress.bytes_done += bytes_in_chunk;
+                        cx.emit(MigrationEvent::Progress);
+                        s.extend_log(log_lines, cx);
+                    })
+                    .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
+                Ok(())
+            }
+        },
+    )
     .await?;
-    info!(server = %server_id, db, total = keys.len(), format = ?format, "readable export finished");
+
+    let writer_opt = writer_cell.lock().take();
+    if let Some(mut writer) = writer_opt {
+        smol::unblock(move || -> Result<()> {
+            if format == ExportFormat::Json {
+                writer.write_all(b"\n]\n")?;
+            }
+            writer.flush()?;
+            Ok(())
+        })
+        .await?;
+    }
+    info!(server = %server_id, db, format = ?format, "readable export finished");
     Ok(())
 }
 
@@ -748,7 +1216,6 @@ async fn import_binary_worker(
     } = ctl;
     let at = ServerDb::new(server_id.as_str(), db);
 
-    // Open + parse the header on a blocking thread (sync I/O).
     let path_for_open = input_path.clone();
     let mut reader = smol::unblock(move || -> Result<DumpReader<BufReader<File>>> {
         let file = File::open(&path_for_open)?;
@@ -767,7 +1234,6 @@ async fn import_binary_worker(
             break;
         }
         let batch_started_at = Instant::now();
-        // Read up to RESTORE_BATCH_SIZE entries on a blocking thread, hand the reader back.
         let (returned_reader, mut batch, eof) =
             smol::unblock(move || -> Result<(DumpReader<BufReader<File>>, Vec<DumpEntry>, bool)> {
                 let mut batch = Vec::with_capacity(RESTORE_BATCH_SIZE);
@@ -789,9 +1255,6 @@ async fn import_binary_worker(
             break;
         }
         let batch_len = batch.len();
-        // The TTLs are as `PTTL` said at the export: count them down to now,
-        // and leave out a key that would have expired since — restoring it
-        // with its old TTL brought it back to life.
         let now_ms = Utc::now().timestamp_millis();
         let mut expired = Vec::new();
         batch.retain_mut(|entry| match ttl_left(entry.pttl_ms, dumped_at_ms, now_ms) {
@@ -930,10 +1393,11 @@ struct CopySpec {
     source_db: usize,
     target_id: SharedString,
     target_db: usize,
-    keys: Vec<SharedString>,
+    source: KeySource,
     conflict: ConflictMode,
     throttle: MigrationThrottle,
     paused: Arc<AtomicBool>,
+    resume: Option<(String, MigrationResumeCursor)>,
 }
 
 async fn run_copy(
@@ -942,9 +1406,26 @@ async fn run_copy(
     spec: CopySpec,
     cancel: Arc<AtomicBool>,
 ) {
-    match copy_worker(handle.clone(), cx, spec, cancel.clone()).await {
+    let cp_job = MigrationCheckpointJob::Copy {
+        source_id: spec.source_id.clone(),
+        source_db: spec.source_db,
+        target_id: spec.target_id.clone(),
+        target_db: spec.target_db,
+        source: spec.source.clone(),
+        conflict: spec.conflict,
+        throttle: spec.throttle,
+    };
+    let mut checkpoint = new_checkpoint(cp_job, spec.resume.clone());
+    save_migration_checkpoint(&checkpoint);
+    let job_id = checkpoint.id.clone();
+
+    match copy_worker(handle.clone(), cx, spec, &mut checkpoint, cancel.clone()).await {
         Ok(()) => {
-            let phase = if cancel.load(Ordering::Acquire) {
+            let cancelled = cancel.load(Ordering::Acquire);
+            if !cancelled {
+                delete_migration_checkpoint(&job_id);
+            }
+            let phase = if cancelled {
                 MigrationPhase::Cancelled
             } else {
                 MigrationPhase::Finished
@@ -969,6 +1450,7 @@ async fn copy_worker(
     handle: gpui::WeakEntity<MigrationState>,
     cx: &mut gpui::AsyncApp,
     spec: CopySpec,
+    checkpoint: &mut MigrationCheckpoint,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
     let CopySpec {
@@ -976,52 +1458,73 @@ async fn copy_worker(
         source_db,
         target_id,
         target_db,
-        keys,
+        source,
         conflict,
         throttle,
         paused,
+        ..
     } = spec;
-    let total = keys.len() as u64;
+    let total = match &source {
+        KeySource::Keys { keys } => keys.len() as u64,
+        KeySource::Patterns { .. } => 0,
+    };
+    let initial_done = checkpoint.cursor.processed_count as u64;
     let _ = handle.update(cx, |s, cx| {
         s.progress.keys_total = total;
+        s.progress.keys_done = initial_done;
         cx.notify();
     });
     let src = ServerDb::new(source_id.as_str(), source_db);
     let dst = ServerDb::new(target_id.as_str(), target_db);
+    let initial_cursor = checkpoint.cursor.clone();
+    let cx_ptr: *mut gpui::AsyncApp = cx;
 
-    for chunk in keys.chunks(DUMP_BATCH_SIZE) {
-        if cancel.load(Ordering::Acquire) {
-            break;
-        }
-        let batch_started_at = Instant::now();
-        let chunk: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
-        let mut entries = dump_keys_chunk(&src, &chunk).await?;
-        // Keys gone from the source since they were listed.
-        let dumped: ahash::AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
-        let missing: Vec<LogLine> = chunk
-            .iter()
-            .filter(|key| !dumped.contains(key.as_bytes()))
-            .map(|key| LogLine {
-                key: key.clone().into(),
-                bytes: 0,
-                status: LogStatus::Skipped,
-                message: Some("missing".into()),
-            })
-            .collect();
-        flush_restore_batch(&handle, cx, Some(&src), &dst, &mut entries, conflict).await?;
-        if !missing.is_empty() {
-            let count = missing.len() as u64;
-            handle
-                .update(cx, |s, cx| {
-                    s.progress.keys_skipped += count;
-                    cx.emit(MigrationEvent::Progress);
-                    s.extend_log(missing, cx);
-                })
-                .map_err(|e| Error::Invalid { message: e.to_string() })?;
-        }
-        pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
-    }
-    info!(source = %source_id, source_db, target = %target_id, target_db, total, "copy finished");
+    for_each_source_batch(
+        &src,
+        &source,
+        initial_cursor,
+        &cancel,
+        |next_cursor| update_checkpoint(checkpoint, next_cursor),
+        |chunk| {
+            let handle = handle.clone();
+            let paused = paused.clone();
+            let cancel = cancel.clone();
+            let src = src.clone();
+            let dst = dst.clone();
+            let cx = unsafe { &mut *cx_ptr };
+            async move {
+                let batch_started_at = Instant::now();
+                let _ = handle.update(cx, |s, _cx| s.record_copied_keys(&chunk));
+                let mut entries = dump_keys_chunk(&src, &chunk).await?;
+                let dumped: AHashSet<&[u8]> = entries.iter().map(|e| e.key.as_slice()).collect();
+                let missing: Vec<LogLine> = chunk
+                    .iter()
+                    .filter(|key| !dumped.contains(key.as_bytes()))
+                    .map(|key| LogLine {
+                        key: key.clone().into(),
+                        bytes: 0,
+                        status: LogStatus::Skipped,
+                        message: Some("missing".into()),
+                    })
+                    .collect();
+                flush_restore_batch(&handle, cx, Some(&src), &dst, &mut entries, conflict).await?;
+                if !missing.is_empty() {
+                    let count = missing.len() as u64;
+                    handle
+                        .update(cx, |s, cx| {
+                            s.progress.keys_skipped += count;
+                            cx.emit(MigrationEvent::Progress);
+                            s.extend_log(missing, cx);
+                        })
+                        .map_err(|e| Error::Invalid { message: e.to_string() })?;
+                }
+                pace_and_wait_if_paused(&paused, &cancel, throttle, chunk.len(), batch_started_at, cx).await;
+                Ok(())
+            }
+        },
+    )
+    .await?;
+    info!(source = %source_id, source_db, target = %target_id, target_db, "copy finished");
     Ok(())
 }
 
