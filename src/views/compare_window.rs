@@ -262,6 +262,7 @@ impl ZedisCompareWindow {
         self.prefix_input.update(cx, |input, cx| {
             input.set_value(key_prefix, window, cx);
         });
+        self.tab = ResultTab::Differing;
         self.run(cx);
     }
 
@@ -362,6 +363,20 @@ impl ZedisCompareWindow {
         match result {
             Ok(report) => {
                 self.fill_tables(&report, cx);
+                let current_empty = match self.tab {
+                    ResultTab::OnlySource => report.only_source.is_empty(),
+                    ResultTab::OnlyTarget => report.only_target.is_empty(),
+                    ResultTab::Differing => report.differing.is_empty(),
+                };
+                if current_empty {
+                    if !report.differing.is_empty() {
+                        self.tab = ResultTab::Differing;
+                    } else if !report.only_source.is_empty() {
+                        self.tab = ResultTab::OnlySource;
+                    } else if !report.only_target.is_empty() {
+                        self.tab = ResultTab::OnlyTarget;
+                    }
+                }
                 self.report = Some(report);
                 self.state = RunState::Done;
             }
@@ -1012,6 +1027,78 @@ mod tests {
         })
         .expect("window is open");
 
+        set_servers_cache(prev);
+    }
+
+    #[gpui::test]
+    fn a_finished_report_switches_from_an_empty_tab_to_the_first_non_empty_tab(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _list = hold_the_server_list();
+        let prev = get_servers().unwrap_or_default();
+        let server = |id: &str| RedisServer {
+            id: id.into(),
+            name: id.into(),
+            host: "127.0.0.1".into(),
+            port: 6379,
+            ..Default::default()
+        };
+        set_servers_cache(vec![server("cmp-a"), server("cmp-b")]);
+
+        let mut view = None;
+        let handle: AnyWindowHandle = cx
+            .open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |window, cx| {
+                let compare = cx.new(|cx| ZedisCompareWindow::new("cmp-a".into(), "cmp-a".into(), 0, window, cx));
+                view = Some(compare.clone());
+                Root::new(compare, window, cx)
+            })
+            .into();
+        cx.run_until_parked();
+        let view = view.expect("compare view built");
+
+        // Starts on OnlySource, which has 0 rows in this report while Differing has 1.
+        view.update(cx, |compare, cx| {
+            assert_eq!(compare.tab, ResultTab::OnlySource);
+            compare.finish(
+                Ok(CompareReport {
+                    differing: vec![DifferingKey {
+                        key: "user:42".to_string(),
+                        key_type: "string".to_string(),
+                        difference: KeyDifference::Value,
+                    }],
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |compare, cx| {
+            assert_eq!(compare.tab, ResultTab::Differing);
+            let rows = compare.tables[compare.tab.index()].read(cx).delegate().visible_rows();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0].as_ref(), "user:42");
+        });
+
+        // When only OnlyTarget has rows and current tab (Differing) is empty, switches to OnlyTarget.
+        view.update(cx, |compare, cx| {
+            compare.finish(
+                Ok(CompareReport {
+                    only_target: vec![("target:only".to_string(), "hash".to_string())],
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |compare, cx| {
+            assert_eq!(compare.tab, ResultTab::OnlyTarget);
+            let rows = compare.tables[compare.tab.index()].read(cx).delegate().visible_rows();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0].as_ref(), "target:only");
+        });
+
+        let _ = handle;
         set_servers_cache(prev);
     }
 }

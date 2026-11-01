@@ -55,12 +55,21 @@ pub struct BenchmarkRunResult {
     pub summary: BenchmarkSummary,
 }
 
+fn new_benchmark_run_id() -> String {
+    let raw = Uuid::now_v7().simple().to_string();
+    raw[raw.len().saturating_sub(12)..].to_string()
+}
+
+/// Generate a fresh random throwaway prefix (`<key_prefix><12-hex>:`) scoped
+/// to `config.key_prefix`.
+pub fn new_benchmark_prefix_for(config: &BenchmarkConfig) -> String {
+    config.scoped_run_prefix(&new_benchmark_run_id())
+}
+
 /// Generate a fresh random throwaway prefix (`zedis:bench:<12-hex>:`) for a
 /// single benchmark run.
 pub fn new_benchmark_prefix() -> String {
-    let raw = Uuid::now_v7().simple().to_string();
-    let short = &raw[raw.len().saturating_sub(12)..];
-    format!("zedis:bench:{short}:")
+    new_benchmark_prefix_for(&BenchmarkConfig::default())
 }
 
 /// Deterministic key name for index `index` under `prefix`.
@@ -91,11 +100,20 @@ fn effective_benchmark_keyspace(cfg: &BenchmarkConfig) -> usize {
     }
 }
 
-fn build_single_cmd(preset: BenchmarkPreset, key: &str, payload: &[u8], seq: usize) -> Cmd {
+fn build_single_cmd(
+    preset: BenchmarkPreset,
+    key: &str,
+    payload: &[u8],
+    seq: usize,
+    safety_ttl_secs: Option<u64>,
+) -> Cmd {
     match preset {
         BenchmarkPreset::Set => {
             let mut c = cmd("SET");
             c.arg(key).arg(payload);
+            if let Some(ttl) = safety_ttl_secs {
+                c.arg("EX").arg(ttl);
+            }
             c
         }
         BenchmarkPreset::Get => {
@@ -126,8 +144,15 @@ fn build_single_cmd(preset: BenchmarkPreset, key: &str, payload: &[u8], seq: usi
     }
 }
 
-fn append_pipeline_cmd(p: &mut Pipeline, preset: BenchmarkPreset, key: &str, payload: &[u8], seq: usize) {
-    p.add_command(build_single_cmd(preset, key, payload, seq));
+fn append_pipeline_cmd(
+    p: &mut Pipeline,
+    preset: BenchmarkPreset,
+    key: &str,
+    payload: &[u8],
+    seq: usize,
+    safety_ttl_secs: Option<u64>,
+) {
+    p.add_command(build_single_cmd(preset, key, payload, seq, safety_ttl_secs));
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -148,12 +173,14 @@ async fn open_worker_connection(at: &ServerDb, fallback: &RedisAsyncConn) -> Red
 async fn seed_get_keys(
     conn: &mut RedisAsyncConn,
     prefix: &str,
-    pipeline: usize,
+    cfg: &BenchmarkConfig,
     effective_keyspace: usize,
     payload: &[u8],
     touched: &[AtomicBool],
     cancel: &AtomicBool,
 ) -> Result<()> {
+    let pipeline = cfg.pipeline;
+    let safety_ttl_secs = (!cfg.keep_keys).then(|| cfg.duration_secs.clamp(1, 60) + 60);
     if pipeline > 1 {
         let shards = effective_keyspace.clamp(1, 16);
         for shard in 0..shards {
@@ -169,7 +196,13 @@ async fn seed_get_keys(
                 for &idx in chunk {
                     let key = benchmark_key_name(prefix, pipeline, effective_keyspace, idx);
                     touched[idx].store(true, Ordering::Relaxed);
-                    p.add_command(build_single_cmd(BenchmarkPreset::Set, &key, payload, idx));
+                    p.add_command(build_single_cmd(
+                        BenchmarkPreset::Set,
+                        &key,
+                        payload,
+                        idx,
+                        safety_ttl_secs,
+                    ));
                 }
                 let _: Vec<Value> = p.query_async(conn).await?;
             }
@@ -181,7 +214,8 @@ async fn seed_get_keys(
             }
             let key = benchmark_key_name(prefix, 1, effective_keyspace, idx);
             flag.store(true, Ordering::Relaxed);
-            let _: Value = cmd("SET").arg(&key).arg(payload).query_async(conn).await?;
+            let c = build_single_cmd(BenchmarkPreset::Set, &key, payload, idx, safety_ttl_secs);
+            let _: Value = c.query_async(conn).await?;
         }
     }
     Ok(())
@@ -234,12 +268,13 @@ pub async fn run_benchmark_with_prefix(
     let effective_keyspace = effective_benchmark_keyspace(&cfg);
     let payload: Vec<u8> = vec![b'x'; cfg.payload_size];
     let touched: Vec<AtomicBool> = (0..effective_keyspace).map(|_| AtomicBool::new(false)).collect();
+    let safety_ttl_secs = (!cfg.keep_keys).then(|| cfg.duration_secs.clamp(1, 60) + 60);
 
     if cfg.preset == BenchmarkPreset::Get
         && let Err(e) = seed_get_keys(
             &mut primary_conn,
             &prefix,
-            cfg.pipeline,
+            &cfg,
             effective_keyspace,
             &payload,
             &touched,
@@ -247,7 +282,9 @@ pub async fn run_benchmark_with_prefix(
         )
         .await
     {
-        let _ = cleanup_touched_keys(at, &prefix, cfg.pipeline, effective_keyspace, &touched).await;
+        if !cfg.keep_keys {
+            let _ = cleanup_touched_keys(at, &prefix, cfg.pipeline, effective_keyspace, &touched).await;
+        }
         return Err(e);
     }
 
@@ -304,7 +341,7 @@ pub async fn run_benchmark_with_prefix(
                         touched_ref[idx].store(true, Ordering::Relaxed);
                     }
                     let key = benchmark_key_name(prefix_ref, 1, effective_keyspace, idx);
-                    let c = build_single_cmd(cfg_ref.preset, &key, payload_ref, batch_seq);
+                    let c = build_single_cmd(cfg_ref.preset, &key, payload_ref, batch_seq, safety_ttl_secs);
                     c.query_async::<Value>(&mut conn).await.map(|_| ()).map_err(Error::from)
                 } else {
                     let shards = effective_keyspace.clamp(1, 16);
@@ -319,7 +356,7 @@ pub async fn run_benchmark_with_prefix(
                             touched_ref[idx].store(true, Ordering::Relaxed);
                         }
                         let key = benchmark_key_name(prefix_ref, cfg_ref.pipeline, effective_keyspace, idx);
-                        append_pipeline_cmd(&mut p, cfg_ref.preset, &key, payload_ref, step);
+                        append_pipeline_cmd(&mut p, cfg_ref.preset, &key, payload_ref, step, safety_ttl_secs);
                     }
                     p.query_async::<Vec<Value>>(&mut conn)
                         .await
@@ -418,7 +455,11 @@ pub async fn run_benchmark_with_prefix(
         all_latencies.append(&mut vec);
     }
 
-    let cleaned_keys = cleanup_touched_keys(at, &prefix, cfg.pipeline, effective_keyspace, &touched).await;
+    let cleaned_keys = if cfg.keep_keys {
+        0
+    } else {
+        cleanup_touched_keys(at, &prefix, cfg.pipeline, effective_keyspace, &touched).await
+    };
 
     let mut timeline_points = timeline.into_inner().map(|(_, _, pts)| pts).unwrap_or_default();
     let final_ops = total_ops.load(Ordering::Relaxed);
@@ -457,7 +498,7 @@ pub async fn run_benchmark(
     cancel: &AtomicBool,
     on_progress: impl FnMut(BenchmarkProgress),
 ) -> Result<BenchmarkRunResult> {
-    run_benchmark_with_prefix(at, config, new_benchmark_prefix(), cancel, on_progress).await
+    run_benchmark_with_prefix(at, config, new_benchmark_prefix_for(config), cancel, on_progress).await
 }
 
 /// Pacing mode for replaying captured MONITOR read-only commands.
@@ -729,6 +770,22 @@ pub async fn run_monitor_replay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_benchmark_prefix_for_uses_configured_namespace() {
+        let default_prefix = new_benchmark_prefix();
+        assert!(default_prefix.starts_with("zedis:bench:"));
+        assert!(default_prefix.ends_with(':'));
+
+        let custom = BenchmarkConfig {
+            key_prefix: "acl:staging".to_string(),
+            ..BenchmarkConfig::default()
+        };
+        let scoped = new_benchmark_prefix_for(&custom);
+        assert!(scoped.starts_with("acl:staging:"));
+        assert!(scoped.ends_with(':'));
+        assert_eq!(scoped.matches(':').count(), 3);
+    }
 
     #[test]
     fn partition_replay_commands_keeps_reads_and_skips_writes_and_blocking() {

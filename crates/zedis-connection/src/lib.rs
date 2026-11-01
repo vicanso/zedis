@@ -118,8 +118,8 @@ pub use async_connection::{
 pub use audit::{is_administration_command, redact_command_line, redact_secrets};
 pub use benchmark::{
     BenchmarkRunResult, MonitorReplayEntry, MonitorReplayReport, MonitorReplaySpeed, benchmark_key_name,
-    new_benchmark_prefix, parse_monitor_replay_entry, partition_replay_commands, run_benchmark,
-    run_benchmark_with_prefix, run_monitor_replay,
+    new_benchmark_prefix, new_benchmark_prefix_for, parse_monitor_replay_entry, partition_replay_commands,
+    run_benchmark, run_benchmark_with_prefix, run_monitor_replay,
 };
 pub use bitmap::{BitOpKind, BitmapInfo, bit_field, bit_op, bitmap_info, set_bit};
 pub use bridge::{

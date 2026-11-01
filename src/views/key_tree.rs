@@ -607,20 +607,25 @@ impl ZedisKeyTree {
         }
         // Nothing to open, so no rebuild will come to take the pending
         // scroll: the row is already there, or it never will be. Settle it
-        // now rather than let the next SCAN page jump the list.
+        // now rather than let the next SCAN page jump the list, and clear any
+        // transient list selection from an earlier row click (#262).
+        self.state.clear_selection = true;
         if let Some(key) = self.state.pending_scroll_key.take() {
-            let index = self
-                .key_tree_list_state
-                .read(cx)
-                .delegate()
-                .items
-                .iter()
-                .position(|item| item.id == key);
+            let index = self.key_tree_list_state.update(cx, |state, _cx| {
+                let delegate = state.delegate_mut();
+                let ix = delegate.items.iter().position(|item| item.id == key);
+                delegate.range_anchor = ix;
+                if !delegate.enabled_multiple_selection && !delegate.selected_items.contains(&key) {
+                    delegate.selected_items.clear();
+                    delegate.range_base.clear();
+                }
+                ix
+            });
             if let Some(index) = index {
                 self.state.scroll_to_index = Some(IndexPath::new(index));
-                cx.notify();
             }
         }
+        cx.notify();
     }
     /// Bring a just-created view in line with a scan that already finished.
     ///
@@ -902,6 +907,7 @@ impl ZedisKeyTree {
                 });
 
                 let (result, listed) = task.await;
+                let mut scroll_row = None;
                 let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
                     view.server_state
                         .update(cx, |state, cx| state.set_listed_keys(listed, cx));
@@ -912,6 +918,7 @@ impl ZedisKeyTree {
                     if let Some(key) = view.state.pending_scroll_key.take()
                         && let Some(index) = result.iter().position(|item| item.id == key)
                     {
+                        scroll_row = Some(index);
                         view.state.scroll_to_index = Some(IndexPath::new(index));
                     }
                     // A refresh keeps its rows until the new batch lands,
@@ -928,6 +935,9 @@ impl ZedisKeyTree {
                 let _ = handle.update(cx, |this, cx| {
                     this.delegate_mut().items = result;
                     this.delegate_mut().retain_selection();
+                    if let Some(row) = scroll_row {
+                        this.delegate_mut().range_anchor = Some(row);
+                    }
                     this.delegate_mut().readonly = readonly;
                     cx.notify();
                 });

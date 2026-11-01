@@ -1023,6 +1023,7 @@ fn benchmark_presets_and_cleanup_leave_zero_throwaway_keys() {
                 keyspace_size,
                 duration_secs: 1,
                 pipeline,
+                ..BenchmarkConfig::default()
             };
             let prefix = new_benchmark_prefix();
             let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {})
@@ -1057,6 +1058,7 @@ fn benchmark_presets_and_cleanup_leave_zero_throwaway_keys() {
             keyspace_size: 32,
             duration_secs: 10,
             pipeline: 4,
+            ..BenchmarkConfig::default()
         };
         let prefix = new_benchmark_prefix();
         let result = run_benchmark_with_prefix(&at, &cfg, prefix.clone(), &cancel, |_| {

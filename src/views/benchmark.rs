@@ -30,7 +30,8 @@
 
 use crate::assets::CustomIconName;
 use crate::connection::{
-    BenchmarkRunResult, Capability, DangerKind, ServerDb, get_server, new_benchmark_prefix, run_benchmark_with_prefix,
+    BenchmarkRunResult, Capability, DangerKind, ServerDb, get_server, new_benchmark_prefix_for,
+    run_benchmark_with_prefix,
 };
 use crate::helpers::{build_csv, get_mono_font_family, group_thousands, now_clock, saves_files};
 use crate::states::{
@@ -45,6 +46,7 @@ use gpui::{App, Context, Entity, ScrollHandle, SharedString, Subscription, Task,
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
     label::Label,
@@ -56,8 +58,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use zedis_core::benchmark::{
     BenchmarkComparison, BenchmarkConfig, BenchmarkPreset, BenchmarkProgress, BenchmarkSummary, DEFAULT_CONCURRENCY,
-    DEFAULT_DURATION_SECS, DEFAULT_KEYSPACE_SIZE, DEFAULT_PAYLOAD_SIZE, PIPELINE_CHOICES, compare_summaries,
-    format_latency_f64_us, format_latency_us,
+    DEFAULT_DURATION_SECS, DEFAULT_KEY_PREFIX, DEFAULT_KEYSPACE_SIZE, DEFAULT_PAYLOAD_SIZE, PIPELINE_CHOICES,
+    compare_summaries, format_latency_f64_us, format_latency_us,
 };
 
 const RUN_BUTTON_ID: &str = "bench-run-btn";
@@ -252,6 +254,8 @@ pub struct ZedisBenchmark {
     payload_input: Entity<InputState>,
     keyspace_input: Entity<InputState>,
     duration_input: Entity<InputState>,
+    prefix_input: Entity<InputState>,
+    keep_keys: bool,
     running: bool,
     active_prefix: Option<SharedString>,
     active_target_label: Option<SharedString>,
@@ -281,6 +285,12 @@ impl ZedisBenchmark {
             cx.new(|cx| InputState::new(window, cx).default_value(last_config.keyspace_size.to_string()));
         let duration_input =
             cx.new(|cx| InputState::new(window, cx).default_value(last_config.duration_secs.to_string()));
+        let prefix_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(last_config.key_prefix.clone())
+                .placeholder(DEFAULT_KEY_PREFIX)
+        });
+        let keep_keys = last_config.keep_keys;
 
         let subscription = cx.subscribe_in(&server_state, window, |this, state, event, window, cx| match event {
             ServerEvent::ServerSelected(_) => {
@@ -313,6 +323,8 @@ impl ZedisBenchmark {
             payload_input,
             keyspace_input,
             duration_input,
+            prefix_input,
+            keep_keys,
             running: false,
             active_prefix: None,
             active_target_label: None,
@@ -377,6 +389,7 @@ impl ZedisBenchmark {
             .trim()
             .parse::<u64>()
             .unwrap_or(DEFAULT_DURATION_SECS);
+        let key_prefix = self.prefix_input.read(cx).value().to_string();
 
         let cfg = BenchmarkConfig {
             preset: self.preset,
@@ -385,6 +398,8 @@ impl ZedisBenchmark {
             keyspace_size,
             duration_secs,
             pipeline: self.pipeline,
+            key_prefix,
+            keep_keys: self.keep_keys,
         }
         .sanitized();
 
@@ -400,7 +415,7 @@ impl ZedisBenchmark {
             return;
         }
         let (config, target_db) = self.parse_config_and_db(cx);
-        let prefix = new_benchmark_prefix();
+        let prefix = new_benchmark_prefix_for(&config);
         let preview = config.command_preview(&prefix);
 
         let Ok(server) = get_server(&server_id) else {
@@ -515,22 +530,27 @@ impl ZedisBenchmark {
                     Ok(run_result) => {
                         let cleaned = run_result.summary.cleaned_keys;
                         let cancelled = run_result.summary.cancelled;
+                        let kept = run_result.config.keep_keys;
                         let ops_sec = run_result.summary.ops_per_sec;
                         let (runs, selected_id, baseline_id) =
                             record_run_in_session(now_clock(false).into(), server_label, run_result);
                         this.runs = runs;
                         this.selected_id = selected_id;
                         this.baseline_id = baseline_id;
+                        let suffix = if kept {
+                            i18n_benchmark(cx, "status_kept").to_string()
+                        } else {
+                            format!("{}: {}", i18n_benchmark(cx, "cleaned_keys"), group_thousands(cleaned))
+                        };
                         let msg = format!(
-                            "{}: {} ops/s · {}: {}",
+                            "{}: {} ops/s · {}",
                             if cancelled {
                                 i18n_benchmark(cx, "stopped_toast")
                             } else {
                                 i18n_benchmark(cx, "completed_toast")
                             },
                             group_thousands(ops_sec.round() as u64),
-                            i18n_benchmark(cx, "cleaned_keys"),
-                            group_thousands(cleaned),
+                            suffix,
                         );
                         this.pending_notification = Some(Notification::success(msg));
                     }
@@ -837,6 +857,22 @@ impl ZedisBenchmark {
                         68.0,
                         self.running,
                     ))
+                    .child(knob(
+                        i18n_benchmark(cx, "key_prefix"),
+                        &self.prefix_input,
+                        132.0,
+                        self.running,
+                    ))
+                    .child(
+                        Checkbox::new("bench-keep-keys")
+                            .label(i18n_benchmark(cx, "keep_keys"))
+                            .checked(self.keep_keys)
+                            .disabled(self.running)
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                this.keep_keys = *checked;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Label::new(i18n_benchmark(cx, "cleanup_note"))
                             .text_xs()
@@ -1082,6 +1118,8 @@ impl ZedisBenchmark {
                                 cx,
                                 if s.cancelled {
                                     "status_cancelled"
+                                } else if entry.config.keep_keys {
+                                    "status_kept"
                                 } else {
                                     "status_cleaned"
                                 },
@@ -1570,6 +1608,8 @@ mod tests {
             keyspace_size: 2_000,
             duration_secs: 3,
             pipeline: 16,
+            key_prefix: "test:bench:".to_string(),
+            keep_keys: true,
         };
         let (_, sel1, base1) = record_run_in_session(
             "12:01:00".into(),

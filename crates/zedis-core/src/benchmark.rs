@@ -42,6 +42,8 @@ pub const DEFAULT_PIPELINE: usize = 1;
 
 pub const PIPELINE_CHOICES: [usize; 5] = [1, 4, 8, 16, 64];
 
+pub const DEFAULT_KEY_PREFIX: &str = "zedis:bench:";
+
 /// Supported command presets for the built-in benchmark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BenchmarkPreset {
@@ -94,6 +96,11 @@ impl BenchmarkPreset {
     }
 }
 
+fn normalize_prefix_base(raw: &str) -> &str {
+    let trimmed = raw.trim().trim_end_matches(':');
+    if trimmed.is_empty() { "zedis:bench" } else { trimmed }
+}
+
 /// User-configurable parameters for a benchmark run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BenchmarkConfig {
@@ -103,6 +110,8 @@ pub struct BenchmarkConfig {
     pub keyspace_size: usize,
     pub duration_secs: u64,
     pub pipeline: usize,
+    pub key_prefix: String,
+    pub keep_keys: bool,
 }
 
 impl Default for BenchmarkConfig {
@@ -114,11 +123,27 @@ impl Default for BenchmarkConfig {
             keyspace_size: DEFAULT_KEYSPACE_SIZE,
             duration_secs: DEFAULT_DURATION_SECS,
             pipeline: DEFAULT_PIPELINE,
+            key_prefix: DEFAULT_KEY_PREFIX.to_string(),
+            keep_keys: false,
         }
     }
 }
 
 impl BenchmarkConfig {
+    /// Returns the normalized base prefix with a single trailing colon (e.g.
+    /// `"zedis:bench:"` or `"test:"`).
+    pub fn normalized_key_prefix(&self) -> String {
+        format!("{}:", normalize_prefix_base(&self.key_prefix))
+    }
+
+    /// Builds the throwaway key prefix scoped to `run_id`
+    /// (`"<normalized_prefix><run_id>:"`, e.g. `"test:abc123:"`).
+    pub fn scoped_run_prefix(&self, run_id: &str) -> String {
+        let base = normalize_prefix_base(&self.key_prefix);
+        let id = run_id.trim().trim_matches(':');
+        format!("{base}:{id}:")
+    }
+
     /// Returns a copy with every parameter clamped to its safe operating range.
     pub fn sanitized(&self) -> Self {
         Self {
@@ -128,6 +153,8 @@ impl BenchmarkConfig {
             keyspace_size: self.keyspace_size.clamp(MIN_KEYSPACE_SIZE, MAX_KEYSPACE_SIZE),
             duration_secs: self.duration_secs.clamp(MIN_DURATION_SECS, MAX_DURATION_SECS),
             pipeline: self.pipeline.clamp(MIN_PIPELINE, MAX_PIPELINE),
+            key_prefix: self.normalized_key_prefix(),
+            keep_keys: self.keep_keys,
         }
     }
 
@@ -457,6 +484,8 @@ mod tests {
             keyspace_size: 0,
             duration_secs: 500,
             pipeline: 0,
+            key_prefix: "  ".to_string(),
+            keep_keys: true,
         };
         let clean = raw.sanitized();
         assert_eq!(clean.concurrency, MIN_CONCURRENCY);
@@ -464,6 +493,33 @@ mod tests {
         assert_eq!(clean.keyspace_size, MIN_KEYSPACE_SIZE);
         assert_eq!(clean.duration_secs, MAX_DURATION_SECS);
         assert_eq!(clean.pipeline, MIN_PIPELINE);
+        assert_eq!(clean.key_prefix, DEFAULT_KEY_PREFIX);
+        assert!(clean.keep_keys);
+    }
+
+    #[test]
+    fn scoped_run_prefix_normalizes_custom_and_empty_prefixes() {
+        let default_cfg = BenchmarkConfig::default();
+        assert_eq!(default_cfg.scoped_run_prefix("run42"), "zedis:bench:run42:");
+
+        let without_colon = BenchmarkConfig {
+            key_prefix: "test".to_string(),
+            ..BenchmarkConfig::default()
+        };
+        assert_eq!(without_colon.scoped_run_prefix("run42"), "test:run42:");
+        assert_eq!(without_colon.sanitized().key_prefix, "test:");
+
+        let with_colon = BenchmarkConfig {
+            key_prefix: "app:staging::".to_string(),
+            ..BenchmarkConfig::default()
+        };
+        assert_eq!(with_colon.scoped_run_prefix("run42"), "app:staging:run42:");
+
+        let empty = BenchmarkConfig {
+            key_prefix: " ::: ".to_string(),
+            ..BenchmarkConfig::default()
+        };
+        assert_eq!(empty.scoped_run_prefix("run42"), "zedis:bench:run42:");
     }
 
     #[test]

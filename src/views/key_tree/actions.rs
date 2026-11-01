@@ -660,4 +660,83 @@ mod tests {
             "refresh after a paged scan preserves expanded folders"
         );
     }
+
+    /// Selecting a key programmatically (e.g. via a `zedis://open` deep link)
+    /// when its parent folders are already expanded clears the list widget's
+    /// previous row selection and moves the range anchor to the new key so
+    /// two rows do not appear highlighted simultaneously (#262).
+    #[gpui::test]
+    fn selecting_a_key_via_deep_link_clears_previous_row_highlight(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let (handle, tree, server_state) = open_tree(cx, None);
+
+        let item = |id: &str| KeyTreeItem {
+            id: id.into(),
+            label: id.into(),
+            key_type: KeyType::String,
+            depth: 1,
+            ..Default::default()
+        };
+
+        // Pre-expand folder `zedis` and populate two sibling keys so jumping
+        // to the second key requires no folder expansion (`inserted_count == 0`).
+        tree.update(cx, |tree, cx| {
+            tree.state.expanded_items.insert("zedis".into());
+            tree.key_tree_list_state.update(cx, |list, _| {
+                list.delegate_mut().items = vec![item("zedis:key_a"), item("zedis:key_b")];
+            });
+        });
+
+        // Simulate clicking row 0 (`zedis:key_a`) in the list.
+        cx.update_window(handle, |_, window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.key_tree_list_state.update(cx, |list, cx| {
+                    list.set_selected_index(Some(IndexPath::new(0)), window, cx);
+                });
+                tree.select_item_by_index(&IndexPath::new(0), false, cx);
+            });
+            window.render_frame(cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        // Suppose the list still holds a selected_index on row 0 (or pick on key_a)
+        // when a deep link opens `zedis:key_b`.
+        cx.update_window(handle, |_, window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.key_tree_list_state.update(cx, |list, cx| {
+                    list.set_selected_index(Some(IndexPath::new(0)), window, cx);
+                    list.delegate_mut().set_pick("zedis:key_a".into(), true, 0);
+                });
+            });
+            window.render_frame(cx);
+        })
+        .expect("the window is open");
+
+        server_state.update(cx, |state, cx| {
+            state.select_key("zedis:key_b".into(), cx);
+        });
+        cx.run_until_parked();
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        assert_eq!(server_state.read_with(cx, |s, _| s.key()), Some("zedis:key_b".into()));
+        tree.read_with(cx, |tree, cx| {
+            let list = tree.key_tree_list_state.read(cx);
+            assert_eq!(list.selected_index(), None, "list highlight on key_a was cleared");
+            assert!(
+                list.delegate().selected_items.is_empty(),
+                "stale pick on key_a was cleared"
+            );
+            assert_eq!(
+                list.delegate().range_anchor,
+                Some(1),
+                "range anchor moved to key_b's row"
+            );
+        });
+    }
 }

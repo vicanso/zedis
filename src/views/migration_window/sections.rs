@@ -273,13 +273,13 @@ impl ZedisMigrationWindow {
                     .children(destination_labels)
                     .selected_index(Some(destination_index))
                     .disabled(is_running)
-                    .on_click(cx.listener(|this, index, _window, cx| {
+                    .on_click(cx.listener(|this, index, window, cx| {
                         let destination = if *index == 1 {
                             Destination::Server
                         } else {
                             Destination::File
                         };
-                        this.set_destination(destination, cx);
+                        this.set_destination(destination, window, cx);
                     })),
             )
             .when(!is_copy, |this| {
@@ -387,6 +387,10 @@ impl ZedisMigrationWindow {
                 button.on_click(cx.listener(move |this, _, _window, cx| this.select_target(id_click.clone(), cx))),
             );
         }
+        let same_server = match &self.mode {
+            MigrationWindowMode::Export { server_id, .. } => selected.as_ref() == Some(server_id),
+            MigrationWindowMode::Import { .. } => false,
+        };
         let conflict_labels = vec![
             i18n_migration(cx, "conflict_skip").to_string(),
             i18n_migration(cx, "conflict_overwrite").to_string(),
@@ -452,11 +456,15 @@ impl ZedisMigrationWindow {
                 )
                 .child(sample_block(sample_lines, cx))
             })
-            .child(
+            .child(if same_server {
+                Label::new(i18n_copy(cx, "same_server_note"))
+                    .text_xs()
+                    .text_color(muted)
+            } else {
                 Label::new(i18n_copy(cx, "version_note"))
                     .text_xs()
-                    .text_color(theme.yellow),
-            )
+                    .text_color(theme.yellow)
+            })
     }
 
     /// Best-effort live follow controls after a pattern-based copy finishes.

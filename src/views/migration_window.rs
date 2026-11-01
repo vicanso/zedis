@@ -22,9 +22,9 @@
 
 use super::export::{CopyPreset, ExportSource, dirs_default_directory};
 use crate::connection::{
-    ChannelSubscription, ConflictMode, ConflictPreview, CopyVerificationReport, DangerKind, ServerDb, SubscribeKind,
-    config_set, copy_keys_batch, delete_keys, get_keyspace_events_config, get_server, get_servers,
-    preview_import_conflicts, preview_key_conflicts, verify_copied_keys,
+    ChannelSubscription, ConflictMode, ConflictPreview, CopyVerificationReport, DangerKind, SERVER_TYPE_CLUSTER,
+    ServerDb, SubscribeKind, config_set, copy_keys_batch, delete_keys, get_keyspace_events_config, get_server,
+    get_servers, preview_import_conflicts, preview_key_conflicts, verify_copied_keys,
 };
 use crate::helpers::with_app_identity;
 use crate::states::{
@@ -209,11 +209,23 @@ impl ZedisMigrationWindow {
         let target_server_id = preset.as_ref().map(|preset| preset.target_id.clone()).or_else(|| {
             servers
                 .iter()
-                .find(|(id, _)| *id != source_id)
+                .find(|(id, _)| *id == source_id)
                 .or_else(|| servers.first())
                 .map(|(id, _)| id.clone())
         });
-        let target_db = preset.as_ref().map(|preset| preset.target_db).unwrap_or(source_db);
+        let is_cluster = get_server(source_id.as_str())
+            .ok()
+            .and_then(|s| s.server_type)
+            .is_some_and(|t| t == SERVER_TYPE_CLUSTER);
+        let default_target_db = if target_server_id.as_ref() == Some(&source_id) && !is_cluster {
+            if source_db == 0 { 1 } else { 0 }
+        } else {
+            source_db
+        };
+        let target_db = preset
+            .as_ref()
+            .map(|preset| preset.target_db)
+            .unwrap_or(default_target_db);
         let target_db_input = cx.new(|cx| InputState::new(window, cx).default_value(target_db.to_string()));
         let destination = if preset.is_some() {
             Destination::Server
@@ -432,6 +444,7 @@ impl ZedisMigrationWindow {
                 ..
             } => {
                 self.destination = Destination::Server;
+                window.set_window_title(&self.title_label(cx));
                 self.target_server_id = Some(target_id.clone());
                 self.conflict_mode = *conflict;
                 self.target_db_input
@@ -480,6 +493,7 @@ impl ZedisMigrationWindow {
                 ..
             } => {
                 self.destination = Destination::File;
+                window.set_window_title(&self.title_label(cx));
                 self.chosen_path = Some(output_path.clone());
                 self.export_format = *format;
                 if let KeySource::Patterns { types, .. } = source {
@@ -844,11 +858,12 @@ impl ZedisMigrationWindow {
         .detach();
     }
 
-    fn set_destination(&mut self, destination: Destination, cx: &mut Context<Self>) {
+    fn set_destination(&mut self, destination: Destination, window: &mut Window, cx: &mut Context<Self>) {
         if self.destination == destination {
             return;
         }
         self.destination = destination;
+        window.set_window_title(&self.title_label(cx));
         self.drop_preview();
         cx.notify();
     }
@@ -1281,7 +1296,7 @@ mod tests {
             port: 6379,
             ..Default::default()
         };
-        set_servers_cache(vec![server("migtest-a"), server("migtest-b")]);
+        set_servers_cache(vec![server("migtest-b"), server("migtest-a")]);
         restore
     }
 
@@ -1387,6 +1402,11 @@ mod tests {
             window.within("migration-destination").click(1usize, cx);
         });
 
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.title_label(cx), i18n_migration(cx, "copy_title"));
+            assert_eq!(view.target_server_id.as_deref(), Some("migtest-a"));
+            assert_eq!(view.target_db(cx), 1);
+        });
         frame(cx, handle, |window, cx| {
             assert_eq!(radios(window, "migration-export-format"), 0, "a copy has no format");
             assert_eq!(radios(window, "migration-copy-conflict"), 3);
@@ -1402,13 +1422,13 @@ mod tests {
                 label(window, "migration-start").as_deref(),
                 Some(i18n_migration(cx, "start_copy").as_ref())
             );
-            window.click("migration-target-migtest-a", cx);
         });
+        let target_db = view.read_with(cx, |view, _| view.target_db_input.clone());
+        type_into(cx, handle, &target_db, "0");
         frame(cx, handle, |window, _| {
             assert_eq!(window.find("migration-preview").disabled(), Some(true), "onto itself");
             assert_eq!(window.find("migration-start").disabled(), Some(true), "onto itself");
         });
-        let target_db = view.read_with(cx, |view, _| view.target_db_input.clone());
         type_into(cx, handle, &target_db, "1");
         frame(cx, handle, |window, cx| {
             assert_eq!(window.find("migration-preview").disabled(), None, "another database");
@@ -1443,6 +1463,9 @@ mod tests {
                 Some(true)
             );
             assert_eq!(radios(window, "migration-copy-conflict"), 0);
+        });
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.title_label(cx), i18n_migration(cx, "export_title"));
         });
     }
 
