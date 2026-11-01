@@ -157,6 +157,8 @@ pub struct ZedisMigrationWindow {
     preview: Option<ConflictPreview>,
     preview_running: bool,
     preview_error: Option<SharedString>,
+    /// The save / open dialog failed to open. Shown while Status stays Idle.
+    pick_error: Option<SharedString>,
     preview_cancel: Arc<AtomicBool>,
     /// Optional throughput rate cap (keys/s).
     throttle: MigrationThrottle,
@@ -281,6 +283,7 @@ impl ZedisMigrationWindow {
             preview: None,
             preview_running: false,
             preview_error: None,
+            pick_error: None,
             preview_cancel: Arc::new(AtomicBool::new(false)),
             throttle: MigrationThrottle::Unlimited,
             verify_report: None,
@@ -435,28 +438,14 @@ impl ZedisMigrationWindow {
         };
         self.stop_follow(cx);
         self.drop_preview();
+        // The form has to match the job before it runs, and before Copy
+        // again: otherwise a resumed pattern copy still shows `*` and
+        // Unlimited, and the next click copies the whole keyspace.
+        self.apply_checkpoint_fields(&cp, window, cx);
         match &cp.job {
             MigrationCheckpointJob::Copy {
-                target_id,
-                target_db,
-                source,
-                conflict,
-                ..
+                target_id, target_db, ..
             } => {
-                self.destination = Destination::Server;
-                window.set_window_title(&self.title_label(cx));
-                self.target_server_id = Some(target_id.clone());
-                self.conflict_mode = *conflict;
-                self.target_db_input
-                    .update(cx, |input, cx| input.set_value(target_db.to_string(), window, cx));
-                if let KeySource::Patterns { patterns, types } = source {
-                    self.source_mode = KeySourceMode::ScanPatterns;
-                    self.selected_types = types.clone();
-                    self.last_copy_patterns = Some(patterns.clone());
-                } else {
-                    self.source_mode = KeySourceMode::LoadedKeys;
-                    self.last_copy_patterns = None;
-                }
                 if let Ok(target_server) = get_server(target_id.as_str()) {
                     if target_server.readonly.unwrap_or(false) {
                         return;
@@ -486,24 +475,69 @@ impl ZedisMigrationWindow {
                 let job = cp.into_migration_job();
                 self.state.update(cx, |s, cx| s.start(job, cx));
             }
+            MigrationCheckpointJob::Export { .. } => {
+                let job = cp.into_migration_job();
+                self.state.update(cx, |s, cx| s.start(job, cx));
+            }
+        }
+    }
+
+    /// Put the checkpoint's destination, patterns, types and rate limit back
+    /// on the form. Does not start the job.
+    fn apply_checkpoint_fields(&mut self, cp: &MigrationCheckpoint, window: &mut Window, cx: &mut Context<Self>) {
+        match &cp.job {
+            MigrationCheckpointJob::Copy {
+                target_id,
+                target_db,
+                source,
+                conflict,
+                throttle,
+                ..
+            } => {
+                self.destination = Destination::Server;
+                window.set_window_title(&self.title_label(cx));
+                self.target_server_id = Some(target_id.clone());
+                self.conflict_mode = *conflict;
+                self.throttle = *throttle;
+                self.target_db_input
+                    .update(cx, |input, cx| input.set_value(target_db.to_string(), window, cx));
+                self.apply_key_source(source, window, cx);
+            }
             MigrationCheckpointJob::Export {
                 output_path,
                 format,
                 source,
+                throttle,
                 ..
             } => {
                 self.destination = Destination::File;
                 window.set_window_title(&self.title_label(cx));
                 self.chosen_path = Some(output_path.clone());
                 self.export_format = *format;
-                if let KeySource::Patterns { types, .. } = source {
-                    self.source_mode = KeySourceMode::ScanPatterns;
-                    self.selected_types = types.clone();
-                } else {
-                    self.source_mode = KeySourceMode::LoadedKeys;
-                }
-                let job = cp.into_migration_job();
-                self.state.update(cx, |s, cx| s.start(job, cx));
+                self.throttle = *throttle;
+                self.apply_key_source(source, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_key_source(&mut self, source: &KeySource, window: &mut Window, cx: &mut Context<Self>) {
+        match source {
+            KeySource::Patterns { patterns, types } => {
+                self.source_mode = KeySourceMode::ScanPatterns;
+                self.selected_types = types.clone();
+                self.last_copy_patterns = Some(patterns.clone());
+                let text = patterns
+                    .iter()
+                    .map(|pattern| pattern.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.patterns_input_state
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+            }
+            KeySource::Keys { .. } => {
+                self.source_mode = KeySourceMode::LoadedKeys;
+                self.last_copy_patterns = None;
             }
         }
     }
@@ -950,6 +984,23 @@ impl ZedisMigrationWindow {
         keys.iter().filter(move |key| key.starts_with(prefix.as_str()))
     }
 
+    /// The native file dialog did not open. Status stays Idle; the sentence
+    /// is what the window shows, and the raw error goes to the log.
+    fn note_file_dialog_error(&mut self, detail: &str, cx: &mut Context<Self>) {
+        if detail.is_empty() {
+            error!("could not open the file dialog");
+        } else {
+            error!(error = %detail, "could not open the file dialog");
+        }
+        let hint = i18n_migration(cx, "file_dialog_failed");
+        self.pick_error = Some(if detail.is_empty() {
+            hint
+        } else {
+            format!("{hint} {detail}").into()
+        });
+        cx.notify();
+    }
+
     fn handle_pick_and_start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         match &self.mode {
             MigrationWindowMode::Export { .. } if self.destination == Destination::Server => {
@@ -961,11 +1012,15 @@ impl ZedisMigrationWindow {
                 let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
                 cx.spawn(async move |this, cx| {
                     let result = receiver.await;
-                    let _ = this.update(cx, move |view, cx| {
-                        if let Ok(Ok(Some(path))) = result {
+                    let _ = this.update(cx, move |view, cx| match result {
+                        Ok(Ok(Some(path))) => {
+                            view.pick_error = None;
                             view.chosen_path = Some(path.clone());
                             view.start_with_path(path, cx);
                         }
+                        Ok(Ok(None)) => view.pick_error = None,
+                        Ok(Err(err)) => view.note_file_dialog_error(&err.to_string(), cx),
+                        Err(_) => view.note_file_dialog_error("", cx),
                     });
                 })
                 .detach();
@@ -979,15 +1034,19 @@ impl ZedisMigrationWindow {
                 });
                 cx.spawn(async move |this, cx| {
                     let result = receiver.await;
-                    let _ = this.update(cx, move |view, cx| {
-                        if let Ok(Ok(Some(paths))) = result
-                            && let Some(path) = paths.into_iter().next()
-                        {
-                            view.chosen_path = Some(path);
-                            view.preview = None;
-                            view.preview_error = None;
-                            cx.notify();
+                    let _ = this.update(cx, move |view, cx| match result {
+                        Ok(Ok(Some(paths))) => {
+                            if let Some(path) = paths.into_iter().next() {
+                                view.pick_error = None;
+                                view.chosen_path = Some(path);
+                                view.preview = None;
+                                view.preview_error = None;
+                                cx.notify();
+                            }
                         }
+                        Ok(Ok(None)) => view.pick_error = None,
+                        Ok(Err(err)) => view.note_file_dialog_error(&err.to_string(), cx),
+                        Err(_) => view.note_file_dialog_error("", cx),
                     });
                 })
                 .detach();
@@ -1591,6 +1650,83 @@ mod tests {
         frame(cx, handle, |window, _| {
             assert!(window.try_find("migration-pause").is_none());
             assert!(window.try_find("migration-verify").is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn resuming_a_copy_puts_its_patterns_and_rate_back_on_the_form(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _list = hold_the_server_list();
+        let _restore = own_servers();
+        let cp = MigrationCheckpoint {
+            id: "mig-ui-resume-form".to_string(),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_010,
+            summary: "Copy migtest-a/db0 → migtest-b/db1 (zedis:fn:bulk2:*)".to_string(),
+            job: MigrationCheckpointJob::Copy {
+                source_id: "migtest-a".into(),
+                source_db: 0,
+                target_id: "migtest-b".into(),
+                target_db: 1,
+                source: KeySource::Patterns {
+                    patterns: vec!["zedis:fn:bulk2:*".into()],
+                    types: vec!["string".into()],
+                },
+                conflict: ConflictMode::Skip,
+                throttle: MigrationThrottle::Rate50,
+            },
+            cursor: MigrationResumeCursor {
+                processed_count: 40,
+                ..Default::default()
+            },
+        };
+        save_migration_checkpoint(&cp);
+        let (handle, view) = open(cx, export_mode(None));
+        // Don't park after this: resume also starts the job, and a missing
+        // server would sit on the connect timeout. The form is written
+        // before that start.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            view.update(cx, |view, cx| view.resume_checkpoint(0, window, cx));
+            window.render_frame(cx);
+            let (pattern, throttle, mode, types) = view.read_with(cx, |view, cx| {
+                (
+                    view.patterns_input_state.read(cx).value().to_string(),
+                    view.throttle,
+                    view.source_mode,
+                    view.selected_types.clone(),
+                )
+            });
+            assert_eq!(pattern, "zedis:fn:bulk2:*");
+            assert_eq!(throttle, MigrationThrottle::Rate50);
+            assert_eq!(mode, KeySourceMode::ScanPatterns);
+            assert_eq!(types, vec![SharedString::from("string")]);
+            assert_eq!(window.within("migration-throttle").find(3usize).checked(), Some(true));
+        })
+        .expect("resume form");
+    }
+
+    #[gpui::test]
+    fn a_failed_file_dialog_is_said_in_the_window(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let (handle, view) = open(
+            cx,
+            MigrationWindowMode::Import {
+                server_id: "migtest-a".into(),
+                server_name: "migtest-a".into(),
+                db: 0,
+            },
+        );
+        view.update(cx, |view, cx| {
+            view.note_file_dialog_error(
+                "Couldn't open file picker due to missing xdg-desktop-portal implementation.",
+                cx,
+            );
+        });
+        frame(cx, handle, |_window, cx| {
+            let text = view.read_with(cx, |view, _| view.pick_error.clone().unwrap_or_default());
+            assert!(text.contains("Could not open the file dialog"), "{text}");
+            assert!(text.contains("Couldn't open file picker"), "{text}");
         });
     }
 

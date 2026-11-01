@@ -204,6 +204,14 @@ impl ZedisMigrationWindow {
                             })),
                     ),
             )
+            .when_some(self.pick_error.clone(), |this, err| {
+                this.child(
+                    div()
+                        .id("migration-file-dialog-error")
+                        .pt_2()
+                        .child(Label::new(err).text_sm().text_color(cx.theme().danger_foreground)),
+                )
+            })
     }
 
     /// Export: format choice — must be picked before the file dialog,

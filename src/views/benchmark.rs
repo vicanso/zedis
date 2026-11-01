@@ -245,6 +245,16 @@ fn format_delta_pct(delta: f64) -> String {
     }
 }
 
+/// The glob the cleanup hint names: the same normalized prefix a run will
+/// write under, plus `*`. An empty field is the default `zedis:bench:`.
+fn benchmark_cleanup_glob(prefix: &str) -> String {
+    let cfg = BenchmarkConfig {
+        key_prefix: prefix.to_string(),
+        ..BenchmarkConfig::default()
+    };
+    format!("{}*", cfg.normalized_key_prefix())
+}
+
 pub struct ZedisBenchmark {
     server_state: Entity<ZedisServerState>,
     preset: BenchmarkPreset,
@@ -404,6 +414,14 @@ impl ZedisBenchmark {
         .sanitized();
 
         (cfg, target_db)
+    }
+
+    /// Hint under "Keep keys after run": the configured prefix, and whether
+    /// those keys are deleted or left behind.
+    fn cleanup_note(&self, cx: &App) -> SharedString {
+        let glob = benchmark_cleanup_glob(&self.prefix_input.read(cx).value());
+        let key = if self.keep_keys { "cleanup_kept" } else { "cleanup_note" };
+        i18n_benchmark(cx, key).replace("{prefix}", &glob).into()
     }
 
     fn request_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -874,9 +892,11 @@ impl ZedisBenchmark {
                             })),
                     )
                     .child(
-                        Label::new(i18n_benchmark(cx, "cleanup_note"))
-                            .text_xs()
-                            .text_color(theme.muted_foreground),
+                        div().id("bench-cleanup-note").child(
+                            Label::new(self.cleanup_note(cx))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                        ),
                     ),
             )
             .into_any_element()
@@ -1527,7 +1547,15 @@ mod tests {
     use crate::test_support::init_ui;
     use gpui::{AppContext, TestAppContext, size};
     use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt;
     use zedis_core::benchmark::{BenchmarkRawOutcome, ThroughputPoint, summarize_benchmark};
+
+    #[test]
+    fn the_cleanup_hint_uses_the_configured_prefix() {
+        assert_eq!(benchmark_cleanup_glob(""), "zedis:bench:*");
+        assert_eq!(benchmark_cleanup_glob("zedis:fn:bench:"), "zedis:fn:bench:*");
+        assert_eq!(benchmark_cleanup_glob("test"), "test:*");
+    }
 
     #[test]
     fn csv_export_includes_run_metrics_and_histogram_buckets() {
@@ -1557,6 +1585,34 @@ mod tests {
         assert!(csv.contains("local (db 0)"));
         assert!(csv.contains("# Histogram (Run #1)"));
         assert!(csv.contains("≤0.1ms"));
+    }
+
+    #[gpui::test]
+    fn the_cleanup_note_follows_the_prefix_and_whether_keys_are_kept(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let mut panel = None;
+        let handle = cx
+            .open_window(size(px(1000.), px(700.)), |window, cx| {
+                let view = cx.new(|cx| ZedisBenchmark::new(server_state.clone(), window, cx));
+                panel = Some(view.clone());
+                Root::new(view, window, cx)
+            })
+            .into();
+        let view = panel.expect("benchmark view");
+        let prefix = view.read_with(cx, |bench, _| bench.prefix_input.clone());
+
+        cx.update_window(handle, |_, window, cx| {
+            prefix.update(cx, |input, cx| input.set_value("zedis:fn:bench:", window, cx));
+            window.render_frame(cx);
+            let note = view.read_with(cx, |bench, cx| bench.cleanup_note(cx).to_string());
+            assert!(note.contains("zedis:fn:bench:*") && note.contains("deleted"), "{note}");
+            window.click("bench-keep-keys", cx);
+        })
+        .expect("set prefix");
+        cx.run_until_parked();
+        let note = view.read_with(cx, |bench, cx| bench.cleanup_note(cx).to_string());
+        assert!(note.contains("zedis:fn:bench:*") && note.contains("kept"), "{note}");
     }
 
     #[gpui::test]
