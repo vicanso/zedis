@@ -33,8 +33,8 @@ use crate::connection::{
     rename_key, run_key_op, scan_page, server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
 };
 use crate::db::{
-    TRASH_MAX_BULK_KEYS, TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TrashEntry, get_favorites_manager,
-    get_key_metadata_manager, get_recent_keys_manager, recent_keys_scope,
+    TRASH_MAX_BULK_KEYS, TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TrashEntry, get_recent_keys_manager,
+    move_local_records, recent_keys_scope,
 };
 use crate::states::{QueryMode, ZedisGlobalStore, i18n_key_tree, i18n_status_bar, trash_store};
 use crate::{
@@ -60,26 +60,6 @@ fn expire_at_after(ttl_secs: Option<u64>, now: i64) -> i64 {
     match ttl_secs {
         Some(secs) => now.saturating_add(i64::try_from(secs).unwrap_or(i64::MAX)),
         None => -1,
-    }
-}
-
-/// The records this app keeps under a key's *name* follow the key to its
-/// new one: the recent-keys entry, the favorite, the tag and note. Only the
-/// edit history did, so a renamed key was still listed under a name that
-/// opened nothing, and its star and colour stayed behind with it (#188).
-/// What is moved is what the old name had — a key with no favorite or tag
-/// takes none, and leaves the new name's alone. Never an error: these are
-/// conveniences, and the rename itself has already happened.
-fn move_local_records(server_id: &str, db: usize, old: &str, new: &str) {
-    let scope = recent_keys_scope(server_id, db);
-    if let Err(e) = get_recent_keys_manager().rename_record(&scope, old, new) {
-        warn!(error = %e, "recent keys did not follow the rename");
-    }
-    if let Err(e) = get_favorites_manager().rename_record(server_id, old, new) {
-        warn!(error = %e, "the favorite did not follow the rename");
-    }
-    if let Err(e) = get_key_metadata_manager().rename(server_id, old, new) {
-        warn!(error = %e, "the tag and note did not follow the rename");
     }
 }
 

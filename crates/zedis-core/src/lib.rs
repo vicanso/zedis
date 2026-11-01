@@ -55,3 +55,15 @@ pub mod tally;
 pub mod ttl;
 pub mod ttl_cache;
 pub mod validate;
+
+/// Auto-load cap for whole-payload value types (String / RedisJSON) and
+/// persisted key timeline snapshots.
+pub const MAX_INLINE_VALUE_SIZE: u64 = 5_000_000;
+
+/// Current wall-clock time as Unix seconds (portable across native and wasm).
+pub fn now_unix_secs() -> i64 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}

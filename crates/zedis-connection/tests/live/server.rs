@@ -1072,3 +1072,40 @@ fn benchmark_presets_and_cleanup_leave_zero_throwaway_keys() {
         assert_eq!(leftover.keys, 0, "cancelled run left throwaway keys under {prefix}");
     });
 }
+
+#[test]
+#[ignore]
+fn monitor_replay_executes_only_reads_and_reports_latencies() {
+    smol::block_on(async {
+        let id = register(server("it-monitor-replay", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let key = unique("replay");
+
+        string_set(&at, &key, b"initial", -1, None).await.expect("seed key");
+
+        let entries = vec![
+            format!(r#"+1700000000.100000 [0 127.0.0.1:50000] "GET" "{key}""#),
+            format!(r#"+1700000000.101000 [0 127.0.0.1:50000] "SET" "{key}" "mutated""#),
+            format!(r#"+1700000000.102000 [0 127.0.0.1:50000] "EXISTS" "{key}""#),
+            format!(r#"+1700000000.103000 [0 127.0.0.1:50000] "DEL" "{key}""#),
+            format!(r#"+1700000000.104000 [0 127.0.0.1:50000] "TTL" "{key}""#),
+        ];
+
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let report = run_monitor_replay(&at, &entries, MonitorReplaySpeed::MaxSpeed, cancel)
+            .await
+            .expect("replay");
+
+        assert_eq!(report.replayed_count, 3);
+        assert_eq!(report.skipped_write_count, 2);
+        assert_eq!(report.error_count, 0);
+        assert_eq!(report.summary.total_ops, 3);
+        assert!(report.summary.p99_us >= report.summary.p50_us);
+
+        // Verify SET and DEL were skipped and the key still holds "initial".
+        let val = string_get(&at, &key).await.expect("get after replay");
+        assert_eq!(val.as_slice(), b"initial");
+
+        delete_key(&at, &key).await.expect("cleanup");
+    });
+}

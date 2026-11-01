@@ -73,6 +73,32 @@ impl RedisClient {
         }
     }
 
+    /// Resolves the target node `RedisServer` for a Lua debugger session:
+    /// on a standalone/Sentinel connection, returns the single node config;
+    /// on a cluster connection, routes by `slot` (when `KEYS` is non-empty),
+    /// or by explicit master `node_addr` (when `KEYS` is empty), falling back
+    /// to the first master node.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn debug_node_config(&self, slot: Option<u16>, node_addr: Option<&str>) -> Option<RedisServer> {
+        if let Some(single) = self.single_node_config() {
+            return Some(single);
+        }
+        if let Some(slot) = slot
+            && let Some(node) = self
+                .master_nodes
+                .iter()
+                .find(|n| n.slots.iter().any(|&(lo, hi)| lo <= slot && slot <= hi))
+        {
+            return Some(node.server.clone());
+        }
+        if let Some(addr) = node_addr.map(str::trim).filter(|a| !a.is_empty())
+            && let Some(node) = self.master_nodes.iter().find(|n| n.host_port() == addr)
+        {
+            return Some(node.server.clone());
+        }
+        self.master_nodes.first().map(|n| n.server.clone())
+    }
+
     /// The browser's dedicated connection: a bridge *session*, which is the
     /// same promise over HTTP — one backend connection, this caller's alone,
     /// so connection-scoped state stays where it was typed (ADR 4).

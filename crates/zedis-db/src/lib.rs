@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::debug;
+use tracing::{debug, warn};
 #[cfg(not(target_family = "wasm"))]
 use zedis_core::fs::get_or_create_config_dir;
 
@@ -42,6 +42,7 @@ mod alerts;
 mod history_manager;
 mod jobs;
 mod key_metadata_manager;
+mod key_timeline;
 mod lua_scripts;
 /// The browser's stand-in for redb (ADR 9). Also compiled for `cargo test`
 /// on the desktop, because the ordering rules it has to reproduce — a
@@ -68,6 +69,7 @@ pub use history_manager::{
 };
 pub use jobs::*;
 pub use key_metadata_manager::*;
+pub use key_timeline::*;
 pub use lua_scripts::*;
 pub use metrics_history::*;
 #[cfg(target_family = "wasm")]
@@ -105,6 +107,8 @@ const METRICS_HISTORY_TABLE: TableDefinition<(&str, i64), &[u8]> = TableDefiniti
 const ALERT_RULES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("alert_rules");
 // Generic persisted background job checkpoints (e.g. resumable migrations).
 const JOBS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("jobs");
+// Per-(server, db, key) persisted Key Timeline snapshots (`"{server_id}:{db}:{key}"`).
+const KEY_TIMELINE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("key_timeline");
 // Local recycle bin for soft-deleted keys: key (server_id, id) where id is
 // "{deleted_at_ms:020}:{db}:{key}"; value = framed meta JSON + DUMP payload
 // (see `db/trash.rs`). Entries are purged after 24h.
@@ -193,6 +197,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
         write_txn.open_table(METRICS_HISTORY_TABLE)?;
         write_txn.open_table(ALERT_RULES_TABLE)?;
         write_txn.open_table(JOBS_TABLE)?;
+        write_txn.open_table(KEY_TIMELINE_TABLE)?;
         write_txn.open_table(TRASH_TABLE)?;
         write_txn
             .open_table(META_TABLE)?
@@ -303,6 +308,24 @@ fn add_normalize_history(history: &mut Vec<String>, keyword: String, max: usize)
     }
 }
 
+/// Moves all per-key local records (`recent_keys`, `favority`, `key_metadata`,
+/// and `key_timeline`) when a Redis key is renamed on `(server_id, db)`.
+pub fn move_local_records(server_id: &str, db: usize, old: &str, new: &str) {
+    let scope = recent_keys_scope(server_id, db);
+    if let Err(e) = get_recent_keys_manager().rename_record(&scope, old, new) {
+        warn!(error = %e, "recent keys did not follow the rename");
+    }
+    if let Err(e) = get_favorites_manager().rename_record(server_id, old, new) {
+        warn!(error = %e, "the favorite did not follow the rename");
+    }
+    if let Err(e) = get_key_metadata_manager().rename(server_id, old, new) {
+        warn!(error = %e, "the tag and note did not follow the rename");
+    }
+    if let Err(e) = KeyTimelineManager::rename(server_id, db, old, new) {
+        warn!(error = %e, "the key timeline snapshots did not follow the rename");
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[cfg(test)]
 mod schema_tests {
@@ -379,6 +402,7 @@ mod schema_tests {
                 "favority",
                 "jobs",
                 "key_metadata",
+                "key_timeline",
                 "key_trash",
                 "lua_script",
                 "meta",

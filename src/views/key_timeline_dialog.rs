@@ -29,11 +29,12 @@ use crate::assets::CustomIconName;
 use crate::connection::{
     ChannelSubscription, KeyTimelineProbe, ServerDb, SubscribeKind, capture_key_timeline_snapshot, config_get_one,
 };
+use crate::db::{KeyTimelineManager, StoredKeyTimelineSnapshot};
 use crate::error::Error;
 use crate::helpers::{
     DiffOp, channel, get_mono_font_family, line_diff, now_clock, pacing::KEY_TIMELINE_POLL_INTERVAL, saves_files,
 };
-use crate::states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor};
+use crate::states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor, i18n_monitor};
 use crate::views::export_to_file;
 use gpui::{App, ClipboardItem, Entity, Hsla, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -48,6 +49,7 @@ use gpui_kit::component::{
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
 use std::collections::VecDeque;
+use zedis_core::now_unix_secs;
 use zedis_ui::ZedisDialog;
 
 const DIALOG_WIDTH: f32 = 900.0;
@@ -58,6 +60,7 @@ const CONTEXT_LINES: usize = 3;
 
 pub const KEY_TIMELINE_PAUSE_BTN_ID: &str = "key-timeline-pause-btn";
 pub const KEY_TIMELINE_SNAP_BTN_ID: &str = "key-timeline-snap-btn";
+pub const KEY_TIMELINE_CLEAR_BTN_ID: &str = "key-timeline-clear-btn";
 pub const KEY_TIMELINE_COPY_BTN_ID: &str = "key-timeline-copy-btn";
 pub const KEY_TIMELINE_EXPORT_BTN_ID: &str = "key-timeline-export-btn";
 
@@ -216,6 +219,7 @@ impl Render for TimelineDialogActions {
         let has_snapshots = !state.snapshots.is_empty();
         let dialog_for_pause = self.dialog.clone();
         let dialog_for_snap = self.dialog.clone();
+        let dialog_for_clear = self.dialog.clone();
         let dialog_for_copy = self.dialog.clone();
 
         let pause_label = if paused {
@@ -250,6 +254,20 @@ impl Render for TimelineDialogActions {
                     .on_click(move |_, _, cx| {
                         dialog_for_snap.update(cx, |this, cx| {
                             this.trigger_snapshot("manual", false, cx);
+                        });
+                    }),
+            )
+            .child(
+                Button::new(KEY_TIMELINE_CLEAR_BTN_ID)
+                    .outline()
+                    .small()
+                    .icon(IconName::Delete)
+                    .disabled(!has_snapshots)
+                    .label(i18n_monitor(cx, "clear"))
+                    .on_click(move |_, _, cx| {
+                        dialog_for_clear.update(cx, |this, cx| {
+                            this.clear_snapshots();
+                            cx.notify();
                         });
                     }),
             )
@@ -294,14 +312,33 @@ impl ZedisKeyTimelineDialog {
         let server_id = state.server_id().to_string();
         let db = state.db();
 
+        let persisted = KeyTimelineManager::list_snapshots(&server_id, db, key.as_ref());
+        let total = persisted.len();
+        let snapshots: VecDeque<KeyTimelineSnapshot> = persisted
+            .into_iter()
+            .enumerate()
+            .map(|(idx, stored)| KeyTimelineSnapshot {
+                id: total.saturating_sub(idx),
+                timestamp: stored.timestamp.into(),
+                event: stored.event.into(),
+                exists: stored.exists,
+                key_type: stored.key_type.into(),
+                ttl_secs: stored.ttl_secs,
+                snapshot_text: stored.snapshot_text,
+            })
+            .collect();
+        let selected_id = snapshots.front().map(|s| s.id);
+        let next_id = total + 1;
+        let has_persisted = !snapshots.is_empty();
+
         let mut this = Self {
             server_state,
             server_id,
             db,
             key,
-            snapshots: VecDeque::new(),
-            selected_id: None,
-            next_id: 1,
+            snapshots,
+            selected_id,
+            next_id,
             paused: false,
             push_connected: false,
             notify_flags: SharedString::default(),
@@ -312,7 +349,7 @@ impl ZedisKeyTimelineDialog {
         };
 
         this.fetch_notify_flags(cx);
-        this.trigger_snapshot("initial", false, cx);
+        this.trigger_snapshot("initial", has_persisted, cx);
         this.start_keyspace_subscription(cx);
         this.start_poll_loop(cx);
         this
@@ -464,20 +501,28 @@ impl ZedisKeyTimelineDialog {
     }
 
     fn ingest_probe(&mut self, event: SharedString, probe: KeyTimelineProbe, only_if_changed: bool) {
+        self.record_snapshot(event, probe, only_if_changed);
+    }
+
+    pub fn record_snapshot(&mut self, event: impl Into<SharedString>, probe: KeyTimelineProbe, only_if_changed: bool) {
+        let event: SharedString = event.into();
         if let Some(latest) = self.snapshots.front_mut() {
             if only_if_changed && !is_meaningful_poll_change(latest, &probe) {
                 return;
             }
-            // If a push event arrives right after a poll already captured the exact same state,
-            // upgrade that poll entry's event label instead of duplicating the snapshot.
-            if !only_if_changed
-                && event.as_ref() != "manual"
-                && event.as_ref() != "initial"
-                && latest.event.as_ref() == "poll"
-                && !is_meaningful_poll_change(latest, &probe)
-            {
-                latest.event = event;
-                latest.ttl_secs = probe.ttl_secs;
+            // Deduplicate consecutive identical values unless the user explicitly clicked "Snapshot Now".
+            if !only_if_changed && event.as_ref() != "manual" && !is_meaningful_poll_change(latest, &probe) {
+                if latest.event.as_ref() == "poll" && event.as_ref() != "initial" {
+                    latest.event = event.clone();
+                    latest.ttl_secs = probe.ttl_secs;
+                    let _ = KeyTimelineManager::update_latest_event(
+                        &self.server_id,
+                        self.db,
+                        self.key.as_ref(),
+                        event.as_ref(),
+                        probe.ttl_secs,
+                    );
+                }
                 return;
             }
         }
@@ -488,15 +533,31 @@ impl ZedisKeyTimelineDialog {
         let id = self.next_id;
         self.next_id += 1;
 
+        let timestamp_str = now_clock(false);
         let snap = KeyTimelineSnapshot {
             id,
-            timestamp: now_clock(false).into(),
-            event,
+            timestamp: timestamp_str.clone().into(),
+            event: event.clone(),
             exists: probe.exists,
-            key_type: probe.key_type.into(),
+            key_type: probe.key_type.clone().into(),
             ttl_secs: probe.ttl_secs,
-            snapshot_text: probe.snapshot_text,
+            snapshot_text: probe.snapshot_text.clone(),
         };
+
+        let _ = KeyTimelineManager::append_snapshot(
+            &self.server_id,
+            self.db,
+            self.key.as_ref(),
+            StoredKeyTimelineSnapshot {
+                recorded_at: now_unix_secs(),
+                timestamp: timestamp_str,
+                event: event.to_string(),
+                exists: probe.exists,
+                key_type: probe.key_type,
+                ttl_secs: probe.ttl_secs,
+                snapshot_text: probe.snapshot_text,
+            },
+        );
 
         self.snapshots.push_front(snap);
         while self.snapshots.len() > MAX_SNAPSHOTS {
@@ -506,6 +567,13 @@ impl ZedisKeyTimelineDialog {
         if was_viewing_latest || !self.snapshots.iter().any(|s| Some(s.id) == self.selected_id) {
             self.selected_id = Some(id);
         }
+    }
+
+    pub fn clear_snapshots(&mut self) {
+        self.snapshots.clear();
+        self.selected_id = None;
+        self.next_id = 1;
+        let _ = KeyTimelineManager::clear_snapshots(&self.server_id, self.db, self.key.as_ref());
     }
 
     fn selected_and_previous(&self) -> Option<(&KeyTimelineSnapshot, Option<&KeyTimelineSnapshot>)> {
@@ -971,5 +1039,61 @@ mod tests {
             diff.iter()
                 .any(|l| l.kind == DiffLineKind::Added && l.text == "+ b: 20")
         );
+    }
+
+    #[gpui::test]
+    fn dialog_persists_reloads_and_clears_snapshots(cx: &mut gpui::TestAppContext) {
+        crate::test_support::isolate_config();
+        KeyTimelineManager::clear_snapshots("srv-timeline-ui", 0, "orders:42").expect("clear");
+
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let dialog = cx.new(|cx| ZedisKeyTimelineDialog::new(server_state.clone(), "orders:42".into(), cx));
+        dialog.update(cx, |d, _| {
+            d.server_id = "srv-timeline-ui".to_string();
+            d.db = 0;
+            d.record_snapshot(
+                "set",
+                KeyTimelineProbe {
+                    exists: true,
+                    key_type: "string".to_string(),
+                    ttl_secs: -1,
+                    snapshot_text: "v1".to_string(),
+                },
+                false,
+            );
+            // Duplicate consecutive value should be deduplicated.
+            d.record_snapshot(
+                "set",
+                KeyTimelineProbe {
+                    exists: true,
+                    key_type: "string".to_string(),
+                    ttl_secs: -1,
+                    snapshot_text: "v1".to_string(),
+                },
+                false,
+            );
+            d.record_snapshot(
+                "set",
+                KeyTimelineProbe {
+                    exists: true,
+                    key_type: "string".to_string(),
+                    ttl_secs: -1,
+                    snapshot_text: "v2".to_string(),
+                },
+                false,
+            );
+            assert_eq!(d.snapshots.len(), 2);
+        });
+
+        let persisted = KeyTimelineManager::list_snapshots("srv-timeline-ui", 0, "orders:42");
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(persisted[0].snapshot_text, "v2");
+        assert_eq!(persisted[1].snapshot_text, "v1");
+
+        dialog.update(cx, |d, _| {
+            d.clear_snapshots();
+            assert!(d.snapshots.is_empty());
+        });
+        assert!(KeyTimelineManager::list_snapshots("srv-timeline-ui", 0, "orders:42").is_empty());
     }
 }

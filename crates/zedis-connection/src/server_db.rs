@@ -72,6 +72,16 @@ impl ServerDb {
         self.db
     }
 
+    /// Replays verified read-only commands from `entries` against this `ServerDb`.
+    pub async fn run_monitor_replay(
+        &self,
+        entries: &[String],
+        speed: crate::benchmark::MonitorReplaySpeed,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::benchmark::MonitorReplayReport, Error> {
+        crate::benchmark::run_monitor_replay(self, entries, speed, cancel).await
+    }
+
     /// The pooled connection the operations of this crate run on. Crate
     /// private on purpose: a caller with a connection in hand is a caller
     /// that builds commands.
@@ -97,14 +107,21 @@ impl ServerDb {
     }
 
     /// A connection of the caller's own whose replies it reads itself
-    /// (`RawConnection`), to the node the pooled client talks to. `None` on
-    /// a cluster. Desktop only: it dials.
+    /// Opens a [`RawConnection`] for the Lua debugger: on standalone/Sentinel
+    /// connections, dials the single node; on cluster connections, dials the
+    /// master node owning `slot` or matching `cluster_node_addr` (or the first
+    /// master node when neither is specified).
     #[cfg(not(target_family = "wasm"))]
-    pub(crate) async fn raw_connection(&self) -> Result<Option<RawConnection>, Error> {
+    pub(crate) async fn raw_connection_for_debug(
+        &self,
+        slot: Option<u16>,
+        cluster_node_addr: Option<&str>,
+    ) -> Result<Option<RawConnection>, Error> {
         let client = self.client().await?;
-        let Some(node) = client.single_node_config() else {
+        let Some(node) = client.debug_node_config(slot, cluster_node_addr) else {
             return Ok(None);
         };
-        Ok(Some(RawConnection::open(&node, self.db).await?))
+        let db = if client.is_cluster() { 0 } else { self.db };
+        Ok(Some(RawConnection::open(&node, db).await?))
     }
 }

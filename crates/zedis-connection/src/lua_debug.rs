@@ -53,6 +53,74 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// What the server marks the end of a session with.
 const END_SESSION: &str = "<endsession>";
 
+/// Computes the Redis Cluster hash slot (`0..16384`) for `key` using
+/// CRC16-XMODEM, honoring `{tag}` hash tags when `{` and `}` enclose at
+/// least one byte.
+pub fn cluster_key_slot(key: &str) -> u16 {
+    let bytes = key.as_bytes();
+    let hashed = if let Some(open) = bytes.iter().position(|&b| b == b'{') {
+        if let Some(close_rel) = bytes[open + 1..].iter().position(|&b| b == b'}') {
+            if close_rel > 0 {
+                &bytes[open + 1..open + 1 + close_rel]
+            } else {
+                bytes
+            }
+        } else {
+            bytes
+        }
+    } else {
+        bytes
+    };
+
+    let mut crc: u16 = 0;
+    for &byte in hashed {
+        crc ^= u16::from(byte) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc & 0x3FFF
+}
+
+/// Validates that all `keys` for a cluster Lua debugging session map to the
+/// same hash slot (`0..16384`).
+///
+/// - Returns `Ok(None)` when `keys` is empty.
+/// - Returns `Ok(Some(slot))` when all keys map to `slot`.
+/// - Returns `Err(Error::Invalid)` when two keys map to different hash slots,
+///   explaining how to align them with `{tag}` hash tags.
+pub fn validate_cluster_debug_keys(keys: &[String]) -> Result<Option<u16>> {
+    let Some(first_key) = keys.first() else {
+        return Ok(None);
+    };
+    let first_slot = cluster_key_slot(first_key);
+    for key in &keys[1..] {
+        let slot = cluster_key_slot(key);
+        if slot != first_slot {
+            return Err(Error::Invalid {
+                message: format!(
+                    "CROSSSLOT Keys in request don't hash to the same slot ('{first_key}' -> slot {first_slot}, '{key}' -> slot {slot}). Multi-key cluster debugging requires all KEYS to share the same hash slot via {{tag}} hash tags (e.g. {{user:1}}:profile, {{user:1}}:settings)."
+                ),
+            });
+        }
+    }
+    Ok(Some(first_slot))
+}
+
+/// Lists the `host:port` addresses of all master nodes for `at`.
+pub async fn cluster_master_addrs(at: &ServerDb) -> Result<Vec<String>> {
+    let client = at.client().await?;
+    Ok(client
+        .master_servers()
+        .into_iter()
+        .map(|s| format!("{}:{}", s.host, s.port))
+        .collect())
+}
+
 /// How changes made by the debugged script are treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DebugMode {
@@ -186,10 +254,32 @@ impl LuaDebugSession {
         breakpoints: &[u32],
         mode: DebugMode,
     ) -> Result<(Self, DebugStep)> {
-        let Some(conn) = at.raw_connection().await? else {
+        Self::start_on_node(at, code, keys, args, breakpoints, mode, None).await
+    }
+
+    /// Start debugging `code` on a standalone or cluster connection. On a
+    /// cluster, `keys` are validated with [`validate_cluster_debug_keys`] to
+    /// ensure they share a single hash slot, and the dedicated debug session
+    /// connects to the master node owning that slot (or `cluster_node_addr`
+    /// when `keys` is empty).
+    pub async fn start_on_node(
+        at: &ServerDb,
+        code: &str,
+        keys: &[String],
+        args: &[String],
+        breakpoints: &[u32],
+        mode: DebugMode,
+        cluster_node_addr: Option<&str>,
+    ) -> Result<(Self, DebugStep)> {
+        let is_cluster = at.client().await?.is_cluster();
+        let slot = if is_cluster {
+            validate_cluster_debug_keys(keys)?
+        } else {
+            None
+        };
+        let Some(conn) = at.raw_connection_for_debug(slot, cluster_node_addr).await? else {
             return Err(Error::Invalid {
-                message: "the Lua debugger needs a single-node connection; it is not available on a cluster"
-                    .to_string(),
+                message: "no master node available for the Lua debugger".to_string(),
             });
         };
         let session = Self {
@@ -533,5 +623,36 @@ mod tests {
         );
         assert_eq!(DebugMode::Forked.word(), "YES");
         assert_eq!(DebugMode::Sync.word(), "SYNC");
+    }
+
+    #[test]
+    fn validate_cluster_debug_keys_handles_empty_single_hashtag_and_crossslot() {
+        // Empty keys -> Ok(None)
+        assert_eq!(validate_cluster_debug_keys(&[]).expect("empty"), None);
+
+        // Single key -> Ok(Some(slot))
+        let single = vec!["mykey".to_string()];
+        let slot = validate_cluster_debug_keys(&single)
+            .expect("single")
+            .expect("some slot");
+        assert!(slot < 16384);
+
+        // Multiple keys sharing a {tag} -> Ok(Some(same_slot))
+        let tagged = vec![
+            "{user:100}:profile".to_string(),
+            "{user:100}:settings".to_string(),
+            "prefix:{user:100}:cart".to_string(),
+        ];
+        let tag_slot = validate_cluster_debug_keys(&tagged)
+            .expect("tagged keys must succeed")
+            .expect("some slot");
+        assert_eq!(tag_slot, cluster_key_slot("user:100"));
+
+        // Multiple keys in different hash slots -> Err with hash-tag guidance
+        let cross = vec!["user:1:profile".to_string(), "user:2:profile".to_string()];
+        let err = validate_cluster_debug_keys(&cross).expect_err("cross-slot keys must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("CROSSSLOT"), "unexpected error: {msg}");
+        assert!(msg.contains("{tag}"), "unexpected error: {msg}");
     }
 }

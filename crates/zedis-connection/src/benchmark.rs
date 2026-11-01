@@ -26,11 +26,12 @@ use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::keyspace::delete_keys;
+use crate::read_only::{is_read_only_command, reveals_secrets};
 use crate::server_db::ServerDb;
 use futures::future::join_all;
 use redis::{Cmd, Pipeline, Value, cmd, pipe};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 use zedis_core::benchmark::{
@@ -457,4 +458,310 @@ pub async fn run_benchmark(
     on_progress: impl FnMut(BenchmarkProgress),
 ) -> Result<BenchmarkRunResult> {
     run_benchmark_with_prefix(at, config, new_benchmark_prefix(), cancel, on_progress).await
+}
+
+/// Pacing mode for replaying captured MONITOR read-only commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorReplaySpeed {
+    /// Paced replay (~1 ms between commands).
+    RealTime1x,
+    /// Double-speed paced replay (~0.5 ms between commands).
+    Fast2x,
+    /// Immediate back-to-back execution with no artificial delay.
+    #[default]
+    MaxSpeed,
+}
+
+impl MonitorReplaySpeed {
+    pub const ALL: [MonitorReplaySpeed; 3] = [
+        MonitorReplaySpeed::RealTime1x,
+        MonitorReplaySpeed::Fast2x,
+        MonitorReplaySpeed::MaxSpeed,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            MonitorReplaySpeed::RealTime1x => "1x",
+            MonitorReplaySpeed::Fast2x => "2x",
+            MonitorReplaySpeed::MaxSpeed => "Max",
+        }
+    }
+
+    const fn step_delay(self) -> Duration {
+        match self {
+            MonitorReplaySpeed::RealTime1x => Duration::from_millis(1),
+            MonitorReplaySpeed::Fast2x => Duration::from_micros(500),
+            MonitorReplaySpeed::MaxSpeed => Duration::ZERO,
+        }
+    }
+}
+
+/// A single parsed MONITOR command candidate for read-only replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorReplayEntry {
+    pub timestamp_ms: Option<u64>,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// Final report for a MONITOR read-only replay run.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MonitorReplayReport {
+    pub summary: BenchmarkSummary,
+    pub replayed_count: usize,
+    pub skipped_write_count: usize,
+    pub error_count: usize,
+}
+
+const NON_REPLAYABLE_COMMANDS: &[&str] = &[
+    "BLPOP",
+    "BRPOP",
+    "BZPOPMIN",
+    "BZPOPMAX",
+    "BLMOVE",
+    "BLMPOP",
+    "BZMPOP",
+    "BRPOPLPUSH",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "SSUBSCRIBE",
+    "UNSUBSCRIBE",
+    "PUNSUBSCRIBE",
+    "SUNSUBSCRIBE",
+    "MONITOR",
+    "SYNC",
+    "PSYNC",
+    "AUTH",
+    "HELLO",
+    "SELECT",
+    "QUIT",
+    "RESET",
+    "MULTI",
+    "EXEC",
+    "DISCARD",
+    "WATCH",
+    "UNWATCH",
+    "CLIENT",
+    "WAIT",
+    "WAITOF",
+    "ASKING",
+    "READONLY",
+    "READWRITE",
+];
+
+/// Parses a raw MONITOR line (either full `+1339518083.107412 [0 127.0.0.1:60866] "GET" "foo"`
+/// or a command-and-arguments string `"GET" "foo"` / `GET foo`) into a [`MonitorReplayEntry`].
+pub fn parse_monitor_replay_entry(raw: &str) -> Option<MonitorReplayEntry> {
+    let line = raw.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let stripped = line.strip_prefix('+').unwrap_or(line);
+    let (timestamp_ms, cmd_part) = if let Some((ts_part, rest)) = stripped.split_once('[')
+        && let Some(end) = rest.find("] \"")
+    {
+        let ts_ms = ts_part
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|secs| (secs * 1000.0) as u64);
+        (ts_ms, rest[end + 1..].trim())
+    } else {
+        (None, line)
+    };
+
+    let tokens = shlex::split(cmd_part).unwrap_or_else(|| cmd_part.split_whitespace().map(str::to_string).collect());
+    let (first, rest) = tokens.split_first()?;
+    let command = first.trim().to_ascii_uppercase();
+    if command.is_empty() {
+        return None;
+    }
+    Some(MonitorReplayEntry {
+        timestamp_ms,
+        command,
+        args: rest.to_vec(),
+    })
+}
+
+fn is_safe_replay_command(cmd_upper: &str, args: &[String]) -> bool {
+    if NON_REPLAYABLE_COMMANDS.contains(&cmd_upper) {
+        return false;
+    }
+    if matches!(cmd_upper, "XREAD" | "XREADGROUP") && args.iter().any(|a| a.eq_ignore_ascii_case("BLOCK")) {
+        return false;
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    is_read_only_command(cmd_upper, &arg_refs) && !reveals_secrets(cmd_upper, &arg_refs)
+}
+
+/// Partitions raw MONITOR command entries into verified read-only `(command, args)` pairs
+/// and the count of skipped write, blocking, subscribing, or unsafe commands.
+pub fn partition_replay_commands(entries: &[String]) -> (Vec<(String, Vec<String>)>, usize) {
+    let mut read_only = Vec::new();
+    let mut skipped_write_count = 0usize;
+
+    for raw in entries {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Some(entry) = parse_monitor_replay_entry(raw) else {
+            skipped_write_count += 1;
+            continue;
+        };
+        if is_safe_replay_command(&entry.command, &entry.args) {
+            read_only.push((entry.command, entry.args));
+        } else {
+            skipped_write_count += 1;
+        }
+    }
+
+    (read_only, skipped_write_count)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn replay_delay(delay: Duration) {
+    if !delay.is_zero() {
+        smol::Timer::after(delay).await;
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn replay_delay(_delay: Duration) {}
+
+/// Sequentially replays only the verified read-only commands from `entries`
+/// against `at`, recording each command's latency into a [`BenchmarkSummary`].
+pub async fn run_monitor_replay(
+    at: &ServerDb,
+    entries: &[String],
+    speed: MonitorReplaySpeed,
+    cancel: Arc<AtomicBool>,
+) -> Result<MonitorReplayReport> {
+    let (read_only_commands, skipped_write_count) = partition_replay_commands(entries);
+    if read_only_commands.is_empty() {
+        let summary = summarize_benchmark(BenchmarkRawOutcome {
+            latencies_us: Vec::new(),
+            total_ops: 0,
+            errors: 0,
+            elapsed_ms: 0,
+            timeline: Vec::new(),
+            cleaned_keys: 0,
+            cancelled: false,
+        });
+        return Ok(MonitorReplayReport {
+            summary,
+            replayed_count: 0,
+            skipped_write_count,
+            error_count: 0,
+        });
+    }
+
+    let mut conn = at.connection().await?;
+    let delay = speed.step_delay();
+    let mut latencies_us = Vec::with_capacity(read_only_commands.len());
+    let mut replayed_count = 0usize;
+    let mut error_count = 0usize;
+    let start = Instant::now();
+
+    for (idx, (cmd_upper, args)) in read_only_commands.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if idx > 0 && !delay.is_zero() {
+            replay_delay(delay).await;
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
+        let cmd_name = cmd_upper.as_str();
+        let mut command = cmd(cmd_name);
+        for arg in args {
+            command.arg(arg.as_str());
+        }
+
+        let step_start = Instant::now();
+        let res: std::result::Result<Value, _> = command.query_async(&mut conn).await;
+        let step_us = (step_start.elapsed().as_micros() as u64).max(1);
+        replayed_count += 1;
+        match res {
+            Ok(_) => {
+                latencies_us.push(step_us);
+            }
+            Err(_) => {
+                error_count += 1;
+            }
+        }
+    }
+
+    let elapsed_ms = (start.elapsed().as_millis() as u64).max(1);
+    let cancelled = cancel.load(Ordering::Relaxed);
+    let mut sorted_copy = latencies_us.clone();
+    sorted_copy.sort_unstable();
+    let timeline = if replayed_count > 0 {
+        vec![ThroughputPoint {
+            elapsed_ms,
+            ops_per_sec: (replayed_count as f64) * 1000.0 / (elapsed_ms as f64),
+            p99_us: percentile_sorted(&sorted_copy, 0.99),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    let summary = summarize_benchmark(BenchmarkRawOutcome {
+        latencies_us,
+        total_ops: replayed_count as u64,
+        errors: error_count as u64,
+        elapsed_ms,
+        timeline,
+        cleaned_keys: 0,
+        cancelled,
+    });
+
+    Ok(MonitorReplayReport {
+        summary,
+        replayed_count,
+        skipped_write_count,
+        error_count,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partition_replay_commands_keeps_reads_and_skips_writes_and_blocking() {
+        let entries = vec![
+            r#"+1700000000.123456 [0 127.0.0.1:50000] "GET" "user:1""#.to_string(),
+            r#"+1700000000.124000 [0 127.0.0.1:50000] "SET" "user:1" "alice""#.to_string(),
+            r#""HGETALL" "profile:1""#.to_string(),
+            r#"BLPOP queue:jobs 0"#.to_string(),
+            r#"SUBSCRIBE notifications"#.to_string(),
+            r#"MONITOR"#.to_string(),
+            r#"XREAD BLOCK 1000 STREAMS mystream $"#.to_string(),
+            r#"XREAD COUNT 5 STREAMS mystream 0-0"#.to_string(),
+            r#"DEL user:1"#.to_string(),
+        ];
+
+        let (read_only, skipped) = partition_replay_commands(&entries);
+        assert_eq!(skipped, 6);
+        assert_eq!(
+            read_only,
+            vec![
+                ("GET".to_string(), vec!["user:1".to_string()]),
+                ("HGETALL".to_string(), vec!["profile:1".to_string()]),
+                (
+                    "XREAD".to_string(),
+                    vec![
+                        "COUNT".to_string(),
+                        "5".to_string(),
+                        "STREAMS".to_string(),
+                        "mystream".to_string(),
+                        "0-0".to_string()
+                    ]
+                ),
+            ]
+        );
+    }
 }

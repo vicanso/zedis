@@ -1285,6 +1285,20 @@ summary_empty = "サンプリング中にコマンドは見えませんでした
 summary_show_lines = "該当する明細を表示"
 show_own = "Zedis 自身のコマンドを表示"
 show_own_tooltip = "チェックしない限り、このアプリ自身の接続が送るコマンド（ハートビートの INFO、キーツリーの SCAN、この一覧の取得）はフィードとサンプルから除外されます。zedis という名前のクライアントはすべて対象なので、別の Zedis や bridge も除外されます。"
+replay_button = "読み取り専用リプレイ…"
+replay_tooltip = "キャプチャされた読み取り専用コマンドを非本番サーバーに対して再生し、レイテンシを測定します"
+replay_title = "読み取り専用コマンドのリプレイ"
+replay_start = "リプレイ開始"
+replay_preview_summary = "%{reads} 件の読み取り専用コマンドを再生 · %{skipped} 件の書き込み/非安全コマンドをスキップ"
+replay_safety_note = "検証済みの読み取り専用コマンドのみが実行されます。本番タグ付きサーバーは対象リストから除外されます。"
+replay_target_server = "対象サーバー（非本番）"
+replay_no_non_prod_servers = "非本番サーバーが設定されていません。"
+replay_speed = "リプレイ速度"
+replay_confirm_title = "読み取り専用リプレイの確認"
+replay_confirm_body = "%{count} 件の読み取り専用コマンドを %{server} に対して %{speed} 速度で再生しますか？"
+replay_running = "読み取り専用コマンドを再生中…"
+replay_report_title = "リプレイレポート"
+replay_report_summary = "%{server} (%{speed}) · %{replayed} 再生、%{skipped} スキップ、%{errors} エラー · %{rps} req/s · p50 %{p50} · p95 %{p95} · p99 %{p99}"
 
 [stream_editor]
 tail_stopped = "ライブテール停止"
@@ -1927,6 +1941,7 @@ debug_running = "実行中…"
 debug_finished = "完了"
 debug_failed = "失敗"
 debug_cluster_unavailable = "クラスターでは利用できません。デバッガーには単一ノードへの接続が必要です。"
+debug_cluster_node = "対象マスター"
 
 [shortcuts]
 title = "キーボードショートカット"

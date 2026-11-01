@@ -26,17 +26,12 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::RwLock;
+pub use zedis_core::MAX_INLINE_VALUE_SIZE;
 use zedis_core::codec::{bson, java, pickle};
 use zedis_core::json::keep_stored_layout;
 
 pub(crate) const SUCCESS_NOTIFY_THRESHOLD: usize = 10;
 
-/// Auto-load cap for whole-payload value types (String / RedisJSON).
-/// `get_value` probes the size first and, above this, returns a
-/// [`RedisValueStatus::TooLarge`] placeholder instead of pulling the
-/// payload — the editor then offers an explicit "load anyway".
-/// Collection types are exempt: their first loads are paginated.
-pub const MAX_INLINE_VALUE_SIZE: u64 = 5_000_000;
 /// How much of a String over [`MAX_INLINE_VALUE_SIZE`] its preview shows
 /// ("Preview" on the too-large panel): enough to tell what the value is, and
 /// an amount the editor draws without a stall. Decimal, like every size the

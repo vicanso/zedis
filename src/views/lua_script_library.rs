@@ -1387,19 +1387,13 @@ impl ZedisLuaScriptLibrary {
                                 ),
                         )
                         .when(debugs_lua_scripts(), |this| {
-                            let on_cluster = self.server_state.read(cx).is_cluster();
                             this.child(
                                 Button::new(("lua-debug", card_hash))
                                     .outline()
                                     .small()
                                     .icon(IconName::Inspector)
                                     .label(i18n_lua_scripts(cx, "debug"))
-                                    .tooltip(if on_cluster {
-                                        i18n_lua_scripts(cx, "debug_cluster_unavailable")
-                                    } else {
-                                        i18n_lua_scripts(cx, "debug_tooltip")
-                                    })
-                                    .disabled(on_cluster)
+                                    .tooltip(i18n_lua_scripts(cx, "debug_tooltip"))
                                     .on_click(cx.listener(move |this, _, w, cx| this.open_debugger(&id_debug, w, cx))),
                             )
                         })

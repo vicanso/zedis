@@ -28,7 +28,7 @@ use super::ZedisLuaScriptLibrary;
 use crate::{
     connection::{
         Capability, DebugCommand, DebugEnd, DebugLine, DebugMode, DebugStep, LuaDebugSession, LuaLocal, ServerDb,
-        max_keys_index,
+        cluster_master_addrs, max_keys_index, validate_cluster_debug_keys,
     },
     db::LuaScript,
     error::Error,
@@ -108,6 +108,8 @@ pub(super) struct LuaDebugger {
     args: Entity<TextareaState>,
     expr: Entity<InputState>,
     sync: bool,
+    cluster_masters: Vec<String>,
+    selected_master_idx: usize,
     session: Option<LuaDebugSession>,
     /// The line the script is paused before, while it is.
     current_line: Option<u32>,
@@ -149,6 +151,48 @@ impl LuaDebugger {
                 this.evaluate(window, cx);
             }
         })];
+
+        let (is_cluster, server_id, db, mut cluster_masters) = {
+            let state = server_state.read(cx);
+            let is_cluster = state.is_cluster();
+            let server_id = state.server_id().to_string();
+            let db = state.db();
+            let mut masters = Vec::new();
+            let desc = state.nodes_description();
+            if !desc.slot_map.masters.is_empty() {
+                masters = desc.slot_map.masters.iter().map(|m| m.addr.clone()).collect();
+            } else if !desc.master_nodes.is_empty() {
+                masters = desc
+                    .master_nodes
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            (is_cluster, server_id, db, masters)
+        };
+
+        if is_cluster && cluster_masters.is_empty() && !server_id.is_empty() {
+            let at = ServerDb::new(server_id, db);
+            let entity = cx.entity().downgrade();
+            cx.spawn(async move |_handle, cx| {
+                let res = cx
+                    .background_spawn(async move { cluster_master_addrs(&at).await })
+                    .await;
+                if let Ok(addrs) = res
+                    && !addrs.is_empty()
+                {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.cluster_masters = addrs;
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+            cluster_masters = Vec::new();
+        }
+
         Self {
             library,
             server_state,
@@ -164,6 +208,8 @@ impl LuaDebugger {
             args,
             expr,
             sync: false,
+            cluster_masters,
+            selected_master_idx: 0,
             session: None,
             current_line: None,
             stop_reason: None,
@@ -211,6 +257,7 @@ impl LuaDebugger {
         let state = self.server_state.read(cx);
         let server_id = state.server_id().to_string();
         let db = state.db();
+        let is_cluster = state.is_cluster();
         if server_id.is_empty() {
             self.error = Some(i18n_lua_scripts(cx, "no_server"));
             cx.notify();
@@ -231,6 +278,16 @@ impl LuaDebugger {
             cx.notify();
             return;
         }
+        if is_cluster && let Err(e) = validate_cluster_debug_keys(&keys) {
+            self.error = Some(e.to_string().into());
+            cx.notify();
+            return;
+        }
+        let target_node = if is_cluster && keys.is_empty() {
+            self.cluster_masters.get(self.selected_master_idx).cloned()
+        } else {
+            None
+        };
         // A previous session still paused is let go: dropping it closes its
         // connection, which aborts that script.
         self.session = None;
@@ -247,7 +304,8 @@ impl LuaDebugger {
         self._task = Some(cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 let at = ServerDb::new(&*server_id, db);
-                LuaDebugSession::start(&at, &code, &keys, &args, &breakpoints, mode).await
+                LuaDebugSession::start_on_node(&at, &code, &keys, &args, &breakpoints, mode, target_node.as_deref())
+                    .await
             });
             let result: Result<(LuaDebugSession, DebugStep)> = task.await.map_err(Into::into);
             let _ = handle.update(cx, |this, cx| {
@@ -627,9 +685,81 @@ impl LuaDebugger {
         let section = |title: SharedString| Label::new(title).text_xs().text_color(muted);
 
         // KEYS / ARGV and the mode, while nothing is paused.
+        let is_cluster = self.server_state.read(cx).is_cluster();
+        let cluster_target_el: Option<gpui::AnyElement> = is_cluster.then(|| {
+            let keys_list = parse_lines(&self.keys.read(cx).value());
+            if keys_list.is_empty() {
+                let selected_addr = self
+                    .cluster_masters
+                    .get(self.selected_master_idx)
+                    .cloned()
+                    .unwrap_or_else(|| "auto".to_string());
+                let count = self.cluster_masters.len();
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(section(i18n_lua_scripts(cx, "debug_cluster_node")))
+                    .child(
+                        Button::new("lua-dbg-cluster-node")
+                            .outline()
+                            .xsmall()
+                            .label(SharedString::from(selected_addr))
+                            .when(count == 0, |b| {
+                                b.tooltip(i18n_lua_scripts(cx, "debug_cluster_unavailable"))
+                            })
+                            .disabled(self.busy || count <= 1)
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                if !this.cluster_masters.is_empty() {
+                                    this.selected_master_idx =
+                                        (this.selected_master_idx + 1) % this.cluster_masters.len();
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .into_any_element()
+            } else {
+                match validate_cluster_debug_keys(&keys_list) {
+                    Ok(Some(slot)) => {
+                        let desc = self.server_state.read(cx).nodes_description();
+                        let owner = desc
+                            .slot_map
+                            .owners
+                            .iter()
+                            .find(|r| r.start <= slot && slot <= r.end)
+                            .map(|r| r.addr.clone())
+                            .or_else(|| self.cluster_masters.first().cloned());
+                        let label = match owner {
+                            Some(addr) => format!("Slot {slot} → {addr}"),
+                            None => format!("Slot {slot}"),
+                        };
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(section(i18n_lua_scripts(cx, "debug_cluster_node")))
+                            .child(
+                                Label::new(SharedString::from(label))
+                                    .font_family(mono.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().green),
+                            )
+                            .into_any_element()
+                    }
+                    Ok(None) => div().into_any_element(),
+                    Err(e) => Label::new(SharedString::from(e.to_string()))
+                        .text_xs()
+                        .whitespace_normal()
+                        .text_color(cx.theme().red)
+                        .into_any_element(),
+                }
+            }
+        });
+
         let inputs = (!live).then(|| {
             v_flex()
                 .gap_2()
+                .children(cluster_target_el)
                 .child(section(i18n_lua_scripts(cx, "keys_label")))
                 .child(Textarea::new(&self.keys).appearance(true).text_sm())
                 .child(section(i18n_lua_scripts(cx, "args_label")))
