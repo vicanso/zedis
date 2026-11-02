@@ -403,9 +403,15 @@ impl ZedisMemoryAnalysis {
         cx.spawn(async move |handle, cx| {
             let result = receiver.await;
             let _ = handle.update(cx, |this, cx| {
-                if let Ok(Ok(Some(paths))) = result
-                    && let Some(path) = paths.into_iter().next()
-                {
+                let paths = match crate::views::export::dialog_answer(result) {
+                    crate::views::export::DialogAnswer::Chosen(paths) => paths,
+                    crate::views::export::DialogAnswer::Cancelled => return,
+                    crate::views::export::DialogAnswer::Failed(detail) => {
+                        crate::views::export::note_file_dialog_failure(cx, &detail);
+                        return;
+                    }
+                };
+                if let Some(path) = paths.into_iter().next() {
                     let file_name: SharedString = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())

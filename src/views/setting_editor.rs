@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #[cfg(not(target_family = "wasm"))]
-use super::export::dirs_default_directory;
+use super::export::{
+    DialogAnswer, dialog_answer, dirs_default_directory, file_dialog_failed_message, log_file_dialog_failure,
+};
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{
     ensure_keybindings_file, export_local_data_json, get_or_create_config_dir, import_local_data_file,
@@ -880,8 +882,17 @@ impl ZedisSettingEditor {
         };
         let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(&name));
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(path))) = receiver.await else {
-                return;
+            let path = match dialog_answer(receiver.await) {
+                DialogAnswer::Chosen(path) => path,
+                DialogAnswer::Cancelled => return,
+                DialogAnswer::Failed(detail) => {
+                    log_file_dialog_failure(&detail);
+                    let _ = this.update_in(cx, |_this, window, cx| {
+                        let message = file_dialog_failed_message(cx, &detail);
+                        window.push_notification(Notification::error(message), cx);
+                    });
+                    return;
+                }
             };
             let result = cx
                 .background_spawn(async move { write_local_data_file(&path, &json).map(|()| path) })
@@ -918,8 +929,17 @@ impl ZedisSettingEditor {
             prompt: None,
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else {
-                return;
+            let paths = match dialog_answer(receiver.await) {
+                DialogAnswer::Chosen(paths) => paths,
+                DialogAnswer::Cancelled => return,
+                DialogAnswer::Failed(detail) => {
+                    log_file_dialog_failure(&detail);
+                    let _ = this.update_in(cx, |_this, window, cx| {
+                        let message = file_dialog_failed_message(cx, &detail);
+                        window.push_notification(Notification::error(message), cx);
+                    });
+                    return;
+                }
             };
             let Some(path) = paths.into_iter().next() else {
                 return;

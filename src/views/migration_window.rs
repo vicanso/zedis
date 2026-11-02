@@ -20,7 +20,10 @@
 //! verification with one-click jump to Compare, and best-effort live sync
 //! follow mode via keyspace notifications.
 
-use super::export::{CopyPreset, ExportSource, dirs_default_directory};
+use super::export::{
+    CopyPreset, DialogAnswer, ExportSource, dialog_answer, dirs_default_directory, file_dialog_failed_message,
+    log_file_dialog_failure,
+};
 use crate::connection::{
     ChannelSubscription, ConflictMode, ConflictPreview, CopyVerificationReport, DangerKind, SERVER_TYPE_CLUSTER,
     ServerDb, SubscribeKind, config_set, copy_keys_batch, delete_keys, get_keyspace_events_config, get_server,
@@ -987,17 +990,8 @@ impl ZedisMigrationWindow {
     /// The native file dialog did not open. Status stays Idle; the sentence
     /// is what the window shows, and the raw error goes to the log.
     fn note_file_dialog_error(&mut self, detail: &str, cx: &mut Context<Self>) {
-        if detail.is_empty() {
-            error!("could not open the file dialog");
-        } else {
-            error!(error = %detail, "could not open the file dialog");
-        }
-        let hint = i18n_migration(cx, "file_dialog_failed");
-        self.pick_error = Some(if detail.is_empty() {
-            hint
-        } else {
-            format!("{hint} {detail}").into()
-        });
+        log_file_dialog_failure(detail);
+        self.pick_error = Some(file_dialog_failed_message(cx, detail));
         cx.notify();
     }
 
@@ -1012,15 +1006,14 @@ impl ZedisMigrationWindow {
                 let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
                 cx.spawn(async move |this, cx| {
                     let result = receiver.await;
-                    let _ = this.update(cx, move |view, cx| match result {
-                        Ok(Ok(Some(path))) => {
+                    let _ = this.update(cx, move |view, cx| match dialog_answer(result) {
+                        DialogAnswer::Chosen(path) => {
                             view.pick_error = None;
                             view.chosen_path = Some(path.clone());
                             view.start_with_path(path, cx);
                         }
-                        Ok(Ok(None)) => view.pick_error = None,
-                        Ok(Err(err)) => view.note_file_dialog_error(&err.to_string(), cx),
-                        Err(_) => view.note_file_dialog_error("", cx),
+                        DialogAnswer::Cancelled => view.pick_error = None,
+                        DialogAnswer::Failed(detail) => view.note_file_dialog_error(&detail, cx),
                     });
                 })
                 .detach();
@@ -1034,8 +1027,8 @@ impl ZedisMigrationWindow {
                 });
                 cx.spawn(async move |this, cx| {
                     let result = receiver.await;
-                    let _ = this.update(cx, move |view, cx| match result {
-                        Ok(Ok(Some(paths))) => {
+                    let _ = this.update(cx, move |view, cx| match dialog_answer(result) {
+                        DialogAnswer::Chosen(paths) => {
                             if let Some(path) = paths.into_iter().next() {
                                 view.pick_error = None;
                                 view.chosen_path = Some(path);
@@ -1044,9 +1037,8 @@ impl ZedisMigrationWindow {
                                 cx.notify();
                             }
                         }
-                        Ok(Ok(None)) => view.pick_error = None,
-                        Ok(Err(err)) => view.note_file_dialog_error(&err.to_string(), cx),
-                        Err(_) => view.note_file_dialog_error("", cx),
+                        DialogAnswer::Cancelled => view.pick_error = None,
+                        DialogAnswer::Failed(detail) => view.note_file_dialog_error(&detail, cx),
                     });
                 })
                 .detach();

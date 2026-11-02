@@ -25,6 +25,8 @@ use crate::helpers::{PickFailure, PickedFile};
 use crate::helpers::{get_download_dir, get_home_dir};
 #[cfg(target_family = "wasm")]
 use crate::helpers::{media_type_for, web_download, web_upload};
+#[cfg(not(target_family = "wasm"))]
+use crate::states::i18n_common;
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
 use chrono::Local;
 use gpui::{App, Context, Entity, SharedString, Task, Window};
@@ -155,6 +157,64 @@ pub(crate) fn dirs_default_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// What a native file dialog answered. Cancelling is not a failure: a missing
+/// portal or a bus error is [`DialogAnswer::Failed`], and that is the case
+/// the caller logs and shows.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+pub(crate) enum DialogAnswer<T> {
+    Chosen(T),
+    Cancelled,
+    Failed(String),
+}
+
+/// Split a `prompt_for_new_path` / `prompt_for_paths` reply. `Ok(None)` is
+/// the person closing the dialog; `Err` is the dialog never opening.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn dialog_answer<T>(
+    result: Result<Result<Option<T>, impl std::fmt::Display>, impl std::fmt::Display>,
+) -> DialogAnswer<T> {
+    match result {
+        Ok(Ok(Some(value))) => DialogAnswer::Chosen(value),
+        Ok(Ok(None)) => DialogAnswer::Cancelled,
+        Ok(Err(err)) => DialogAnswer::Failed(err.to_string()),
+        Err(err) => DialogAnswer::Failed(err.to_string()),
+    }
+}
+
+/// The sentence every file dialog shows when it cannot open, plus the raw
+/// error when there is one.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn file_dialog_failed_message(cx: &App, detail: &str) -> SharedString {
+    let hint = i18n_common(cx, "file_dialog_failed");
+    if detail.is_empty() {
+        hint
+    } else {
+        format!("{hint} {detail}").into()
+    }
+}
+
+/// Log a dialog that did not open. The message matches the migration window
+/// so one search finds every path.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn log_file_dialog_failure(detail: &str) {
+    if detail.is_empty() {
+        tracing::error!("could not open the file dialog");
+    } else {
+        tracing::error!(error = %detail, "could not open the file dialog");
+    }
+}
+
+/// Log the failure and raise the app-wide error notification.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn note_file_dialog_failure(cx: &mut App, detail: &str) {
+    log_file_dialog_failure(detail);
+    let message = file_dialog_failed_message(cx, detail);
+    cx.global::<ZedisGlobalStore>().clone().update(cx, |_state, cx| {
+        cx.emit(GlobalEvent::Notification(NotificationAction::new_error(message)));
+    });
+}
+
 /// Prompt for a save path, write `bytes` to it off the UI thread, and emit
 /// a success / error notification through the server state.
 ///
@@ -176,17 +236,20 @@ pub(crate) fn export_to_file<V: 'static>(
     error_label: SharedString,
 ) {
     let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(suggested_name));
-    cx.spawn(async move |_view, cx| {
-        let Ok(Ok(Some(path))) = receiver.await else {
-            return;
-        };
-        let result = cx
-            .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
-            .await;
-        server_state.update(cx, |state, cx| match &result {
-            Ok(path) => state.emit_success_notification(path.display().to_string().into(), success_title, cx),
-            Err(e) => state.emit_error_notification(format!("{error_label}: {e}").into(), cx),
-        });
+    cx.spawn(async move |_view, cx| match dialog_answer(receiver.await) {
+        DialogAnswer::Cancelled => {}
+        DialogAnswer::Failed(detail) => {
+            cx.update(|cx| note_file_dialog_failure(cx, &detail));
+        }
+        DialogAnswer::Chosen(path) => {
+            let result = cx
+                .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
+                .await;
+            server_state.update(cx, |state, cx| match &result {
+                Ok(path) => state.emit_success_notification(path.display().to_string().into(), success_title, cx),
+                Err(e) => state.emit_error_notification(format!("{error_label}: {e}").into(), cx),
+            });
+        }
     })
     .detach();
 }
@@ -231,23 +294,26 @@ pub(crate) fn export_to_file_global(
     error_label: SharedString,
 ) {
     let receiver = cx.prompt_for_new_path(&dirs_default_directory(), Some(suggested_name));
-    cx.spawn(async move |cx| {
-        let Ok(Ok(Some(path))) = receiver.await else {
-            return;
-        };
-        let result = cx
-            .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
-            .await;
-        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-            store.update(cx, |_state, cx| match &result {
-                Ok(path) => cx.emit(GlobalEvent::Notification(NotificationAction::new_success(
-                    format!("{success_label}: {}", path.display()).into(),
-                ))),
-                Err(e) => cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
-                    format!("{error_label}: {e}").into(),
-                ))),
+    cx.spawn(async move |cx| match dialog_answer(receiver.await) {
+        DialogAnswer::Cancelled => {}
+        DialogAnswer::Failed(detail) => {
+            cx.update(|cx| note_file_dialog_failure(cx, &detail));
+        }
+        DialogAnswer::Chosen(path) => {
+            let result = cx
+                .background_spawn(async move { std::fs::write(&path, &bytes).map(|_| path) })
+                .await;
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |_state, cx| match &result {
+                    Ok(path) => cx.emit(GlobalEvent::Notification(NotificationAction::new_success(
+                        format!("{success_label}: {}", path.display()).into(),
+                    ))),
+                    Err(e) => cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
+                        format!("{error_label}: {e}").into(),
+                    ))),
+                });
             });
-        });
+        }
     })
     .detach();
 }
@@ -282,12 +348,16 @@ pub(crate) fn open_file(cx: &mut App, _accept: &str, max_bytes: u64) -> Task<Opt
         multiple: false,
         prompt: None,
     });
-    cx.spawn(async move |cx| {
-        let Ok(Ok(Some(paths))) = receiver.await else {
-            return None;
-        };
-        let path = paths.into_iter().next()?;
-        Some(cx.background_spawn(async move { read_picked(&path, max_bytes) }).await)
+    cx.spawn(async move |cx| match dialog_answer(receiver.await) {
+        DialogAnswer::Cancelled => None,
+        DialogAnswer::Failed(detail) => {
+            cx.update(|cx| note_file_dialog_failure(cx, &detail));
+            None
+        }
+        DialogAnswer::Chosen(paths) => {
+            let path = paths.into_iter().next()?;
+            Some(cx.background_spawn(async move { read_picked(&path, max_bytes) }).await)
+        }
     })
 }
 
@@ -350,6 +420,19 @@ pub(crate) fn export_filename_with(stem: &str, extension: &str) -> String {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dialog_that_does_not_open_is_not_a_cancel() {
+        let failed: Result<Result<Option<u8>, &str>, &str> = Ok(Err("portal missing"));
+        match dialog_answer(failed) {
+            DialogAnswer::Failed(detail) => assert_eq!(detail, "portal missing"),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        let closed: Result<Result<Option<u8>, &str>, &str> = Ok(Ok(None));
+        assert!(matches!(dialog_answer(closed), DialogAnswer::Cancelled));
+        let dropped: Result<Result<Option<u8>, &str>, &str> = Err("canceled");
+        assert!(matches!(dialog_answer(dropped), DialogAnswer::Failed(_)));
+    }
 
     /// A picked file over the caller's limit is refused by its size, before
     /// a byte of it is read; one within it comes back whole, named.

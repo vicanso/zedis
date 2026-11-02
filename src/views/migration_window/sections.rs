@@ -204,14 +204,6 @@ impl ZedisMigrationWindow {
                             })),
                     ),
             )
-            .when_some(self.pick_error.clone(), |this, err| {
-                this.child(
-                    div()
-                        .id("migration-file-dialog-error")
-                        .pt_2()
-                        .child(Label::new(err).text_sm().text_color(cx.theme().danger_foreground)),
-                )
-            })
     }
 
     /// Export: format choice — must be picked before the file dialog,
@@ -793,7 +785,17 @@ impl ZedisMigrationWindow {
                     .on_click(cx.listener(|this, _, window, cx| this.handle_pick_and_start(window, cx))),
             );
         }
-        row
+        // Next to the button that opened the dialog. `danger` is the red
+        // drawn on the page; `danger_foreground` is the colour for text that
+        // sits on a danger fill, and on a light page it is nearly white.
+        let error = self.pick_error.clone().map(|err| {
+            div()
+                .id("migration-file-dialog-error")
+                .px_6()
+                .pt_4()
+                .child(Label::new(err).text_sm().text_color(cx.theme().danger))
+        });
+        v_flex().w_full().children(error).child(row)
     }
 
     /// The dry run in a line: on its way, failed, cancelled, what it
