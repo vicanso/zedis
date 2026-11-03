@@ -68,7 +68,7 @@ repository = "https://github.com/vicanso/zedis"
 documentation = "https://github.com/vicanso/zedis"
 # The published MSRV — what `cargo install zedis-gui` users are promised.
 # Compile-checked by the `msrv` job in lint.yml; the floor currently comes
-# from gpui-pre-macos 0.3.10 (`Option::map_or_default`, stabilized in 1.98.0).
+# from gpui-pre-macos 0.3.11 (`Option::map_or_default`, stabilized in 1.98.0).
 rust-version = "1.98.0"
 
 [dependencies]
@@ -112,7 +112,7 @@ lz4_flex = { version = "0.14.0", default-features = false, features = [
     "safe-decode",
     "checked-decode",
 ] }
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 pretty-hex = "0.4.2"
 regex = { workspace = true }
 rmp-serde = "1.3.1"
@@ -336,7 +336,7 @@ redis = { version = "1.7.1", features = [
     "aio",
 ] }
 regex = "1.13.1"
-russh = { version = "0.64.1", default-features = false, features = [
+russh = { version = "0.65.0", default-features = false, features = [
     "ring",
     "flate2",
     "rsa",
@@ -363,7 +363,7 @@ url = "2.5.8"
 # `Uuid::now_v7`, and it only ever compiled because accesskit (via gpui)
 # happens to turn the feature on — so `cargo test -p zedis-connection`,
 # which drags in no GUI stack, failed to build on its own.
-uuid = { version = "1.28.0", features = ["v7"] }
+uuid = { version = "1.29.0", features = ["v7"] }
 # `std::time` for the browser too. `Instant::now()` and `SystemTime::now()`
 # panic on `wasm32-unknown-unknown` ("time not implemented on this platform"),
 # and on every other target this crate *is* std's own types, so a file that
@@ -371,27 +371,27 @@ uuid = { version = "1.28.0", features = ["v7"] }
 # `std::time` (ADR 9). `Duration` stays std: it is arithmetic, the same type
 # everywhere. Native-only files (the updater, the file logger) keep std.
 web-time = "1.1.0"
-webpki-roots = "1.0.10"
+webpki-roots = "1.0.11"
 # GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
 # too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
-# names (0.3.10 = zed@08cbb88) and depends on it itself. The `package =`
+# names (0.3.11 = zed@f816e1f) and depends on it itself. The `package =`
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.10" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.10", features = [
+gpui = { package = "gpui-pre", version = "0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.11", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.10" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.11" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.10" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.11" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
@@ -404,7 +404,7 @@ gpui_web = { package = "gpui-pre-web", version = "0.3.10" }
 # (`gpui-fast-*`: not enabled here, never compiled). The lockfile covers
 # those too. `unicode-properties` 0.1.3 is what gpui-pre-web and rustybuzz
 # ask for; gpui-pre-macos no longer pins `cocoa` (`zed-scap` brings 0.25).
-gpui-kit = { version = "0.8.1" }
+gpui-kit = { version = "0.9.0" }
 
 [build-dependencies]
 winres = "0.1.12"

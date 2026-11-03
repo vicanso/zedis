@@ -43,7 +43,7 @@ zedis-gui = { path = ".." }
 # Only the browser entry point uses the kit: `web_init`, the single-threaded
 # app and the asset source. A native check of this crate builds the transport
 # and its tests, and needs none of it. `syntect` is the page's highlighter
-# (gpui-kit 0.8): regex-based (`regex-fancy`, pure Rust), so it builds for
+# (gpui-kit 0.8+): regex-based (`regex-fancy`, pure Rust), so it builds for
 # wasm32 where tree-sitter does not, and it colours the editors with the
 # theme's own highlight names, as the desktop's tree-sitter does.
 gpui-kit = { workspace = true, features = ["syntect"] }
