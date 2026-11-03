@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.16.0](https://github.com/vicanso/zedis/compare/v0.15.2..v0.16.0) - 2026-11-03
+
+### ⛰️  Features
+
+- *(bridge)* Add troubleshooting_report MCP tool and update role hint - ([e3d4e01](https://github.com/vicanso/zedis/commit/e3d4e01a6cfc4b246bc3ab28b062737fad36f8fb))
+- *(editor)* Add live key timeline dialog with keyspace event watch and value diffs - ([a9712ea](https://github.com/vicanso/zedis/commit/a9712ea7f7a548c091b4147d466ef122b195fe98))
+- *(lua)* Add interactive Lua script debugger (SCRIPT DEBUG) - ([0308a8e](https://github.com/vicanso/zedis/commit/0308a8e77470b5301991b562a502873b3369a516))
+- *(memory)* Infer keyspace schema patterns and export data dictionary - ([ba7508b](https://github.com/vicanso/zedis/commit/ba7508ba2166e49008265546cc7b27685cca0432))
+- *(metrics)* Add opt-in per-server threshold alerts and notifications - ([7646bd9](https://github.com/vicanso/zedis/commit/7646bd9863f9261b3e4a7297cea81da25e15d5eb))
+- *(migration)* Add pattern scan source, resumable job checkpoints, live follow sync, and verify compare jump - ([b5cb0ad](https://github.com/vicanso/zedis/commit/b5cb0ad7367699a5db7b2732f1b37277ba026c28))
+- *(migration)* Add rate limiting, pause/resume, and post-copy verification - ([7b18333](https://github.com/vicanso/zedis/commit/7b18333f85250b13cb4b8d2913f9d8a35961f4a9))
+- *(monitor)* Add command-count sampling, 2D cross-tab aggregation, and summary export - ([b39f17a](https://github.com/vicanso/zedis/commit/b39f17ac7238df7cbb973c58c18262b0ff109636))
+- *(script-viewer)* Add optional encode command write-back and JSON import/export - ([5ce4f03](https://github.com/vicanso/zedis/commit/5ce4f031df282fa80ece9141bf415c8c5bb0df7f))
+- *(ui)* Add zedis:// deep links and copy-link-to-key action - ([3065f6a](https://github.com/vicanso/zedis/commit/3065f6af37185925b376ee54f65e542ffa03bf8e))
+- *(ui,connection,db)* Add key timeline persistence, cluster lua debugging, and monitor read-only replay - ([6205a1e](https://github.com/vicanso/zedis/commit/6205a1eda09812878f2c974b5016da9f30f59715))
+- *(web)* Support SCRIPT KILL and FUNCTION KILL in browser via bridge - ([71d892c](https://github.com/vicanso/zedis/commit/71d892c04b44c937cbb4ec6d8734c8bde5f558f8))
+- *(web)* Support JSON and CSV readable key import in browser - ([0cf74fd](https://github.com/vicanso/zedis/commit/0cf74fd1481116f75faf333394e93aa1e5baf521))
+- *(web)* Support server-to-server key copy and compare copy-to-target in browser - ([a6463a3](https://github.com/vicanso/zedis/commit/a6463a3a7115b208b42ba332890ad604d6786805))
+
+### 🐛 Bug Fixes
+
+- *(benchmark, migration)* Follow the bench prefix, restore a resumed copy, and report a failed file dialog (#263, #264, #265) - ([d939687](https://github.com/vicanso/zedis/commit/d9396874890d439f551892fae5554fa07673d0cd))
+- *(key-tree)* Preserve rows and expanded folders across paged refreshes - ([60330e2](https://github.com/vicanso/zedis/commit/60330e220e0f158f7e3e09452410efa2b932bce1))
+- *(ui)* Report a file dialog that cannot open, and keep that error readable (#265, #267) - ([2a252d0](https://github.com/vicanso/zedis/commit/2a252d0d442992c9916063c5cd381927877cf74b))
+- *(ui,connection)* Resolve compare tab selection, copy target default, benchmark prefix, and key tree deep-link highlight (#259, #260, #261, #262) - ([95c94d9](https://github.com/vicanso/zedis/commit/95c94d9e63da8d7607dfeeaf6016c793680659db))
+
+### 🚜 Refactor
+
+- *(views)* Split kv_table, memory_analysis, slowlog_editor, and terminal into submodules - ([34983a8](https://github.com/vicanso/zedis/commit/34983a82afa548735ec4a79355f0467f1a960c44))
+
+### 📚 Documentation
+
+- *(agents)* Add differentiation feature plan - ([c5e22df](https://github.com/vicanso/zedis/commit/c5e22df810ac3346415f6cb7d8b924ffec3bffaf))
+- *(readme)* Fix demo video embed and replace user-attachments image links - ([74f0186](https://github.com/vicanso/zedis/commit/74f01861db20c8e2e7a82a1c9a6edd540cb07141))
+- *(readme)* Use local docs/images paths for gallery screenshots - ([1e75a14](https://github.com/vicanso/zedis/commit/1e75a140f6f1f379a0f9f6cf49fbbdccb2c6b228))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(ci)* Scope GITHUB_TOKEN in workflows and update yanked crypto-bigint - ([b0ce9a4](https://github.com/vicanso/zedis/commit/b0ce9a4a6f6e815a76ec15fb394155e7f97605ac))
+
+### Build
+
+- *(web)* Pin wasm nightly toolchain to nightly-2026-10-07 - ([09aeb82](https://github.com/vicanso/zedis/commit/09aeb8239c47f6698fe53f304e5702f8159a4a86))
+
 ## [0.15.2](https://github.com/vicanso/zedis/compare/v0.15.1..v0.15.2) - 2026-10-31
 
 ### ⛰️  Features

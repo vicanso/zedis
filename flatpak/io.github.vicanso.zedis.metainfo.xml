@@ -77,6 +77,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.16.0" date="2026-11-04">
+      <url>https://github.com/vicanso/zedis/releases/tag/v0.16.0</url>
+    </release>
     <release version="0.15.2" date="2026-10-31">
       <url>https://github.com/vicanso/zedis/releases/tag/v0.15.2</url>
     </release>
