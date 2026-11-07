@@ -1,11 +1,11 @@
 [中文](./SQL_STORE_zh.md) | English · [← Back to README](../README.md)
 
-# Zedis Web: PostgreSQL and MySQL storage
+# Zedis Web: PostgreSQL, MySQL and Redis storage
 
-By default `zedis-bridge` — the server of the [web version](./WEB.md) — keeps everything in its data directory (`/data` in the image): one process, nothing else to run, and a backup is one directory to copy. Put its data in **PostgreSQL 14+** or **MySQL 8.0.19+** instead when you want
+By default `zedis-bridge` — the server of the [web version](./WEB.md) — keeps everything in its data directory (`/data` in the image): one process, nothing else to run, and a backup is one directory to copy. Put its data in **PostgreSQL 14+**, **MySQL 8.0.19+** or **Redis / Valkey** instead when you want
 
 - **more than one bridge**, behind a load balancer, or so that a bridge can go down without signing everyone out;
-- **an audit you can search**: with a database it is on by default, kept for a year, and read on the account page.
+- **an audit you can search**: with a database it is on by default, kept for a year (90 days sliding TTL in Redis), and read on the account page.
 
 The desktop app is not affected: it keeps its data on your machine. MariaDB, SQLite and other servers that only speak the MySQL or PostgreSQL protocol are not supported.
 
@@ -76,6 +76,24 @@ docker run -d --name zedis-web --network zedis --restart unless-stopped \
   vicanso/zedis-web:latest
 
 docker logs zedis-web 2>&1 | grep -E "stores are in a database|setup token"
+```
+
+### Redis / Valkey
+
+```bash
+docker network create zedis
+
+docker run -d --name zedis-redis --network zedis --restart unless-stopped \
+  -v zedis-redis:/data \
+  redis:8 redis-server --appendonly yes --requirepass change-me
+
+docker run -d --name zedis-web --network zedis --restart unless-stopped \
+  -p 127.0.0.1:7379:7379 \
+  -v zedis-data:/data \
+  -e ZEDIS_BRIDGE_STORE='redis://:change-me@zedis-redis:6379/0?prefix=zedis' \
+  vicanso/zedis-web:latest
+
+docker logs zedis-web 2>&1 | grep -E "stores are in Redis|setup token"
 ```
 
 Then open <http://localhost:7379> and create the administrator with the setup token from the log, as in the [self-hosting guide](./WEB.md#try-it). For anything past a trial put HTTPS in front ([Deploy it](./WEB.md#deploy-it)).

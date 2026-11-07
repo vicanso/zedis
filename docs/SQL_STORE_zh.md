@@ -1,11 +1,11 @@
 中文 | [English](./SQL_STORE.md) · [← 返回 README](../README_zh.md)
 
-# Zedis Web 版：PostgreSQL 与 MySQL 存储
+# Zedis Web 版：PostgreSQL、MySQL 与 Redis 存储
 
-`zedis-bridge` —— [Web 版](./WEB_zh.md)的服务端 —— 默认把所有数据存在它的数据目录里（镜像中是 `/data`）：只有一个进程，不用额外部署任何东西，备份就是复制一个目录。下面两种情况，改用 **PostgreSQL 14+** 或 **MySQL 8.0.19+** 存储：
+`zedis-bridge` —— [Web 版](./WEB_zh.md)的服务端 —— 默认把所有数据存在它的数据目录里（镜像中是 `/data`）：只有一个进程，不用额外部署任何东西，备份就是复制一个目录。下面两种情况，改用 **PostgreSQL 14+**、**MySQL 8.0.19+** 或 **Redis / Valkey** 存储：
 
 - **要运行多个 bridge**：放在负载均衡之后，或者希望某个 bridge 挂掉时不会让所有人都要重新登录；
-- **要能查询的审计**：使用数据库时审计默认开启，保留一年，可以在账号页查看。
+- **要能查询的审计**：使用数据库时审计默认开启，保留一年（Redis 中为 90 天滑动 TTL），可以在账号页查看。
 
 桌面应用不受影响：它的数据保存在本机。不支持 MariaDB、SQLite，也不支持其他只是兼容 MySQL 或 PostgreSQL 协议的服务。
 
@@ -76,6 +76,24 @@ docker run -d --name zedis-web --network zedis --restart unless-stopped \
   vicanso/zedis-web:latest
 
 docker logs zedis-web 2>&1 | grep -E "stores are in a database|setup token"
+```
+
+### Redis / Valkey
+
+```bash
+docker network create zedis
+
+docker run -d --name zedis-redis --network zedis --restart unless-stopped \
+  -v zedis-redis:/data \
+  redis:8 redis-server --appendonly yes --requirepass change-me
+
+docker run -d --name zedis-web --network zedis --restart unless-stopped \
+  -p 127.0.0.1:7379:7379 \
+  -v zedis-data:/data \
+  -e ZEDIS_BRIDGE_STORE='redis://:change-me@zedis-redis:6379/0?prefix=zedis' \
+  vicanso/zedis-web:latest
+
+docker logs zedis-web 2>&1 | grep -E "stores are in Redis|setup token"
 ```
 
 然后打开 <http://localhost:7379>，用日志里的初始化令牌创建管理员，和[自托管指南](./WEB_zh.md#快速试用)里一样。试用之外的场景请在前面加 HTTPS（见[部署](./WEB_zh.md#正式部署)）。

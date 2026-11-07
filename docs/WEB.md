@@ -9,6 +9,8 @@ Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn 
 </p>
 
 > **Early preview.** The image is published for linux/amd64 and linux/arm64 (~26 MB): `:latest` and the release version for tagged releases, `:nightly` for the rolling build from `main`.
+>
+> **Live demo:** <https://zedis.pingap.io/> — Account: `zedis` / Password: `zedis123123` (read-only public demo account).
 
 ## Try it
 
@@ -71,7 +73,7 @@ Open `https://tools.example.com/zedis/`. For nginx the equivalent is `location /
 
 ## Several bridges on one database
 
-By default a bridge keeps everything in its data directory: one process, nothing else to run, and a backup is one directory to copy. To run more than one bridge — behind a load balancer, or for a bridge that may go down without signing everyone out — or to have an audit you can search, give every bridge the same PostgreSQL 14+ or MySQL 8.0.19+ database:
+By default a bridge keeps everything in its data directory: one process, nothing else to run, and a backup is one directory to copy. To run more than one bridge — behind a load balancer, or for a bridge that may go down without signing everyone out — or to have an audit you can search, give every bridge the same PostgreSQL 14+, MySQL 8.0.19+ or Redis/Valkey database:
 
 ```bash
 docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
@@ -80,9 +82,9 @@ docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   vicanso/zedis-web:latest
 ```
 
-It comes with the first release after v0.14.0; until then use `vicanso/zedis-web:nightly`. The [PostgreSQL and MySQL storage guide](./SQL_STORE.md) has the Docker commands for both databases, the database user and its privileges, TLS, backups, upgrades and the schema; what follows is the short version.
+It comes with the first release after v0.14.0; until then use `vicanso/zedis-web:nightly`. The [PostgreSQL, MySQL and Redis storage guide](./SQL_STORE.md) has the Docker commands for all three stores, the database user and its privileges, TLS, backups, upgrades and the schema; what follows is the short version.
 
-`ZEDIS_BRIDGE_STORE` (or `--store`) is a `postgres://…` or `mysql://…` URL. Prefer the environment: the URL carries a password, and a flag is visible to anyone who can list processes. The log only ever shows its host. The bridge creates its tables on start and brings them up to date with each release, under the database's own lock, so bridges starting together do it once; a bridge older than the tables refuses to start. MariaDB is not supported.
+`ZEDIS_BRIDGE_STORE` (or `--store`) is a `postgres://…`, `mysql://…`, `redis://…` (`rediss://…`), or `valkey://…` (`valkeys://…`) URL. Prefer the environment: the URL carries a password, and a flag is visible to anyone who can list processes. The log only ever shows its host. For PostgreSQL and MySQL the bridge creates its tables on start and brings them up to date with each release, under the database's own lock, so bridges starting together do it once; a bridge older than the tables refuses to start (MariaDB is not supported). For Redis/Valkey, the bridge keeps its keys under `zedis:…` (or `?prefix=zedis:prod`): core configuration and authored assets (`zedis:meta`, `zedis:versions`, `zedis:servers`, `zedis:accounts`, `zedis:scripts`, `zedis:page_rows:{account}`, `zedis:key_notes:{server_id}`) are kept without a TTL, while logins, invitations, signup requests, the setup token, failed sign-ins, the recycle bin, metrics history and audit lines refresh a sliding TTL on every write.
 
 What the database then holds: the accounts, invitations, requests for an account and MCP tokens, the logins, the server list, the recycle bin, the Metrics history, the page's data, the setup token and failed sign-ins. A browser signed in on one bridge is signed in on all of them, ten failed sign-ins are ten across all of them, and a change made on one — an account disabled, a server rule removed, a sign-out — reaches the others within **two seconds**. The audit is on and kept there too (see [Audit log](#audit-log)).
 

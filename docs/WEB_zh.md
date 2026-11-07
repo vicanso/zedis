@@ -9,6 +9,8 @@ Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 c
 </p>
 
 > **早期预览。** 镜像已发布 linux/amd64 与 linux/arm64 两个架构（约 26 MB）：正式发布对应 `:latest` 与版本号标签，`:nightly` 是跟随 `main` 的滚动构建。
+>
+> **在线演示：** <https://zedis.pingap.io/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
 
 ## 快速试用
 
@@ -71,7 +73,7 @@ tools.example.com {
 
 ## 多个 bridge 共用一个数据库
 
-默认情况下 bridge 把所有东西都存在数据目录里：只有一个进程，不需要额外的服务，备份就是复制一个目录。要运行多个 bridge（放在负载均衡后面，或者让某个 bridge 宕机时不会把所有人都踢下线），或者想要一个能检索的审计记录，就让所有 bridge 共用同一个 PostgreSQL 14+ 或 MySQL 8.0.19+ 数据库：
+默认情况下 bridge 把所有东西都存在数据目录里：只有一个进程，不需要额外的服务，备份就是复制一个目录。要运行多个 bridge（放在负载均衡后面，或者让某个 bridge 宕机时不会把所有人都踢下线），或者想要一个能检索的审计记录，就让所有 bridge 共用同一个 PostgreSQL 14+、MySQL 8.0.19+ 或 Redis/Valkey 数据库：
 
 ```bash
 docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
@@ -80,9 +82,9 @@ docker run -d --name zedis-web -p 127.0.0.1:7379:7379 \
   vicanso/zedis-web:latest
 ```
 
-这个功能从 v0.14.0 之后的第一个正式版本开始提供，在那之前请用 `vicanso/zedis-web:nightly`。[PostgreSQL 与 MySQL 存储指南](./SQL_STORE_zh.md)里有两种数据库的 Docker 启动命令、数据库用户与权限、TLS、备份、升级和建表语句；下面是简要说明。
+这个功能从 v0.14.0 之后的第一个正式版本开始提供，在那之前请用 `vicanso/zedis-web:nightly`。[PostgreSQL、MySQL 与 Redis 存储指南](./SQL_STORE_zh.md)里有三种存储的 Docker 启动命令、数据库用户与权限、TLS、备份、升级和建表语句；下面是简要说明。
 
-`ZEDIS_BRIDGE_STORE`（或 `--store`）是一个 `postgres://…` 或 `mysql://…` URL。推荐用环境变量：URL 里带着密码，而命令行参数能被任何可以列出进程的人看到。日志里只会出现它的主机部分。bridge 启动时会建表，每次升级时把表结构更新到当前版本，期间持有数据库自己的锁，所以同时启动的多个 bridge 只会执行一次；比表结构旧的 bridge 会拒绝启动。不支持 MariaDB。
+`ZEDIS_BRIDGE_STORE`（或 `--store`）是一个 `postgres://…`、`mysql://…`、`redis://…`（`rediss://…`）或 `valkey://…`（`valkeys://…`）URL。推荐用环境变量：URL 里带着密码，而命令行参数能被任何可以列出进程的人看到。日志里只会出现它的主机部分。使用 PostgreSQL 或 MySQL 时，bridge 启动时会建表，每次升级时把表结构更新到当前版本，期间持有数据库自己的锁，所以同时启动的多个 bridge 只会执行一次；比表结构旧的 bridge 会拒绝启动（不支持 MariaDB）。使用 Redis/Valkey 时，数据保存在 `zedis:…` 前缀下（可通过 `?prefix=zedis:prod` 自定义）：核心配置与自建资产（`zedis:meta`、`zedis:versions`、`zedis:servers`、`zedis:accounts`、`zedis:scripts`、`zedis:page_rows:{account}`、`zedis:key_notes:{server_id}`）永久有效（无 TTL），而登录会话、邀请、账号申请、初始化令牌、登录失败记录、回收站、指标历史和审计日志则在每次写入或续期时刷新滑动 TTL。
 
 这时存进数据库的有：账号、邀请、账号申请和 MCP 令牌，登录状态，服务器列表，回收站，指标历史，页面数据，初始化令牌，以及登录失败记录。在一个 bridge 上登录，在所有 bridge 上都算已登录；登录失败 10 次是所有 bridge 合计 10 次；在一个 bridge 上做的变更 —— 停用账号、删掉一条服务器规则、退出登录 —— **两秒内**传到其他 bridge。审计也默认开启并存在数据库里（见[审计日志](#审计日志)）。
 

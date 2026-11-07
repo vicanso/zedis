@@ -17,6 +17,7 @@
   <a href="#-功能">功能</a> ·
   <a href="#-安装">安装</a> ·
   <a href="#-web-版自托管">Web 版</a> ·
+  <a href="https://zedis.pingap.io/">在线演示</a> ·
   <a href="./docs/FEATURES_zh.md">完整功能介绍</a> ·
   <a href="https://zedis.net/zh/">官网</a>
 </p>
@@ -122,6 +123,8 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 同一套 GUI，编译成 WebAssembly。部署在 Redis 旁边，打开浏览器标签页就能用。`zedis-bridge` 提供页面并代替浏览器访问 Redis —— 密码只保存在 bridge 上（加密存储），不会到达页面。
 
+👉 **在线演示：** <https://zedis.pingap.io/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
+
 <p align="center">
   <img src="docs/images/architecture.svg" width="100%" alt="Zedis 的界面和 Redis 连接层是同一份代码、两套程序。桌面应用是一个原生进程，两者都在其中。Web 版把同一套界面以 WebAssembly 跑在标签页里，通过 HTTP 访问 zedis-bridge；bridge 用同一套连接层把请求变成 Redis 命令。桌面应用和 bridge 都以 RESP 连接单机、哨兵与集群的 Redis 和 Valkey。">
 </p>
@@ -138,7 +141,7 @@ docker logs zedis-web 2>&1 | grep "setup token"
 - **账号、角色、SSO** —— 第一个账号是管理员，其他人凭邀请注册，或提交申请由管理员审核；条目默认私有；账号可以只读或只能看到部分服务器；身份可以来自反向代理写入的请求头。
 - **生产环境默认锁写** —— Prod 每次解锁 15 分钟；审计日志记录登录、条目变更和每条经确认的命令。
 - **MCP** —— Claude Code、Cursor 或任何 MCP 客户端以只读账号读 Redis，每次调用都留审计。
-- **多个 bridge 共用一个数据库** —— 用 PostgreSQL 或 MySQL 保存账号、登录状态与审计，bridge 可以放在负载均衡之后（[指南](./docs/SQL_STORE_zh.md)）。
+- **多个 bridge 共用一个数据库** —— 用 PostgreSQL、MySQL 或 Redis/Valkey 保存账号、登录状态与审计，bridge 可以放在负载均衡之后（[指南](./docs/SQL_STORE_zh.md)）。
 
 > **早期预览。** linux/amd64 与 linux/arm64（约 26 MB）。部分桌面面板在浏览器里不可用，指南里有清单。
 
@@ -154,7 +157,7 @@ Valkey 在这里是一等公民，不是兼容模式。依赖版本的功能能�
 
 - **[完整功能介绍](./docs/FEATURES_zh.md)** —— 每个面板、查看器和快捷键。
 - **[Web 版：自托管指南](./docs/WEB_zh.md)** —— 部署、账号、SSO、审计日志与 MCP。
-- **[Web 版：PostgreSQL 与 MySQL 存储](./docs/SQL_STORE_zh.md)** —— Docker 启动命令、数据库用户、TLS、备份、升级与建表语句。
+- **[Web 版：PostgreSQL、MySQL 与 Redis 存储](./docs/SQL_STORE_zh.md)** —— Docker 启动命令、数据库用户、TLS、备份、升级与建表语句。
 - **[Redis 与 Valkey](./docs/REDIS_VALKEY_zh.md)** —— 两者的差异，以及它们之间的复制如何工作。
 - **[安全策略](./SECURITY.md)** · **[更新日志](./CHANGELOG.md)**
 
