@@ -37,13 +37,12 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_kit::component::menu::DropdownMenu;
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
     h_flex,
-    input::{Escape, Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Escape, Input, InputEvent, InputState},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
     table::{DataTable, TableEvent, TableState},
@@ -57,7 +56,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tracing::info;
 use zedis_core::json::numbers_survive_round_trip;
-use zedis_ui::{ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions};
+use zedis_ui::{
+    ZedisDialog, ZedisForm, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, decode_extra_pair_key,
+    extra_pair_rows, extra_single_rows,
+};
 
 mod entry_panel;
 mod layout;
@@ -66,12 +68,12 @@ mod toolbar;
 
 use entry_panel::PreviewMode;
 #[cfg(test)]
-use entry_panel::{element_json_document, opening_preview, preview_modes, row_holds, tree_editable};
+use entry_panel::{
+    build_kv_add_batches, element_json_document, opening_preview, preview_modes, row_holds, tree_editable,
+};
 #[cfg(test)]
 use layout::{DATA_COLUMN_MIN_WIDTH, ENTRY_PANEL_MIN_WIDTH, PanelSplit, fit_columns};
 use layout::{TABLE_MIN_WIDTH, entry_panel_split, width_probe};
-#[cfg(test)]
-use operations::parse_bulk_rows;
 
 pub const FOOTER_HEIGHT: f32 = 50.0;
 
@@ -688,8 +690,8 @@ pub(crate) use define_kv_editor;
 #[cfg(test)]
 mod tests {
     use super::{
-        DATA_COLUMN_MIN_WIDTH, ENTRY_PANEL_MIN_WIDTH, JsonView, PanelSplit, PreviewMode, TABLE_MIN_WIDTH,
-        element_json_document, entry_panel_split, fit_columns, opening_preview, parse_bulk_rows, preview_modes,
+        DATA_COLUMN_MIN_WIDTH, ENTRY_PANEL_MIN_WIDTH, JsonView, KeyType, PanelSplit, PreviewMode, TABLE_MIN_WIDTH,
+        build_kv_add_batches, element_json_document, entry_panel_split, fit_columns, opening_preview, preview_modes,
         row_holds, tree_editable,
     };
 
@@ -902,69 +904,79 @@ mod tests {
     }
 
     #[test]
-    fn parse_single_column_preserves_commas() {
-        // For 1-col types (Set/List) we never split — the line is
-        // the value, commas inside are part of the data.
-        let rows = parse_bulk_rows("a,b,c\nplain\n", 1);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0].as_ref(), "a,b,c");
-        assert_eq!(rows[1][0].as_ref(), "plain");
+    fn build_kv_add_batches_dispatches_multiple_list_and_set_rows() {
+        let mut list_data: IndexMap<SharedString, SharedString> = IndexMap::new();
+        list_data.insert("position".into(), "1".into());
+        list_data.insert("Value".into(), "first".into());
+        list_data.insert("__extra_single_row_0".into(), "dup".into());
+        list_data.insert("__extra_single_row_1".into(), "".into());
+        list_data.insert("__extra_single_row_2".into(), "dup".into());
+
+        let list_batches = build_kv_add_batches(KeyType::List, false, &["position".into(), "Value".into()], &list_data);
+        assert_eq!(
+            list_batches,
+            vec![
+                vec![SharedString::from("1"), SharedString::from("first")],
+                vec![SharedString::from("1"), SharedString::from("dup")],
+                vec![SharedString::from("1"), SharedString::from("dup")],
+            ]
+        );
+
+        let mut set_data: IndexMap<SharedString, SharedString> = IndexMap::new();
+        set_data.insert("Value".into(), "m1".into());
+        set_data.insert("__extra_single_row_0".into(), "m2".into());
+
+        let set_batches = build_kv_add_batches(KeyType::Set, false, &["Value".into()], &set_data);
+        assert_eq!(
+            set_batches,
+            vec![vec![SharedString::from("m1")], vec![SharedString::from("m2")]]
+        );
     }
 
     #[test]
-    fn parse_two_columns_prefers_tab_over_comma() {
-        // Tab present → tab wins; commas inside the value column stay.
-        let rows = parse_bulk_rows("field1\tvalue,with,commas\nfield2\tplain\n", 2);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0].as_ref(), "field1");
-        assert_eq!(rows[0][1].as_ref(), "value,with,commas");
-        assert_eq!(rows[1][0].as_ref(), "field2");
-        assert_eq!(rows[1][1].as_ref(), "plain");
-    }
+    fn build_kv_add_batches_dispatches_multiple_zset_and_hash_rows() {
+        let mut zset_data: IndexMap<SharedString, SharedString> = IndexMap::new();
+        zset_data.insert("Value".into(), "m1".into());
+        zset_data.insert("Score".into(), "1".into());
+        zset_data.insert("m2".into(), "2.5".into());
+        zset_data.insert("m3".into(), "".into());
 
-    #[test]
-    fn parse_two_columns_falls_back_to_comma() {
-        let rows = parse_bulk_rows("a,1\nb,2\n", 2);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0].as_ref(), "a");
-        assert_eq!(rows[0][1].as_ref(), "1");
-    }
+        let zset_batches = build_kv_add_batches(KeyType::Zset, false, &["Value".into(), "Score".into()], &zset_data);
+        assert_eq!(
+            zset_batches,
+            vec![
+                vec![SharedString::from("m1"), SharedString::from("1")],
+                vec![SharedString::from("m2"), SharedString::from("2.5")],
+                vec![SharedString::from("m3"), SharedString::from("0")],
+            ]
+        );
 
-    #[test]
-    fn parse_pads_missing_columns_with_empty() {
-        // A single-cell line under a 2-column expectation pads the
-        // second slot — the downstream `handle_add_value` for the
-        // editor decides whether that empty cell is acceptable.
-        let rows = parse_bulk_rows("lonely\n", 2);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][0].as_ref(), "lonely");
-        assert_eq!(rows[0][1].as_ref(), "");
-    }
+        let mut hash_data: IndexMap<SharedString, SharedString> = IndexMap::new();
+        hash_data.insert("Field".into(), "f1".into());
+        hash_data.insert("Value".into(), "v1".into());
+        hash_data.insert("TTL".into(), "60".into());
+        hash_data.insert("f2".into(), "v2".into());
 
-    #[test]
-    fn parse_skips_blank_lines_and_handles_crlf() {
-        let rows = parse_bulk_rows("a\tb\r\n\r\nc\td\n", 2);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0].as_ref(), "a");
-        assert_eq!(rows[0][1].as_ref(), "b");
-        assert_eq!(rows[1][0].as_ref(), "c");
-        assert_eq!(rows[1][1].as_ref(), "d");
-    }
-
-    #[test]
-    fn parse_trims_each_cell() {
-        let rows = parse_bulk_rows("  member  ,  9.5  \n", 2);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][0].as_ref(), "member");
-        assert_eq!(rows[0][1].as_ref(), "9.5");
-    }
-
-    #[test]
-    fn parse_extra_separators_absorbed_into_last_column() {
-        // splitn(2, ',') leaves "v,with,more,commas" in slot 1.
-        let rows = parse_bulk_rows("k,v,with,more,commas\n", 2);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][0].as_ref(), "k");
-        assert_eq!(rows[0][1].as_ref(), "v,with,more,commas");
+        let hash_batches = build_kv_add_batches(
+            KeyType::Hash,
+            false,
+            &["Field".into(), "Value".into(), "TTL".into()],
+            &hash_data,
+        );
+        assert_eq!(
+            hash_batches,
+            vec![
+                vec![
+                    SharedString::from("f1"),
+                    SharedString::from("v1"),
+                    SharedString::from("60"),
+                ],
+                vec![
+                    SharedString::from("f2"),
+                    SharedString::from("v2"),
+                    SharedString::from("60"),
+                ],
+            ]
+        );
     }
 }

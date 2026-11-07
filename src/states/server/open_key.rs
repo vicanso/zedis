@@ -91,7 +91,7 @@ impl OpenKey {
     pub(super) fn try_get_mut_key_value(&mut self) -> Option<(SharedString, &mut RedisValue)> {
         let key = self.key.as_ref().filter(|k| !k.is_empty())?.clone();
         let value = self.value.as_mut()?;
-        if value.is_busy() {
+        if value.is_loading() {
             return None;
         }
         Some((key, value))

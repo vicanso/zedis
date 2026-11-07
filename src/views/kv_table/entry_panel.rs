@@ -385,17 +385,34 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
         }
 
-        let mut values = Vec::with_capacity(data.len());
-        let include_field_names = self.fetcher.include_field_names();
-        for (name, value) in data {
-            if include_field_names {
-                values.push(name);
-            }
-            values.push(value);
-        }
         if row_ix == usize::MAX {
-            self.fetcher.handle_add_value(values, window, cx);
+            let mut static_field_names = Vec::with_capacity(self.columns.len() + 1);
+            if self.fetcher.key_type() == KeyType::List {
+                static_field_names.push("position".into());
+            }
+            for column in &self.columns {
+                if column.column_type == KvTableColumnType::Value {
+                    static_field_names.push(column.name.clone());
+                }
+            }
+            let batches = build_kv_add_batches(
+                self.fetcher.key_type(),
+                self.fetcher.include_field_names(),
+                &static_field_names,
+                &data,
+            );
+            for batch in batches {
+                self.fetcher.handle_add_value(batch, window, cx);
+            }
         } else {
+            let mut values = Vec::with_capacity(data.len());
+            let include_field_names = self.fetcher.include_field_names();
+            for (name, value) in data {
+                if include_field_names {
+                    values.push(name);
+                }
+                values.push(value);
+            }
             self.fetcher.handle_update_value(row_ix, values, window, cx);
         }
         self.editor_form = None;
@@ -469,7 +486,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.focus();
                 first = false;
             }
-            if column.flex {
+            if !is_adding && column.flex {
                 field = field.fill();
             }
             if column.verbatim {
@@ -479,10 +496,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.placeholder(placeholder);
             }
             if let Some(field_type) = column.field_type.clone() {
-                if field_type == ZedisFormFieldType::Editor && !column.flex {
-                    field = field.h(px(150. * font_scale));
-                }
-                field = field.field_type(field_type);
+                let resolved_type = if is_adding && field_type == ZedisFormFieldType::Editor {
+                    ZedisFormFieldType::AutoGrow(2, 6)
+                } else {
+                    if field_type == ZedisFormFieldType::Editor && !column.flex {
+                        field = field.h(px(150. * font_scale));
+                    }
+                    field_type
+                };
+                field = field.field_type(resolved_type);
             }
 
             if !is_adding && let Some(value) = value {
@@ -508,13 +530,16 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             };
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
-        // With a flexible column the form fills the panel and that column
-        // takes the rest; a form of fixed-height fields only (a stream
-        // entry, one editor per field) keeps the scrolling grid instead.
-        let fills_panel = self
-            .columns
-            .iter()
-            .any(|column| column.column_type == KvTableColumnType::Value && column.flex);
+        let key_type = self.fetcher.key_type();
+        // When editing an existing row with a flexible column, the form fills
+        // the panel and that column takes the rest; when adding row(s) or
+        // viewing a stream entry, keep the scrolling grid so multiple added
+        // rows stay compact and scrollable.
+        let fills_panel = !is_adding
+            && self
+                .columns
+                .iter()
+                .any(|column| column.column_type == KvTableColumnType::Value && column.flex);
         let form_opts = ZedisFormOptions::new(fields)
             .when(fills_panel, |this| this.fill_height())
             .on_cancel(on_cancel)
@@ -548,6 +573,26 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             })
             .when(!readonly_on_edit && self.fetcher.support_add_fields(), |this| {
                 this.support_add_fields()
+            })
+            .when(is_adding && !readonly_on_edit && key_type == KeyType::List, |this| {
+                this.support_add_single_fields(i18n_common(cx, "value_placeholder"), 0)
+            })
+            .when(is_adding && !readonly_on_edit && key_type == KeyType::Set, |this| {
+                this.support_add_single_fields(i18n_common(cx, "member_placeholder"), 0)
+            })
+            .when(is_adding && !readonly_on_edit && key_type == KeyType::Zset, |this| {
+                this.support_add_pair_fields(
+                    i18n_common(cx, "member_placeholder"),
+                    i18n_common(cx, "score_placeholder"),
+                    0,
+                )
+            })
+            .when(is_adding && !readonly_on_edit && key_type == KeyType::Hash, |this| {
+                this.support_add_pair_fields(
+                    i18n_common(cx, "field_placeholder"),
+                    i18n_common(cx, "value_placeholder"),
+                    0,
+                )
             });
 
         let form = cx.new(|cx| {
@@ -560,4 +605,72 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.editor_form = Some(form.clone());
         form
     }
+}
+
+pub(super) fn build_kv_add_batches(
+    key_type: KeyType,
+    include_field_names: bool,
+    static_field_names: &[SharedString],
+    data: &IndexMap<SharedString, SharedString>,
+) -> Vec<Vec<SharedString>> {
+    if include_field_names {
+        let mut values = Vec::with_capacity(data.len() * 2);
+        for (name, value) in data {
+            values.push(decode_extra_pair_key(name.as_ref()));
+            values.push(value.clone());
+        }
+        return vec![values];
+    }
+
+    let primary: Vec<SharedString> = static_field_names
+        .iter()
+        .filter_map(|name| data.get(name).cloned())
+        .collect();
+    let mut batches = vec![primary];
+    let static_refs: Vec<&str> = static_field_names.iter().map(|s| s.as_ref()).collect();
+
+    match key_type {
+        KeyType::List => {
+            let pos = data.get("position").cloned().unwrap_or_else(|| "0".into());
+            for extra in extra_single_rows(data) {
+                if !extra.is_empty() {
+                    batches.push(vec![pos.clone(), extra]);
+                }
+            }
+        }
+        KeyType::Set => {
+            for extra in extra_single_rows(data) {
+                if !extra.is_empty() {
+                    batches.push(vec![extra]);
+                }
+            }
+        }
+        KeyType::Zset => {
+            for (member, score) in extra_pair_rows(data, &static_refs) {
+                if !member.is_empty() {
+                    let score_val = if score.trim().is_empty() {
+                        "0".into()
+                    } else {
+                        score.trim().to_string().into()
+                    };
+                    batches.push(vec![member, score_val]);
+                }
+            }
+        }
+        KeyType::Hash => {
+            let ttl = static_field_names
+                .get(2)
+                .and_then(|ttl_name| data.get(ttl_name))
+                .cloned()
+                .unwrap_or_default();
+            for (field, value) in extra_pair_rows(data, &static_refs) {
+                if !field.is_empty() {
+                    batches.push(vec![field, value, ttl.clone()]);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    batches
 }

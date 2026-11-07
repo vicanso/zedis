@@ -73,29 +73,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                                 })),
                         )
                     })
-                    // Bulk paste only makes sense for the
-                    // four flat-table types — Stream rows
-                    // require structured fields (ID + N
-                    // entries) that don't map cleanly to
-                    // TSV/CSV, so we hide the button
-                    // there.
-                    .when(
-                        can_add
-                            && matches!(
-                                self.fetcher.key_type(),
-                                KeyType::Hash | KeyType::List | KeyType::Set | KeyType::Zset
-                            ),
-                        |this| {
-                            this.child(
-                                Button::new("bulk-add-value-btn")
-                                    .icon(IconName::Asterisk)
-                                    .tooltip(i18n_kv_table(cx, "bulk_add_tooltip"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.handle_bulk_add(window, cx);
-                                    })),
-                            )
-                        },
-                    )
                     .when(can_filter, |this| {
                         // Its own box, so that the line wraps around
                         // it rather than squeezing it.

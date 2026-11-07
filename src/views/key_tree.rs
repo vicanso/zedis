@@ -58,6 +58,7 @@ use gpui_kit::component::{
     list::{List, ListDelegate, ListEvent, ListItem, ListState},
     menu::DropdownMenu,
 };
+use indexmap::IndexMap;
 use regex::Regex;
 use rust_i18n::t;
 use schemars::JsonSchema;
@@ -65,7 +66,10 @@ use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, rc::Rc, str::FromStr, time::Duration};
 use tracing::{info, warn};
 use web_time::Instant;
-use zedis_ui::{ZedisDialog, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading};
+use zedis_ui::{
+    ZedisDialog, ZedisFormAddFieldsMode, ZedisFormField, ZedisFormFieldType, ZedisFormOptions, ZedisSkeletonLoading,
+    extra_pair_rows, extra_single_rows,
+};
 
 // Constants for tree layout and behavior
 mod actions;
@@ -1105,14 +1109,42 @@ impl ZedisKeyTree {
                 .visible_on("category", &json_index.map_or(vec![], |i| vec![i])),
         ];
         let server_state = self.server_state.clone();
+        let field_placeholder = i18n_common(cx, "field_placeholder");
+        let value_placeholder = i18n_common(cx, "value_placeholder");
+        let member_placeholder = i18n_common(cx, "member_placeholder");
+        let score_placeholder = i18n_common(cx, "score_placeholder");
 
         ZedisFormOptions::new(fields)
             .title(i18n_key_tree(cx, "add_key_title"))
             .confirm_label(i18n_common(cx, "confirm"))
             .cancel_label(i18n_common(cx, "cancel"))
-            .support_add_fields_on("category", &[5])
-            .add_field_placeholder(i18n_common(cx, "field_placeholder"))
-            .add_value_placeholder(i18n_common(cx, "value_placeholder"))
+            .support_add_fields_mode_on(
+                "category",
+                1,
+                ZedisFormAddFieldsMode::single(value_placeholder.clone(), 0),
+            )
+            .support_add_fields_mode_on(
+                "category",
+                2,
+                ZedisFormAddFieldsMode::single(member_placeholder.clone(), 0),
+            )
+            .support_add_fields_mode_on(
+                "category",
+                3,
+                ZedisFormAddFieldsMode::pair(score_placeholder, member_placeholder, 0),
+            )
+            .support_add_fields_mode_on(
+                "category",
+                4,
+                ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 0),
+            )
+            .support_add_fields_mode_on(
+                "category",
+                5,
+                ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 1),
+            )
+            .add_field_placeholder(field_placeholder)
+            .add_value_placeholder(value_placeholder)
             .on_dialog_submit(move |values, _window, cx| {
                 let category_index = values
                     .get("category")
@@ -1123,64 +1155,7 @@ impl ZedisKeyTree {
                 let ttl = values.get("ttl").cloned().unwrap_or_default();
 
                 let key_type = KeyType::from(category.to_lowercase().as_str());
-                let seed = key_type.seed_args();
-                let get_or_seed = |name: &str, index: usize| -> SharedString {
-                    values
-                        .get(name)
-                        .filter(|s| !s.is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| seed.get(index).unwrap_or(&"").to_string().into())
-                };
-                let args: Vec<SharedString> = match key_type {
-                    KeyType::String | KeyType::List | KeyType::Set => {
-                        vec![get_or_seed("value", 0)]
-                    }
-                    KeyType::Zset => {
-                        vec![get_or_seed("score", 0), get_or_seed("member", 1)]
-                    }
-                    KeyType::Hash => {
-                        vec![get_or_seed("hash_field", 0), get_or_seed("hash_value", 1)]
-                    }
-                    KeyType::Json => {
-                        // JSON.SET key $ <json_value>
-                        let json_value = get_or_seed("json_value", 1);
-                        vec!["$".into(), json_value]
-                    }
-                    KeyType::Stream => {
-                        // stream_id + dynamic field-value pairs from add_fields
-                        let mut args = vec![get_or_seed("stream_id", 0)];
-                        // Collect dynamic field-value pairs added by the user.
-                        // They are stored as sequential entries in the values map
-                        // after the static fields.
-                        let static_keys = [
-                            "category",
-                            "key",
-                            "ttl",
-                            "value",
-                            "score",
-                            "member",
-                            "hash_field",
-                            "hash_value",
-                            "stream_id",
-                            "json_value",
-                        ];
-                        let mut has_dynamic = false;
-                        for (k, v) in &values {
-                            if !static_keys.contains(&k.as_ref()) {
-                                args.push(k.clone());
-                                args.push(v.clone());
-                                has_dynamic = true;
-                            }
-                        }
-                        if !has_dynamic {
-                            // Fallback to seed_args field-value pair
-                            args.push(seed.get(1).unwrap_or(&"field").to_string().into());
-                            args.push(seed.get(2).unwrap_or(&"value").to_string().into());
-                        }
-                        args
-                    }
-                    _ => seed.into_iter().map(|s| s.to_string().into()).collect(),
-                };
+                let args = build_add_key_args(key_type, &values);
 
                 server_state.update(cx, |this, cx| {
                     this.add_key(category.to_string().into(), key, ttl, args, cx);
@@ -1257,5 +1232,172 @@ impl ZedisKeyTree {
                 });
             }
         }
+    }
+}
+
+const ADD_KEY_STATIC_FIELDS: &[&str] = &[
+    "category",
+    "key",
+    "ttl",
+    "value",
+    "score",
+    "member",
+    "hash_field",
+    "hash_value",
+    "stream_id",
+    "json_value",
+];
+
+fn build_add_key_args(key_type: KeyType, values: &IndexMap<SharedString, SharedString>) -> Vec<SharedString> {
+    let seed = key_type.seed_args();
+    let get_or_seed = |name: &str, index: usize| -> SharedString {
+        values
+            .get(name)
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| seed.get(index).unwrap_or(&"").to_string().into())
+    };
+    match key_type {
+        KeyType::String => vec![get_or_seed("value", 0)],
+        KeyType::List | KeyType::Set => {
+            let mut args = vec![get_or_seed("value", 0)];
+            for extra in extra_single_rows(values) {
+                if !extra.is_empty() {
+                    args.push(extra);
+                }
+            }
+            args
+        }
+        KeyType::Zset => {
+            let mut args = vec![get_or_seed("score", 0), get_or_seed("member", 1)];
+            for (score, member) in extra_pair_rows(values, ADD_KEY_STATIC_FIELDS) {
+                if !member.is_empty() {
+                    let score_arg = if score.trim().is_empty() {
+                        "0".into()
+                    } else {
+                        score.trim().to_string().into()
+                    };
+                    args.push(score_arg);
+                    args.push(member);
+                }
+            }
+            args
+        }
+        KeyType::Hash => {
+            let mut args = vec![get_or_seed("hash_field", 0), get_or_seed("hash_value", 1)];
+            for (field, value) in extra_pair_rows(values, ADD_KEY_STATIC_FIELDS) {
+                if !field.is_empty() {
+                    args.push(field);
+                    args.push(value);
+                }
+            }
+            args
+        }
+        KeyType::Json => {
+            // JSON.SET key $ <json_value>
+            let json_value = get_or_seed("json_value", 1);
+            vec!["$".into(), json_value]
+        }
+        KeyType::Stream => {
+            // stream_id + dynamic field-value pairs from add_fields
+            let mut args = vec![get_or_seed("stream_id", 0)];
+            let mut has_dynamic = false;
+            for (field, value) in extra_pair_rows(values, ADD_KEY_STATIC_FIELDS) {
+                if !field.is_empty() {
+                    args.push(field);
+                    args.push(value);
+                    has_dynamic = true;
+                }
+            }
+            if !has_dynamic {
+                // Fallback to seed_args field-value pair
+                args.push(seed.get(1).unwrap_or(&"field").to_string().into());
+                args.push(seed.get(2).unwrap_or(&"value").to_string().into());
+            }
+            args
+        }
+        _ => seed.into_iter().map(|s| s.to_string().into()).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_add_key_args;
+    use crate::states::KeyType;
+    use gpui::SharedString;
+    use indexmap::IndexMap;
+    use zedis_ui::{EXTRA_PAIR_DUP_PREFIX, EXTRA_SINGLE_ROW_PREFIX};
+
+    #[test]
+    fn build_add_key_args_collects_multiple_list_and_set_elements() {
+        let mut values: IndexMap<SharedString, SharedString> = IndexMap::new();
+        values.insert("value".into(), "first".into());
+        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}0").into(), "second".into());
+        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}1").into(), "".into());
+        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}2").into(), "second".into());
+
+        let list_args = build_add_key_args(KeyType::List, &values);
+        assert_eq!(
+            list_args,
+            vec![
+                SharedString::from("first"),
+                SharedString::from("second"),
+                SharedString::from("second"),
+            ]
+        );
+
+        let set_args = build_add_key_args(KeyType::Set, &values);
+        assert_eq!(
+            set_args,
+            vec![
+                SharedString::from("first"),
+                SharedString::from("second"),
+                SharedString::from("second"),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_add_key_args_collects_multiple_zset_and_hash_elements() {
+        let mut zset_values: IndexMap<SharedString, SharedString> = IndexMap::new();
+        zset_values.insert("score".into(), "1.5".into());
+        zset_values.insert("member".into(), "m1".into());
+        zset_values.insert("2.5".into(), "m2".into());
+        zset_values.insert(format!("{EXTRA_PAIR_DUP_PREFIX}1:2.5").into(), "m3".into());
+        zset_values.insert(format!("{EXTRA_PAIR_DUP_PREFIX}2:").into(), "m4".into());
+
+        let zset_args = build_add_key_args(KeyType::Zset, &zset_values);
+        assert_eq!(
+            zset_args,
+            vec![
+                SharedString::from("1.5"),
+                SharedString::from("m1"),
+                SharedString::from("2.5"),
+                SharedString::from("m2"),
+                SharedString::from("2.5"),
+                SharedString::from("m3"),
+                SharedString::from("0"),
+                SharedString::from("m4"),
+            ]
+        );
+
+        let mut hash_values: IndexMap<SharedString, SharedString> = IndexMap::new();
+        hash_values.insert("hash_field".into(), "f1".into());
+        hash_values.insert("hash_value".into(), "v1".into());
+        hash_values.insert("f2".into(), "v2".into());
+        hash_values.insert("f3".into(), "v3".into());
+
+        let hash_args = build_add_key_args(KeyType::Hash, &hash_values);
+        assert_eq!(
+            hash_args,
+            vec![
+                SharedString::from("f1"),
+                SharedString::from("v1"),
+                SharedString::from("f2"),
+                SharedString::from("v2"),
+                SharedString::from("f3"),
+                SharedString::from("v3"),
+            ]
+        );
     }
 }

@@ -12,49 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Row and table operations for [`ZedisKvTable`]: CSV export, bulk paste,
+//! Row and table operations for [`ZedisKvTable`]: CSV export,
 //! add / remove / filter, type-native key ops, and the row right-click menu.
 
 use super::*;
-
-/// Parse pasted text into rows of values for bulk insertion.
-///
-/// - Lines are split on `\n` (also handles `\r\n` because `lines()`
-///   trims `\r`). Trimmed-empty lines are skipped.
-/// - For `expected_columns <= 1` the entire trimmed line is one
-///   value (commas/tabs are preserved verbatim).
-/// - For `expected_columns >= 2` the line is split into at most that
-///   many parts. Separator is auto-detected per-line: tab takes
-///   precedence over comma so users can paste Redis values that
-///   themselves contain commas as long as their rows use tabs.
-///   Use `splitn(N, ...)` so the trailing column absorbs any extra
-///   separator runs — handy when a hash value happens to contain a
-///   comma. Missing trailing columns are padded with empty strings
-///   so the row always has exactly `expected_columns` slots.
-/// - Per-cell trimming strips leading/trailing whitespace.
-pub(crate) fn parse_bulk_rows(text: &str, expected_columns: usize) -> Vec<Vec<SharedString>> {
-    let mut rows = Vec::new();
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if expected_columns <= 1 {
-            rows.push(vec![SharedString::from(line.to_string())]);
-            continue;
-        }
-        let sep: char = if line.contains('\t') { '\t' } else { ',' };
-        let mut row: Vec<SharedString> = line
-            .splitn(expected_columns, sep)
-            .map(|part| SharedString::from(part.trim().to_string()))
-            .collect();
-        while row.len() < expected_columns {
-            row.push(SharedString::default());
-        }
-        rows.push(row);
-    }
-    rows
-}
 
 impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// Export the currently-loaded rows to a CSV file via the shared
@@ -115,89 +76,6 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             success,
             error,
         );
-    }
-
-    /// Open a dialog to paste many rows at once. The pasted text is
-    /// parsed into rows (one per line, tab-separated preferred,
-    /// comma fallback) and each row is dispatched through the same
-    /// `handle_add_value` path as the single-row form, so backend
-    /// semantics (HSET, LPUSH/RPUSH, SADD, ZADD) stay identical.
-    ///
-    /// Per key type the dialog adapts:
-    /// - Hash: 2 cols → "field<sep>value"
-    /// - ZSet: 2 cols → "member<sep>score"  (score must parse as f64
-    ///   downstream — invalid scores fall back to 0.0 like the
-    ///   single-row form does)
-    /// - List: 1 col → "value" per line, always pushed as RPUSH for
-    ///   bulk paste so the visual top-to-bottom order in the textarea
-    ///   matches the resulting list order
-    /// - Set:  1 col → "member" per line
-    ///
-    /// Stream/other key types fall through (no-op).
-    pub(super) fn handle_bulk_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.mode.contains(KvTableMode::ADD) {
-            return;
-        }
-        let key_type = self.fetcher.key_type();
-        let column_count: usize = match key_type {
-            KeyType::Hash | KeyType::Zset => 2,
-            KeyType::List | KeyType::Set => 1,
-            _ => return,
-        };
-
-        let placeholder = match key_type {
-            KeyType::Hash => i18n_kv_table(cx, "bulk_add_placeholder_hash"),
-            KeyType::Zset => i18n_kv_table(cx, "bulk_add_placeholder_zset"),
-            KeyType::List => i18n_kv_table(cx, "bulk_add_placeholder_list"),
-            KeyType::Set => i18n_kv_table(cx, "bulk_add_placeholder_set"),
-            _ => SharedString::default(),
-        };
-        let hint = i18n_kv_table(cx, "bulk_add_hint");
-        let success_template = i18n_kv_table(cx, "bulk_add_success");
-        let empty_label = i18n_kv_table(cx, "bulk_add_empty");
-
-        let textarea = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(8, 20)
-                .placeholder(placeholder.clone())
-        });
-        let body_state = textarea.clone();
-        let submit_state = textarea.clone();
-        let fetcher = self.fetcher.clone();
-
-        ZedisDialog::new(i18n_kv_table(cx, "bulk_add_title"))
-            .w(px(680.))
-            .ok_text(i18n_common(cx, "save"))
-            .cancel_text(i18n_common(cx, "cancel"))
-            .child(move || {
-                v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Label::new(hint.clone()).text_xs())
-                    .child(Textarea::new(&body_state).appearance(true))
-            })
-            .on_ok(move |_, window, cx| {
-                let text = submit_state.read(cx).value().to_string();
-                let rows = parse_bulk_rows(&text, column_count);
-                if rows.is_empty() {
-                    window.push_notification(Notification::warning(empty_label.clone()), cx);
-                    return false;
-                }
-                let imported = rows.len();
-                for mut row in rows {
-                    if key_type == KeyType::List {
-                        // Prepend the position selector; matches the
-                        // [position, value] shape the list fetcher
-                        // expects.
-                        row.insert(0, SharedString::from("RPUSH"));
-                    }
-                    fetcher.handle_add_value(row, window, cx);
-                }
-                let msg = success_template.replace("%{count}", &imported.to_string());
-                window.push_notification(Notification::success(SharedString::from(msg)), cx);
-                true
-            })
-            .open(window, cx);
     }
 
     pub(super) fn handle_add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
