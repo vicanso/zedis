@@ -41,6 +41,7 @@ mod metrics;
 mod page_data;
 mod policy;
 mod presence;
+mod redis_store;
 mod resp;
 mod session;
 mod sql;
@@ -89,9 +90,18 @@ fn setting(flag_name: &str, env_name: &str) -> Option<String> {
 }
 
 /// Where the bridge keeps what it keeps (ADR 18): the database `--store`
-/// names, or the local directory.
+/// names (PostgreSQL, MySQL, or Redis/Valkey), or the local directory.
 async fn open_stores(data_dir: &std::path::Path) -> std::io::Result<store::Stores> {
     match store_url() {
+        Some(url) if redis_store::is_redis_url(&url) => {
+            let store = redis_store::RedisStore::connect(&url).await?;
+            tracing::info!(
+                store = sql::redacted(&url),
+                prefix = store.prefix(),
+                "the stores are in Redis"
+            );
+            Ok(store.stores())
+        }
         Some(url) => {
             let store = sql::SqlStore::connect(&url).await?;
             tracing::info!(store = sql::redacted(&url), dialect = ?store.dialect(), "the stores are in a database");
@@ -135,9 +145,14 @@ async fn import_local_command() -> Result<(), Box<dyn std::error::Error>> {
     disable_keychain();
     let from = get_or_create_config_dir()?;
     let url = store_url().ok_or_else(|| format!("import-local needs --store <url> or {}", sql::STORE_ENV))?;
-    let store = sql::SqlStore::connect(&url).await?;
     let audit_file = flag("--audit-file").map(std::path::PathBuf::from);
-    let done = import::import_local(&from, audit_file.as_deref(), &store).await?;
+    let done = if redis_store::is_redis_url(&url) {
+        let store = redis_store::RedisStore::connect(&url).await?;
+        import::import_local(&from, audit_file.as_deref(), &store).await?
+    } else {
+        let store = sql::SqlStore::connect(&url).await?;
+        import::import_local(&from, audit_file.as_deref(), &store).await?
+    };
     println!("Copied {} into {}:", from.display(), sql::redacted(&url));
     println!("{done}");
     println!();
@@ -383,10 +398,10 @@ fn print_help() {
         "--store <url> ({}, preferred: the URL carries a password) keeps the accounts, logins,",
         sql::STORE_ENV
     );
-    println!("server list, recycle bin, metrics and the page's data in PostgreSQL 14+ or MySQL");
-    println!("8.0.19+ (postgres://… or mysql://…) instead of that directory, so several bridges");
-    println!("can share them: route each browser to one of them by its login cookie, and give");
-    println!("every bridge the same master.key.");
+    println!("server list, recycle bin, metrics and the page's data in PostgreSQL 14+, MySQL");
+    println!("8.0.19+ or Redis/Valkey (postgres://…, mysql://…, or redis://…[?prefix=zedis])");
+    println!("instead of that directory, so several bridges can share them: route each browser");
+    println!("to one of them by its login cookie, and give every bridge the same master.key.");
     println!(
         "--audit-log <file> ({}) appends one JSON line per login and failed",
         audit::LOG_ENV

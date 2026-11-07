@@ -30,14 +30,74 @@ use crate::audit::entry_of;
 use crate::auth::{LocalLogins, LoginChange};
 use crate::metrics::LocalMetrics;
 use crate::page_data::{LocalKeyNotes, LocalPageRows, LocalScripts, RowError};
+use crate::redis_store::RedisStore;
 use crate::sql::SqlStore;
 use crate::sql::audit::write_batch;
-use crate::store::{AccountStore, KeyNoteStore, LoginStore, PageRowStore, ScriptStore, SetupStore, local_paths as at};
-use crate::trash::LocalTrash;
+use crate::store::{
+    AccountStore, AuditEntry, KeyNoteStore, LoginStore, PageRowStore, ScriptStore, SetupStore, Stores,
+    local_paths as at,
+};
+use crate::trash::{LocalTrash, Meta};
+use serde_json::value::RawValue;
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::path::Path;
 use zedis_connection::read_servers_file;
+
+/// Any shared store (`SqlStore` or `RedisStore`) that `import-local` can copy
+/// a local directory into.
+pub trait ImportTarget: Clone {
+    fn stores(&self) -> Stores;
+    fn is_empty(&self) -> impl Future<Output = io::Result<bool>>;
+    fn import_trash(&self, server_id: &str, meta: &Meta, payload: Vec<u8>) -> impl Future<Output = io::Result<()>>;
+    fn import_metric(&self, server_id: &str, ts_ms: i64, sample: &RawValue) -> impl Future<Output = io::Result<()>>;
+    fn write_audit_batch(&self, batch: Vec<AuditEntry>) -> impl Future<Output = io::Result<()>>;
+}
+
+impl ImportTarget for SqlStore {
+    fn stores(&self) -> Stores {
+        self.clone().stores()
+    }
+
+    async fn is_empty(&self) -> io::Result<bool> {
+        SqlStore::is_empty(self).await
+    }
+
+    async fn import_trash(&self, server_id: &str, meta: &Meta, payload: Vec<u8>) -> io::Result<()> {
+        SqlStore::import_trash(self, server_id, meta, payload).await
+    }
+
+    async fn import_metric(&self, server_id: &str, ts_ms: i64, sample: &RawValue) -> io::Result<()> {
+        SqlStore::import_metric(self, server_id, ts_ms, sample).await
+    }
+
+    async fn write_audit_batch(&self, batch: Vec<AuditEntry>) -> io::Result<()> {
+        write_batch(self, batch).await
+    }
+}
+
+impl ImportTarget for RedisStore {
+    fn stores(&self) -> Stores {
+        self.clone().stores()
+    }
+
+    async fn is_empty(&self) -> io::Result<bool> {
+        RedisStore::is_empty(self).await
+    }
+
+    async fn import_trash(&self, server_id: &str, meta: &Meta, payload: Vec<u8>) -> io::Result<()> {
+        RedisStore::import_trash(self, server_id, meta, payload).await
+    }
+
+    async fn import_metric(&self, server_id: &str, ts_ms: i64, sample: &RawValue) -> io::Result<()> {
+        RedisStore::import_metric(self, server_id, ts_ms, sample).await
+    }
+
+    async fn write_audit_batch(&self, batch: Vec<AuditEntry>) -> io::Result<()> {
+        RedisStore::write_audit_batch(self, batch).await
+    }
+}
 
 /// How much of each kind went in.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -80,7 +140,7 @@ impl fmt::Display for Imported {
 /// Copy `from` into `to`, which must hold no account, server entry or
 /// script: an import is a move, not a merge. `audit` is the file
 /// `--audit-log` named, if its lines go too.
-pub async fn import_local(from: &Path, audit: Option<&Path>, to: &SqlStore) -> io::Result<Imported> {
+pub async fn import_local<T: ImportTarget>(from: &Path, audit: Option<&Path>, to: &T) -> io::Result<Imported> {
     if !to.is_empty().await? {
         return Err(io::Error::other(
             "the database already holds accounts, server entries or scripts: \
@@ -100,7 +160,7 @@ pub async fn import_local(from: &Path, audit: Option<&Path>, to: &SqlStore) -> i
 
 /// The lines of an audit file, in the order they were written, a batch at a
 /// time. A line that is not one — cut short by a crash — is left out.
-pub(crate) async fn copy_audit(path: &Path, to: &SqlStore) -> io::Result<usize> {
+pub(crate) async fn copy_audit<T: ImportTarget>(path: &Path, to: &T) -> io::Result<usize> {
     use std::io::BufRead;
     const BATCH: usize = 500;
     let file = std::fs::File::open(path)?;
@@ -112,12 +172,12 @@ pub(crate) async fn copy_audit(path: &Path, to: &SqlStore) -> io::Result<usize> 
         }
         if batch.len() == BATCH {
             count += batch.len();
-            write_batch(to, std::mem::take(&mut batch)).await?;
+            to.write_audit_batch(std::mem::take(&mut batch)).await?;
         }
     }
     count += batch.len();
     if !batch.is_empty() {
-        write_batch(to, batch).await?;
+        to.write_audit_batch(batch).await?;
     }
     Ok(count)
 }
@@ -131,7 +191,7 @@ pub(crate) async fn copy_audit(path: &Path, to: &SqlStore) -> io::Result<usize> 
 /// refuses as not empty. The bin and the metrics, which can be large, are
 /// read as they are written; a part of them that cannot be read is skipped,
 /// as the local stores themselves skip it.
-pub(crate) async fn copy(from: &Path, to: &SqlStore) -> io::Result<Imported> {
+pub(crate) async fn copy<T: ImportTarget>(from: &Path, to: &T) -> io::Result<Imported> {
     let accounts = LocalAccounts::new(from.join(at::ACCOUNTS)).load().await?;
     let logins = LocalLogins::new(from.join(at::LOGINS)).load().await?;
     // The file itself, not the list this process may have cached.
@@ -156,7 +216,7 @@ pub(crate) async fn copy(from: &Path, to: &SqlStore) -> io::Result<Imported> {
     }
     let token = LocalSetup::new(from.join(at::SETUP_TOKEN)).shown().await?;
 
-    let target = to.clone().stores();
+    let target = to.stores();
     let mut done = Imported {
         accounts: accounts.accounts.len(),
         invites: accounts.invites.len(),
