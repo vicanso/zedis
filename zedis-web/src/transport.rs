@@ -213,6 +213,8 @@ fn failure(status: u16, bytes: &[u8]) -> BridgeError {
     #[derive(Deserialize, Default)]
     struct Body {
         #[serde(default)]
+        error: String,
+        #[serde(default)]
         message: String,
         #[serde(default)]
         kind: Option<String>,
@@ -220,10 +222,12 @@ fn failure(status: u16, bytes: &[u8]) -> BridgeError {
         strictness: Option<String>,
     }
     let body = serde_json::from_slice::<Body>(bytes).unwrap_or_default();
-    let message = if body.message.is_empty() {
-        format!("the bridge answered {status}")
-    } else {
+    let message = if !body.message.is_empty() {
         body.message
+    } else if !body.error.is_empty() {
+        format!("the bridge answered {status} ({})", body.error)
+    } else {
+        format!("the bridge answered {status}")
     };
     let kind = match status {
         401 | 403 => BridgeErrorKind::Unauthorized,

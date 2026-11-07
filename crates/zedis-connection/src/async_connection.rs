@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::conn::RedisAsyncConn;
-use super::config::{RedisServer, SERVER_TYPE_SENTINEL, get_server};
+use super::config::{RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL, get_server};
 use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use super::tls_connection::{open_single_sni_tls_connection, tls_server_name};
 use crate::error::{ConnectionErrorKind, Error};
@@ -409,9 +409,13 @@ pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<Multiplex
     if config.server_type == Some(SERVER_TYPE_SENTINEL) && config.has_sentinel_credentials() {
         return open_multiplexed_connection(&config.sentinel_login(), 0, false).await;
     }
+    let may_be_sentinel = matches!(
+        config.server_type,
+        None | Some(SERVER_TYPE_AUTO) | Some(SERVER_TYPE_SENTINEL)
+    );
     match open_multiplexed_connection(config, 0, false).await {
         Ok(conn) => Ok(conn),
-        Err(e) if e.connection_kind() == ConnectionErrorKind::Auth => {
+        Err(e) if may_be_sentinel && e.connection_kind() == ConnectionErrorKind::Auth => {
             let retry = if config.has_sentinel_credentials() {
                 debug!(
                     name = config.name,
@@ -427,7 +431,16 @@ pub(crate) async fn open_seed_endpoint(config: &RedisServer) -> Result<Multiplex
                 anonymous.password = None;
                 anonymous
             };
-            let mut conn = open_multiplexed_connection(&retry, 0, false).await?;
+            let mut conn = match open_multiplexed_connection(&retry, 0, false).await {
+                Ok(conn) => conn,
+                Err(retry_err) => {
+                    return Err(if config.has_sentinel_credentials() {
+                        retry_err
+                    } else {
+                        e
+                    });
+                }
+            };
             // The password-less retry is for a sentinel that needs none. A
             // data node that lets it in has a password-less `default` user,
             // and taking that as success made "Test connection" pass a wrong

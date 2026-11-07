@@ -414,9 +414,11 @@ impl ZedisAppState {
             handle.update(cx, |this, cx| {
                 if let Err(e) = &result {
                     error!(error = %e, "Failed to upsert server");
+                    cx.emit(GlobalEvent::ServerListUpdated);
                     cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
                         e.to_string().into(),
                     )));
+                    cx.notify();
                     return;
                 }
                 cx.emit(GlobalEvent::ServerListUpdated);
@@ -480,9 +482,11 @@ impl ZedisAppState {
             handle.update(cx, |_this, cx| {
                 if let Err(e) = &result {
                     error!(error = %e, "Failed to upsert servers");
+                    cx.emit(GlobalEvent::ServerListUpdated);
                     cx.emit(GlobalEvent::Notification(NotificationAction::new_error(
                         e.to_string().into(),
                     )));
+                    cx.notify();
                     return;
                 }
                 cx.emit(GlobalEvent::ServerListUpdated);

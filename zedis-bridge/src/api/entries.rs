@@ -204,6 +204,12 @@ fn is_plain_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Maximum time `save_and_dial` waits when no explicit `connection_timeout`
+/// is set on the server entry, so a reverse proxy in front of the bridge
+/// never times out the HTTP request with a bare `502 Bad Gateway` before the
+/// bridge can report why the dial failed.
+const SAVE_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Put `server` into the shared list and prove it reachable, or put the list
 /// back the way it was: `previous` is the entry it replaces (an edit), `None`
 /// when it is new.
@@ -219,6 +225,11 @@ async fn save_and_dial(
 ) -> ApiResult<AddServerResponse> {
     let id = server.id.clone();
     let name = server.name.clone();
+    let dial_timeout = server
+        .connection_timeout
+        .filter(|&secs| secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(SAVE_DIAL_TIMEOUT);
     // The pool is keyed by the entry's whole content, so the edited entry
     // gets a client of its own; this drops the one the old content had.
     if previous.is_some() {
@@ -231,14 +242,29 @@ async fn save_and_dial(
         .await
         .map_err(|e| ApiError::Upstream(e.to_string()))?;
 
-    let client = match get_connection_manager().get_client(&id, 0).await {
-        Ok(client) => client,
-        Err(e) => {
+    let dial = tokio::time::timeout(dial_timeout, get_connection_manager().get_client(&id, 0)).await;
+    let client = match dial {
+        Ok(Ok(client)) => client,
+        Ok(Err(e)) => {
             // Take back this request's entry and nothing else: the dial took
             // seconds, and an edit someone made to the same entry meanwhile
-            // is theirs to keep.
+            // is theirs to keep. Answered as 400 Bad Request rather than 502
+            // Bad Gateway so reverse proxies in front of the bridge never
+            // replace the failure reason with their own 502 error page.
+            get_connection_manager().remove_client(&id, 0);
             let _ = servers.swap(saved, previous).await;
-            return Err(ApiError::Upstream(e.to_string()));
+            return Err(ApiError::BadRequest(e.to_string()));
+        }
+        Err(_) => {
+            let reason = format!(
+                "connecting to {}:{} timed out after {}s",
+                saved.host,
+                saved.port,
+                dial_timeout.as_secs()
+            );
+            get_connection_manager().remove_client(&id, 0);
+            let _ = servers.swap(saved, previous).await;
+            return Err(ApiError::BadRequest(reason));
         }
     };
     let description = client.nodes_description();
@@ -941,5 +967,46 @@ mod diagnose_tests {
             reply.replies[0].outcome,
             zedis_connection::KillOutcome::Failed(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn adding_or_updating_an_unreachable_server_returns_bad_request_with_reason_and_rolls_back() {
+        override_config_dir(std::env::temp_dir().join(format!("zedis-bridge-save-dial-{}", std::process::id())));
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = closed.local_addr().expect("address").port();
+        drop(closed);
+        let state = crate::api::mcp_auth_tests::state("[[users]]\nname = \"bob\"\npassword = \"bobs-password\"");
+        let peer: SocketAddr = "10.0.0.7:5000".parse().expect("address");
+        let mut headers = HeaderMap::new();
+        let basic = format!("Basic {}", B64.encode("bob:bobs-password"));
+        headers.insert("authorization", basic.parse().expect("header"));
+
+        let add_res = add_server(
+            State(state.clone()),
+            ConnectInfo(peer),
+            headers.clone(),
+            Json(AddServerRequest {
+                url: None,
+                server: Some(RedisServer {
+                    id: "unreachable-new".to_string(),
+                    name: "Unreachable".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port,
+                    ..Default::default()
+                }),
+                name: None,
+                shared: Some(false),
+            }),
+        )
+        .await;
+
+        let Err(ApiError::BadRequest(reason)) = add_res else {
+            panic!("expected 400 BadRequest with reason, not 502 Upstream");
+        };
+        assert!(!reason.is_empty(), "reason must not be empty");
+        assert!(
+            get_server("unreachable-new").is_err(),
+            "failed add must roll back the entry"
+        );
     }
 }
