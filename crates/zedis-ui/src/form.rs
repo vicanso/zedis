@@ -124,6 +124,11 @@ pub struct ZedisFormField {
     /// How many of the form's twelve columns the field takes; the whole row
     /// when unset.
     span: Option<u16>,
+    /// Optional companion field name when this field is the first column of a
+    /// collection pair (e.g. Hash `Field` + `Value` or ZSet `Member` + `Score`),
+    /// allowing multi-line or tab-separated pastes to fill this pair and
+    /// overflow remaining lines into dynamic (`+`) rows.
+    paste_pair_with: Option<SharedString>,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -203,6 +208,7 @@ impl ZedisFormField {
             verbatim: false,
             stacked: false,
             span: None,
+            paste_pair_with: None,
         }
     }
 
@@ -325,6 +331,15 @@ impl ZedisFormField {
     /// the field keeps the height its style says.
     pub fn fill(mut self) -> Self {
         self.fill = true;
+        self
+    }
+
+    /// Pair this field with `companion` so pasting multi-line or tab-separated
+    /// pairs (`left\tright`, `left=right`, `left: right`, `left right`) into
+    /// this field fills `(self, companion)` with the first line and distributes
+    /// remaining lines across dynamic (`+`) rows.
+    pub fn paste_pair_with(mut self, companion: impl Into<SharedString>) -> Self {
+        self.paste_pair_with = Some(companion.into());
         self
     }
 }
@@ -1405,6 +1420,131 @@ impl ZedisForm {
     pub fn schedule_field_update(&mut self, name: SharedString, value: SharedString) {
         self.pending_field_updates.push((name, value));
     }
+
+    /// Distribute multi-line (or tab-separated pair) clipboard text across
+    /// dynamic add-field rows starting at `start_row`.
+    ///
+    /// Returns `true` when the paste was handled across dynamic rows so the
+    /// caller can stop default single-line paste propagation.
+    pub fn paste_add_field_lines(
+        &mut self,
+        start_row: usize,
+        is_value_col: bool,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(mode) = self.active_add_fields_mode(cx) else {
+            return false;
+        };
+        let lines = split_paste_lines(text);
+        if mode.is_single() {
+            if !text.contains('\n') || lines.len() < 2 {
+                return false;
+            }
+            for (offset, line) in lines.into_iter().enumerate() {
+                let row_ix = start_row + offset;
+                while self.add_field_states.len() <= row_ix {
+                    self.add_field(window, cx);
+                }
+                if let Some((_, value_state)) = self.add_field_states.get(row_ix) {
+                    let val: SharedString = line.to_string().into();
+                    value_state.update(cx, |s, cx| s.set_value(val, window, cx));
+                }
+            }
+            cx.notify();
+            return true;
+        }
+
+        let single_line_tab = !is_value_col && lines.len() == 1 && lines[0].contains('\t');
+        if (!text.contains('\n') || lines.len() < 2) && !single_line_tab {
+            return false;
+        }
+
+        for (offset, line) in lines.into_iter().enumerate() {
+            let row_ix = start_row + offset;
+            while self.add_field_states.len() <= row_ix {
+                self.add_field(window, cx);
+            }
+            let Some((field_state, value_state)) = self.add_field_states.get(row_ix) else {
+                continue;
+            };
+            if is_value_col {
+                let val: SharedString = line.to_string().into();
+                value_state.update(cx, |s, cx| s.set_value(val, window, cx));
+            } else {
+                let (field_part, value_part) = split_paste_pair(line);
+                let field_val: SharedString = field_part.to_string().into();
+                field_state.update(cx, |s, cx| s.set_value(field_val, window, cx));
+                if let Some(val_part) = value_part {
+                    let val: SharedString = val_part.to_string().into();
+                    value_state.update(cx, |s, cx| s.set_value(val, window, cx));
+                }
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// Distribute multi-line or tab-separated pair clipboard text pasted into
+    /// a static pair field (`field_name`, `companion_name`), filling the
+    /// static pair with the first line and overflowing remaining lines into
+    /// dynamic (`+`) rows.
+    ///
+    /// When `require_all_pairs` is true (used for `Textarea` fields that can
+    /// legitimately hold a single multi-line JSON/text document), the paste
+    /// is only split if every non-empty line parses as a `(left, right)` pair.
+    pub fn paste_static_pair_lines(
+        &mut self,
+        field_name: &str,
+        companion_name: &str,
+        require_all_pairs: bool,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(mode) = self.active_add_fields_mode(cx) else {
+            return false;
+        };
+        if mode.is_single() {
+            return false;
+        }
+        let lines = split_paste_lines(text);
+        if lines.is_empty() {
+            return false;
+        }
+        let single_line_tab = lines.len() == 1 && lines[0].contains('\t');
+        if (!text.contains('\n') || lines.len() < 2) && !single_line_tab {
+            return false;
+        }
+        if require_all_pairs && !lines.iter().all(|line| split_paste_pair(line).1.is_some()) {
+            return false;
+        }
+
+        let (first_left, first_right) = split_paste_pair(lines[0]);
+        self.set_field_value(field_name, first_left.to_string(), window, cx);
+        if let Some(right) = first_right {
+            self.set_field_value(companion_name, right.to_string(), window, cx);
+        }
+
+        for (offset, line) in lines.into_iter().skip(1).enumerate() {
+            while self.add_field_states.len() <= offset {
+                self.add_field(window, cx);
+            }
+            let Some((field_state, value_state)) = self.add_field_states.get(offset) else {
+                continue;
+            };
+            let (field_part, value_part) = split_paste_pair(line);
+            let field_val: SharedString = field_part.to_string().into();
+            field_state.update(cx, |s, cx| s.set_value(field_val, window, cx));
+            if let Some(val_part) = value_part {
+                let val: SharedString = val_part.to_string().into();
+                value_state.update(cx, |s, cx| s.set_value(val, window, cx));
+            }
+        }
+        cx.notify();
+        true
+    }
 }
 
 impl Render for ZedisForm {
@@ -1506,6 +1646,25 @@ impl Render for ZedisForm {
                         if let Some(builder) = &field.suffix_builder {
                             input = input.suffix(builder(window, cx));
                         }
+                        if let Some(companion) = field.paste_pair_with.clone() {
+                            let field_name = field.name.clone();
+                            let form_entity = cx.entity().clone();
+                            input = input.on_paste(move |clipboard, window, cx| {
+                                let Some(text) = clipboard.text() else {
+                                    return false;
+                                };
+                                form_entity.update(cx, |this, cx| {
+                                    this.paste_static_pair_lines(
+                                        field_name.as_ref(),
+                                        companion.as_ref(),
+                                        false,
+                                        &text,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            });
+                        }
                         items.push(FormItem::field(new_field(field).child(input)));
                     }
                 }
@@ -1513,9 +1672,27 @@ impl Render for ZedisForm {
                     // `mask` and `suffix` are single-line adornments and have
                     // no counterpart here — gpui-component keeps them on
                     // `Input` alone.
-                    items.push(FormItem::field(new_field(field).child(
-                        Textarea::new(state).disabled(field_disabled).refine_style(&field.style),
-                    )));
+                    let mut textarea = Textarea::new(state).disabled(field_disabled).refine_style(&field.style);
+                    if let Some(companion) = field.paste_pair_with.clone() {
+                        let field_name = field.name.clone();
+                        let form_entity = cx.entity().clone();
+                        textarea = textarea.on_paste(move |clipboard, window, cx| {
+                            let Some(text) = clipboard.text() else {
+                                return false;
+                            };
+                            form_entity.update(cx, |this, cx| {
+                                this.paste_static_pair_lines(
+                                    field_name.as_ref(),
+                                    companion.as_ref(),
+                                    true,
+                                    &text,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        });
+                    }
+                    items.push(FormItem::field(new_field(field).child(textarea)));
                 }
                 ZedisFormFieldState::Editor(state) => {
                     let editor = Editor::new(state).disabled(field_disabled);
@@ -1582,16 +1759,39 @@ impl Render for ZedisForm {
             for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
                 let mut row_flex = h_flex().gap_2();
                 if !is_single {
-                    row_flex = row_flex.child(Input::new(field_state).disabled(form_disabled));
+                    let form_entity = cx.entity().clone();
+                    row_flex = row_flex.child(Input::new(field_state).disabled(form_disabled).on_paste(
+                        move |clipboard, window, cx| {
+                            let Some(text) = clipboard.text() else {
+                                return false;
+                            };
+                            form_entity.update(cx, |this, cx| {
+                                this.paste_add_field_lines(index, false, &text, window, cx)
+                            })
+                        },
+                    ));
                 }
-                row_flex = row_flex.child(Input::new(value_state).disabled(form_disabled)).child(
-                    Button::new(("remove-add-field", index))
-                        .icon(IconName::CircleX)
-                        .disabled(form_disabled)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_add_field(index, cx);
-                        })),
-                );
+                let form_entity = cx.entity().clone();
+                row_flex =
+                    row_flex
+                        .child(Input::new(value_state).disabled(form_disabled).on_paste(
+                            move |clipboard, window, cx| {
+                                let Some(text) = clipboard.text() else {
+                                    return false;
+                                };
+                                form_entity.update(cx, |this, cx| {
+                                    this.paste_add_field_lines(index, true, &text, window, cx)
+                                })
+                            },
+                        ))
+                        .child(
+                            Button::new(("remove-add-field", index))
+                                .icon(IconName::CircleX)
+                                .disabled(form_disabled)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_add_field(index, cx);
+                                })),
+                        );
                 items.push(FormItem::field(row().child(row_flex)));
             }
             items.push(FormItem::field(
@@ -1728,14 +1928,73 @@ fn submitted_value(raw: &str, verbatim: bool) -> String {
     }
 }
 
+/// Non-empty lines extracted from clipboard text, stripping `\r`.
+pub fn split_paste_lines(text: &str) -> Vec<&str> {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.trim().is_empty())
+        .collect()
+}
+
+/// Parse a pasted line into `(first_column, optional_second_column)`.
+///
+/// Recognises:
+/// 1. Tab-delimited (`field\tvalue` — TSV / spreadsheet copy, preserving spacing around `\t`).
+/// 2. Equals-delimited (`field=value` — `.env` / properties).
+/// 3. Colon-space delimited (`field: value` — YAML / header copy; bare `:` without space is
+///    kept whole so Redis colon-namespaced identifiers like `user:1001` are not split).
+/// 4. Whitespace-delimited (`member 42.5`).
+pub fn split_paste_pair(line: &str) -> (&str, Option<&str>) {
+    if let Some((left, right)) = line.split_once('\t')
+        && !left.is_empty()
+    {
+        return (left, Some(right));
+    }
+    if let Some((left, right)) = line.split_once('=')
+        && !left.trim().is_empty()
+    {
+        return (left.trim(), Some(right.trim()));
+    }
+    if let Some((left, right)) = line.split_once(": ")
+        && !left.trim().is_empty()
+    {
+        return (left.trim(), Some(right.trim()));
+    }
+    let trimmed = line.trim();
+    if let Some((left, right)) = trimmed.split_once(char::is_whitespace)
+        && !left.is_empty()
+        && !right.trim().is_empty()
+    {
+        return (left, Some(right.trim()));
+    }
+    (line, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EXTRA_PAIR_DUP_PREFIX, EXTRA_SINGLE_ROW_PREFIX, decode_extra_pair_key, extra_pair_rows, extra_single_rows,
-        submitted_value,
+        split_paste_lines, split_paste_pair, submitted_value,
     };
     use gpui::SharedString;
     use indexmap::IndexMap;
+
+    #[test]
+    fn paste_lines_and_pairs_split_cleanly_while_keeping_redis_colons() {
+        assert_eq!(split_paste_lines("a\r\nb\n\nc\n"), vec!["a", "b", "c"]);
+        // Tab-delimited keeps exact cell values.
+        assert_eq!(
+            split_paste_pair("user:1001\tAlice Smith"),
+            ("user:1001", Some("Alice Smith"))
+        );
+        // Equals and colon-space split and trim.
+        assert_eq!(split_paste_pair("user:1001 = Alice"), ("user:1001", Some("Alice")));
+        assert_eq!(split_paste_pair("user:1001: Alice"), ("user:1001", Some("Alice")));
+        // Space-delimited (e.g. ZSET `member score`).
+        assert_eq!(split_paste_pair("player:1 42.5"), ("player:1", Some("42.5")));
+        // Bare Redis colon identifier stays intact as a single field/member.
+        assert_eq!(split_paste_pair("user:1001"), ("user:1001", None));
+    }
 
     #[test]
     fn only_a_verbatim_field_keeps_its_surrounding_whitespace() {

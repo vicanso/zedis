@@ -468,6 +468,18 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         // (e.g. streams).
         let readonly_on_edit =
             !is_adding && (!Capability::MutateContainer.allowed(self.readonly) || self.fetcher.readonly_on_edit());
+        let pair_companion = is_adding
+            .then(|| {
+                if !matches!(self.fetcher.key_type(), KeyType::Hash | KeyType::Zset) {
+                    return None;
+                }
+                self.columns
+                    .iter()
+                    .filter(|c| c.column_type == KvTableColumnType::Value)
+                    .nth(1)
+                    .map(|c| c.name.clone())
+            })
+            .flatten();
         for column in self.columns.iter() {
             if column.column_type != KvTableColumnType::Value {
                 continue;
@@ -483,7 +495,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 field = field.required();
             }
             if first {
-                field = field.focus();
+                field = field.focus().when_some(pair_companion.clone(), |this, companion| {
+                    this.paste_pair_with(companion)
+                });
                 first = false;
             }
             if !is_adding && column.flex {

@@ -1080,6 +1080,7 @@ impl ZedisKeyTree {
             // Score + Member fields for Zset
             ZedisFormField::new("score", i18n_common(cx, "score"))
                 .placeholder(i18n_common(cx, "score_placeholder"))
+                .paste_pair_with("member")
                 .visible_on("category", &[3]),
             ZedisFormField::new("member", i18n_common(cx, "member"))
                 .placeholder(i18n_common(cx, "member_placeholder"))
@@ -1088,6 +1089,7 @@ impl ZedisKeyTree {
             // Field + Value fields for Hash
             ZedisFormField::new("hash_field", i18n_common(cx, "field"))
                 .placeholder(i18n_common(cx, "field_placeholder"))
+                .paste_pair_with("hash_value")
                 .required()
                 .visible_on("category", &[4]),
             ZedisFormField::new("hash_value", i18n_common(cx, "value"))
