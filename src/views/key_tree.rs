@@ -32,8 +32,8 @@ use crate::{
     states::{
         GlobalEvent, KeyType, KeyTypeFilter, LoadedKeys, ProbKind, QueryMode, ServerEvent, ServerView,
         ZedisGlobalStore, ZedisServerState, dialog_button_props, escalate_dangerous_body, get_session_option,
-        i18n_common, i18n_editor, i18n_features, i18n_key_tag, i18n_key_tree, i18n_timeseries, i18n_vector_set,
-        key_tree_no_scan_body, save_session_option,
+        i18n_common, i18n_editor, i18n_features, i18n_key_tag, i18n_key_tree, i18n_kv_table, i18n_timeseries,
+        i18n_vector_set, key_tree_no_scan_body, save_session_option,
     },
     views::{OnTagDialogDone, confirm_delete_key, open_batch_key_tag_dialog, open_key_tag_dialog, open_ttl_dialog},
 };
@@ -1033,6 +1033,7 @@ impl ZedisKeyTree {
             None
         };
         let supports_rejson = self.server_state.read(cx).supports_rejson();
+        let supports_field_ttl = self.server_state.read(cx).supports_hash_field_ttl();
         let mut category_list = vec!["String", "List", "Set", "Zset", "Hash", "Stream"];
         if supports_rejson {
             category_list.push("Json");
@@ -1040,8 +1041,9 @@ impl ZedisKeyTree {
         // Category indices: String=0, List=1, Set=2, Zset=3, Hash=4, Stream=5, Json=6(optional)
         let json_index = category_list.iter().position(|&s| s == "Json");
         let ttl_invalid = i18n_common(cx, "ttl_invalid");
+        let field_ttl_invalid = i18n_kv_table(cx, "field_ttl_invalid");
         let key_too_long = i18n_key_tree(cx, "key_too_long");
-        let fields = vec![
+        let mut fields = vec![
             ZedisFormField::new("category", i18n_key_tree(cx, "category"))
                 .field_type(ZedisFormFieldType::RadioGroup)
                 .options(category_list.iter().map(|s| s.to_string().into()).collect()),
@@ -1110,6 +1112,20 @@ impl ZedisKeyTree {
                 .h(px(90.))
                 .visible_on("category", &json_index.map_or(vec![], |i| vec![i])),
         ];
+        if supports_field_ttl {
+            fields.push(
+                ZedisFormField::new("hash_field_ttl", i18n_kv_table(cx, "field_ttl"))
+                    .placeholder(i18n_kv_table(cx, "field_ttl_placeholder"))
+                    .validate(move |s| {
+                        if s.trim().is_empty() || ttl_secs(s).is_some() {
+                            None
+                        } else {
+                            Some(field_ttl_invalid.clone())
+                        }
+                    })
+                    .visible_on("category", &[4]),
+            );
+        }
         let server_state = self.server_state.clone();
         let field_placeholder = i18n_common(cx, "field_placeholder");
         let value_placeholder = i18n_common(cx, "value_placeholder");
@@ -1158,9 +1174,12 @@ impl ZedisKeyTree {
 
                 let key_type = KeyType::from(category.to_lowercase().as_str());
                 let args = build_add_key_args(key_type, &values);
+                let field_ttl_secs = (key_type == KeyType::Hash)
+                    .then(|| values.get("hash_field_ttl").and_then(|s| ttl_secs(s)))
+                    .flatten();
 
                 server_state.update(cx, |this, cx| {
-                    this.add_key(category.to_string().into(), key, ttl, args, cx);
+                    this.add_key_with_field_ttl(category.to_string().into(), key, ttl, args, field_ttl_secs, cx);
                 });
                 true
             })
@@ -1246,6 +1265,7 @@ const ADD_KEY_STATIC_FIELDS: &[&str] = &[
     "member",
     "hash_field",
     "hash_value",
+    "hash_field_ttl",
     "stream_id",
     "json_value",
 ];

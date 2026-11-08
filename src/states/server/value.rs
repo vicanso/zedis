@@ -320,6 +320,8 @@ pub struct RedisHashValue {
     /// the field's shown text.
     /// A field absent from this map has no expiry.
     pub field_ttls: HashMap<SharedString, i64>,
+    /// When `true`, only fields with an active TTL in `field_ttls` are shown.
+    pub expiring_only: bool,
 }
 
 /// Redis List value structure

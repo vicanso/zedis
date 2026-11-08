@@ -188,7 +188,7 @@ pub use functions::{
 pub use geo::{GeoMember, GeoSample, GeoShape, geo_add, geo_dist, geo_sample, geo_search, zset_looks_geo};
 pub use hash_fields::{
     FieldTtl, hash_delete_fields, hash_field_ttls, hash_len, hash_scan, rename_hash_field, set_hash_field_ttl,
-    write_hash_field,
+    set_hash_fields_ttl, write_hash_field,
 };
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};

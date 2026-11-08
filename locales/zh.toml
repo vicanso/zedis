@@ -679,6 +679,7 @@ add_value_success = "字段添加成功"
 add_value_success_tips = "字段已添加。您可能需要刷新才能看到它。"
 update_exist_field_value_success_tips = "字段值已更新。"
 field_ttl_gone = "该字段已不在这个哈希中。"
+expiring_filter_tooltip = "仅显示有过期时间的字段"
 
 
 [kv_table]

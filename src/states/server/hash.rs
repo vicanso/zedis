@@ -456,6 +456,7 @@ impl ZedisServerState {
         let new_hash = RedisHashValue {
             keyword: Some(keyword),
             size: hash.size,
+            expiring_only: hash.expiring_only,
             ..Default::default()
         };
         value.data = Some(RedisValueData::Hash(Arc::new(new_hash)));
@@ -466,6 +467,33 @@ impl ZedisServerState {
 
         // Trigger load with the new filter
         self.load_more_hash_value(cx);
+    }
+
+    /// Whether the open Hash key currently filters to expiring fields only.
+    pub fn hash_expiring_only(&self) -> bool {
+        self.open
+            .value
+            .as_ref()
+            .and_then(|v| v.hash_value())
+            .is_some_and(|h| h.expiring_only)
+    }
+
+    /// Toggle filtering the open Hash key to only fields with an active TTL.
+    pub fn toggle_hash_expiring_only(&mut self, cx: &mut Context<Self>) {
+        let Some(value) = self.open.value.as_mut() else {
+            return;
+        };
+        let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut() else {
+            return;
+        };
+        let hash = Arc::make_mut(hash_data);
+        hash.expiring_only = !hash.expiring_only;
+        let should_scan_more = hash.expiring_only && !hash.done && hash.field_ttls.len() < 50;
+        cx.emit(ServerEvent::ValueUpdated);
+        cx.notify();
+        if should_scan_more {
+            self.load_more_hash_value(cx);
+        }
     }
     /// Removes a field from the Redis HASH.
     ///
@@ -569,8 +597,8 @@ impl ZedisServerState {
         };
 
         // Extract current cursor and filter keyword from HASH state
-        let (cursor, keyword) = match value.hash_value() {
-            Some(hash) => (hash.cursor, hash.keyword.clone()),
+        let (cursor, keyword, expiring_only) = match value.hash_value() {
+            Some(hash) => (hash.cursor, hash.keyword.clone(), hash.expiring_only),
             None => return,
         };
 
@@ -589,7 +617,7 @@ impl ZedisServerState {
             // Async operation: fetch next batch using HSCAN (+ optional HTTL)
             move || async move {
                 // Use larger batch size when filtering to reduce round trips
-                let count = if keyword.is_some() { 1000 } else { 100 };
+                let count = if keyword.is_some() || expiring_only { 1000 } else { 100 };
 
                 let (new_cursor, new_values) = get_redis_hash_value(&at, &key, keyword, cursor, count).await?;
 
@@ -632,7 +660,12 @@ impl ZedisServerState {
                     }
                     hash.field_ttls.extend(new_ttls);
 
-                    if !hash.done && hash.values.len() < 50 {
+                    let visible_len = if hash.expiring_only {
+                        hash.field_ttls.len()
+                    } else {
+                        hash.values.len()
+                    };
+                    if !hash.done && visible_len < 50 {
                         should_load_more = true;
                     }
                 }

@@ -202,6 +202,21 @@ pub async fn set_hash_field_ttl(at: &ServerDb, key: &str, field: &[u8], ttl: Opt
     Ok(codes.first().is_some_and(|code| *code != -2))
 }
 
+/// Set the same TTL (`secs >= 1`) on multiple hash fields in a single
+/// `HEXPIRE key secs FIELDS n field…` command (`floors::HASH_FIELD_TTL`).
+pub async fn set_hash_fields_ttl(at: &ServerDb, key: &str, fields: &[&[u8]], secs: u64) -> Result<()> {
+    if fields.is_empty() || secs == 0 {
+        return Ok(());
+    }
+    let mut c = cmd("HEXPIRE");
+    c.arg(key).arg(secs).arg("FIELDS").arg(fields.len());
+    for field in fields {
+        c.arg(*field);
+    }
+    let _: Vec<i64> = c.query_async(&mut at.connection().await?).await?;
+    Ok(())
+}
+
 /// `HDEL key field…`; answers how many were there to delete.
 pub async fn hash_delete_fields(at: &ServerDb, key: &str, fields: &[&[u8]]) -> Result<usize> {
     if fields.is_empty() {

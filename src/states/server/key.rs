@@ -30,7 +30,8 @@ use crate::connection::{
     ExpireCondition, HeatMetric, KeyOp, KeyOpOutcome, ServerCommand, create_key, delete_key, delete_keys,
     delete_keys_matching, dump_key, expire_key, expire_key_at, floors, flush_all, flush_db, get_server_features,
     get_server_heat_probe, key_memory_usage, key_object_meta, key_type_and_ttl, key_types, persist_key, publish,
-    rename_key, run_key_op, scan_page, server_supports, set_keys_ttl, set_ttl_matching, snapshot_key,
+    rename_key, run_key_op, scan_page, server_supports, set_hash_fields_ttl, set_keys_ttl, set_ttl_matching,
+    snapshot_key,
 };
 use crate::db::{
     TRASH_MAX_BULK_KEYS, TRASH_MAX_PAYLOAD, TRASH_MAX_VALUE_MEMORY, TrashEntry, get_recent_keys_manager,
@@ -2168,6 +2169,18 @@ impl ZedisServerState {
         args: Vec<SharedString>,
         cx: &mut Context<Self>,
     ) {
+        self.add_key_with_field_ttl(category, key, ttl, args, None, cx);
+    }
+
+    pub fn add_key_with_field_ttl(
+        &mut self,
+        category: SharedString,
+        key: SharedString,
+        ttl: SharedString,
+        args: Vec<SharedString>,
+        field_ttl_secs: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         let key: SharedString = key.trim().to_string().into();
         if key.is_empty() {
             return;
@@ -2209,6 +2222,12 @@ impl ZedisServerState {
                     return Err(Error::Invalid {
                         message: "Key already exists".to_string(),
                     });
+                }
+                if key_type == KeyType::Hash
+                    && let Some(secs) = field_ttl_secs.filter(|s| *s > 0)
+                {
+                    let field_names: Vec<&[u8]> = args.iter().step_by(2).map(|f| f.as_bytes()).collect();
+                    set_hash_fields_ttl(&at, key.as_str(), &field_names, secs).await?;
                 }
                 Ok(())
             },

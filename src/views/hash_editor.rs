@@ -24,13 +24,18 @@
 //! - Incremental loading of large HASHes with pagination
 
 use crate::{
+    assets::CustomIconName,
     components::KvTableColumn,
     components::ZedisKvFetcher,
     helpers::{format_duration, ttl_secs},
-    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_hash_editor, i18n_kv_table},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui_kit::component::{
+    Selectable,
+    button::{Button, ButtonVariants},
+};
 use std::time::Duration;
 use zedis_ui::ZedisFormFieldType;
 
@@ -52,6 +57,17 @@ struct ZedisHashValues {
     value: RedisValue,
     /// Reference to server state for executing Redis operations
     server_state: Entity<ZedisServerState>,
+    /// Visible row indices in `hash.values` when `expiring_only` is active.
+    visible_item_indexes: Option<Vec<usize>>,
+}
+
+impl ZedisHashValues {
+    fn real_index(&self, row_ix: usize) -> usize {
+        self.visible_item_indexes
+            .as_ref()
+            .and_then(|indexes| indexes.get(row_ix).copied())
+            .unwrap_or(row_ix)
+    }
 }
 
 /// What a field's TTL cell asks for: `Ok(None)` when empty, `Ok(Some(secs))`
@@ -75,7 +91,24 @@ impl ZedisKvFetcher for ZedisHashValues {
 
     /// Creates a new data adapter instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
-        Self { server_state, value }
+        let visible_item_indexes = value.hash_value().and_then(|hash| {
+            if !hash.expiring_only {
+                return None;
+            }
+            Some(
+                hash.values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (field, _))| hash.field_ttls.contains_key(field.text()))
+                    .map(|(ix, _)| ix)
+                    .collect(),
+            )
+        });
+        Self {
+            server_state,
+            value,
+            visible_item_indexes,
+        }
     }
 
     /// Retrieves a cell value for the table at the given row and column.
@@ -87,7 +120,7 @@ impl ZedisKvFetcher for ZedisHashValues {
     ///   string = no expiry)
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         let hash = self.value.hash_value()?;
-        let (field, value) = hash.values.get(row_ix)?;
+        let (field, value) = hash.values.get(self.real_index(row_ix))?;
 
         if col_ix == TTL_COL_IX {
             return Some(match hash.field_ttls.get(field.text()).copied() {
@@ -109,7 +142,7 @@ impl ZedisKvFetcher for ZedisHashValues {
     fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         if col_ix == TTL_COL_IX {
             let hash = self.value.hash_value()?;
-            let (field, _) = hash.values.get(row_ix)?;
+            let (field, _) = hash.values.get(self.real_index(row_ix))?;
             return Some(match hash.field_ttls.get(field.text()).copied() {
                 Some(t) => format!("{}", t).into(),
                 None => SharedString::default(),
@@ -119,7 +152,7 @@ impl ZedisKvFetcher for ZedisHashValues {
     }
 
     fn element(&self, row_ix: usize, col_ix: usize) -> Option<KvElement> {
-        let (field, value) = self.value.hash_value()?.values.get(row_ix)?;
+        let (field, value) = self.value.hash_value()?.values.get(self.real_index(row_ix))?;
         match col_ix {
             1 => Some(field.clone()),
             2 => Some(value.clone()),
@@ -136,6 +169,9 @@ impl ZedisKvFetcher for ZedisHashValues {
     ///
     /// This may be less than `count()` if pagination is in progress.
     fn rows_count(&self) -> usize {
+        if let Some(indexes) = &self.visible_item_indexes {
+            return indexes.len();
+        }
         self.value.hash_value().map_or(0, |v| v.values.len())
     }
 
@@ -162,20 +198,22 @@ impl ZedisKvFetcher for ZedisHashValues {
     }
 
     fn row_expires(&self, row_ix: usize) -> bool {
+        let real_ix = self.real_index(row_ix);
         self.value
             .hash_value()
             .and_then(|hash| {
-                let (field, _) = hash.values.get(row_ix)?;
+                let (field, _) = hash.values.get(real_ix)?;
                 Some(hash.field_ttls.contains_key(field.text()))
             })
             .unwrap_or(false)
     }
 
     fn set_row_ttl(&self, row_ix: usize, ttl: Option<u64>, cx: &mut App) {
+        let real_ix = self.real_index(row_ix);
         let Some((field, _)) = self
             .value
             .hash_value()
-            .and_then(|hash| hash.values.get(row_ix).cloned())
+            .and_then(|hash| hash.values.get(real_ix).cloned())
         else {
             return;
         };
@@ -196,7 +234,7 @@ impl ZedisKvFetcher for ZedisHashValues {
         };
         let fields: Vec<KvElement> = rows
             .iter()
-            .filter_map(|row| hash.values.get(*row).map(|(field, _)| field.clone()))
+            .filter_map(|row| hash.values.get(self.real_index(*row)).map(|(field, _)| field.clone()))
             .collect();
         self.server_state.update(cx, |this, cx| {
             this.remove_hash_values(fields, cx);
@@ -208,7 +246,7 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(hash) = self.value.hash_value() else {
             return;
         };
-        let Some((field, _value)) = hash.values.get(index).cloned() else {
+        let Some((field, _value)) = hash.values.get(self.real_index(index)).cloned() else {
             return;
         };
 
@@ -238,7 +276,8 @@ impl ZedisKvFetcher for ZedisHashValues {
         let Some(value) = values.get(1) else {
             return;
         };
-        let Some((old_field, old_value)) = self.value.hash_value().and_then(|v| v.values.get(row_ix).cloned()) else {
+        let real_ix = self.real_index(row_ix);
+        let Some((old_field, old_value)) = self.value.hash_value().and_then(|v| v.values.get(real_ix).cloned()) else {
             return;
         };
 
@@ -330,7 +369,29 @@ impl ZedisHashEditor {
             );
         }
 
-        let table_state = cx.new(|cx| ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx));
+        let filter_server_state = server_state.clone();
+        let table_state = cx.new(|cx| {
+            let mut table = ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx);
+            if supports_field_ttl {
+                table.set_action_button_factory(Box::new(move |_window, cx| {
+                    let active = filter_server_state.read(cx).hash_expiring_only();
+                    let state_for_click = filter_server_state.clone();
+                    vec![
+                        Button::new("hash-expiring-filter-btn")
+                            .ghost()
+                            .selected(active)
+                            .icon(CustomIconName::Clock3)
+                            .tooltip(i18n_hash_editor(cx, "expiring_filter_tooltip"))
+                            .on_click(move |_, _window, cx| {
+                                state_for_click.update(cx, |state, cx| {
+                                    state.toggle_hash_expiring_only(cx);
+                                });
+                            }),
+                    ]
+                }));
+            }
+            table
+        });
 
         Self { table_state }
     }

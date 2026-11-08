@@ -681,6 +681,7 @@ add_value_success = "Feld hinzugefügt"
 add_value_success_tips = "Feld hinzugefügt. Möglicherweise müssen Sie aktualisieren, um es anzuzeigen."
 update_exist_field_value_success_tips = "Feldwert aktualisiert."
 field_ttl_gone = "Dieses Feld ist nicht mehr im Hash."
+expiring_filter_tooltip = "Nur Felder mit TTL anzeigen"
 
 [kv_table]
 field = "Feld"

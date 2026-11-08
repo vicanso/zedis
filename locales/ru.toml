@@ -681,6 +681,7 @@ add_value_success = "Поле добавлено"
 add_value_success_tips = "Поле добавлено. Возможно, потребуется обновить страницу для просмотра."
 update_exist_field_value_success_tips = "Значение поля обновлено."
 field_ttl_gone = "Этого поля больше нет в хэше."
+expiring_filter_tooltip = "Показывать только поля с TTL"
 
 [kv_table]
 field = "Поле"

@@ -681,6 +681,7 @@ add_value_success = "Champ ajouté"
 add_value_success_tips = "Champ ajouté. Vous devrez peut-être actualiser pour le visualiser."
 update_exist_field_value_success_tips = "Valeur du champ mise à jour."
 field_ttl_gone = "Ce champ n’est plus dans le Hash."
+expiring_filter_tooltip = "Afficher uniquement les champs avec TTL"
 
 [kv_table]
 field = "Champ"

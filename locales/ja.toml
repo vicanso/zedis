@@ -681,6 +681,7 @@ add_value_success = "フィールドを追加しました"
 add_value_success_tips = "フィールドを追加しました。確認するには更新が必要な場合があります。"
 update_exist_field_value_success_tips = "フィールド値を更新しました。"
 field_ttl_gone = "このフィールドはもうハッシュにありません。"
+expiring_filter_tooltip = "TTL のあるフィールドのみ表示"
 
 [kv_table]
 field = "フィールド"
