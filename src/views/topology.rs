@@ -43,10 +43,12 @@
 //! servers get the escalated warning.
 
 use crate::assets::CustomIconName;
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::SentinelMaster;
 use crate::connection::{
     AtomicSlotMigration, CLUSTER_HASH_SLOTS, Capability, ClusterSlotMap, FAILOVER_TIMEOUT_MS, NodeHealth,
-    RebalanceMove, ReplicationRole, SentinelMaster, ServerCommand, ServerDb, SlotStatMetric, SlotStatRow,
-    cluster_slot_stats, floors, get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
+    RebalanceMove, ReplicationRole, ServerCommand, ServerDb, SlotStatMetric, SlotStatRow, cluster_slot_stats, floors,
+    get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
 use crate::helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing};
@@ -56,7 +58,9 @@ use crate::states::{
     fetch_cluster_node_loads, fetch_slot_migrations, i18n_common, i18n_hints, i18n_topology,
     plan_cluster_rebalance_moves, plan_cluster_reshard, source_owners_for_slots, update_app_state_and_save_quiet,
 };
-use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog, unavailable_chip};
+use crate::views::unavailable_chip;
+#[cfg(not(target_family = "wasm"))]
+use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -78,6 +82,7 @@ mod cluster_nodes;
 mod cluster_reshard;
 mod cluster_slots;
 mod replication;
+#[cfg(not(target_family = "wasm"))]
 mod sentinel;
 
 /// Shorten a cluster node id for display (first 8 hex chars).
@@ -335,6 +340,7 @@ impl ZedisTopology {
         self.server_state.read(cx).can(Capability::ClusterWrite)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn can_sentinel_write(&self, cx: &Context<Self>) -> bool {
         self.server_state.read(cx).can(Capability::SentinelWrite)
     }
@@ -346,6 +352,7 @@ impl ZedisTopology {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.server_state.update(cx, |state, cx| {
             state.refresh_redis_info(cx);
+            #[cfg(not(target_family = "wasm"))]
             if self.mode == TopologyMode::Sentinel {
                 state.load_sentinel_masters(cx);
             }
@@ -460,6 +467,14 @@ impl ZedisTopology {
             col = col.child(banner);
         }
         col.child(body).into_any_element()
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(super) fn ensure_sentinel_info(&mut self, _cx: &mut Context<Self>) {}
+
+    #[cfg(target_family = "wasm")]
+    pub(super) fn render_sentinel_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.render_standalone_body(window, cx)
     }
 }
 
@@ -621,18 +636,21 @@ mod tests {
             }),
             "forget a node"
         );
-        assert!(
-            asks_in_the_destructive_shape(cx, handle, &topology, |topology, window, cx| {
-                topology.open_sentinel_reset_dialog("mymaster".into(), window, cx)
-            }),
-            "reset a master"
-        );
-        assert!(
-            asks_in_the_destructive_shape(cx, handle, &topology, |topology, window, cx| {
-                topology.open_sentinel_remove_dialog("mymaster".into(), window, cx)
-            }),
-            "remove a master"
-        );
+        #[cfg(not(target_family = "wasm"))]
+        {
+            assert!(
+                asks_in_the_destructive_shape(cx, handle, &topology, |topology, window, cx| {
+                    topology.open_sentinel_reset_dialog("mymaster".into(), window, cx)
+                }),
+                "reset a master"
+            );
+            assert!(
+                asks_in_the_destructive_shape(cx, handle, &topology, |topology, window, cx| {
+                    topology.open_sentinel_remove_dialog("mymaster".into(), window, cx)
+                }),
+                "remove a master"
+            );
+        }
     }
 
     #[test]

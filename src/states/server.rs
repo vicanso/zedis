@@ -60,7 +60,6 @@ use zedis_core::alerts::{AlertEvaluator, AlertRule, AlertSample, TriggeredAlert}
 use zedis_core::change_log::ChangeEntry;
 use zedis_core::report::Section;
 
-#[cfg(not(target_family = "wasm"))]
 pub mod cluster;
 pub mod element;
 pub mod event;

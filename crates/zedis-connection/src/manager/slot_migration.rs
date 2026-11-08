@@ -37,7 +37,12 @@
 //! `migrate` / `import` operations become `EXPORT` / `IMPORT`, its
 //! millisecond times seconds, its `completed` done beside Valkey's `success`.
 
+#[cfg(target_family = "wasm")]
+use crate::bridge::BridgeQuery as _;
+#[cfg(target_family = "wasm")]
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
+#[cfg(not(target_family = "wasm"))]
 use redis::aio::ConnectionLike;
 use redis::{Value, cmd};
 
@@ -139,6 +144,7 @@ impl AtomicSlotMigration {
 /// id: the slots' owners are the sources) — [`SlotMigrationDialect::starts_on_target`]
 /// says which. Returns as soon as the server accepted the job; the
 /// migration itself is watched through [`cluster_get_slot_migrations`].
+#[cfg(not(target_family = "wasm"))]
 pub async fn cluster_migrate_slots<C: ConnectionLike + Send>(
     conn: &mut C,
     dialect: SlotMigrationDialect,
@@ -172,8 +178,41 @@ pub async fn cluster_migrate_slots<C: ConnectionLike + Send>(
     Ok(())
 }
 
+#[cfg(target_family = "wasm")]
+pub async fn cluster_migrate_slots(
+    conn: &mut RedisAsyncConn,
+    dialect: SlotMigrationDialect,
+    ranges: &[(u16, u16)],
+    target_id: &str,
+) -> Result<()> {
+    if ranges.is_empty() {
+        return Err(Error::Invalid {
+            message: "no slot ranges to migrate".to_string(),
+        });
+    }
+    let mut c = cmd("CLUSTER");
+    match dialect {
+        SlotMigrationDialect::Valkey => {
+            c.arg("MIGRATESLOTS").arg("SLOTSRANGE");
+            for (start, end) in ranges {
+                c.arg(*start).arg(*end);
+            }
+            c.arg("NODE").arg(target_id);
+        }
+        SlotMigrationDialect::Redis => {
+            c.arg("MIGRATION").arg("IMPORT");
+            for (start, end) in ranges {
+                c.arg(*start).arg(*end);
+            }
+        }
+    }
+    let _: String = c.query_async(conn).await?;
+    Ok(())
+}
+
 /// Every in-flight job on this node plus the recently finished ones the
 /// server still remembers, from whichever end `conn` is.
+#[cfg(not(target_family = "wasm"))]
 pub async fn cluster_get_slot_migrations<C: ConnectionLike + Send>(
     conn: &mut C,
     dialect: SlotMigrationDialect,
@@ -203,13 +242,60 @@ pub async fn cluster_get_slot_migrations<C: ConnectionLike + Send>(
         .collect())
 }
 
+#[cfg(target_family = "wasm")]
+pub async fn cluster_get_slot_migrations(
+    conn: &mut RedisAsyncConn,
+    dialect: SlotMigrationDialect,
+) -> Result<Vec<AtomicSlotMigration>> {
+    let value: Value = match dialect {
+        SlotMigrationDialect::Valkey => cmd("CLUSTER").arg("GETSLOTMIGRATIONS").query_async(conn).await?,
+        SlotMigrationDialect::Redis => {
+            cmd("CLUSTER")
+                .arg("MIGRATION")
+                .arg("STATUS")
+                .arg("ALL")
+                .query_async(conn)
+                .await?
+        }
+    };
+    let Value::Array(items) = value else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .iter()
+        .filter_map(|row| match dialect {
+            SlotMigrationDialect::Valkey => parse_migration(row),
+            SlotMigrationDialect::Redis => parse_redis_migration(row),
+        })
+        .collect())
+}
+
 /// Abort every migration this node has a hand in. On Valkey only the source
 /// can cancel; Redis takes the cancel on either end and answers with a
 /// count, which is why `cluster_ops` tells both ends there.
+#[cfg(not(target_family = "wasm"))]
 pub async fn cluster_cancel_slot_migrations<C: ConnectionLike + Send>(
     conn: &mut C,
     dialect: SlotMigrationDialect,
 ) -> Result<()> {
+    match dialect {
+        SlotMigrationDialect::Valkey => {
+            let _: String = cmd("CLUSTER").arg("CANCELSLOTMIGRATIONS").query_async(conn).await?;
+        }
+        SlotMigrationDialect::Redis => {
+            let _: i64 = cmd("CLUSTER")
+                .arg("MIGRATION")
+                .arg("CANCEL")
+                .arg("ALL")
+                .query_async(conn)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn cluster_cancel_slot_migrations(conn: &mut RedisAsyncConn, dialect: SlotMigrationDialect) -> Result<()> {
     match dialect {
         SlotMigrationDialect::Valkey => {
             let _: String = cmd("CLUSTER").arg("CANCELSLOTMIGRATIONS").query_async(conn).await?;

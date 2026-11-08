@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::views::ZedisProtoEditor;
+#[cfg(not(target_family = "wasm"))]
+use crate::views::ZedisScriptEditor;
+use crate::views::{ZedisKeyspaceNotifications, ZedisMonitor, ZedisTopology};
 use crate::{
     helpers::{EditorAction, get_key_tree_widths},
     states::{
@@ -25,14 +29,6 @@ use crate::{
         ZedisTerminal, ZedisTimeSeriesExplorer, ZedisUnsupportedPanel, ZedisValueSearch,
     },
 };
-// Push streams (MONITOR, keyspace events), node administration (Topology) and
-// the two local-file managers are the bridge's side of the wire (ADR 9).
-#[cfg(target_family = "wasm")]
-use crate::connection::{CommandStatus, ServerCommand};
-use crate::views::ZedisProtoEditor;
-use crate::views::{ZedisKeyspaceNotifications, ZedisMonitor};
-#[cfg(not(target_family = "wasm"))]
-use crate::views::{ZedisScriptEditor, ZedisTopology};
 use gpui::{AnyView, App, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -510,18 +506,7 @@ impl ZedisContent {
             ServerView::LuaScripts => cx.new(|cx| ZedisLuaScriptLibrary::new(state, window, cx)).into(),
             ServerView::Persistence => cx.new(|cx| ZedisPersistence::new(state, window, cx)).into(),
             ServerView::KeyspaceNotifications => cx.new(|cx| ZedisKeyspaceNotifications::new(state, window, cx)).into(),
-            #[cfg(not(target_family = "wasm"))]
             ServerView::Topology => cx.new(|cx| ZedisTopology::new(state, window, cx)).into(),
-            // Administration that dials each node: the bridge's side of the
-            // wire (ADR 9). The same placeholder a missing command gets, in
-            // the same cache slot.
-            #[cfg(target_family = "wasm")]
-            ServerView::Topology => {
-                let command = view.required_commands().first().copied().unwrap_or(ServerCommand::Info);
-                self.placeholders.insert(view);
-                cx.new(|_| ZedisUnsupportedPanel::new(state, view, command, CommandStatus::Missing))
-                    .into()
-            }
             ServerView::ServerLoad => cx.new(|cx| ZedisServerLoad::new(state, window, cx)).into(),
             ServerView::Hotkeys => cx.new(|cx| ZedisHotkeys::new(state, window, cx)).into(),
             ServerView::TimeSeriesExplorer => cx.new(|cx| ZedisTimeSeriesExplorer::new(state, window, cx)).into(),

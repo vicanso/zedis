@@ -469,6 +469,80 @@ async fn bridge_master_nodes(connection: &RedisAsyncConn) -> Vec<RedisNode> {
     }
 }
 
+/// The cluster's full topology (masters, replicas, slot ranges, migrations)
+/// from `CLUSTER NODES` over a bridge fan-out, with the bridge's `nodes`
+/// labels as the fallback when `CLUSTER NODES` is refused.
+#[cfg(target_family = "wasm")]
+async fn bridge_cluster_nodes(connection: &RedisAsyncConn, config: &RedisServer) -> (Vec<RedisNode>, Vec<RedisNode>) {
+    if let Some(conn) = connection.as_bridge()
+        && let Ok((labels, values)) = conn
+            .fanout_masters(vec![cmd("CLUSTER").arg("NODES").get_packed_command()])
+            .await
+    {
+        let fallback_host = labels
+            .first()
+            .map(|label| split_label(label).0.to_string())
+            .unwrap_or_else(|| config.host.clone());
+        if let Some(raw) = values.iter().find_map(crate::reply::text)
+            && let Ok(parsed) = parse_cluster_nodes(&raw)
+            && !parsed.is_empty()
+        {
+            let peer_host = parsed
+                .iter()
+                .find(|item| !item.ip.is_empty())
+                .map(|item| item.ip.clone())
+                .unwrap_or(fallback_host);
+            let nodes: Vec<RedisNode> = parsed
+                .into_iter()
+                .map(|item| {
+                    let host = if item.ip.is_empty() { peer_host.clone() } else { item.ip };
+                    let mut tmp_config = config.clone();
+                    tmp_config.host = host;
+                    tmp_config.port = item.port;
+                    RedisNode {
+                        server: tmp_config,
+                        role: item.role,
+                        cluster_id: Some(item.id),
+                        master_cluster_id: item.master_id,
+                        health: item.health,
+                        slots: item.slots,
+                        migrations: item.migrations,
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            let master_nodes: Vec<RedisNode> = nodes
+                .iter()
+                .filter(|node| joins_fan_out(&node.role, node.health, node.server.port, true))
+                .cloned()
+                .collect();
+            if !master_nodes.is_empty() {
+                return (nodes, master_nodes);
+            }
+        }
+        let masters: Vec<RedisNode> = labels
+            .iter()
+            .map(|label| {
+                let (host, port) = split_label(label);
+                RedisNode {
+                    server: RedisServer {
+                        name: label.clone(),
+                        host: host.to_string(),
+                        port,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .collect();
+        if !masters.is_empty() {
+            return (masters.clone(), masters);
+        }
+    }
+    let masters = bridge_master_nodes(connection).await;
+    (masters.clone(), masters)
+}
+
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {
@@ -851,26 +925,28 @@ impl ConnectionManager {
                 ServerType::Standalone
             }),
         };
-        // Masters as *labels*, learned from the bridge's own fan-out rather
-        // than from `CLUSTER NODES` — for every topology, not only a cluster. A
-        // label is all `query_async_masters_with_option` aligns replies on, and
-        // the browser's copy of the entry has no host to build one from: the
-        // bridge's list gives ids and names, because handing the browser a
-        // dialable address is precisely what the bridge exists to avoid
-        // (ADR 9). A standalone answers with its one label the same way.
-        let mut master_nodes = bridge_master_nodes(&connection).await;
+        let (mut nodes, mut master_nodes) = if server_type == ServerType::Cluster {
+            bridge_cluster_nodes(&connection, config).await
+        } else {
+            let masters = bridge_master_nodes(&connection).await;
+            (masters.clone(), masters)
+        };
         if master_nodes.is_empty() {
             // The fan-out did not answer; keep the entry itself so the client
             // still has a node to count, even if it cannot aim a scan.
-            master_nodes.push(RedisNode {
+            let fallback = RedisNode {
                 server: config.clone(),
                 ..Default::default()
-            });
+            };
+            if nodes.is_empty() {
+                nodes.push(fallback.clone());
+            }
+            master_nodes.push(fallback);
         }
         Ok(Reached {
             connection,
             server_type,
-            nodes: master_nodes.clone(),
+            nodes,
             master_nodes,
             // Sentinel administration dials the sentinels themselves, which
             // is server-side work the web build does not offer.

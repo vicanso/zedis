@@ -90,7 +90,6 @@ mod terminal;
 mod timeseries_editor;
 mod timeseries_explorer;
 mod title_bar;
-#[cfg(not(target_family = "wasm"))]
 mod topology;
 mod trash_dialog;
 mod troubleshoot_report;
@@ -192,7 +191,6 @@ pub use stream_editor::ZedisStreamEditor;
 pub use terminal::ZedisTerminal;
 pub use timeseries_editor::ZedisTimeSeriesEditor;
 pub use title_bar::ZedisTitleBar;
-#[cfg(not(target_family = "wasm"))]
 pub use topology::ZedisTopology;
 pub use trash_dialog::open_trash_dialog;
 pub(crate) use ttl_dialog::open_ttl_dialog;

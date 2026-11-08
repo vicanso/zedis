@@ -110,7 +110,6 @@ pub use server::LinkProblem;
 pub use server::LoadedKeys;
 pub use server::WriteGate;
 pub use server::ZedisServerState;
-#[cfg(not(target_family = "wasm"))]
 pub use server::cluster::{
     ClusterMasterRanges, ClusterNodeLoad, RebalanceLeg, fetch_cluster_node_loads, fetch_slot_migrations,
     plan_cluster_rebalance_moves, plan_cluster_reshard, source_owners_for_slots,

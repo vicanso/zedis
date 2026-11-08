@@ -188,20 +188,8 @@ impl ServerView {
     }
 
     /// Whether this build has the panel.
-    ///
-    /// The desktop has all of them. The browser build leaves out Topology,
-    /// whose administration dials each node (ADR 9). An entry point goes with
-    /// its feature, so the
-    /// tools menu and the ⌘K palette ask this before they list a panel; a
-    /// route that names one anyway (a link, a restored tab) is answered by
-    /// `ZedisUnsupportedPanel`.
-    #[cfg(not(target_family = "wasm"))]
     pub const fn in_this_build(self) -> bool {
         true
-    }
-    #[cfg(target_family = "wasm")]
-    pub const fn in_this_build(self) -> bool {
-        !matches!(self, ServerView::Topology)
     }
 
     /// Parse a connection-scoped view name (expects an already-lowercased str).

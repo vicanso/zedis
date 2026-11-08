@@ -25,14 +25,20 @@
 //! told to every master, `FORGET` because gossip re-adds a node that only
 //! some masters dropped.
 
+#[cfg(not(target_family = "wasm"))]
 use crate::async_connection::{open_node_connection, open_node_connection_cached};
+#[cfg(target_family = "wasm")]
+use crate::bridge::{BridgeConn, BridgeQuery as _, bridge_transport};
 use crate::config::get_server;
+#[cfg(target_family = "wasm")]
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::manager::{
     AtomicSlotMigration, SlotMigrationDialect, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
     cluster_migrate_slots, get_connection_manager,
 };
 use crate::server_db::ServerDb;
+#[cfg(not(target_family = "wasm"))]
 use redis::aio::MultiplexedConnection;
 use redis::cmd;
 use std::collections::BTreeSet;
@@ -71,6 +77,7 @@ impl ClusterNode {
 
     /// A connection of this call's own. Crate private like
     /// [`ServerDb::connection`], and for the same reason.
+    #[cfg(not(target_family = "wasm"))]
     async fn connection(&self) -> Result<MultiplexedConnection> {
         // Boxed for the same reason as `ServerDb::connection`: dialing is a
         // large future, and a caller that opens several nodes in a loop
@@ -81,8 +88,27 @@ impl ClusterNode {
     /// The pooled per-node connection, for traffic that *recurs* — a poll
     /// that samples every master on an interval, where a fresh handshake per
     /// node per tick is pure churn. Never for connection-scoped state.
+    #[cfg(not(target_family = "wasm"))]
     async fn cached_connection(&self) -> Result<MultiplexedConnection> {
         Box::pin(open_node_connection_cached(&self.server_id, &self.addr)).await
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn connection(&self) -> Result<RedisAsyncConn> {
+        self.cached_connection().await
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn cached_connection(&self) -> Result<RedisAsyncConn> {
+        let transport = bridge_transport().ok_or_else(|| Error::Invalid {
+            message: "no bridge transport is installed".to_string(),
+        })?;
+        let confirm = get_server(&self.server_id).ok().map(|s| s.name);
+        Ok(RedisAsyncConn::Bridge(
+            BridgeConn::new(transport, &self.server_id, 0)
+                .with_node(&self.addr)
+                .with_confirmation(confirm),
+        ))
     }
 }
 

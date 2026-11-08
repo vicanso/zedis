@@ -348,7 +348,6 @@ pub enum NodeRole {
     Master,
     Slave,
     Fail,
-    #[cfg(not(target_family = "wasm"))]
     Unknown, // e.g. "handshake", "noaddr"
 }
 
@@ -377,7 +376,6 @@ pub enum NodeHealth {
 /// where port 0 means exactly that; an entry of the user's own keeps its
 /// port whatever it is. The full list stays in `nodes` for the topology
 /// page, and `fail?` — one node's suspicion — still joins.
-#[cfg(not(target_family = "wasm"))]
 fn joins_fan_out(role: &NodeRole, health: NodeHealth, port: u16, cluster: bool) -> bool {
     *role == NodeRole::Master && health != NodeHealth::Failing && !(cluster && port == 0)
 }
@@ -396,7 +394,6 @@ struct RedisNode {
     /// Slot ranges owned by this master node (cluster mode only).
     slots: Vec<(u16, u16)>,
     /// In-flight slot migrations reported on this node (`CLUSTER NODES`).
-    #[cfg(not(target_family = "wasm"))]
     migrations: Vec<SlotMigration>,
     /// `fail?` / `fail` from `CLUSTER NODES`; `Ok` outside cluster mode.
     health: NodeHealth,
@@ -410,7 +407,6 @@ impl RedisNode {
 }
 
 /// Direction of an in-flight slot migration reported by `CLUSTER NODES`.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotMigrationKind {
     /// This node owns the slot and is migrating it *to* `peer_id`.
@@ -421,7 +417,6 @@ pub enum SlotMigrationKind {
 
 /// One migrating/importing marker from a `CLUSTER NODES` line
 /// (e.g. `[12345->-target_id]` / `[12345-<-source_id]`).
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotMigration {
     pub slot: u16,
@@ -430,7 +425,6 @@ pub struct SlotMigration {
 }
 
 // Information parsed from `CLUSTER NODES` command
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone)]
 pub struct ClusterNodeInfo {
     pub id: String,
@@ -773,12 +767,9 @@ mod replication;
 mod slots;
 
 mod pool;
-/// The pubsub modules hold a socket open and slot migration is generic over
-/// `ConnectionLike` — neither exists in the browser, and both are panels the
-/// web build drops (ADR 9).
+/// The pubsub module holds a socket open (desktop only).
 #[cfg(not(target_family = "wasm"))]
 mod sharded_pubsub;
-#[cfg(not(target_family = "wasm"))]
 mod slot_migration;
 
 pub(crate) use commandlog::MAX_COMMAND_LOG_ENTRIES;
@@ -790,12 +781,10 @@ pub use replication::FAILOVER_TIMEOUT_MS;
 pub use sharded_pubsub::ShardedPubSub;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use sharded_pubsub::open_push_connection;
-#[cfg(not(target_family = "wasm"))]
 pub use slot_migration::{
     AtomicSlotMigration, SlotMigrationDialect, cluster_cancel_slot_migrations, cluster_get_slot_migrations,
     cluster_migrate_slots,
 };
-#[cfg(not(target_family = "wasm"))]
 use slots::parse_cluster_nodes;
 pub use slots::{
     REBALANCE_THRESHOLD_PCT, RebalanceMove, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots,

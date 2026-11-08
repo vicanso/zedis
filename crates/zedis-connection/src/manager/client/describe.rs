@@ -71,10 +71,8 @@ impl RedisClient {
         self.master_nodes.iter().map(|node| node.server.clone()).collect()
     }
 
-    /// Every node's `host:port`, masters and replicas — the keys of the
-    /// per-node connection pool, which the browser build does not have.
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn node_addrs(&self) -> Vec<String> {
+    /// Every node's `host:port`, masters and replicas.
+    pub fn node_addrs(&self) -> Vec<String> {
         self.master_nodes
             .iter()
             .chain(&self.nodes)
@@ -114,7 +112,6 @@ impl RedisClient {
 
     /// Build the structured slot map consumed by Topology's slot bar and
     /// reshard planner. Only populated in cluster mode.
-    #[cfg(not(target_family = "wasm"))]
     fn build_slot_map(&self) -> ClusterSlotMap {
         if self.server_type != ServerType::Cluster {
             return ClusterSlotMap::default();
@@ -246,11 +243,6 @@ impl RedisClient {
         }
     }
 
-    #[cfg(target_family = "wasm")]
-    fn build_slot_map(&self) -> ClusterSlotMap {
-        ClusterSlotMap::default()
-    }
-
     /// Build the structured topology consumed by the status-bar tooltip.
     ///
     /// Cluster mode groups replicas under their master via `master_cluster_id`
@@ -263,7 +255,6 @@ impl RedisClient {
                 NodeRole::Master => "●",
                 NodeRole::Slave => "↳",
                 NodeRole::Fail => "✗",
-                #[cfg(not(target_family = "wasm"))]
                 NodeRole::Unknown => "?",
             }
             .into()

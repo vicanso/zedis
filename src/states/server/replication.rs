@@ -47,7 +47,7 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         let addr: SharedString = format!("{host}:{port}").into();
         let addr_for_msg = addr.clone();
         self.spawn_with_arg(
@@ -72,7 +72,7 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         self.spawn_with_arg(
             ServerTask::Replicaof,
             "NO ONE",
@@ -95,7 +95,7 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         let addr: SharedString = format!("{host}:{port}").into();
         let addr_for_msg = addr.clone();
         self.spawn_with_arg(
@@ -119,7 +119,7 @@ impl ZedisServerState {
         if !self.replication_write_allowed(cx) {
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         self.spawn_with_arg(
             ServerTask::Failover,
             "ABORT",

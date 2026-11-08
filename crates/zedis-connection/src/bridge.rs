@@ -1089,6 +1089,8 @@ pub struct BridgeConn {
     server_id: String,
     db: usize,
     session: Option<String>,
+    /// When set, aim every command at this cluster node (`host:port`).
+    node: Option<String>,
     /// Sent with every request: the answer to the question the bridge's
     /// policy would otherwise ask of a destructive command (`ServerDb::confirmed`).
     confirm: Option<String>,
@@ -1100,6 +1102,7 @@ impl std::fmt::Debug for BridgeConn {
             .field("server_id", &self.server_id)
             .field("db", &self.db)
             .field("session", &self.session.is_some())
+            .field("node", &self.node)
             .finish()
     }
 }
@@ -1113,8 +1116,15 @@ impl BridgeConn {
             server_id: server_id.into(),
             db,
             session: None,
+            node: None,
             confirm: None,
         }
+    }
+
+    /// Aim every command sent on this connection at one cluster node (`host:port`).
+    pub fn with_node(mut self, node: impl Into<String>) -> Self {
+        self.node = Some(node.into());
+        self
     }
 
     /// Carry `token` as the confirmation on every request from here on.
@@ -1145,14 +1155,18 @@ impl BridgeConn {
     }
 
     fn request(&self, commands: Vec<Vec<u8>>, pipeline: Option<PipelineSpec>) -> BridgeRequest {
+        let (fanout_masters, fanout_nodes, pipeline) = match &self.node {
+            Some(node) => (true, vec![node.clone(); commands.len()], None),
+            None => (false, Vec::new(), pipeline),
+        };
         BridgeRequest {
             server_id: self.server_id.clone(),
             db: self.db,
             session: self.session.clone(),
             commands,
             pipeline,
-            fanout_masters: false,
-            fanout_nodes: Vec::new(),
+            fanout_masters,
+            fanout_nodes,
             confirm: self.confirm.clone(),
         }
     }

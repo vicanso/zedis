@@ -51,7 +51,6 @@ native_only!(
 );
 mod bitmap;
 mod bridge;
-#[cfg(not(target_family = "wasm"))]
 mod cluster_ops;
 mod command;
 mod compare;
@@ -145,8 +144,6 @@ pub use clients::{
     KillFilter, PauseMode, client_kill_by, client_kill_id, client_list, client_pause, client_unpause,
     is_zedis_client_name, kill_filter_commands, kill_filter_summary, pause_args, zedis_client_addrs,
 };
-/// Cluster surgery: node-addressed commands, which need a socket per node.
-#[cfg(not(target_family = "wasm"))]
 pub use cluster_ops::{
     ClusterNode, NodeLoad, SlotMove, cluster_forget, cluster_meet, master_addrs, migrate_slot, node_add_slots,
     node_cancel_slot_migrations, node_failover, node_load, node_migrate_slots, node_replicate, node_slot_migrations,
@@ -321,21 +318,17 @@ pub async fn open_single_connection(
 #[cfg(target_family = "wasm")]
 pub fn install_crypto_provider() {}
 
+#[cfg(not(target_family = "wasm"))]
+pub use manager::ShardedPubSub;
 pub use manager::get_connection_manager;
 pub use manager::{
-    AccessMode, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition, FAILOVER_TIMEOUT_MS,
-    HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, PubsubChannel, PubsubChannelsSnapshot,
-    REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription, SearchableType, SlowLogEntry, ValueMatch,
-    ValueSearchRound, ValueSearchSpec, command_log_reset, command_logs, group_slot_ranges, plan_cluster_rebalance,
-    plan_reshard_slots, slots_in_ranges, unassigned_slot_ranges,
-};
-/// Slot migration and sharded Pub/Sub are cluster surgery and a held socket
-/// — server-side work either way, and both are panels the web build drops
-/// (ADR 9).
-#[cfg(not(target_family = "wasm"))]
-pub use manager::{
-    AtomicSlotMigration, NodeHealth, ShardedPubSub, SlotMigrationDialect, cluster_cancel_slot_migrations,
-    cluster_get_slot_migrations, cluster_migrate_slots,
+    AccessMode, AtomicSlotMigration, CLUSTER_HASH_SLOTS, ClusterSlotMap, CommandLogKind, CommandStat, ExpireCondition,
+    FAILOVER_TIMEOUT_MS, HeatMetric, HeatProbe, KeyMemoryUsage, MAX_PUBSUB_CHANNELS, MatchLocation, NodeHealth,
+    PubsubChannel, PubsubChannelsSnapshot, REBALANCE_THRESHOLD_PCT, RebalanceMove, RedisClientDescription,
+    SearchableType, SlotMigrationDialect, SlowLogEntry, ValueMatch, ValueSearchRound, ValueSearchSpec,
+    cluster_cancel_slot_migrations, cluster_get_slot_migrations, cluster_migrate_slots, command_log_reset,
+    command_logs, group_slot_ranges, plan_cluster_rebalance, plan_reshard_slots, slots_in_ranges,
+    unassigned_slot_ranges,
 };
 pub use search::{
     AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,

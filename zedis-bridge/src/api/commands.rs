@@ -317,6 +317,21 @@ pub(crate) async fn forward_values(
                     })
                 })
                 .collect();
+            if aimed.iter().all(Option::is_none)
+                && req.fanout_nodes.len() == 1
+                && decoded.len() == 1
+                && client.node_addrs().iter().any(|addr| addr == &req.fanout_nodes[0])
+            {
+                let target_addr = &req.fanout_nodes[0];
+                let mut conn = zedis_connection::open_node_connection_cached(&req.server, target_addr)
+                    .await
+                    .map_err(|e| ApiError::Upstream(e.to_string()))?;
+                let value = conn
+                    .req_packed_command(&resp::command_from_args(&decoded[0]))
+                    .await
+                    .map_err(|e| ApiError::Upstream(e.to_string()))?;
+                return Ok((vec![value], vec![target_addr.clone()]));
+            }
             let replies: Vec<Option<Vec<redis::Value>>> = client
                 .query_async_masters_pipelines(aimed)
                 .await

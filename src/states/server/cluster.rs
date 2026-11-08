@@ -180,7 +180,7 @@ impl ZedisServerState {
             self.emit_warning_notification("Read-only mode — cluster ops blocked".into(), cx);
             return;
         }
-        let at = self.at();
+        let at = self.at_confirmed();
         let id_for_op = node_id.clone();
         self.spawn(
             ServerTask::ClusterForget,
