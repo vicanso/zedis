@@ -1377,6 +1377,13 @@ idmp_pids = "Отслеживаемые продюсеры"
 idmp_iids = "Отслеживаемые ID"
 idmp_added = "Добавлено через IDMP"
 idmp_duplicates = "Подавлено дубликатов"
+ack_many_done = "Подтверждено ожидающих записей: %{count}"
+ack_group_tooltip = "Подтвердить все загруженные ожидающие записи в этой группе (XACK)"
+ack_shown = "Подтвердить показанные"
+ack_shown_tooltip = "Подтвердить все ожидающие записи, соответствующие текущему фильтру (XACK)"
+pending_filter_placeholder = "Фильтр по ID, потребителю, группе…"
+pending_all_groups = "Все"
+inspect_entry_tooltip = "Показать запись в таблице потока"
 
 [config_editor]
 title = "Управление конфигурацией"

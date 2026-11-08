@@ -1377,6 +1377,13 @@ idmp_pids = "Verfolgte Produzenten"
 idmp_iids = "Verfolgte IDs"
 idmp_added = "Über IDMP hinzugefügt"
 idmp_duplicates = "Unterdrückte Duplikate"
+ack_many_done = "%{count} ausstehende Einträge bestätigt"
+ack_group_tooltip = "Alle geladenen ausstehenden Einträge dieser Gruppe bestätigen (XACK)"
+ack_shown = "Angezeigte bestätigen"
+ack_shown_tooltip = "Alle dem aktuellen Filter entsprechenden ausstehenden Einträge bestätigen (XACK)"
+pending_filter_placeholder = "Nach ID, Consumer, Gruppe filtern…"
+pending_all_groups = "Alle"
+inspect_entry_tooltip = "Eintrag in der Stream-Tabelle anzeigen"
 
 [config_editor]
 title = "Konfigurationsverwaltung"

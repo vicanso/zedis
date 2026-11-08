@@ -1376,6 +1376,13 @@ idmp_pids = "跟踪的生产者"
 idmp_iids = "跟踪的 ID"
 idmp_added = "经 IDMP 写入"
 idmp_duplicates = "已抑制的重复"
+ack_many_done = "已确认 %{count} 条待处理消息"
+ack_group_tooltip = "批量确认该消费组已加载的所有待处理消息 (XACK)"
+ack_shown = "确认当前列表"
+ack_shown_tooltip = "批量确认当前筛选结果中的所有待处理消息 (XACK)"
+pending_filter_placeholder = "按消息 ID、消费者或消费组筛选…"
+pending_all_groups = "全部"
+inspect_entry_tooltip = "在 Stream 数据表中定位并查看该消息"
 
 [config_editor]
 title = "配置管理"

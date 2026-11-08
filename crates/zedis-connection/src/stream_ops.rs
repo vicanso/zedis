@@ -408,13 +408,22 @@ pub async fn consumer_delete(at: &ServerDb, key: &str, group: &str, consumer: &s
 
 /// `XACK key group id` — acknowledge one pending entry.
 pub async fn stream_ack(at: &ServerDb, key: &str, group: &str, id: &str) -> Result<()> {
-    let _: i64 = cmd("XACK")
-        .arg(key)
-        .arg(group)
-        .arg(id)
-        .query_async(&mut at.connection().await?)
-        .await?;
-    Ok(())
+    stream_ack_many(at, key, group, &[id]).await.map(|_| ())
+}
+
+/// `XACK key group id [id …]` — acknowledge one or more pending entries in a
+/// single command; answers how many entries left the group's PEL.
+pub async fn stream_ack_many(at: &ServerDb, key: &str, group: &str, ids: &[&str]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut c = cmd("XACK");
+    c.arg(key).arg(group);
+    for id in ids {
+        c.arg(*id);
+    }
+    let acked: i64 = c.query_async(&mut at.connection().await?).await?;
+    Ok(acked.max(0) as usize)
 }
 
 /// `XACKDEL key group KEEPREF IDS 1 id` (Redis 8.2+) — acknowledge one

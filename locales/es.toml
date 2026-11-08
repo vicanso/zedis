@@ -1377,6 +1377,13 @@ idmp_pids = "Productores rastreados"
 idmp_iids = "IDs rastreados"
 idmp_added = "Añadidas vía IDMP"
 idmp_duplicates = "Duplicados suprimidos"
+ack_many_done = "%{count} entradas pendientes confirmadas"
+ack_group_tooltip = "Confirmar todas las entradas pendientes cargadas de este grupo (XACK)"
+ack_shown = "Confirmar visibles"
+ack_shown_tooltip = "Confirmar todas las entradas pendientes que coinciden con el filtro actual (XACK)"
+pending_filter_placeholder = "Filtrar por ID, consumidor, grupo…"
+pending_all_groups = "Todos"
+inspect_entry_tooltip = "Inspeccionar entrada en la tabla del stream"
 
 [config_editor]
 title = "Gestión de configuración"

@@ -1377,6 +1377,13 @@ idmp_pids = "追跡中のプロデューサー"
 idmp_iids = "追跡中の ID"
 idmp_added = "IDMP 経由の追加"
 idmp_duplicates = "抑制された重複"
+ack_many_done = "%{count} 件の保留エントリを確認応答しました"
+ack_group_tooltip = "このグループの読み込み済み保留エントリをすべて確認応答 (XACK)"
+ack_shown = "表示分を確認応答"
+ack_shown_tooltip = "現在のフィルタに一致する保留エントリをすべて確認応答 (XACK)"
+pending_filter_placeholder = "ID、コンシューマ、グループで絞り込み…"
+pending_all_groups = "すべて"
+inspect_entry_tooltip = "ストリームテーブルでエントリを表示"
 
 [config_editor]
 title = "設定管理"

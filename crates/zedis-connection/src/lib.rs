@@ -268,8 +268,8 @@ pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_k
 pub use stream_ops::{
     PENDING_PAGE, StreamConsumer, StreamEntry, StreamGroup, StreamIdmp, StreamInfo, StreamPending, StreamRefPolicy,
     StreamSummary, StreamTrim, consumer_create, consumer_delete, group_create, group_destroy, group_set_id,
-    pending_page, stream_ack, stream_ack_delete, stream_add, stream_autoclaim, stream_claim, stream_delete,
-    stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
+    pending_page, stream_ack, stream_ack_delete, stream_ack_many, stream_add, stream_autoclaim, stream_claim,
+    stream_delete, stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
 };
 pub use stream_tail::{StreamTail, StreamTailEntry};
 pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_prefix, string_set};

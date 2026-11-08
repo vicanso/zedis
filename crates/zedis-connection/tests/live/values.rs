@@ -974,6 +974,11 @@ fn standalone_stream_operations_page_describe_and_administer() {
             1,
             "the acknowledged entry left the PEL"
         );
+        assert_eq!(
+            stream_ack_many(&at, &key, group, &[]).await.expect("empty xack"),
+            0,
+            "empty batch ack is a no-op"
+        );
         if supports(&id, floors::XAUTOCLAIM).await {
             let count = stream_autoclaim(&at, &key, group, "c2", 0, 10)
                 .await

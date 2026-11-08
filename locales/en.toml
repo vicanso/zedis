@@ -1377,6 +1377,13 @@ idmp_pids = "Producers tracked"
 idmp_iids = "IDs tracked"
 idmp_added = "Added via IDMP"
 idmp_duplicates = "Duplicates suppressed"
+ack_many_done = "%{count} pending entries acknowledged"
+ack_group_tooltip = "Acknowledge all loaded pending entries in this group (XACK)"
+ack_shown = "Ack shown"
+ack_shown_tooltip = "Acknowledge all pending entries matching the current filter (XACK)"
+pending_filter_placeholder = "Filter by ID, consumer, group…"
+pending_all_groups = "All"
+inspect_entry_tooltip = "Inspect entry in stream table"
 
 [config_editor]
 title = "Config Management"

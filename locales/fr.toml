@@ -1378,6 +1378,13 @@ idmp_pids = "Producteurs suivis"
 idmp_iids = "IDs suivis"
 idmp_added = "Ajoutées via IDMP"
 idmp_duplicates = "Doublons supprimés"
+ack_many_done = "%{count} entrées en attente acquittées"
+ack_group_tooltip = "Acquitter toutes les entrées en attente chargées de ce groupe (XACK)"
+ack_shown = "Acquitter affichées"
+ack_shown_tooltip = "Acquitter toutes les entrées en attente correspondant au filtre actuel (XACK)"
+pending_filter_placeholder = "Filtrer par ID, consommateur, groupe…"
+pending_all_groups = "Tous"
+inspect_entry_tooltip = "Inspecter l'entrée dans la table du stream"
 
 [config_editor]
 title = "Gestion de configuration"

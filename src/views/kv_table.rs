@@ -443,6 +443,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.action_button_factory = Some(factory);
     }
 
+    /// Sets the keyword search input to `keyword` and runs the filter immediately.
+    pub fn apply_filter(&mut self, keyword: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyword_state.update(cx, |input, cx| {
+            input.set_value(keyword, window, cx);
+        });
+        self.handle_filter(cx);
+    }
+
     /// Sets the operation mode for the table.
     ///
     /// This method allows you to customize which operations are available:

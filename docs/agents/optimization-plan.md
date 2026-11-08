@@ -229,4 +229,4 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 | 6.3 | Web Parity | Enable Topology panel (`ServerView::Topology`) in browser build | Done |
 | 7.1 | Data UX | Multi-line paste auto-split in collection add-item dialogs | Done |
 | 7.2 | Data UX | Inline field TTL (`HEXPIRE`) when adding Hash fields & expiring filter | Done |
-| 7.3 | Data UX | Stream consumer group pending messages (`XPENDING`/`XACK`/`XCLAIM`/`SETID`) | Pending |
+| 7.3 | Data UX | Stream consumer group pending messages (`XPENDING`/`XACK`/`XCLAIM`/`SETID`) | Done |

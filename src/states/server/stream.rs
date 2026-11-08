@@ -26,8 +26,8 @@ use crate::{
     connection::{
         PENDING_PAGE, ServerDb, StreamEntry, StreamGroup, StreamInfo, StreamPending, consumer_create, consumer_delete,
         group_create, group_destroy, group_set_id, next_stream_id, pending_page, stream_ack, stream_ack_delete,
-        stream_add, stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len, stream_nack, stream_page,
-        stream_set_id, stream_trim,
+        stream_ack_many, stream_add, stream_autoclaim, stream_claim, stream_delete, stream_info, stream_len,
+        stream_nack, stream_page, stream_set_id, stream_trim,
     },
     error::Error,
 };
@@ -559,6 +559,34 @@ impl ZedisServerState {
                 Ok(())
             },
             |this, _, cx| this.fetch_stream_info(cx),
+        );
+    }
+
+    /// XACK key group id [id …] — acknowledge multiple pending entries in a
+    /// single round-trip and refresh XINFO.
+    pub fn ack_stream_entries(&mut self, group: SharedString, entry_ids: Vec<SharedString>, cx: &mut Context<Self>) {
+        if entry_ids.is_empty() {
+            return;
+        }
+        self.exec_stream_op(
+            ServerTask::AckStreamEntry,
+            cx,
+            |_| {},
+            move |key, at| async move {
+                let ids: Vec<&str> = entry_ids.iter().map(|id| id.as_str()).collect();
+                Ok(stream_ack_many(&at, &key, group.as_str(), &ids).await?)
+            },
+            |this, acked, cx| {
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                let message: SharedString = t!("stream_editor.ack_many_done", count = acked, locale = locale)
+                    .to_string()
+                    .into();
+                let title: SharedString = t!("stream_editor.pending_entries_title", locale = locale)
+                    .to_string()
+                    .into();
+                this.emit_success_notification(message, title, cx);
+                this.fetch_stream_info(cx);
+            },
         );
     }
 

@@ -32,7 +32,7 @@ use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     label::Label,
     scroll::ScrollableElement,
     table::{Column, DataTable, TableDelegate, TableState},
@@ -91,6 +91,30 @@ struct ZedisStreamValues {
 /// never a 0 that would read as "caught up".
 fn lag_cell(lag: Option<i64>) -> SharedString {
     lag.map_or_else(|| "—".into(), |lag| lag.to_string().into())
+}
+
+/// Whether a pending entry matches the optional group filter and keyword search
+/// (matched case-insensitively against entry ID, consumer name, or group name).
+fn matches_pending_filter(
+    group: &str,
+    entry_id: &str,
+    consumer: &str,
+    group_filter: Option<&str>,
+    keyword: &str,
+) -> bool {
+    if let Some(target_group) = group_filter
+        && group != target_group
+    {
+        return false;
+    }
+    let trimmed = keyword.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let needle = trimmed.to_lowercase();
+    fast_contains_ignore_case(entry_id, &needle)
+        || fast_contains_ignore_case(consumer, &needle)
+        || fast_contains_ignore_case(group, &needle)
 }
 
 impl ZedisStreamValues {
@@ -404,6 +428,10 @@ pub struct ZedisStreamEditor {
     is_info_view: bool,
     /// Merged groups+consumers table (Group | Last-ID | Lag | Consumer | Pending | Idle )
     groups_consumers_table: Option<Entity<TableState<SimpleTableDelegate>>>,
+    /// Keyword filter for the Pending Entries (XPENDING) table.
+    pending_filter_input: Entity<InputState>,
+    /// Optional group filter for the Pending Entries (XPENDING) table.
+    pending_group_filter: Option<SharedString>,
     /// Whether live tail (XREAD BLOCK loop) is running.
     tailing: bool,
     /// The cancellable tail loop. Dropping it (stop, key/server
@@ -494,6 +522,17 @@ impl ZedisStreamEditor {
             }));
         });
 
+        let pending_filter_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_stream_editor(cx, "pending_filter_placeholder"))
+        });
+        let filter_sub = cx.subscribe(&pending_filter_input, |_this, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+
         // Rebuild info tables when fresh XINFO data arrives; reset them on key change
         let sub = cx.subscribe_in(
             &server_state,
@@ -506,6 +545,11 @@ impl ZedisStreamEditor {
                         .and_then(|v| v.stream_value())
                         .and_then(|sv| sv.info.clone());
                     if let Some(info) = stream_info {
+                        if let Some(selected_group) = this.pending_group_filter.as_ref()
+                            && !info.groups.iter().any(|g| &g.name == selected_group)
+                        {
+                            this.pending_group_filter = None;
+                        }
                         this.rebuild_info_tables(&info, window, cx);
                     }
                     cx.notify();
@@ -513,6 +557,10 @@ impl ZedisStreamEditor {
                 ServerEvent::KeySelected(_) => {
                     this.is_info_view = false;
                     this.groups_consumers_table = None;
+                    this.pending_group_filter = None;
+                    this.pending_filter_input.update(cx, |input, cx| {
+                        input.set_value(SharedString::default(), window, cx);
+                    });
                     // Stop tailing — the loop targets the previous key;
                     // dropping the task cancels it and its connection.
                     this.tail_task = None;
@@ -528,9 +576,11 @@ impl ZedisStreamEditor {
             server_state,
             is_info_view: false,
             groups_consumers_table: None,
+            pending_filter_input,
+            pending_group_filter: None,
             tailing: false,
             tail_task: None,
-            _subscriptions: vec![sub],
+            _subscriptions: vec![sub, filter_sub],
         }
     }
 
@@ -968,19 +1018,17 @@ impl ZedisStreamEditor {
         .open(window, cx);
     }
 
-    /// XCLAIM dialog for one pending entry: target consumer name.
+    /// XCLAIM dialog for one pending entry: target consumer name (with quick-pick chips for existing consumers).
     fn claim_entry_dialog(
         &mut self,
         group: SharedString,
         entry_id: SharedString,
+        consumers: Vec<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let consumer_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
-        let hint = i18n_stream_editor(cx, "claim_hint");
-        let body_consumer = consumer_state.clone();
-        let submit_consumer = consumer_state.clone();
+        let form = cx.new(|cx| StreamClaimForm::new(consumers, window, cx));
+        let body = form.clone();
         let server_state = self.server_state.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "claim_title"))
@@ -992,15 +1040,9 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_consumer))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
-                let consumer = submit_consumer.read(cx).value().to_string();
+                let consumer = form.read(cx).consumer.read(cx).value().to_string();
                 if consumer.trim().is_empty() {
                     return false;
                 }
@@ -1016,20 +1058,15 @@ impl ZedisStreamEditor {
 
     /// XAUTOCLAIM dialog for one group: target consumer, minimum idle
     /// time and how many entries to claim at most.
-    fn autoclaim_dialog(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let consumer_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
-        let min_idle_state = cx.new(|cx| InputState::new(window, cx).default_value("60000"));
-        let count_state = cx.new(|cx| InputState::new(window, cx).default_value("100"));
-        let min_idle_label = i18n_stream_editor(cx, "autoclaim_min_idle");
-        let count_label = i18n_stream_editor(cx, "autoclaim_count");
-        let hint = i18n_stream_editor(cx, "autoclaim_hint");
-        let body_consumer = consumer_state.clone();
-        let body_min_idle = min_idle_state.clone();
-        let body_count = count_state.clone();
-        let submit_consumer = consumer_state.clone();
-        let submit_min_idle = min_idle_state.clone();
-        let submit_count = count_state.clone();
+    fn autoclaim_dialog(
+        &mut self,
+        group: SharedString,
+        consumers: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = cx.new(|cx| StreamAutoclaimForm::new(consumers, window, cx));
+        let body = form.clone();
         let server_state = self.server_state.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "autoclaim_title"))
@@ -1041,26 +1078,17 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_consumer))
-                    .child(Label::new(min_idle_label.clone()).text_xs())
-                    .child(Input::new(&body_min_idle))
-                    .child(Label::new(count_label.clone()).text_xs())
-                    .child(Input::new(&body_count))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
-                let consumer = submit_consumer.read(cx).value().to_string();
+                let form_ref = form.read(cx);
+                let consumer = form_ref.consumer.read(cx).value().to_string();
                 if consumer.trim().is_empty() {
                     return false;
                 }
-                let Ok(min_idle_ms) = submit_min_idle.read(cx).value().trim().parse::<u64>() else {
+                let Ok(min_idle_ms) = form_ref.min_idle.read(cx).value().trim().parse::<u64>() else {
                     return false;
                 };
-                let Ok(count) = submit_count.read(cx).value().trim().parse::<usize>() else {
+                let Ok(count) = form_ref.count.read(cx).value().trim().parse::<usize>() else {
                     return false;
                 };
                 if count == 0 {
@@ -1350,6 +1378,9 @@ impl ZedisStreamEditor {
             let delete_consumer_group = g.name.clone();
             let group_consumers: Vec<(SharedString, u64)> =
                 g.consumers.iter().map(|c| (c.name.clone(), c.pending as u64)).collect();
+            let consumer_names: Vec<SharedString> = g.consumers.iter().map(|c| c.name.clone()).collect();
+            let group_pending_ids: Vec<SharedString> = g.pending_entries.iter().map(|p| p.id.clone()).collect();
+            let ack_group = g.name.clone();
             result = result.child(
                 h_flex()
                     .w_full()
@@ -1363,6 +1394,23 @@ impl ZedisStreamEditor {
                     .child(Label::new(g.name.clone()).text_sm())
                     .child(Label::new(g.last_delivered_id.clone()).text_xs().text_color(muted))
                     .child(div().flex_1())
+                    // Batch XACK for all loaded pending entries of this group.
+                    .when(!group_pending_ids.is_empty(), |this| {
+                        let ack_group = ack_group.clone();
+                        let ids = group_pending_ids.clone();
+                        this.child(
+                            Button::new(("stream-ack-group", idx))
+                                .small()
+                                .ghost()
+                                .icon(IconName::Check)
+                                .tooltip(i18n_stream_editor(cx, "ack_group_tooltip"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.server_state.update(cx, |state, cx| {
+                                        state.ack_stream_entries(ack_group.clone(), ids.clone(), cx);
+                                    });
+                                })),
+                        )
+                    })
                     // An empty consumer, visible in XINFO before it reads.
                     .when(can_create_consumer, |this| {
                         let create_consumer_group = create_consumer_group.clone();
@@ -1403,16 +1451,17 @@ impl ZedisStreamEditor {
                                 this.setid_group_dialog(setid_group.clone(), window, cx);
                             })),
                     )
-                    .child(
+                    .child({
+                        let consumers = consumer_names.clone();
                         Button::new(("stream-autoclaim", idx))
                             .small()
                             .ghost()
                             .icon(Icon::new(CustomIconName::ListCheck))
                             .tooltip(i18n_stream_editor(cx, "autoclaim_tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.autoclaim_dialog(autoclaim_group.clone(), window, cx);
-                            })),
-                    )
+                                this.autoclaim_dialog(autoclaim_group.clone(), consumers.clone(), window, cx);
+                            }))
+                    })
                     .child(
                         Button::new(("stream-destroy", idx))
                             .small()
@@ -1456,18 +1505,119 @@ impl ZedisStreamEditor {
         }
 
         result = result
-            .child(
-                Label::new(i18n_stream_editor(cx, "pending_entries_title"))
-                    .text_xs()
-                    .text_color(muted),
-            )
+            .child(self.render_pending_toolbar(&info, muted, cx))
             .child(self.render_pending_entries(&info, muted, border, cx));
 
         result.into_any_element()
     }
 
+    /// Toolbar above the Pending Entries list: section title, optional group
+    /// filter pills, search input, and a batch "Ack shown" action.
+    fn render_pending_toolbar(
+        &self,
+        info: &Arc<StreamInfoData>,
+        muted: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement + use<> {
+        let keyword = self.pending_filter_input.read(cx).value().to_string();
+        let active_group = self.pending_group_filter.as_deref();
+        let shown_batches: Vec<(SharedString, Vec<SharedString>)> = info
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let ids: Vec<SharedString> = g
+                    .pending_entries
+                    .iter()
+                    .filter(|p| {
+                        matches_pending_filter(
+                            g.name.as_ref(),
+                            p.id.as_ref(),
+                            p.consumer.as_ref(),
+                            active_group,
+                            &keyword,
+                        )
+                    })
+                    .map(|p| p.id.clone())
+                    .collect();
+                (!ids.is_empty()).then(|| (g.name.clone(), ids))
+            })
+            .collect();
+        let has_shown = !shown_batches.is_empty();
+
+        let mut left = h_flex().gap_1p5().items_center().flex_wrap().child(
+            Label::new(i18n_stream_editor(cx, "pending_entries_title"))
+                .text_xs()
+                .text_color(muted),
+        );
+
+        if info.groups.len() > 1 {
+            let all_active = self.pending_group_filter.is_none();
+            left = left.child(
+                Button::new("stream-pending-group-all")
+                    .xsmall()
+                    .when(all_active, |b| b.primary())
+                    .when(!all_active, |b| b.outline())
+                    .label(i18n_stream_editor(cx, "pending_all_groups"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.pending_group_filter = None;
+                        cx.notify();
+                    })),
+            );
+            for (idx, g) in info.groups.iter().enumerate() {
+                let is_active = self.pending_group_filter.as_ref() == Some(&g.name);
+                let group_name = g.name.clone();
+                left = left.child(
+                    Button::new(("stream-pending-group", idx))
+                        .xsmall()
+                        .when(is_active, |b| b.primary())
+                        .when(!is_active, |b| b.outline())
+                        .label(format!("{} ({})", g.name, g.pending_count))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.pending_group_filter = Some(group_name.clone());
+                            cx.notify();
+                        })),
+                );
+            }
+        }
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(left)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(220.))
+                            .child(Input::new(&self.pending_filter_input).small().cleanable(true)),
+                    )
+                    .when(has_shown, |this| {
+                        let batches = shown_batches.clone();
+                        this.child(
+                            Button::new("stream-ack-shown")
+                                .small()
+                                .outline()
+                                .icon(IconName::Check)
+                                .label(i18n_stream_editor(cx, "ack_shown"))
+                                .tooltip(i18n_stream_editor(cx, "ack_shown_tooltip"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.server_state.update(cx, |state, cx| {
+                                        for (group, ids) in batches.iter() {
+                                            state.ack_stream_entries(group.clone(), ids.clone(), cx);
+                                        }
+                                    });
+                                })),
+                        )
+                    }),
+            )
+    }
+
     /// Pending entries across every group, as interactive rows: per-row
-    /// XACK / XCLAIM, plus a per-group "load more" while XPENDING pages
+    /// Inspect / XACK / XCLAIM, plus a per-group "load more" while XPENDING pages
     /// remain. Hand-rolled instead of a `DataTable` because the table
     /// component has no per-row action slot (same reason as the
     /// workspace tab strip).
@@ -1478,7 +1628,8 @@ impl ZedisStreamEditor {
         border: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> impl gpui::IntoElement + use<> {
-        let total_pending: usize = info.groups.iter().map(|g| g.pending_entries.len()).sum();
+        let keyword = self.pending_filter_input.read(cx).value().to_string();
+        let active_group = self.pending_group_filter.as_deref();
 
         // Header row mirroring the old table columns; the trailing gap
         // roughly reserves the per-row action-button width.
@@ -1521,20 +1672,29 @@ impl ZedisStreamEditor {
             );
 
         let mut list = v_flex().w_full();
-        if total_pending == 0 {
-            list = list.child(
-                div().p_2().child(
-                    Label::new(i18n_stream_editor(cx, "no_pending_entries"))
-                        .text_sm()
-                        .text_color(muted),
-                ),
-            );
-        }
         let can_ackdel = self.server_state.read(cx).supports_stream_ref_policies();
         let can_nack = self.server_state.read(cx).supports_stream_nack();
         let mut row_ix = 0usize;
+        let mut matched_rows = 0usize;
         for g in info.groups.iter() {
+            if let Some(target_group) = active_group
+                && g.name.as_ref() != target_group
+            {
+                continue;
+            }
+            let group_consumers: Vec<SharedString> = g.consumers.iter().map(|c| c.name.clone()).collect();
             for p in g.pending_entries.iter() {
+                if !matches_pending_filter(
+                    g.name.as_ref(),
+                    p.id.as_ref(),
+                    p.consumer.as_ref(),
+                    active_group,
+                    &keyword,
+                ) {
+                    continue;
+                }
+                matched_rows += 1;
+                let inspect_id = p.id.clone();
                 let ack_group = g.name.clone();
                 let ack_id = p.id.clone();
                 let ackdel_group = g.name.clone();
@@ -1543,6 +1703,7 @@ impl ZedisStreamEditor {
                 let nack_id = p.id.clone();
                 let claim_group = g.name.clone();
                 let claim_id = p.id.clone();
+                let claim_consumers = group_consumers.clone();
                 list = list.child(
                     h_flex()
                         .w_full()
@@ -1583,6 +1744,21 @@ impl ZedisStreamEditor {
                         )
                         .child(Label::new(p.delivery_count.to_string()).text_xs().text_color(muted))
                         .child(div().flex_1())
+                        .child(
+                            Button::new(("stream-inspect", row_ix))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Search)
+                                .tooltip(i18n_stream_editor(cx, "inspect_entry_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.is_info_view = false;
+                                    let entry_id = inspect_id.clone();
+                                    this.table_state.update(cx, |table, cx| {
+                                        table.apply_filter(entry_id, window, cx);
+                                    });
+                                    cx.notify();
+                                })),
+                        )
                         .child(
                             Button::new(("stream-ack", row_ix))
                                 .xsmall()
@@ -1639,7 +1815,13 @@ impl ZedisStreamEditor {
                                 .icon(IconName::CircleUser)
                                 .tooltip(i18n_stream_editor(cx, "claim_tooltip"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.claim_entry_dialog(claim_group.clone(), claim_id.clone(), window, cx);
+                                    this.claim_entry_dialog(
+                                        claim_group.clone(),
+                                        claim_id.clone(),
+                                        claim_consumers.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 })),
                         ),
                 );
@@ -1665,6 +1847,16 @@ impl ZedisStreamEditor {
                 );
                 row_ix += 1;
             }
+        }
+
+        if matched_rows == 0 {
+            list = list.child(
+                div().p_2().child(
+                    Label::new(i18n_stream_editor(cx, "no_pending_entries"))
+                        .text_sm()
+                        .text_color(muted),
+                ),
+            );
         }
 
         // Fixed height on purpose: `max_h` + a scroll wrapper silently
@@ -1774,5 +1966,137 @@ impl Render for StreamTrimForm {
                 }
                 this.child(row)
             })
+    }
+}
+
+/// View entity for the `XCLAIM` dialog body (target consumer input + optional
+/// quick-pick consumer chips).
+struct StreamClaimForm {
+    consumer: Entity<InputState>,
+    consumers: Vec<SharedString>,
+}
+
+impl StreamClaimForm {
+    fn new(consumers: Vec<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let consumer =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
+        Self { consumer, consumers }
+    }
+}
+
+impl Render for StreamClaimForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .w_full()
+            .when(!self.consumers.is_empty(), |this| {
+                let mut row = h_flex().gap_1().flex_wrap();
+                for (idx, name) in self.consumers.iter().enumerate() {
+                    let pick = name.clone();
+                    row = row.child(
+                        Button::new(("stream-claim-pick", idx))
+                            .xsmall()
+                            .outline()
+                            .label(name.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let pick = pick.clone();
+                                this.consumer.update(cx, |input, cx| {
+                                    input.set_value(pick, window, cx);
+                                });
+                                cx.notify();
+                            })),
+                    );
+                }
+                this.child(row)
+            })
+            .child(Input::new(&self.consumer))
+            .child(Label::new(i18n_stream_editor(cx, "claim_hint")).text_xs())
+    }
+}
+
+/// View entity for the `XAUTOCLAIM` dialog body (target consumer input +
+/// quick-pick chips, min idle ms, and count).
+struct StreamAutoclaimForm {
+    consumer: Entity<InputState>,
+    min_idle: Entity<InputState>,
+    count: Entity<InputState>,
+    consumers: Vec<SharedString>,
+}
+
+impl StreamAutoclaimForm {
+    fn new(consumers: Vec<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let consumer =
+            cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "claim_consumer_placeholder")));
+        let min_idle = cx.new(|cx| InputState::new(window, cx).default_value("60000"));
+        let count = cx.new(|cx| InputState::new(window, cx).default_value("100"));
+        Self {
+            consumer,
+            min_idle,
+            count,
+            consumers,
+        }
+    }
+}
+
+impl Render for StreamAutoclaimForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .w_full()
+            .when(!self.consumers.is_empty(), |this| {
+                let mut row = h_flex().gap_1().flex_wrap();
+                for (idx, name) in self.consumers.iter().enumerate() {
+                    let pick = name.clone();
+                    row = row.child(
+                        Button::new(("stream-autoclaim-pick", idx))
+                            .xsmall()
+                            .outline()
+                            .label(name.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let pick = pick.clone();
+                                this.consumer.update(cx, |input, cx| {
+                                    input.set_value(pick, window, cx);
+                                });
+                                cx.notify();
+                            })),
+                    );
+                }
+                this.child(row)
+            })
+            .child(Input::new(&self.consumer))
+            .child(Label::new(i18n_stream_editor(cx, "autoclaim_min_idle")).text_xs())
+            .child(Input::new(&self.min_idle))
+            .child(Label::new(i18n_stream_editor(cx, "autoclaim_count")).text_xs())
+            .child(Input::new(&self.count))
+            .child(Label::new(i18n_stream_editor(cx, "autoclaim_hint")).text_xs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_pending_filter_checks_group_and_keyword() {
+        assert!(matches_pending_filter("orders", "1700-0", "worker-1", None, ""));
+        assert!(matches_pending_filter(
+            "orders",
+            "1700-0",
+            "worker-1",
+            Some("orders"),
+            ""
+        ));
+        assert!(!matches_pending_filter(
+            "orders",
+            "1700-0",
+            "worker-1",
+            Some("billing"),
+            ""
+        ));
+        assert!(matches_pending_filter("orders", "1700-0", "worker-1", None, "WORKER"));
+        assert!(matches_pending_filter("orders", "1700-0", "worker-1", None, "1700"));
+        assert!(!matches_pending_filter(
+            "orders", "1700-0", "worker-1", None, "worker-2"
+        ));
     }
 }
