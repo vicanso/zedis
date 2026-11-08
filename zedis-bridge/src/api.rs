@@ -65,7 +65,8 @@ mod watch_routes;
 pub(crate) use commands::{ExecRequest, forward_values};
 use commands::{close_session, exec, open_session};
 use entries::{
-    add_server, delete_server, diagnose_server, kill_script, lock_writes, servers, unlock_writes, update_server,
+    add_server, delete_server, diagnose_draft_server, diagnose_server, kill_script, lock_writes, servers,
+    unlock_writes, update_server,
 };
 pub use page::normalize_base_path;
 use page::web_asset;
@@ -153,6 +154,7 @@ pub fn router(state: AppState) -> Router {
         .route(&at("/v1/login"), post(login))
         .route(&at("/v1/logout"), post(logout))
         .route(&at("/v1/servers"), get(servers).post(add_server))
+        .route(&at("/v1/servers/diagnose"), post(diagnose_draft_server))
         .route(&at("/v1/servers/{id}"), delete(delete_server).put(update_server))
         .route(&at("/v1/servers/{id}/unlock"), post(unlock_writes).delete(lock_writes))
         .route(&at("/v1/servers/{id}/diagnose"), post(diagnose_server))

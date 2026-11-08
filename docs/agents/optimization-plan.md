@@ -136,6 +136,79 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 
 ---
 
+## 6. Web Build (`zedis-web` + `zedis-bridge`) Final Desktop Parity
+
+### 6.1 Unsaved & Edited Server Connection Diagnostics in Browser Form
+- **Files**:
+  - `zedis-bridge/src/api.rs`, `zedis-bridge/src/api/entries.rs`
+  - `crates/zedis-connection/src/bridge.rs`
+  - `zedis-web/src/transport/commands.rs`
+  - `src/views/connection_diagnostics.rs`, `src/views/servers.rs`, `src/views/servers/form.rs`
+  - `docs/WEB.md`, `docs/WEB_zh.md`
+- **Problem**:
+  - In the browser build, *Diagnose Connection* (`POST /v1/servers/{id}/diagnose`) only works on already-saved entries, so the Add/Edit Server dialog has no **Diagnose** button (`docs/WEB.md` line 278). Users adding a new connection or editing an existing one cannot inspect which stage (DNS → TCP → SSH → TLS → AUTH → PING) fails before saving.
+- **Proposed Fix**:
+  - Add `POST /v1/servers/diagnose` in `zedis-bridge` for unsaved entries (requiring write authorization) and allow `POST /v1/servers/{id}/diagnose` to accept an optional `{ server, keep_secrets }` body for in-progress edits (reusing `merge_update` so stored secrets are never sent to a changed host/port/SSH hop).
+  - Pass `RedisServer` through `BridgeTransport::diagnose` and enable the **Diagnose** button in the Add/Edit Server form on both desktop and web.
+
+### 6.2 Shared Online Client Presence Across Multi-Bridge Store Deployments
+- **Files**:
+  - `zedis-bridge/src/presence.rs`, `zedis-bridge/src/store.rs`
+  - `zedis-bridge/src/redis_store.rs`, `zedis-bridge/src/sql/`
+  - `zedis-bridge/src/api/status.rs`, `zedis-bridge/src/main.rs`
+  - `docs/WEB.md`, `docs/WEB_zh.md`, `docs/SQL_STORE.md`, `docs/SQL_STORE_zh.md`
+- **Problem**:
+  - When multiple `zedis-bridge` instances share `--store` (`postgres://`, `mysql://`, or `redis://`), `GET /v1/clients` only reports clients seen by the process that answered the request (`presence.rs` is in-memory only).
+- **Proposed Fix**:
+  - Introduce a shared `PresenceStore` trait (or sync active client records via `Stores`) so `GET /v1/clients` aggregates active clients across all bridge processes on the shared store.
+
+### 6.3 Enable Topology Panel (`ServerView::Topology`) in Browser Build
+- **Files**:
+  - `src/states/server.rs`
+  - `src/views/topology.rs`
+  - `docs/WEB.md`, `docs/WEB_zh.md`
+- **Problem**:
+  - `ServerView::Topology` (Standalone primary/replica replication, Sentinel monitored masters, and Cluster node/slot/load inspection) is currently excluded from `ServerView::in_this_build()` on wasm even though its queries run through `zedis-connection`.
+- **Proposed Fix**:
+  - Enable `ServerView::Topology` in the web build and ensure any node-targeted operations route cleanly through `zedis-connection` / `zedis-bridge`.
+
+---
+
+## 7. Data Editing & High-Frequency UX Enhancements
+
+### 7.1 Multi-Line Paste Auto-Split in Collection Add-Item Dialogs (List / Set / ZSet / Hash)
+- **Files**:
+  - `src/views/key_actions_dialogs.rs`
+  - `locales/{en,zh,de,es,fr,ja,pt,ru}.toml`
+- **Problem**:
+  - The multi-row add-item dialogs for List, Set, ZSet, and Hash let users add rows with `+`, but pasting multi-line text (e.g. a newline-separated list of values, `field\tvalue` or `field=value` lines for Hash, `member\tscore` or `member score` lines for ZSet) into an input row does not split into multiple rows.
+- **Proposed Fix**:
+  - Detect multi-line paste in collection add-item inputs and automatically split the lines across existing/new rows in the dialog.
+
+### 7.2 Inline Field TTL (`HEXPIRE`) When Adding Hash Fields & Expiring Field Filter
+- **Files**:
+  - `crates/zedis-connection/src/hash.rs`
+  - `src/states/server/hash.rs`
+  - `src/views/key_actions_dialogs.rs`, `src/views/hash_editor.rs`
+  - `locales/{en,zh,de,es,fr,ja,pt,ru}.toml`
+- **Problem**:
+  - On Redis 7.4+ / Valkey 9.0+ (`Capability::HashFieldExpiration`), setting a field TTL requires adding the field first and then clicking its TTL badge in the table. In large hashes, finding fields that have a TTL set also requires manual scrolling.
+- **Proposed Fix**:
+  - Add an optional TTL input in the Hash Add-Fields dialog when the server supports `Capability::HashFieldExpiration` (applying `HEXPIRE` in the same pipeline after `HSET`), and add an expiring-fields filter toggle in `ZedisHashEditor`.
+
+### 7.3 Stream Consumer Group Pending Messages (`XPENDING` / `XACK` / `XCLAIM` / `XGROUP SETID`)
+- **Files**:
+  - `crates/zedis-connection/src/stream.rs`
+  - `src/states/server/stream.rs`
+  - `src/views/stream_editor.rs`
+  - `locales/{en,zh,de,es,fr,ja,pt,ru}.toml`
+- **Problem**:
+  - The Stream editor displays consumer groups (`XINFO GROUPS` / `XINFO CONSUMERS`) and supports creating/destroying groups, but cannot inspect a group's pending entries (`XPENDING`), acknowledge (`XACK`) or claim (`XCLAIM`) stuck messages, or update a group's last-delivered ID (`XGROUP SETID`).
+- **Proposed Fix**:
+  - Add typed `XPENDING`, `XACK`, `XCLAIM`, and `XGROUP SETID` operations in `crates/zedis-connection/src/stream.rs` and wire them into the Stream consumer group drawer/modal in `src/views/stream_editor.rs`.
+
+---
+
 ## Progress Tracker
 
 | Step | Area | Summary | Status |
@@ -146,8 +219,14 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 | 2.3 | Web Parity | Enable `SCRIPT KILL` / `FUNCTION KILL` in browser via bridge | Done |
 | 3.1 | MCP Server | Add `troubleshooting_report` (10th MCP tool) in `zedis-bridge` | Done |
 | 3.2 | MCP Server | Update stale `WRITE_ACCOUNT_REFUSAL` hint in `zedis-bridge/src/mcp.rs` | Done |
-| 3.3 | MCP Server | Share client presence across multi-bridge SQL deployments | Optional |
+| 3.3 | MCP Server | Share client presence across multi-bridge SQL deployments | Superseded by 6.2 |
 | 4.1 | CI Security | Scope `GITHUB_TOKEN` to only steps that need it in `lint.yml` / `publish.yml` | Done |
-| 4.2 | Dependencies | Update yanked `crypto-bigint` (`0.7.6 -> 0.7.10`) in `Cargo.lock` | Done |
-| 5.1 | Docs | Replace `user-attachments` links in `README.md` / `README_zh.md` (#257) | Done |
-| 5.2 | Issues | Close confirmed-fixed Issue #190 | Done |
+| 4.2 | Dependencies | Update yanked `crypto-bigint 0.7.6` in `Cargo.lock` | Done |
+| 5.1 | Docs | Replace `user-attachments` media links in `README.md` (#257) | Done |
+| 5.2 | Issues | Close resolved issue #190 | Done |
+| 6.1 | Web Parity | Unsaved & edited server connection diagnostics in browser form | Done |
+| 6.2 | Web Parity | Shared online client presence across multi-bridge store deployments | Pending |
+| 6.3 | Web Parity | Enable Topology panel (`ServerView::Topology`) in browser build | Pending |
+| 7.1 | Data UX | Multi-line paste auto-split in collection add-item dialogs | Pending |
+| 7.2 | Data UX | Inline field TTL (`HEXPIRE`) when adding Hash fields & expiring filter | Pending |
+| 7.3 | Data UX | Stream consumer group pending messages (`XPENDING`/`XACK`/`XCLAIM`/`SETID`) | Pending |

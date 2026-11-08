@@ -240,11 +240,26 @@ impl BridgeTransport for HttpBridgeTransport {
         });
     }
 
-    fn diagnose(&self, server_id: String) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>> {
+    fn diagnose(&self, server: RedisServer) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>> {
         let client = self.client.clone();
-        let url = format!("{}/v1/servers/{}/diagnose", self.base_url, segment(&server_id));
+        let base_url = self.base_url.clone();
         Box::pin(async move {
-            let (status, bytes) = Self::post(client, url, String::new()).await?;
+            let (url, body) = if server.id.is_empty() {
+                let (created, _) = super::servers::split_stored_secrets(server);
+                let body = serde_json::json!({ "server": created }).to_string();
+                (format!("{base_url}/v1/servers/diagnose"), body)
+            } else if get_server(&server.id).ok().as_ref() == Some(&server) {
+                (
+                    format!("{base_url}/v1/servers/{}/diagnose", segment(&server.id)),
+                    String::new(),
+                )
+            } else {
+                let id = server.id.clone();
+                let (edited, keep_secrets) = super::servers::split_stored_secrets(server);
+                let body = serde_json::json!({ "server": edited, "keep_secrets": keep_secrets }).to_string();
+                (format!("{base_url}/v1/servers/{}/diagnose", segment(&id)), body)
+            };
+            let (status, bytes) = Self::post(client, url, body).await?;
             if status != 200 {
                 return Err(failure(status, &bytes));
             }

@@ -38,6 +38,7 @@ impl ZedisServers {
             return;
         }
         let server_id = redis_server.id.clone();
+        let foot_server_id = server_id.clone();
         let is_new = server_id.is_empty();
 
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
@@ -104,7 +105,7 @@ impl ZedisServers {
                             .into_any_element(),
                     );
                 }
-                items.extend(desktop_foot_actions(cx));
+                items.extend(form_foot_actions(&foot_server_id, cx));
                 items
             })
             .on_dialog_submit(move |values, _window, cx| {
@@ -571,19 +572,20 @@ fn fetch_master_names(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn desktop_foot_actions(cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
+fn form_foot_actions(server_id: &str, cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
     let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
     let test_label = i18n_servers(cx, "test_connection");
     let diagnose_label = i18n_servers(cx, "diagnose_connection");
     vec![
         test_connection_button(test_label, locale, cx),
-        diagnose_button(diagnose_label, cx),
+        diagnose_button(diagnose_label, server_id.to_string(), cx),
     ]
 }
 
 #[cfg(target_family = "wasm")]
-fn desktop_foot_actions(_cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
-    Vec::new()
+fn form_foot_actions(server_id: &str, cx: &mut Context<zedis_ui::ZedisForm>) -> Vec<gpui::AnyElement> {
+    let diagnose_label = i18n_servers(cx, "diagnose_connection");
+    vec![diagnose_button(diagnose_label, server_id.to_string(), cx)]
 }
 
 /// Test: dial the server as the form describes it, and say how it went.
@@ -642,8 +644,11 @@ fn test_connection_button(
 }
 
 /// Diagnose: the connection's stages, one by one, for the form's values.
-#[cfg(not(target_family = "wasm"))]
-fn diagnose_button(diagnose_label: SharedString, cx: &mut Context<zedis_ui::ZedisForm>) -> gpui::AnyElement {
+fn diagnose_button(
+    diagnose_label: SharedString,
+    server_id: String,
+    cx: &mut Context<zedis_ui::ZedisForm>,
+) -> gpui::AnyElement {
     Button::new("diagnose-connection")
         .label(diagnose_label)
         .on_click(cx.listener(move |form, _, window, cx| {
@@ -652,7 +657,7 @@ fn diagnose_button(diagnose_label: SharedString, cx: &mut Context<zedis_ui::Zedi
             };
             let values: indexmap::IndexMap<String, String> =
                 values.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            let server = RedisServer::from_form_data("", &values);
+            let server = RedisServer::from_form_data(&server_id, &values);
             open_connection_diagnostics(server, window, cx);
         }))
         .into_any_element()

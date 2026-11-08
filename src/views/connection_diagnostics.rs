@@ -133,7 +133,7 @@ impl ZedisConnectionDiagnostics {
         if !Self::set_row(&this, cx, first, RowState::Running) {
             return;
         }
-        match diagnose_on_bridge(server.id.clone()).await {
+        match diagnose_on_bridge(server).await {
             Ok(rows) => {
                 for row in rows {
                     if !Self::set_row(&this, cx, row.stage, RowState::Done(row.outcome())) {

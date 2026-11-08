@@ -44,7 +44,7 @@ use zedis_connection::{
     BridgeOrphans, BridgeOwnAccount, BridgeOwned, BridgeOwnedItem, BridgePageData, BridgePageRow, BridgePageSeed,
     BridgeReply, BridgeRequest, BridgeRole, BridgeScript, BridgeServerStore, BridgeSignup, BridgeStorage, BridgeToken,
     BridgeTransport, BridgeTrashEntry, DiagReportRow, KillReply, KillTarget, RedisServer, WatchBatch, WatchItem,
-    WatchKind, WatchOpened, describe_commands, get_servers, set_account_read_only_on,
+    WatchKind, WatchOpened, describe_commands, get_server, get_servers, set_account_read_only_on,
 };
 
 mod accounts;
@@ -899,35 +899,54 @@ mod tests {
         assert_eq!(failure(413, b"").kind, BridgeErrorKind::TooLarge);
     }
 
-    /// A diagnosis is the bridge's to run: the page posts to the entry's
-    /// route and reads every stage back.
+    /// A diagnosis is the bridge's to run: an unchanged saved entry posts to
+    /// its route with an empty body, an edited entry carries `{ server, keep_secrets }`
+    /// there, and an unsaved draft posts `{ server }` to `/v1/servers/diagnose`.
     #[test]
     fn a_diagnosis_is_asked_of_the_entry_and_read_back_stage_by_stage() {
-        let asked = Arc::new(Mutex::new(None));
-        let captured = asked.clone();
-        let client = FakeHttpClient::create(move |req| {
-            let captured = captured.clone();
-            async move {
-                *captured.lock().expect("lock") = Some((req.method().to_string(), req.uri().to_string()));
-                let body = r#"{"stages":[{"stage":"dns","status":"skipped","elapsed_ms":0},
-                    {"stage":"tcp","status":"failed","error":"refused","hint":"tcp_refused","elapsed_ms":3}]}"#;
-                Ok(gpui::http_client::http::Response::builder()
-                    .status(200)
-                    .body(AsyncBody::from(body.to_string()))?)
-            }
-        });
-        let transport = HttpBridgeTransport::new(client, "http://bridge:7379/");
-        let rows = futures::executor::block_on(transport.diagnose("srv 1".to_string())).expect("rows");
-        assert_eq!(
-            asked.lock().expect("lock").clone(),
-            Some((
-                "POST".to_string(),
-                "http://bridge:7379/v1/servers/srv%201/diagnose".to_string()
-            ))
-        );
+        let entry = RedisServer {
+            id: "srv 1".to_string(),
+            name: "srv 1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 6379,
+            password: Some(STORED_SECRET.to_string()),
+            ..Default::default()
+        };
+        set_servers_cache(vec![entry.clone()]);
+        let reply = r#"{"stages":[{"stage":"dns","status":"skipped","elapsed_ms":0},
+            {"stage":"tcp","status":"failed","error":"refused","hint":"tcp_refused","elapsed_ms":3}]}"#;
+        let (transport, seen) = transport_recording(200, reply);
+
+        let rows = futures::executor::block_on(transport.diagnose(entry.clone())).expect("rows");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].stage, zedis_connection::DiagStage::Tcp);
         assert_eq!(rows[1].outcome().error.as_deref(), Some("refused"));
+
+        let mut edited = entry;
+        edited.port = 6380;
+        let _ = futures::executor::block_on(transport.diagnose(edited)).expect("edited rows");
+
+        let draft = RedisServer {
+            host: "10.0.0.9".to_string(),
+            port: 6379,
+            ..Default::default()
+        };
+        let _ = futures::executor::block_on(transport.diagnose(draft)).expect("draft rows");
+
+        let routes = routes(&seen);
+        let paths: Vec<(&str, &str)> = routes.iter().map(|(m, p, _)| (m.as_str(), p.as_str())).collect();
+        assert_eq!(
+            paths,
+            [
+                ("POST", "/v1/servers/srv%201/diagnose"),
+                ("POST", "/v1/servers/srv%201/diagnose"),
+                ("POST", "/v1/servers/diagnose"),
+            ]
+        );
+        assert!(routes[0].2.is_null(), "saved entry sends no body");
+        assert_eq!(routes[1].2["server"]["port"], 6380);
+        assert_eq!(routes[1].2["keep_secrets"], serde_json::json!(["password"]));
+        assert_eq!(routes[2].2["server"]["host"], "10.0.0.9");
     }
 
     #[test]

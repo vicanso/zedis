@@ -32,7 +32,6 @@ use crate::states::{
     account_is_read_only, dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_servers,
     update_app_state_and_save,
 };
-#[cfg(not(target_family = "wasm"))]
 use crate::views::open_connection_diagnostics;
 use crate::views::placeholders::Placeholders;
 use crate::views::{ZedisExportServersDialog, export_filename, export_to_file_global, open_file};

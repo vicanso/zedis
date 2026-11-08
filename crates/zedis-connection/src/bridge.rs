@@ -501,10 +501,13 @@ pub trait BridgeTransport: Send + Sync + 'static {
     /// a watch nobody polls, which covers a tab that closed first.
     fn release_watch(&self, token: String);
 
-    /// Diagnose the saved entry `server_id` from the bridge — the process
-    /// that dials it, and so the only one that can say which stage fails.
-    /// Every stage, answered together.
-    fn diagnose(&self, server_id: String) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>>;
+    /// Diagnose `server` from the bridge — the process that dials it, and so
+    /// the only one that can say which stage fails. May be a saved entry, an
+    /// edited one, or an unsaved draft from the connection form.
+    fn diagnose(
+        &self,
+        server: crate::config::RedisServer,
+    ) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>>;
 
     /// Send `SCRIPT KILL` / `FUNCTION KILL` to every data node of `server_id`
     /// from the bridge, over fresh connections that bypass a `BUSY` pool.
@@ -551,10 +554,10 @@ pub async fn sign_out_of_bridge() -> Result<(), BridgeError> {
     transport.sign_out().await
 }
 
-/// Diagnose a saved entry from the bridge ([`BridgeTransport::diagnose`]).
-pub async fn diagnose_on_bridge(server_id: String) -> Result<Vec<DiagReportRow>, BridgeError> {
+/// Diagnose `server` from the bridge ([`BridgeTransport::diagnose`]).
+pub async fn diagnose_on_bridge(server: crate::config::RedisServer) -> Result<Vec<DiagReportRow>, BridgeError> {
     let transport = bridge_transport().ok_or_else(|| BridgeError::transport("no bridge transport"))?;
-    transport.diagnose(server_id).await
+    transport.diagnose(server).await
 }
 
 /// Stop a runaway script on `server_id` from the bridge ([`BridgeTransport::kill_running`]).
@@ -1526,7 +1529,10 @@ mod tests {
 
         fn release_watch(&self, _token: String) {}
 
-        fn diagnose(&self, _server_id: String) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>> {
+        fn diagnose(
+            &self,
+            _server: crate::config::RedisServer,
+        ) -> BoxFuture<'static, Result<Vec<DiagReportRow>, BridgeError>> {
             Box::pin(async { Ok(Vec::new()) })
         }
 

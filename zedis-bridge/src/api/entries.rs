@@ -507,31 +507,21 @@ pub(super) async fn lock_writes(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub(super) struct DiagnoseDraftRequest {
+    server: RedisServer,
+    #[serde(default)]
+    keep_secrets: Vec<String>,
+}
+
 #[derive(Serialize)]
 pub(super) struct DiagnoseReply {
     stages: Vec<DiagReportRow>,
 }
 
-/// Diagnose a saved entry from here (DNS → TCP → SSH → TLS → AUTH → PING):
-/// a page cannot, having no socket, and this is the process that dials it —
-/// so which stage fails *from the bridge* is the answer the page needs.
-///
-/// Anyone who sees the entry may ask, read-only accounts too: it connects,
-/// as opening the entry does, and changes nothing — which is also why it is
-/// not an audit line. It is no reach a full account lacks either, since
-/// adding an entry dials whatever it names. Each run dials afresh (a new
-/// SSH session, a new connection), as the desktop's does.
-pub(super) async fn diagnose_server(
-    State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> ApiResult<Json<DiagnoseReply>> {
-    let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
-    let server = visible_server(&state.accounts, &id, &account)?;
+async fn run_diagnostics_for(server: &RedisServer, account: &str) -> DiagnoseReply {
     let mut stages = Vec::new();
-    run_diagnostics(&server, |stage, outcome| {
+    run_diagnostics(server, |stage, outcome| {
         if let Some(outcome) = outcome {
             stages.push(DiagReportRow::new(stage, &outcome));
         }
@@ -549,8 +539,55 @@ pub(super) async fn diagnose_server(
         .iter()
         .find(|row| row.status == DiagStatus::Failed)
         .map(|row| row.stage);
-    tracing::info!(account, server = %server.id, ?failed, "diagnosed");
-    Ok(Json(DiagnoseReply { stages }))
+    tracing::info!(account, server = %server.id, host = %server.host, ?failed, "diagnosed");
+    DiagnoseReply { stages }
+}
+
+/// Diagnose an unsaved server configuration from the Add Connection form
+/// before saving (`POST /v1/servers/diagnose`). Requires a write-capable
+/// account, since a read-only account cannot add connections.
+pub(super) async fn diagnose_draft_server(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<DiagnoseDraftRequest>,
+) -> ApiResult<Json<DiagnoseReply>> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize_write(&state, &headers, &mut origin, "server_diagnose")?;
+    if req.server.host.trim().is_empty() {
+        return Err(ApiError::BadRequest("the server has no host".to_string()));
+    }
+    Ok(Json(run_diagnostics_for(&req.server, &account).await))
+}
+
+/// Diagnose a saved entry from here (DNS → TCP → SSH → TLS → AUTH → PING):
+/// a page cannot, having no socket, and this is the process that dials it —
+/// so which stage fails *from the bridge* is the answer the page needs.
+///
+/// With an empty body, anyone who sees the entry may ask, read-only accounts
+/// too: it connects, as opening the entry does, and changes nothing. With a
+/// `{ server, keep_secrets }` body (from the Edit Connection form before
+/// saving), the caller must be allowed to edit `id`, and stored secrets are
+/// merged through [`merge_update`] so they are never sent to a changed address.
+pub(super) async fn diagnose_server(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<DiagnoseReply>> {
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin)?;
+    let stored = visible_server(&state.accounts, &id, &account)?;
+    let server = if body.iter().all(|b| b.is_ascii_whitespace()) {
+        stored
+    } else {
+        refuse_read_only_on(&state, &account, &stored, &origin, "server_diagnose")?;
+        let req: DiagnoseDraftRequest =
+            serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
+        merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?
+    };
+    Ok(Json(run_diagnostics_for(&server, &account).await))
 }
 
 #[derive(Deserialize, Default)]
@@ -887,6 +924,7 @@ mod diagnose_tests {
                 ConnectInfo(peer),
                 headers.clone(),
                 Path(id.to_string()),
+                Bytes::new(),
             )
         };
 
@@ -906,6 +944,30 @@ mod diagnose_tests {
         assert!(reply.stages[1].error.is_some(), "the refusal is said");
 
         assert!(matches!(diagnose("diag-bobs").await, Err(ApiError::UnknownServer(_))));
+
+        // Diagnosing an unsaved draft requires a write-capable account.
+        let draft = DiagnoseDraftRequest {
+            server: entry("", None),
+            keep_secrets: Vec::new(),
+        };
+        assert!(matches!(
+            diagnose_draft_server(State(state.clone()), ConnectInfo(peer), headers.clone(), Json(draft)).await,
+            Err(ApiError::Forbidden(_))
+        ));
+
+        let mut bob_headers = HeaderMap::new();
+        let bob_basic = format!("Basic {}", B64.encode("bob:bobs-password"));
+        bob_headers.insert("authorization", bob_basic.parse().expect("header"));
+        let draft = DiagnoseDraftRequest {
+            server: entry("", None),
+            keep_secrets: Vec::new(),
+        };
+        let Ok(Json(draft_reply)) =
+            diagnose_draft_server(State(state.clone()), ConnectInfo(peer), bob_headers, Json(draft)).await
+        else {
+            panic!("a write-capable account may diagnose an unsaved draft");
+        };
+        assert_eq!(draft_reply.stages.len(), 4);
     }
 
     #[tokio::test]
