@@ -225,7 +225,7 @@ Drawn up 2026-10-31 from an audit of the codebase, documentation (`docs/FEATURES
 | 5.1 | Docs | Replace `user-attachments` media links in `README.md` (#257) | Done |
 | 5.2 | Issues | Close resolved issue #190 | Done |
 | 6.1 | Web Parity | Unsaved & edited server connection diagnostics in browser form | Done |
-| 6.2 | Web Parity | Shared online client presence across multi-bridge store deployments | Pending |
+| 6.2 | Web Parity | Shared online client presence across multi-bridge store deployments | Done |
 | 6.3 | Web Parity | Enable Topology panel (`ServerView::Topology`) in browser build | Pending |
 | 7.1 | Data UX | Multi-line paste auto-split in collection add-item dialogs | Pending |
 | 7.2 | Data UX | Inline field TTL (`HEXPIRE`) when adding Hash fields & expiring filter | Pending |

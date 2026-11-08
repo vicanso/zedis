@@ -179,6 +179,7 @@ impl SqlStore {
             setup: store.clone(),
             audit: Some(Arc::new(audit::SqlAudit::start(store.as_ref().clone()))),
             throttle: Some(store.clone()),
+            presence: Some(store.clone()),
             versions: Some(store),
         }
     }

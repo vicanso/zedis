@@ -283,19 +283,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(shared) => auth::Throttle::shared(shared, store::process_id().to_string()),
         None => auth::Throttle::new(),
     };
+    let presence = match stores.presence.clone() {
+        Some(shared) => presence::Presence::shared(shared, store::process_id().to_string()),
+        None => presence::Presence::new(),
+    };
     if let Some(versions) = stores.versions.clone() {
         let held = store::Held {
             servers: stores.servers.clone(),
             accounts: accounts.clone(),
             logins: logins.clone(),
             throttle: throttle.clone(),
+            presence: presence.clone(),
         };
         tokio::spawn(store::keep_in_step(versions, held));
     }
 
     let sessions = Sessions::new();
     let unlocks = policy::Unlocks::new();
-    let presence = presence::Presence::new();
     let watches = watch::Watches::new();
     tokio::spawn(
         Housekeeping {
@@ -693,6 +697,7 @@ impl Housekeeping {
             for (account, kind) in gone {
                 tracing::info!(account, kind, online, "client offline");
             }
+            presence_sweeper.prune_shared().await;
             let ended = unlock_sweeper.sweep();
             if ended > 0 {
                 tracing::info!(ended, "swept ended write windows");

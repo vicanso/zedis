@@ -221,7 +221,7 @@ $ curl -s -u alice:secret https://zedis.example.com/v1/clients
 
 In the page the same list is **Account… → Online**, an administrator's section: who, from where, on which servers, last seen — so an administrator about to restart or flush a shared server can see who else is on it first.
 
-`peer` is the socket peer, which behind a reverse proxy is the proxy; `forwarded_for` is added when the proxy wrote `X-Forwarded-For`. The count is kept in memory: after a restart each client is back with its next request. With [several bridges](#several-bridges-on-one-database) each counts its own clients, and `process` says which bridge answered.
+`peer` is the socket peer, which behind a reverse proxy is the proxy; `forwarded_for` is added when the proxy wrote `X-Forwarded-For`. The count is kept in memory: after a restart each client is back with its next request. With [several bridges](#several-bridges-on-one-database) each bridge publishes its online clients to the shared store every two seconds and merges the others', so `GET /v1/clients` lists everyone online across all bridges (`process` says which bridge answered).
 
 ## Read-only access for AI assistants (MCP)
 

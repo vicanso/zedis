@@ -20,7 +20,10 @@ use super::statements::{self as st};
 use super::{SqlStore, counter, db, stored};
 use crate::accounts::{AccountOp, AccountRecord, InviteRecord, SignupRecord};
 use crate::auth::{Login, LoginChange, hex};
-use crate::store::{AccountStore, AccountsAt, LoginStore, ServerStore, SetupStore, StoreFuture, ThrottleStore};
+use crate::presence::ProcessPresence;
+use crate::store::{
+    AccountStore, AccountsAt, LoginStore, PresenceStore, ServerStore, SetupStore, StoreFuture, ThrottleStore,
+};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -369,6 +372,78 @@ impl ThrottleStore for SqlStore {
                 .await
                 .map_err(db)?
                 .rows_affected())
+        })
+    }
+}
+
+// ---- online client presence ---------------------------------------------------------------
+
+const PRESENCE_META_PREFIX: &str = "presence:";
+
+impl PresenceStore for SqlStore {
+    fn put(&self, process: String, snapshot: ProcessPresence) -> StoreFuture<()> {
+        let store = self.clone();
+        Box::pin(async move {
+            sqlx::query(store.sql(&st::META_PUT))
+                .bind(format!("{PRESENCE_META_PREFIX}{process}"))
+                .bind(doc(&snapshot)?)
+                .execute(&store.pool)
+                .await
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    fn others(&self, process: String, since_secs: u64) -> StoreFuture<Vec<ProcessPresence>> {
+        let store = self.clone();
+        Box::pin(async move {
+            let own_name = format!("{PRESENCE_META_PREFIX}{process}");
+            let rows = sqlx::query(store.sql(&st::PRESENCE_LIST))
+                .fetch_all(&store.pool)
+                .await
+                .map_err(db)?;
+            let mut out = Vec::new();
+            for row in rows {
+                let name: String = row.try_get(0).map_err(db)?;
+                if name == own_name {
+                    continue;
+                }
+                let raw: String = row.try_get(1).map_err(db)?;
+                if let Ok(snapshot) = record::<ProcessPresence>(&raw)
+                    && snapshot.updated_at >= since_secs
+                {
+                    out.push(snapshot);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn prune(&self, before_secs: u64) -> StoreFuture<u64> {
+        let store = self.clone();
+        Box::pin(async move {
+            let rows = sqlx::query(store.sql(&st::PRESENCE_LIST))
+                .fetch_all(&store.pool)
+                .await
+                .map_err(db)?;
+            let mut pruned = 0u64;
+            for row in rows {
+                let name: String = row.try_get(0).map_err(db)?;
+                let raw: String = row.try_get(1).map_err(db)?;
+                let expired = match record::<ProcessPresence>(&raw) {
+                    Ok(snap) => snap.updated_at < before_secs,
+                    Err(_) => true,
+                };
+                if expired {
+                    pruned += sqlx::query(store.sql(&st::META_DELETE))
+                        .bind(name)
+                        .execute(&store.pool)
+                        .await
+                        .map_err(db)?
+                        .rows_affected();
+                }
+            }
+            Ok(pruned)
         })
     }
 }

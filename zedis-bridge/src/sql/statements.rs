@@ -62,6 +62,17 @@ pub const META_PUT_IF_NONE: Stmt = Stmt {
     pg: "INSERT INTO store_meta (name, value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
     my: "INSERT IGNORE INTO store_meta (name, value) VALUES (?, ?)",
 };
+pub const META_PUT: Stmt = Stmt {
+    pg: "INSERT INTO store_meta (name, value) VALUES ($1, $2) \
+         ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value",
+    my: "INSERT INTO store_meta (name, value) VALUES (?, ?) AS new \
+         ON DUPLICATE KEY UPDATE value = new.value",
+};
+pub const META_DELETE: Stmt = Stmt {
+    pg: "DELETE FROM store_meta WHERE name = $1",
+    my: "DELETE FROM store_meta WHERE name = ?",
+};
+pub const PRESENCE_LIST: Stmt = both!("SELECT name, value FROM store_meta WHERE name LIKE 'presence:%'");
 
 /// Forget sqlx's mark on a schema step that was cut short, so it runs again
 /// (`sql::migrate`): only an unfinished one, never a step that completed.

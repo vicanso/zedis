@@ -221,7 +221,7 @@ $ curl -s -u alice:secret https://zedis.example.com/v1/clients
 
 页面里同样的列表在 **账号… → 在线**，只有管理员能看到：谁、从哪里、在用哪些服务器、最后活动时间——管理员要重启或清空一台共享服务器之前，可以先看看还有谁在用它。
 
-`peer` 是 TCP 连接的对端，经反向代理时是代理的地址；代理写了 `X-Forwarded-For` 时会多一个 `forwarded_for`。在线数只保存在内存里：bridge 重启后，每个客户端在下一次请求时重新计入。[多个 bridge](#多个-bridge-共用一个数据库) 时各自统计自己的客户端，`process` 表明是哪个 bridge 回答的。
+`peer` 是 TCP 连接的对端，经反向代理时是代理的地址；代理写了 `X-Forwarded-For` 时会多一个 `forwarded_for`。在线数保存在内存里：bridge 重启后，每个客户端在下一次请求时重新计入。[多个 bridge](#多个-bridge-共用一个数据库) 时每个 bridge 每两秒把自己的在线客户端同步到共享存储并合并其他 bridge 的快照，因此 `GET /v1/clients` 会列出所有 bridge 上的全部在线客户端（`process` 表明是哪个 bridge 回答的）。
 
 ## 让 AI 助手只读访问（MCP）
 

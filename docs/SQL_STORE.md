@@ -180,7 +180,7 @@ The tables choose their own character set and collation (`utf8mb4` with `utf8mb4
 
 ## What is kept where
 
-In the database: the accounts, invitations, requests for an account and MCP tokens (only their hashes), the logins, the server list, the recycle bin, the Metrics history, the page's data (favorites, recent keys, search history, preferences, key tags and notes, saved Lua scripts), the setup token (its hash), the failed sign-ins and the audit.
+In the database: the accounts, invitations, requests for an account and MCP tokens (only their hashes), the logins, the server list, the recycle bin, the Metrics history, the page's data (favorites, recent keys, search history, preferences, key tags and notes, saved Lua scripts), the setup token (its hash), the failed sign-ins, each bridge's online client snapshot and the audit.
 
 Not in the database: **`master.key`**, in the bridge's data directory (`/data/master.key`). It encrypts the server entries' passwords and the recycle bin's values before they are written, so the database alone opens neither. Back it up, and keep it apart from the database's backups: one is no use without the other, and they should not travel together.
 

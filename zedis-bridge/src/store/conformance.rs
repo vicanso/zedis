@@ -23,6 +23,7 @@ use super::Stores;
 use crate::accounts::{AccountOp, AccountRecord, InviteKind, InviteRecord, Role, SignupRecord};
 use crate::auth::{Login, LoginChange};
 use crate::page_data::{KeyNote, MAX_ACCOUNT_BYTES, RowError, ScriptRecord};
+use crate::presence::{ClientKey, ProcessPresence, SharedClient};
 use crate::trash::{MAX_PAYLOAD, NewEntry};
 use serde_json::value::RawValue;
 
@@ -41,6 +42,7 @@ pub(crate) async fn keeps_the_contract(stores: &Stores) {
     page_rows(stores).await;
     key_notes(stores).await;
     scripts(stores).await;
+    presence(stores).await;
 }
 
 /// A change applies against the version it was decided on, and two names
@@ -403,6 +405,48 @@ async fn scripts(stores: &Stores) {
     let removed = store.remove(id.clone()).await.expect("remove").expect("there");
     assert_eq!(removed.id, id);
     assert!(store.remove(id).await.expect("remove").is_none());
+}
+
+async fn presence(stores: &Stores) {
+    let Some(store) = &stores.presence else {
+        return;
+    };
+    let proc_a = unique("proc-a");
+    let proc_b = unique("proc-b");
+    let snap_a = ProcessPresence {
+        updated_at: 1_000,
+        clients: vec![SharedClient {
+            key: ClientKey::Browser("login-a".to_string()),
+            account: "alice".to_string(),
+            peer: Some("10.0.0.1".to_string()),
+            forwarded_for: None,
+            seen_at: 995,
+            servers: vec![("prod".to_string(), 995)],
+        }],
+    };
+    let snap_b = ProcessPresence {
+        updated_at: 2_000,
+        clients: vec![SharedClient {
+            key: ClientKey::Browser("login-b".to_string()),
+            account: "bob".to_string(),
+            peer: Some("10.0.0.2".to_string()),
+            forwarded_for: None,
+            seen_at: 1_990,
+            servers: vec![],
+        }],
+    };
+    store.put(proc_a.clone(), snap_a.clone()).await.expect("put a");
+    store.put(proc_b.clone(), snap_b.clone()).await.expect("put b");
+
+    let seen_by_a = store.others(proc_a.clone(), 1_500).await.expect("others for a");
+    assert!(seen_by_a.contains(&snap_b), "process A sees process B's fresh snapshot");
+    assert!(!seen_by_a.contains(&snap_a), "process A does not read its own snapshot");
+
+    let pruned = store.prune(1_500).await.expect("prune");
+    assert!(pruned >= 1, "stale snapshot before 1500 is pruned");
+    let after = store.others(proc_b.clone(), 0).await.expect("others for b");
+    assert!(!after.contains(&snap_a), "pruned snapshot is gone");
+    let _ = store.prune(u64::MAX).await;
 }
 
 /// The local directory, which `make test` always has.

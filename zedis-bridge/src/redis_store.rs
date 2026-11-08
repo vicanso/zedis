@@ -31,11 +31,12 @@ use crate::accounts::{AccountOp, AccountRecord, InviteRecord, SignupRecord};
 use crate::auth::{Login, LoginChange, hex};
 use crate::metrics::{self, DAY_MS, RETENTION_DAYS};
 use crate::page_data::{AccountRows, KeyNote, MAX_ACCOUNT_BYTES, RowError, ScriptRecord};
+use crate::presence::ProcessPresence;
 use crate::sql::redacted;
 use crate::store::{
     AccountStore, AccountsAt, AuditEntry, AuditLog, AuditPage, AuditQuery, KeyNoteStore, LoginStore, MetricsStore,
-    PageRowStore, ScriptStore, ServerStore, SetupStore, StoreFuture, StoreVersions, Stores, ThrottleStore, TrashStore,
-    Versions,
+    PageRowStore, PresenceStore, ScriptStore, ServerStore, SetupStore, StoreFuture, StoreVersions, Stores,
+    ThrottleStore, TrashStore, Versions,
 };
 use crate::trash::{self, MAX_BYTES, MAX_ENTRIES, MAX_STORED, Meta, NewEntry, PutError, RETENTION};
 use futures::future::BoxFuture;
@@ -62,6 +63,7 @@ const LOGINS_TTL_SECS: i64 = 30 * 86_400;
 const INVITES_SIGNUPS_TTL_SECS: i64 = 30 * 86_400;
 const SETUP_TTL_SECS: i64 = 7 * 86_400;
 const THROTTLE_TTL_SECS: i64 = 3_600;
+const PRESENCE_TTL_SECS: i64 = 600;
 const TRASH_TTL_SECS: i64 = RETENTION.as_secs() as i64 + 3_600;
 const METRICS_TTL_SECS: i64 = (RETENTION_DAYS + 1) * 86_400;
 const AUDIT_TTL_SECS: i64 = 90 * 86_400;
@@ -415,6 +417,7 @@ impl RedisStore {
             setup: store.clone(),
             audit: Some(Arc::new(RedisAudit::start(store.as_ref().clone()))),
             throttle: Some(store.clone()),
+            presence: Some(store.clone()),
             versions: Some(store),
         }
     }
@@ -1102,6 +1105,101 @@ impl ThrottleStore for RedisStore {
                             .arg(&max_score)
                             .query_async(&mut conn)
                             .await
+                    }
+                })
+                .await?;
+            Ok(removed)
+        })
+    }
+}
+
+impl PresenceStore for RedisStore {
+    fn put(&self, process: String, snapshot: ProcessPresence) -> StoreFuture<()> {
+        let store = self.clone();
+        Box::pin(async move {
+            let doc = to_json(&snapshot)?;
+            let presence_key = store.key("presence");
+            store
+                .run(|mut conn| {
+                    let presence_key = presence_key.clone();
+                    let process = process.clone();
+                    let doc = doc.clone();
+                    async move {
+                        redis::pipe()
+                            .cmd("HSET")
+                            .arg(&presence_key)
+                            .arg(&process)
+                            .arg(&doc)
+                            .ignore()
+                            .cmd("EXPIRE")
+                            .arg(&presence_key)
+                            .arg(PRESENCE_TTL_SECS)
+                            .ignore()
+                            .query_async::<()>(&mut conn)
+                            .await
+                    }
+                })
+                .await
+        })
+    }
+
+    fn others(&self, process: String, since_secs: u64) -> StoreFuture<Vec<ProcessPresence>> {
+        let store = self.clone();
+        Box::pin(async move {
+            let presence_key = store.key("presence");
+            let pairs: Vec<(String, String)> = store
+                .run(|mut conn| {
+                    let presence_key = presence_key.clone();
+                    async move { redis::cmd("HGETALL").arg(&presence_key).query_async(&mut conn).await }
+                })
+                .await?;
+            let mut out = Vec::new();
+            for (field, doc) in pairs {
+                if field != process
+                    && let Ok(snapshot) = from_json::<ProcessPresence>(&doc)
+                    && snapshot.updated_at >= since_secs
+                {
+                    out.push(snapshot);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn prune(&self, before_secs: u64) -> StoreFuture<u64> {
+        let store = self.clone();
+        Box::pin(async move {
+            let presence_key = store.key("presence");
+            let pairs: Vec<(String, String)> = store
+                .run(|mut conn| {
+                    let presence_key = presence_key.clone();
+                    async move { redis::cmd("HGETALL").arg(&presence_key).query_async(&mut conn).await }
+                })
+                .await?;
+            let mut stale = Vec::new();
+            for (field, doc) in pairs {
+                let expired = match from_json::<ProcessPresence>(&doc) {
+                    Ok(snapshot) => snapshot.updated_at < before_secs,
+                    Err(_) => true,
+                };
+                if expired {
+                    stale.push(field);
+                }
+            }
+            if stale.is_empty() {
+                return Ok(0);
+            }
+            let removed: u64 = store
+                .run(|mut conn| {
+                    let presence_key = presence_key.clone();
+                    let stale = stale.clone();
+                    async move {
+                        let mut cmd = redis::cmd("HDEL");
+                        cmd.arg(&presence_key);
+                        for field in &stale {
+                            cmd.arg(field);
+                        }
+                        cmd.query_async(&mut conn).await
                     }
                 })
                 .await?;

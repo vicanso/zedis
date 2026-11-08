@@ -29,11 +29,14 @@
 //! same window — a page beats on the one it has open — which is what lets
 //! the list say who is on which server.
 //!
-//! Kept in memory only. A restart starts from nobody, and each client is
-//! back with its next request.
+//! Kept in memory in each process, and — when several bridges share a
+//! `--store` database (ADR 18) — published and merged every [`crate::store::STORE_POLL`]
+//! through [`PresenceStore`] so `GET /v1/clients` lists active clients across
+//! every bridge process.
 
 use crate::audit::{Origin, rfc3339};
-use serde::Serialize;
+use crate::store::PresenceStore;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -42,8 +45,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// How long a client may go without a request and still count as online.
 pub const ONLINE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
+/// Refresh a process's snapshot in the shared store at least once a minute
+/// while clients are online, even if no new request arrived.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
 /// One client, as told apart from the others.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ClientKey {
     /// A browser sign-in, by its login's key — the SHA-256 of the cookie id,
     /// as the logins file keys it, never the id.
@@ -114,10 +122,50 @@ pub struct ClientServer {
     pub name: String,
 }
 
+/// One client in a process's shared presence snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedClient {
+    pub key: ClientKey,
+    pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_for: Option<String>,
+    pub seen_at: u64,
+    /// `(server_id, used_at_unix)` within [`ONLINE_WINDOW`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<(String, u64)>,
+}
+
+/// One bridge process's online clients, as stored in [`PresenceStore`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessPresence {
+    pub updated_at: u64,
+    #[serde(default)]
+    pub clients: Vec<SharedClient>,
+}
+
+#[derive(Default)]
+struct HeldPresence {
+    own: HashMap<ClientKey, Seen>,
+    others: Vec<ProcessPresence>,
+    dirty: bool,
+    last_published: Option<Instant>,
+}
+
+#[derive(Clone)]
+struct Shared {
+    store: Arc<dyn PresenceStore>,
+    process: String,
+}
+
 /// The clients seen within the window, and the ones just past it until the
 /// next sweep.
 #[derive(Clone, Default)]
-pub struct Presence(Arc<Mutex<HashMap<ClientKey, Seen>>>);
+pub struct Presence {
+    held: Arc<Mutex<HeldPresence>>,
+    shared: Option<Shared>,
+}
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -131,6 +179,15 @@ impl Presence {
         Self::default()
     }
 
+    /// A presence tracker that publishes its clients to `store` as `process`
+    /// and merges the other bridge processes' snapshots.
+    pub fn shared(store: Arc<dyn PresenceStore>, process: String) -> Self {
+        Self {
+            held: Arc::default(),
+            shared: Some(Shared { store, process }),
+        }
+    }
+
     /// Mark `key` seen by a request from `origin`. Answers how many clients
     /// are online when this one was not until now, so the caller can say it
     /// came online.
@@ -139,13 +196,14 @@ impl Presence {
     }
 
     fn seen_at(&self, key: ClientKey, account: &str, origin: &Origin, now: Instant, now_unix: u64) -> Option<usize> {
-        let mut clients = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let arrived = clients
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let arrived = held
+            .own
             .get(&key)
             .is_none_or(|seen| now.saturating_duration_since(seen.at) >= ONLINE_WINDOW);
-        let mut servers = clients.remove(&key).map(|seen| seen.servers).unwrap_or_default();
+        let mut servers = held.own.remove(&key).map(|seen| seen.servers).unwrap_or_default();
         servers.retain(|_, at| now.saturating_duration_since(*at) < ONLINE_WINDOW);
-        clients.insert(
+        held.own.insert(
             key,
             Seen {
                 account: account.to_string(),
@@ -156,7 +214,8 @@ impl Presence {
                 servers,
             },
         );
-        arrived.then(|| online_count(&clients, now))
+        held.dirty = true;
+        arrived.then(|| online_count(&held.own, now))
     }
 
     /// Note that `key`'s request named the server entry `server_id`. A
@@ -166,18 +225,38 @@ impl Presence {
     }
 
     fn used_at(&self, key: &ClientKey, server_id: &str, now: Instant) {
-        let mut clients = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(seen) = clients.get_mut(key) {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(seen) = held.own.get_mut(key) {
             seen.servers.insert(server_id.to_string(), now);
+            held.dirty = true;
         }
     }
 
     /// Take a client off at once — a browser that signed out. Answers whose
     /// it was and how many are left online, when it was on the list.
     pub fn forget(&self, key: &ClientKey) -> Option<(String, usize)> {
-        let mut clients = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let seen = clients.remove(key)?;
-        Some((seen.account, online_count(&clients, Instant::now())))
+        let now = Instant::now();
+        let now_unix = unix_now();
+        let (account, remaining, snapshot) = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            let seen = held.own.remove(key)?;
+            held.dirty = true;
+            let count = online_count(&held.own, now);
+            let snap = self.shared.is_some().then(|| snapshot_of(&held.own, now, now_unix));
+            (seen.account, count, snap)
+        };
+        if let (Some(shared), Some(snapshot)) = (&self.shared, snapshot)
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let store = shared.store.clone();
+            let process = shared.process.clone();
+            runtime.spawn(async move {
+                if let Err(e) = store.put(process, snapshot).await {
+                    tracing::warn!(error = %e, "could not publish presence after sign-out");
+                }
+            });
+        }
+        Some((account, remaining))
     }
 
     /// Drop every client quiet past the window: each one's account and
@@ -187,18 +266,70 @@ impl Presence {
     }
 
     fn sweep_at(&self, now: Instant) -> (Vec<(String, &'static str)>, usize) {
-        let mut clients = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let mut gone = Vec::new();
-        clients.retain(|key, seen| {
+        held.own.retain(|key, seen| {
             let online = now.saturating_duration_since(seen.at) < ONLINE_WINDOW;
             if !online {
                 gone.push((seen.account.clone(), key.kind()));
             }
             online
         });
+        if !gone.is_empty() {
+            held.dirty = true;
+        }
         gone.sort();
-        let online = clients.len();
+        let online = held.own.len();
         (gone, online)
+    }
+
+    /// Publish this process's online clients to [`PresenceStore`] when changed
+    /// (or once a minute as a heartbeat) and read the other processes' snapshots.
+    pub async fn sync(&self) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        let now = Instant::now();
+        let now_unix = unix_now();
+        let to_publish = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            let due_heartbeat = !held.own.is_empty()
+                && held
+                    .last_published
+                    .is_none_or(|last| now.saturating_duration_since(last) >= HEARTBEAT_INTERVAL);
+            if held.dirty || due_heartbeat {
+                held.dirty = false;
+                held.last_published = Some(now);
+                Some(snapshot_of(&held.own, now, now_unix))
+            } else {
+                None
+            }
+        };
+        if let Some(snapshot) = to_publish
+            && let Err(e) = shared.store.put(shared.process.clone(), snapshot).await
+        {
+            tracing::warn!(error = %e, "this process's online clients could not be written to the store");
+        }
+        let cutoff = now_unix.saturating_sub(ONLINE_WINDOW.as_secs());
+        match shared.store.others(shared.process.clone(), cutoff).await {
+            Ok(others) => {
+                self.held.lock().unwrap_or_else(PoisonError::into_inner).others = others;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "the other processes' online clients could not be read");
+            }
+        }
+    }
+
+    /// Prune expired process snapshots from [`PresenceStore`].
+    pub async fn prune_shared(&self) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        let cutoff = unix_now().saturating_sub(ONLINE_WINDOW.as_secs());
+        if let Err(e) = shared.store.prune(cutoff).await {
+            tracing::warn!(error = %e, "stale online client snapshots could not be pruned");
+        }
     }
 
     /// Who is online, the most recently seen first.
@@ -207,42 +338,149 @@ impl Presence {
     }
 
     fn online_at(&self, now: Instant) -> Vec<Client> {
-        let clients = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut online: Vec<Client> = clients
-            .iter()
-            .filter_map(|(key, seen)| {
-                let idle = now.saturating_duration_since(seen.at);
-                let mut servers: Vec<(&String, Duration)> = seen
-                    .servers
-                    .iter()
-                    .map(|(id, at)| (id, now.saturating_duration_since(*at)))
-                    .filter(|(_, since)| *since < ONLINE_WINDOW)
-                    .collect();
-                servers.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
-                (idle < ONLINE_WINDOW).then(|| Client {
+        let now_unix = unix_now();
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        struct Entry {
+            account: String,
+            peer: Option<String>,
+            forwarded_for: Option<String>,
+            at_unix: u64,
+            idle: Duration,
+            servers: HashMap<String, Duration>,
+        }
+        let mut merged: HashMap<ClientKey, Entry> = HashMap::new();
+        for (key, seen) in &held.own {
+            let idle = now.saturating_duration_since(seen.at);
+            if idle >= ONLINE_WINDOW {
+                continue;
+            }
+            let servers: HashMap<String, Duration> = seen
+                .servers
+                .iter()
+                .map(|(id, at)| (id.clone(), now.saturating_duration_since(*at)))
+                .filter(|(_, since)| *since < ONLINE_WINDOW)
+                .collect();
+            merged.insert(
+                key.clone(),
+                Entry {
                     account: seen.account.clone(),
-                    kind: key.kind(),
-                    token: match key {
-                        ClientKey::Token { token, .. } => Some(token.clone()),
-                        _ => None,
-                    },
                     peer: seen.peer.clone(),
                     forwarded_for: seen.forwarded_for.clone(),
-                    last_seen: rfc3339(seen.at_unix, 0),
-                    seen_at: seen.at_unix,
-                    idle_secs: idle.as_secs(),
+                    at_unix: seen.at_unix,
+                    idle,
+                    servers,
+                },
+            );
+        }
+        for snapshot in &held.others {
+            if now_unix.saturating_sub(snapshot.updated_at) >= ONLINE_WINDOW.as_secs() {
+                continue;
+            }
+            for client in &snapshot.clients {
+                let idle = Duration::from_secs(now_unix.saturating_sub(client.seen_at));
+                if idle >= ONLINE_WINDOW {
+                    continue;
+                }
+                let other_servers: Vec<(String, Duration)> = client
+                    .servers
+                    .iter()
+                    .map(|(id, ts)| (id.clone(), Duration::from_secs(now_unix.saturating_sub(*ts))))
+                    .filter(|(_, since)| *since < ONLINE_WINDOW)
+                    .collect();
+                match merged.get_mut(&client.key) {
+                    Some(existing) => {
+                        if idle < existing.idle {
+                            existing.account = client.account.clone();
+                            existing.peer = client.peer.clone();
+                            existing.forwarded_for = client.forwarded_for.clone();
+                            existing.at_unix = client.seen_at;
+                            existing.idle = idle;
+                        }
+                        for (id, since) in other_servers {
+                            existing
+                                .servers
+                                .entry(id)
+                                .and_modify(|prev| *prev = (*prev).min(since))
+                                .or_insert(since);
+                        }
+                    }
+                    None => {
+                        merged.insert(
+                            client.key.clone(),
+                            Entry {
+                                account: client.account.clone(),
+                                peer: client.peer.clone(),
+                                forwarded_for: client.forwarded_for.clone(),
+                                at_unix: client.seen_at,
+                                idle,
+                                servers: other_servers.into_iter().collect(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        let mut online: Vec<Client> = merged
+            .into_iter()
+            .map(|(key, entry)| {
+                let mut servers: Vec<(String, Duration)> = entry.servers.into_iter().collect();
+                servers.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+                Client {
+                    account: entry.account,
+                    kind: key.kind(),
+                    token: match key {
+                        ClientKey::Token { token, .. } => Some(token),
+                        _ => None,
+                    },
+                    peer: entry.peer,
+                    forwarded_for: entry.forwarded_for,
+                    last_seen: rfc3339(entry.at_unix, 0),
+                    seen_at: entry.at_unix,
+                    idle_secs: entry.idle.as_secs(),
                     servers: servers
                         .into_iter()
                         .map(|(id, _)| ClientServer {
-                            id: id.clone(),
+                            id,
                             name: String::new(),
                         })
                         .collect(),
-                })
+                }
             })
             .collect();
         online.sort_by(|a, b| a.idle_secs.cmp(&b.idle_secs).then_with(|| a.account.cmp(&b.account)));
         online
+    }
+}
+
+fn snapshot_of(own: &HashMap<ClientKey, Seen>, now: Instant, now_unix: u64) -> ProcessPresence {
+    let clients = own
+        .iter()
+        .filter_map(|(key, seen)| {
+            let idle = now.saturating_duration_since(seen.at);
+            if idle >= ONLINE_WINDOW {
+                return None;
+            }
+            let servers: Vec<(String, u64)> = seen
+                .servers
+                .iter()
+                .filter_map(|(id, at)| {
+                    let since = now.saturating_duration_since(*at);
+                    (since < ONLINE_WINDOW).then(|| (id.clone(), now_unix.saturating_sub(since.as_secs())))
+                })
+                .collect();
+            Some(SharedClient {
+                key: key.clone(),
+                account: seen.account.clone(),
+                peer: seen.peer.clone(),
+                forwarded_for: seen.forwarded_for.clone(),
+                seen_at: seen.at_unix,
+                servers,
+            })
+        })
+        .collect();
+    ProcessPresence {
+        updated_at: now_unix,
+        clients,
     }
 }
 
@@ -365,5 +603,61 @@ mod tests {
         assert_eq!(presence.forget(&browser(1)), Some(("alice".to_string(), 1)));
         assert_eq!(presence.forget(&browser(1)), None);
         assert_eq!(presence.online().len(), 1);
+    }
+
+    struct MemPresenceStore(Mutex<HashMap<String, ProcessPresence>>);
+
+    impl PresenceStore for MemPresenceStore {
+        fn put(&self, process: String, snapshot: ProcessPresence) -> crate::store::StoreFuture<()> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(process, snapshot);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn others(&self, process: String, since_secs: u64) -> crate::store::StoreFuture<Vec<ProcessPresence>> {
+            let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let out = map
+                .iter()
+                .filter(|(k, v)| *k != &process && v.updated_at >= since_secs)
+                .map(|(_, v)| v.clone())
+                .collect();
+            Box::pin(async move { Ok(out) })
+        }
+
+        fn prune(&self, before_secs: u64) -> crate::store::StoreFuture<u64> {
+            let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let before = map.len();
+            map.retain(|_, v| v.updated_at >= before_secs);
+            let removed = (before - map.len()) as u64;
+            Box::pin(async move { Ok(removed) })
+        }
+    }
+
+    /// Two bridges sharing a [`PresenceStore`] see each other's online clients
+    /// and union the servers a client used across both processes.
+    #[tokio::test]
+    async fn shared_presence_merges_clients_across_processes() {
+        let store: Arc<dyn PresenceStore> = Arc::new(MemPresenceStore(Mutex::default()));
+        let bridge_a = Presence::shared(store.clone(), "proc-a".to_string());
+        let bridge_b = Presence::shared(store.clone(), "proc-b".to_string());
+
+        bridge_a.seen(browser(1), "alice", &from("10.0.0.1"));
+        bridge_a.used(&browser(1), "prod");
+        bridge_b.seen(browser(2), "bob", &from("10.0.0.2"));
+        bridge_b.used(&browser(2), "staging");
+
+        bridge_a.sync().await;
+        bridge_b.sync().await;
+        bridge_a.sync().await;
+
+        let on_a = bridge_a.online();
+        assert_eq!(on_a.len(), 2, "bridge A sees both its own and bridge B's clients");
+        let names: Vec<&str> = on_a.iter().map(|c| c.account.as_str()).collect();
+        assert!(names.contains(&"alice") && names.contains(&"bob"));
+
+        let on_b = bridge_b.online();
+        assert_eq!(on_b.len(), 2, "bridge B sees both its own and bridge A's clients");
     }
 }

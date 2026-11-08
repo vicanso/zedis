@@ -46,6 +46,7 @@ use crate::accounts::{AccountOp, AccountRecord, InviteRecord, LocalAccounts, Loc
 use crate::auth::{LocalLogins, Login, LoginChange, Logins, Throttle};
 use crate::metrics::{self, LocalMetrics};
 use crate::page_data::{AccountRows, KeyNote, LocalKeyNotes, LocalPageRows, LocalScripts, RowError, ScriptRecord};
+use crate::presence::{Presence, ProcessPresence};
 use crate::trash::{self, LocalTrash, Meta, NewEntry};
 use futures::future::BoxFuture;
 use serde_json::value::RawValue;
@@ -289,6 +290,19 @@ pub trait ThrottleStore: Send + Sync {
     fn prune(&self, before_ms: i64) -> StoreFuture<u64>;
 }
 
+/// Online clients other processes saw (`GET /v1/clients`). Each bridge
+/// publishes its own active client snapshot and reads the others' every
+/// [`STORE_POLL`] so `GET /v1/clients` lists active clients across all
+/// bridges sharing a store.
+pub trait PresenceStore: Send + Sync {
+    /// Keep `process`'s current online client snapshot.
+    fn put(&self, process: String, snapshot: ProcessPresence) -> StoreFuture<()>;
+    /// The snapshots updated since `since_secs` by processes other than `process`.
+    fn others(&self, process: String, since_secs: u64) -> StoreFuture<Vec<ProcessPresence>>;
+    /// Forget snapshots not updated since `before_secs`, answering how many went.
+    fn prune(&self, before_secs: u64) -> StoreFuture<u64>;
+}
+
 /// The count of changes to each set a process keeps in memory, read every
 /// [`STORE_POLL`] by every process (ADR 18): a counter that moved is a set
 /// another process changed.
@@ -322,19 +336,21 @@ pub struct Held {
     pub accounts: Accounts,
     pub logins: Logins,
     pub throttle: Throttle,
+    pub presence: Presence,
 }
 
 /// Keep `held` in step with `versions`, every [`STORE_POLL`], for the life
 /// of the process: the set whose counter moved is read again — the server
 /// list into `zedis_connection`'s cache, the accounts, the logins dropped
 /// to be taken in again one by one — and the other processes' failed
-/// sign-ins merged.
+/// sign-ins and online clients merged.
 pub async fn keep_in_step(versions: Arc<dyn StoreVersions>, held: Held) {
     let mut seen = versions.read().await.unwrap_or_default();
     let mut tick = tokio::time::interval(STORE_POLL);
     loop {
         tick.tick().await;
         held.throttle.merge().await;
+        held.presence.sync().await;
         let now = match versions.read().await {
             Ok(now) => now,
             Err(e) => {
@@ -379,6 +395,7 @@ pub struct Stores {
     pub audit: Option<Arc<dyn AuditLog>>,
     /// What only several processes need — `None` for one.
     pub throttle: Option<Arc<dyn ThrottleStore>>,
+    pub presence: Option<Arc<dyn PresenceStore>>,
     pub versions: Option<Arc<dyn StoreVersions>>,
 }
 
@@ -413,6 +430,7 @@ impl Stores {
             setup: Arc::new(LocalSetup::new(dir.join(at::SETUP_TOKEN))),
             audit: None,
             throttle: None,
+            presence: None,
             versions: None,
         }
     }
