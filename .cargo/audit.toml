@@ -26,6 +26,14 @@ ignore = [
     # public key — no private-key operation for the attack to time.
     "RUSTSEC-2023-0071",
 
+    # libsqlite3-sys 0.37.0 (RUSTSEC-2026-0459). The daily lockfile scan
+    # sees it; cargo-deny does not, because the sqlite feature is off, so
+    # an ignore in deny.toml would warn advisory-not-detected on every run.
+    # sqlx 0.9 pins libsqlite3-sys to `<0.38`, so 0.39 cannot be selected
+    # until that range moves. The bundled SQLite source is not compiled,
+    # and this process never opens a database file.
+    "RUSTSEC-2026-0459",
+
     # Unmaintained (informational warnings, not vulnerabilities) — all deep
     # transitive deps from the pinned gpui / gpui-component / russh trees we
     # can't swap, none with a maintained drop-in replacement:

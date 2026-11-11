@@ -202,7 +202,7 @@ pub use keyspace::{
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
-pub use list_ops::{list_len, list_push, list_range, list_set_if_unchanged, remove_list_indexes};
+pub use list_ops::{list_len, list_push, list_push_many, list_range, list_set_if_unchanged, remove_list_indexes};
 pub use logical_copy::{
     CopyLoss, CopyPreflight, copy_key_logically, copy_preflight, is_foreign_payload, restore_or_recreate_chunk,
 };
@@ -269,7 +269,7 @@ pub use stream_ops::{
     PENDING_PAGE, StreamConsumer, StreamEntry, StreamGroup, StreamIdmp, StreamInfo, StreamPending, StreamRefPolicy,
     StreamSummary, StreamTrim, consumer_create, consumer_delete, group_create, group_destroy, group_set_id,
     pending_page, stream_ack, stream_ack_delete, stream_ack_many, stream_add, stream_autoclaim, stream_claim,
-    stream_delete, stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
+    stream_delete, stream_entry, stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
 };
 pub use stream_tail::{StreamTail, StreamTailEntry};
 pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_prefix, string_set};

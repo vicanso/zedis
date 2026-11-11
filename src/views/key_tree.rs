@@ -1358,6 +1358,7 @@ mod tests {
         values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}1").into(), "".into());
         values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}2").into(), "second".into());
 
+        assert_eq!(KeyType::List.create_command(), "RPUSH");
         let list_args = build_add_key_args(KeyType::List, &values);
         assert_eq!(
             list_args,

@@ -283,6 +283,8 @@ impl Render for ZedisRecentKeysPalette {
             .justify_center()
             .items_start()
             .bg(gpui::hsla(0., 0., 0., 0.4))
+            // Wheel events stay on the palette instead of scrolling the page.
+            .occlude()
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,

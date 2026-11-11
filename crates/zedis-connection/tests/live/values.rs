@@ -664,6 +664,30 @@ pub(super) async fn collections_page_and_write_through_their_operations(id: Stri
         "somebody else changed it: refused"
     );
     assert_eq!(list_range(&at, &list, 1, 1).await.expect("lrange"), vec![b"A".to_vec()]);
+    // One command for the whole block. `RPUSH` keeps the given order.
+    // `LPUSH` inserts right to left, so the caller passes that block
+    // reversed and the head still reads in the entered order.
+    let block = format!("{prefix}:list-block");
+    assert_eq!(
+        list_push_many(&at, &block, &[b"a", b"b", b"c"], false)
+            .await
+            .expect("rpush block"),
+        3
+    );
+    assert_eq!(
+        list_range(&at, &block, 0, 2).await.expect("lrange block"),
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+    );
+    assert_eq!(
+        list_push_many(&at, &block, &[b"c", b"b", b"a"], true)
+            .await
+            .expect("lpush block"),
+        6
+    );
+    assert_eq!(
+        list_range(&at, &block, 0, 2).await.expect("lrange head"),
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+    );
     assert_eq!(remove_list_indexes(&at, &list, &[0, 2]).await.expect("remove"), 2);
     assert_eq!(list_len(&at, &list).await.expect("llen"), 2);
 
@@ -873,6 +897,9 @@ fn standalone_stream_operations_page_describe_and_administer() {
         // Paging: a full page hands back a cursor, the last one does not.
         let (cursor, first) = stream_page(&at, &key, None, 2, false).await.expect("xrange");
         assert_eq!(first.len(), 2);
+        let jumped = stream_entry(&at, &key, &first[0].0).await.expect("xrange one id");
+        assert_eq!(jumped.as_ref().map(|(id, _)| id.as_str()), Some(first[0].0.as_str()));
+        assert_eq!(stream_entry(&at, &key, "0-1").await.expect("missing id"), None);
         assert_eq!(first[0].1, vec![("n".to_string(), b"1".to_vec())]);
         assert!(!cursor.is_empty(), "more to come");
         let (next, rest) = stream_page(&at, &key, Some(&cursor), 2, false).await.expect("xrange");

@@ -451,6 +451,66 @@ const TAIL_COUNT: usize = 200;
 const TAIL_CAP: usize = 5000;
 
 impl ZedisStreamEditor {
+    /// Select exactly `entry_id` and scroll it into view. A keyword filter
+    /// would also match `…-20` when the id is `…-2`, and would miss an
+    /// entry that has not been paged in yet.
+    fn jump_to_entry(&mut self, entry_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.is_info_view = false;
+        self.table_state.update(cx, |table, cx| table.clear_filter(window, cx));
+        // Clearing the filter emits `ValueUpdated`, and that subscriber
+        // drops the row selection. The select has to run after it.
+        if self.loaded_entry_index(entry_id.as_str(), cx).is_some() {
+            self.select_entry_when_settled(entry_id, cx);
+            return;
+        }
+        let at = self.server_state.read(cx).at();
+        let Some(key) = self.server_state.read(cx).key().map(|key| key.to_string()) else {
+            return;
+        };
+        let id = entry_id.to_string();
+        cx.spawn(async move |this, cx| {
+            let fetched = crate::connection::stream_entry(&at, &key, &id).await;
+            let _ = this.update(cx, |this, cx| {
+                let Ok(Some(entry)) = fetched else {
+                    return;
+                };
+                this.server_state
+                    .update(cx, |state, cx| state.insert_stream_entry(entry, cx));
+                this.select_entry_when_settled(id.into(), cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Select `entry_id` once the table has rebuilt from the pending
+    /// `ValueUpdated`. That event clears the selection, so selecting in
+    /// the same turn never sticks.
+    fn select_entry_when_settled(&mut self, entry_id: SharedString, cx: &mut Context<Self>) {
+        let table = self.table_state.clone();
+        let server = self.server_state.clone();
+        cx.defer(move |cx| {
+            let index = server.read(cx).value().and_then(|value| {
+                value.stream_value().and_then(|stream| {
+                    stream
+                        .values
+                        .iter()
+                        .position(|(id, _)| id.as_str() == entry_id.as_str())
+                })
+            });
+            if let Some(index) = index {
+                table.update(cx, |table, cx| table.select_row(index, cx));
+            }
+        });
+    }
+
+    fn loaded_entry_index(&self, entry_id: &str, cx: &App) -> Option<usize> {
+        self.server_state.read(cx).value().and_then(|value| {
+            value
+                .stream_value()
+                .and_then(|stream| stream.values.iter().position(|(id, _)| id.as_str() == entry_id))
+        })
+    }
+
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fields = if let Some(values) = server_state.read(cx).value() {
             values.stream_fields()
@@ -1751,12 +1811,7 @@ impl ZedisStreamEditor {
                                 .icon(IconName::Search)
                                 .tooltip(i18n_stream_editor(cx, "inspect_entry_tooltip"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.is_info_view = false;
-                                    let entry_id = inspect_id.clone();
-                                    this.table_state.update(cx, |table, cx| {
-                                        table.apply_filter(entry_id, window, cx);
-                                    });
-                                    cx.notify();
+                                    this.jump_to_entry(inspect_id.clone(), window, cx);
                                 })),
                         )
                         .child(

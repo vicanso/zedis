@@ -645,12 +645,17 @@ pub(super) fn build_kv_add_batches(
 
     match key_type {
         KeyType::List => {
-            let pos = data.get("position").cloned().unwrap_or_else(|| "0".into());
+            // One push for the whole block, so the rows stay in the order
+            // they were entered. A push per row is a separate task, and
+            // `LPUSH` of each row also reverses the block. The first batch
+            // is already `[position, value]`.
+            let mut row = batches.remove(0);
             for extra in extra_single_rows(data) {
                 if !extra.is_empty() {
-                    batches.push(vec![pos.clone(), extra]);
+                    row.push(extra);
                 }
             }
+            return vec![row];
         }
         KeyType::Set => {
             for extra in extra_single_rows(data) {

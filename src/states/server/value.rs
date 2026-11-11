@@ -747,7 +747,9 @@ impl KeyType {
     pub fn create_command(&self) -> &'static str {
         match self {
             KeyType::String => "SET",
-            KeyType::List => "LPUSH",
+            // `RPUSH` keeps the rows in the order they were entered. `LPUSH`
+            // would store a multi-element create backwards.
+            KeyType::List => "RPUSH",
             KeyType::Set => "SADD",
             KeyType::Zset => "ZADD",
             KeyType::Hash => "HSET",

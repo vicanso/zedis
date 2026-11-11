@@ -211,6 +211,17 @@ pub async fn stream_page(
     Ok((next, entries))
 }
 
+/// One entry, `XRANGE key id id`. `None` when the stream has no such id.
+pub async fn stream_entry(at: &ServerDb, key: &str, id: &str) -> Result<Option<StreamEntry>> {
+    let raw: Vec<(String, Vec<Vec<u8>>)> = cmd("XRANGE")
+        .arg(key)
+        .arg(id)
+        .arg(id)
+        .query_async(&mut at.connection().await?)
+        .await?;
+    Ok(raw.into_iter().next().map(|(id, flat)| (id, field_values(flat))))
+}
+
 /// `XINFO STREAM` + `XINFO GROUPS` +, per group, `XINFO CONSUMERS` and the
 /// first `XPENDING` page.
 ///

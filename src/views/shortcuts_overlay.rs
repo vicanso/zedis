@@ -184,6 +184,9 @@ impl Render for ZedisShortcutsOverlay {
             // stretching to its max height (mirrors the palette).
             .items_start()
             .bg(gpui::hsla(0., 0., 0., 0.4))
+            // The page under the dim layer must not see the wheel. `occlude`
+            // keeps the hit on this overlay, so the shortcut list scrolls.
+            .occlude()
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,

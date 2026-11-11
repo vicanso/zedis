@@ -109,6 +109,26 @@ pub fn project_stream_entries(entries: Vec<StreamEntry>) -> Vec<RedisStreamEntry
         .collect()
 }
 
+/// `(milliseconds, sequence)`, so `…-2` sorts before `…-10`.
+fn stream_id_key(id: &str) -> (u64, u64) {
+    let mut parts = id.split('-');
+    let ms = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
+    let seq = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
+    (ms, seq)
+}
+
+/// Where `id` belongs among `ids`. Newest-first (`reverse`) puts a higher
+/// id first; oldest-first puts a lower id first.
+fn stream_insert_index(ids: &[&str], id: &str, reverse: bool) -> usize {
+    let key = stream_id_key(id);
+    ids.iter()
+        .position(|other| {
+            let other = stream_id_key(other);
+            if reverse { other < key } else { other > key }
+        })
+        .unwrap_or(ids.len())
+}
+
 /// Where an entry `XADD` has just made goes in the loaded list. It is the
 /// stream's newest — the server refuses an id below the top one — so
 /// newest-first puts it at the front, which is always loaded, and
@@ -277,6 +297,34 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+
+    /// Put `entry` into the loaded page, in id order, and clear the keyword
+    /// filter. An id already loaded is left where it is.
+    pub fn insert_stream_entry(&mut self, entry: StreamEntry, cx: &mut Context<Self>) {
+        let projected = project_stream_entries(vec![entry]);
+        let Some(entry) = projected.into_iter().next() else {
+            return;
+        };
+        let Some(value) = self.open.value.as_mut() else {
+            return;
+        };
+        let Some(RedisValueData::Stream(stream_data)) = value.data.as_mut() else {
+            return;
+        };
+        let stream = Arc::make_mut(stream_data);
+        stream.keyword = None;
+        if stream.values.iter().any(|(id, _)| id == &entry.0) {
+            cx.emit(ServerEvent::ValueUpdated);
+            return;
+        }
+        let index = stream_insert_index(
+            &stream.values.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            entry.0.as_str(),
+            stream.reverse,
+        );
+        stream.values.insert(index, entry);
+        cx.emit(ServerEvent::ValueUpdated);
     }
 
     /// Applies a keyword filter to stream entries (client-side filtering).
@@ -887,5 +935,14 @@ mod tests {
             fields[1].1
         );
         assert!(!fields[2].1.contains('\u{fffd}'), "{}", fields[2].1);
+    }
+
+    #[test]
+    fn a_jumped_id_lands_between_its_neighbours() {
+        let newest_first = ["1794281358071-29", "1794281358071-20", "1794281358071-2"];
+        assert_eq!(stream_insert_index(&newest_first, "1794281358071-15", true), 2);
+        let oldest_first = ["1794281358071-2", "1794281358071-20", "1794281358071-29"];
+        assert_eq!(stream_insert_index(&oldest_first, "1794281358071-15", false), 1);
+        assert_eq!(stream_insert_index(&oldest_first, "1794281358071-30", false), 3);
     }
 }

@@ -78,11 +78,22 @@ pub async fn list_range(at: &ServerDb, key: &str, start: usize, stop: usize) -> 
 
 /// `LPUSH` (`front`) or `RPUSH`; answers the list's new length.
 pub async fn list_push(at: &ServerDb, key: &str, value: &[u8], front: bool) -> Result<usize> {
-    Ok(cmd(if front { "LPUSH" } else { "RPUSH" })
-        .arg(key)
-        .arg(value)
-        .query_async(&mut at.connection().await?)
-        .await?)
+    list_push_many(at, key, &[value], front).await
+}
+
+/// One `LPUSH` or `RPUSH` of every value, in the order given. `LPUSH`
+/// inserts right to left, so a caller that wants the block to read in
+/// this order at the head passes the values reversed.
+pub async fn list_push_many(at: &ServerDb, key: &str, values: &[&[u8]], front: bool) -> Result<usize> {
+    if values.is_empty() {
+        return Ok(0);
+    }
+    let mut command = cmd(if front { "LPUSH" } else { "RPUSH" });
+    command.arg(key);
+    for value in values {
+        command.arg(*value);
+    }
+    Ok(command.query_async(&mut at.connection().await?).await?)
 }
 
 /// Overwrite the element at `index` — but only while it still holds

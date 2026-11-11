@@ -923,11 +923,12 @@ mod tests {
         let list_batches = build_kv_add_batches(KeyType::List, false, &["position".into(), "Value".into()], &list_data);
         assert_eq!(
             list_batches,
-            vec![
-                vec![SharedString::from("1"), SharedString::from("first")],
-                vec![SharedString::from("1"), SharedString::from("dup")],
-                vec![SharedString::from("1"), SharedString::from("dup")],
-            ]
+            vec![vec![
+                SharedString::from("1"),
+                SharedString::from("first"),
+                SharedString::from("dup"),
+                SharedString::from("dup"),
+            ]]
         );
 
         let mut set_data: IndexMap<SharedString, SharedString> = IndexMap::new();

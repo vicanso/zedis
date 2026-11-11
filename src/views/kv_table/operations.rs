@@ -109,6 +109,19 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         self.values_modified = false;
     }
 
+    /// Clears the keyword box and shows every loaded row again.
+    pub fn clear_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyword_state
+            .update(cx, |input, cx| input.set_value(SharedString::default(), window, cx));
+        self.handle_filter(cx);
+    }
+
+    /// Selects `row_ix` and scrolls it into view.
+    pub fn select_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.table_state
+            .update(cx, |state, cx| state.set_selected_row(row_ix, cx));
+    }
+
     /// Triggers a filter operation using the current keyword from the input field.
     pub(super) fn handle_filter(&mut self, cx: &mut Context<Self>) {
         // Only allow filtering if FILTER mode is enabled

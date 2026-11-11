@@ -19,7 +19,7 @@ use super::{
 };
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{ServerDb, list_len, list_push, list_range, list_set_if_unchanged, remove_list_indexes},
+    connection::{ServerDb, list_len, list_push_many, list_range, list_set_if_unchanged, remove_list_indexes},
     error::Error,
     states::ServerEvent,
 };
@@ -240,36 +240,51 @@ impl ZedisServerState {
         );
     }
 
-    /// Pushes a new value to the list (LPUSH or RPUSH).
-    pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
+    /// Pushes every value in one `LPUSH` or `RPUSH`, in the order entered.
+    ///
+    /// `LPUSH` inserts right to left, so the bytes go out reversed and the
+    /// block still reads in the entered order at the head.
+    pub fn push_list_values(&mut self, new_values: Vec<SharedString>, mode: SharedString, cx: &mut Context<Self>) {
+        if new_values.is_empty() {
+            return;
+        }
         let is_lpush = mode == "1";
-        let val_clone = KvElement::from_text(&new_value);
+        let shown: Vec<KvElement> = new_values.iter().map(|value| KvElement::from_text(value)).collect();
+        let count = shown.len();
         let log_key = self.open.key.clone();
-        let log_value = new_value.to_string();
+        let log_values: Vec<String> = new_values.iter().map(ToString::to_string).collect();
+        let wire: Vec<Vec<u8>> = if is_lpush {
+            new_values.iter().rev().map(|value| value.as_bytes().to_vec()).collect()
+        } else {
+            new_values.iter().map(|value| value.as_bytes().to_vec()).collect()
+        };
 
         self.exec_list_op(
             ServerTask::PushListValue,
             cx,
             move |list| {
-                list.size += 1;
+                list.size += count;
                 if is_lpush {
-                    list.values.insert(0, val_clone);
-                } else if list.values.len() + 1 == list.size {
-                    list.values.push(val_clone);
+                    for (index, value) in shown.into_iter().enumerate() {
+                        list.values.insert(index, value);
+                    }
+                } else if list.values.len() + count == list.size {
+                    list.values.extend(shown);
                 }
             },
             move |key, at| async move {
-                list_push(&at, &key, new_value.as_bytes(), is_lpush).await?;
+                let refs: Vec<&[u8]> = wire.iter().map(Vec::as_slice).collect();
+                list_push_many(&at, &key, &refs, is_lpush).await?;
                 Ok(())
             },
             move |this, _cx| {
                 if let Some(log_key) = log_key {
-                    // Named by command: a position would be stale by the next push.
                     let target = if is_lpush { "LPUSH" } else { "RPUSH" };
-                    this.record_changes(
-                        log_key,
-                        vec![ChangeEntry::element(unix_ts(), target, None, Some(log_value.as_str()))],
-                    );
+                    let entries = log_values
+                        .iter()
+                        .map(|value| ChangeEntry::element(unix_ts(), target, None, Some(value.as_str())))
+                        .collect();
+                    this.record_changes(log_key, entries);
                 }
             },
         );

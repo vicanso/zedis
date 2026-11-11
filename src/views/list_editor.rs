@@ -197,15 +197,17 @@ impl ZedisKvFetcher for ZedisListValues {
     /// * `values` - A vector of two SharedString values: [position_choice, value]
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     fn handle_add_value(&self, values: Vec<SharedString>, _window: &mut Window, cx: &mut App) {
-        // Expect exactly 2 values: [position_choice, value]
-        if values.len() != 2 {
+        // [position_choice, value, …]: one push for every row entered.
+        if values.len() < 2 {
             return;
         }
-        let server_state = self.server_state.clone();
-
-        // values[0] = RPUSH/LPUSH choice, values[1] = actual value
-        server_state.update(cx, |state, cx| {
-            state.push_list_value(values[1].clone(), values[0].clone(), cx);
+        let mode = values[0].clone();
+        let items: Vec<SharedString> = values.into_iter().skip(1).filter(|value| !value.is_empty()).collect();
+        if items.is_empty() {
+            return;
+        }
+        self.server_state.update(cx, |state, cx| {
+            state.push_list_values(items, mode, cx);
         });
     }
 
