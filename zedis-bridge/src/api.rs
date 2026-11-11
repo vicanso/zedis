@@ -25,7 +25,11 @@ use crate::static_files::{Representation, WebBuild};
 use crate::store::{KeyNoteStore, MetricsStore, PageRowStore, ScriptStore, ServerStore, StoreVersions, TrashStore};
 use crate::trash::{NewEntry, PutError};
 use crate::watch::{Batch, WatchError, WatchKind, Watches};
-use crate::{account_api, auth, mcp, page_data, policy, resp, session::Sessions, static_files};
+use crate::{
+    account_api, auth, mcp, page_data, policy, resp,
+    session::{SessionError, Sessions},
+    static_files,
+};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -352,7 +356,7 @@ pub(crate) type ApiResult<T> = Result<T, ApiError>;
 /// hang on the name — and one that is not is refused outright rather than
 /// falling through to the password paths: the proxy already said who this
 /// is, and a login form behind single sign-on would be the wrong answer.
-pub(crate) fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
+pub(crate) async fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
     if let (Some(proxy), Some(peer)) = (&state.trusted, origin.peer_ip)
         && let Some(name) = proxy.asserted(peer, headers)
     {
@@ -368,31 +372,33 @@ pub(crate) fn authorize(state: &AppState, headers: &HeaderMap, origin: &mut Orig
         return Ok(name);
     }
     let authorization = headers.get("authorization").and_then(|v| v.to_str().ok());
-    match state.accounts.check_basic(authorization) {
-        Basic::Accepted(account) => {
-            let attempt = auth::attempt_key(origin.peer_ip, &account);
-            if state.throttle.blocked(&attempt) {
-                return Err(ApiError::TooManyAttempts);
-            }
-            state.throttle.succeeded(&attempt);
-            let key = ClientKey::Basic {
-                account: account.clone(),
-                peer: origin.peer_ip,
-            };
-            note_client(state, key, &account, origin);
-            return Ok(account);
+    if let Some((name, password)) = auth::basic_credentials(authorization) {
+        let tried: String = name.chars().take(MAX_TRIED_NAME).collect();
+        let attempt = auth::attempt_key(origin.peer_ip, &tried);
+        // Check the throttle before running Argon2id so a locked-out address
+        // cannot burn password-hashing CPU on every subsequent request.
+        if state.throttle.blocked(&attempt) {
+            state.audit.record(&tried, origin, Event::LoginFailed);
+            return Err(ApiError::TooManyAttempts);
         }
-        // A script's wrong password counts like the form's: Basic is the
-        // other way to guess one.
-        Basic::Refused(tried) => {
-            let attempt = auth::attempt_key(origin.peer_ip, &tried);
-            if state.throttle.blocked(&attempt) {
-                return Err(ApiError::TooManyAttempts);
+        match state.accounts.check_basic_credentials(name, password).await {
+            Basic::Accepted(account) => {
+                state.throttle.succeeded(&attempt);
+                let key = ClientKey::Basic {
+                    account: account.clone(),
+                    peer: origin.peer_ip,
+                };
+                note_client(state, key, &account, origin);
+                return Ok(account);
             }
-            state.throttle.failed(&attempt);
-            return Err(ApiError::Unauthorized);
+            // A script's wrong password counts and audits like the form's:
+            // Basic is the other way to guess one.
+            Basic::Refused(_) => {
+                state.throttle.failed(&attempt);
+                state.audit.record(&tried, origin, Event::LoginFailed);
+                return Err(ApiError::Unauthorized);
+            }
         }
-        Basic::Absent => {}
     }
     let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
     let id = auth::cookie_value(cookie).ok_or(ApiError::Unauthorized)?;
@@ -428,7 +434,7 @@ pub(crate) fn note_server(state: &AppState, origin: &Origin, server_id: &str) {
 /// then whatever [`authorize`] accepts, so a client set up with HTTP Basic
 /// before tokens existed goes on working. The token's name goes into every
 /// audit line of the request.
-pub(crate) fn authorize_mcp(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
+pub(crate) async fn authorize_mcp(state: &AppState, headers: &HeaderMap, origin: &mut Origin) -> ApiResult<String> {
     let authorization = headers.get("authorization").and_then(|v| v.to_str().ok());
     if let Some((account, token)) = state.accounts.account_for_token(authorization) {
         origin.auth = Some("token");
@@ -440,7 +446,7 @@ pub(crate) fn authorize_mcp(state: &AppState, headers: &HeaderMap, origin: &mut 
         origin.token = Some(token);
         return Ok(account);
     }
-    authorize(state, headers, origin)
+    authorize(state, headers, origin).await
 }
 
 /// What a read-only account is told, wherever it is refused. One wording,
@@ -460,13 +466,13 @@ pub(crate) const MAX_TRIED_NAME: usize = 64;
 /// forgetting the test is a compile error's worth of obvious: the route
 /// either asks this function or it does not change anything. `action` is
 /// what the audit log says was refused.
-pub(crate) fn authorize_write(
+pub(crate) async fn authorize_write(
     state: &AppState,
     headers: &HeaderMap,
     origin: &mut Origin,
     action: &'static str,
 ) -> ApiResult<String> {
-    let account = authorize(state, headers, origin)?;
+    let account = authorize(state, headers, origin).await?;
     if state.accounts.is_read_only(&account) {
         state.audit.record(&account, origin, Event::Refused { action });
         return Err(ApiError::Forbidden(READ_ONLY_REFUSAL.to_string()));
@@ -563,8 +569,8 @@ mod mcp_auth_tests {
     /// The MCP entry point takes an account's token and says which one in
     /// its audit lines; HTTP Basic still works there; and the token opens no
     /// other route (ADR 15).
-    #[test]
-    fn a_token_signs_in_at_the_mcp_entry_point_and_nowhere_else() {
+    #[tokio::test]
+    async fn a_token_signs_in_at_the_mcp_entry_point_and_nowhere_else() {
         let (token, sha256) = auth::new_mcp_token();
         let state = state(&format!(
             "[[users]]\nname = \"ai\"\npassword = \"secret\"\nread_only = true\n\
@@ -573,7 +579,7 @@ mod mcp_auth_tests {
         let bearer = headers(&format!("Bearer {token}"));
 
         let mut origin = Origin::default();
-        let Ok(account) = authorize_mcp(&state, &bearer, &mut origin) else {
+        let Ok(account) = authorize_mcp(&state, &bearer, &mut origin).await else {
             panic!("the token did not sign in");
         };
         assert_eq!(account, "ai");
@@ -585,7 +591,7 @@ mod mcp_auth_tests {
             base64::engine::general_purpose::STANDARD.encode("ai:secret")
         ));
         let mut origin = Origin::default();
-        let Ok(account) = authorize_mcp(&state, &basic, &mut origin) else {
+        let Ok(account) = authorize_mcp(&state, &basic, &mut origin).await else {
             panic!("Basic did not sign in");
         };
         assert_eq!(account, "ai");
@@ -593,14 +599,54 @@ mod mcp_auth_tests {
 
         let mut origin = Origin::default();
         assert!(matches!(
-            authorize(&state, &bearer, &mut origin),
+            authorize(&state, &bearer, &mut origin).await,
             Err(ApiError::Unauthorized)
         ));
         let mut origin = Origin::default();
         assert!(matches!(
-            authorize_mcp(&state, &headers("Bearer zdt_nobody"), &mut origin),
+            authorize_mcp(&state, &headers("Bearer zdt_nobody"), &mut origin).await,
             Err(ApiError::Unauthorized)
         ));
+    }
+
+    #[tokio::test]
+    async fn basic_auth_audits_failures_and_checks_throttle_before_password_hashing() {
+        let audit_path =
+            std::env::temp_dir().join(format!("zedis-bridge-basic-audit-{}.jsonl", Uuid::new_v4().simple()));
+        let mut state = state("[[users]]\nname = \"alice\"\npassword = \"correct-password\"\n");
+        state.audit = Audit::open(&audit_path, false).expect("audit");
+
+        let wrong = headers(&format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("alice:wrong-password")
+        ));
+        let right = headers(&format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("alice:correct-password")
+        ));
+        let peer: SocketAddr = "198.51.100.42:9000".parse().expect("peer");
+
+        // Fail up to the throttle limit; every failure must emit login_failed.
+        for _ in 0..10 {
+            let mut origin = Origin::new(peer, &wrong);
+            assert!(matches!(
+                authorize(&state, &wrong, &mut origin).await,
+                Err(ApiError::Unauthorized)
+            ));
+        }
+
+        // Once throttled, even the right password from that peer is rejected
+        // immediately before password verification.
+        let mut origin = Origin::new(peer, &right);
+        assert!(matches!(
+            authorize(&state, &right, &mut origin).await,
+            Err(ApiError::TooManyAttempts)
+        ));
+
+        let log_text = std::fs::read_to_string(&audit_path).expect("read audit log");
+        let _ = std::fs::remove_file(&audit_path);
+        let failed_lines = log_text.lines().filter(|l| l.contains("\"login_failed\"")).count();
+        assert_eq!(failed_lines, 11);
     }
 }
 

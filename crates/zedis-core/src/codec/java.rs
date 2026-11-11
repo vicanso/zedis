@@ -454,9 +454,11 @@ impl Reader<'_> {
         match component {
             b'B' => Ok(tagged("@bytes", Value::String(hex(self.take(len)?)))),
             b'C' => {
-                let mut text = String::with_capacity(len);
-                for _ in 0..len {
-                    text.push(char::from_u32(self.u16()? as u32).unwrap_or('\u{fffd}'));
+                let raw = self.take(len.checked_mul(2).ok_or("char array length overflow")?)?;
+                let mut text = String::with_capacity(len.min(4096));
+                for &pair in raw.as_chunks::<2>().0 {
+                    let code = u16::from_be_bytes(pair) as u32;
+                    text.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                 }
                 Ok(Value::String(text))
             }
@@ -711,6 +713,15 @@ mod tests {
             .class("[B", SC_SERIALIZABLE, &[])
             .bytes(&[0, 0, 0, 3, 0xde, 0xad, 0x01]);
         assert_eq!(decode(&s.0), Some(json!({ "@bytes": "dead01" })));
+
+        // A char[] claiming 2 billion elements in a tiny stream is rejected
+        // before pre-allocating 2 GiB.
+        let mut bogus_chars = Stream::new();
+        bogus_chars
+            .bytes(&[TC_ARRAY])
+            .class("[C", SC_SERIALIZABLE, &[])
+            .bytes(&[0x7f, 0xff, 0xff, 0xff]);
+        assert_eq!(decode(&bogus_chars.0), None);
 
         let mut s = Stream::new();
         s.bytes(&[TC_ENUM])

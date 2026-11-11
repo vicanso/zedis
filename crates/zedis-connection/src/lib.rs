@@ -257,8 +257,8 @@ pub use server_config::{
 pub use server_db::ServerDb;
 pub use server_ops::{
     ServerSummary, bgrewriteaof, bgsave, bgsave_cancel, dbsize, failover, failover_abort, flush_all, flush_db,
-    forget_client, heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one, server_summary,
-    server_supports, slow_logs, unlock_writes,
+    forget_client, forget_server, heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one,
+    server_summary, server_supports, slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use set_ops::{set_add, set_card, set_remove, set_replace_member, set_scan};

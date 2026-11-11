@@ -77,7 +77,7 @@ pub(super) async fn servers(
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<ServerEntry>>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     // An entry the account may not write to is marked read-only, which is
     // the signal the page already understands (`RedisServer::readonly` —
     // the desktop's own "safe mode" switch): every entry for a read-only
@@ -144,7 +144,7 @@ pub(super) async fn add_server(
     Json(req): Json<AddServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "server_add")?;
+    let account = authorize_write(&state, &headers, &mut origin, "server_add").await?;
     let (mut server, shared) = match (req.url, req.server) {
         (Some(url), None) => {
             let server = RedisServer::from_import(&url)
@@ -231,9 +231,10 @@ async fn save_and_dial(
         .map(Duration::from_secs)
         .unwrap_or(SAVE_DIAL_TIMEOUT);
     // The pool is keyed by the entry's whole content, so the edited entry
-    // gets a client of its own; this drops the one the old content had.
-    if previous.is_some() {
-        get_connection_manager().remove_client(&id, 0);
+    // gets a client of its own; this drops every db and per-node connection
+    // the old content had.
+    if let Some(prev) = &previous {
+        get_connection_manager().remove_server(prev);
     }
 
     let saved = server.clone();
@@ -251,7 +252,7 @@ async fn save_and_dial(
             // is theirs to keep. Answered as 400 Bad Request rather than 502
             // Bad Gateway so reverse proxies in front of the bridge never
             // replace the failure reason with their own 502 error page.
-            get_connection_manager().remove_client(&id, 0);
+            get_connection_manager().remove_server(&saved);
             let _ = servers.swap(saved, previous).await;
             return Err(ApiError::BadRequest(e.to_string()));
         }
@@ -262,7 +263,7 @@ async fn save_and_dial(
                 saved.port,
                 dial_timeout.as_secs()
             );
-            get_connection_manager().remove_client(&id, 0);
+            get_connection_manager().remove_server(&saved);
             let _ = servers.swap(saved, previous).await;
             return Err(ApiError::BadRequest(reason));
         }
@@ -346,7 +347,7 @@ pub(super) async fn update_server(
     Json(req): Json<UpdateServerRequest>,
 ) -> ApiResult<Json<AddServerResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "server_update")?;
+    let account = authorize_write(&state, &headers, &mut origin, "server_update").await?;
     let stored = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &stored, &origin, "server_update")?;
     let mut server = merge_update(&stored, req.server, &req.keep_secrets).map_err(ApiError::BadRequest)?;
@@ -356,6 +357,10 @@ pub(super) async fn update_server(
     let secrets_changed = audit::secrets_changed(&stored, &server);
     let (was_shared, is_shared) = (audit::is_shared(&stored), audit::is_shared(&server));
     let result = save_and_dial(&state.servers, server, Some(stored)).await;
+    if result.is_ok() {
+        state.sessions.close_server(&id).await;
+        state.watches.close_server(&id);
+    }
     state.audit.record(
         &account,
         &origin,
@@ -382,7 +387,7 @@ pub(super) async fn delete_server(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "server_delete")?;
+    let account = authorize_write(&state, &headers, &mut origin, "server_delete").await?;
     // Someone else's entry is left alone and answered like one already gone;
     // one the account may see but not write to is refused — and nothing is
     // saved, since nothing changed.
@@ -397,6 +402,7 @@ pub(super) async fn delete_server(
     let removed = match found {
         Some(server) => {
             let reference = ServerRef::from(&server);
+            let stored = server.clone();
             let gone = state
                 .servers
                 .swap(server, None)
@@ -407,13 +413,16 @@ pub(super) async fn delete_server(
                     "the entry changed while it was being deleted; try again".to_string(),
                 ));
             }
-            Some(reference)
+            Some((stored, reference))
         }
         None => None,
     };
     // Only a deletion that deleted something: the second of two asks for
     // the same id changed nothing.
-    if let Some(server) = removed {
+    if let Some((stored, server)) = removed {
+        get_connection_manager().remove_server(&stored);
+        state.sessions.close_server(&stored.id).await;
+        state.watches.close_server(&stored.id);
         // What was deleted from it goes with it: nobody can restore into an
         // entry that is not there, and the values were someone's.
         let _ = state.trash.remove_server(server.id.clone()).await;
@@ -452,7 +461,7 @@ pub(super) async fn unlock_writes(
     Json(req): Json<UnlockRequest>,
 ) -> ApiResult<Json<UnlockResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &server, &origin, "unlock")?;
     if !server.write_locked() {
@@ -493,7 +502,7 @@ pub(super) async fn lock_writes(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     if state.unlocks.lock(&account, &server.id) {
         state.audit.record(
@@ -553,7 +562,7 @@ pub(super) async fn diagnose_draft_server(
     Json(req): Json<DiagnoseDraftRequest>,
 ) -> ApiResult<Json<DiagnoseReply>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "server_diagnose")?;
+    let account = authorize_write(&state, &headers, &mut origin, "server_diagnose").await?;
     if req.server.host.trim().is_empty() {
         return Err(ApiError::BadRequest("the server has no host".to_string()));
     }
@@ -577,7 +586,7 @@ pub(super) async fn diagnose_server(
     body: Bytes,
 ) -> ApiResult<Json<DiagnoseReply>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let stored = visible_server(&state.accounts, &id, &account)?;
     let server = if body.iter().all(|b| b.is_ascii_whitespace()) {
         stored
@@ -613,7 +622,7 @@ pub(super) async fn kill_script(
     Json(req): Json<KillScriptRequest>,
 ) -> ApiResult<Json<KillScriptReply>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &server, &origin, "kill_script")?;
     note_server(&state, &origin, &server.id);

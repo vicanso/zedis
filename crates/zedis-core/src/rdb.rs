@@ -856,6 +856,9 @@ fn lzf_decompress(input: &[u8], expected_len: usize) -> std::result::Result<Vec<
             let Some(end) = end else {
                 return Err("lzf: truncated literal run".to_string());
             };
+            if out.len().saturating_add(len) > expected_len {
+                return Err(format!("lzf: literal run exceeds expected {expected_len} bytes"));
+            }
             out.extend_from_slice(&input[i..end]);
             i = end;
         } else {
@@ -876,7 +879,11 @@ fn lzf_decompress(input: &[u8], expected_len: usize) -> std::result::Result<Vec<
             let Some(mut pos) = out.len().checked_sub(distance + 1) else {
                 return Err("lzf: back-reference before start".to_string());
             };
-            for _ in 0..len + 2 {
+            let total = len + 2;
+            if out.len().saturating_add(total) > expected_len {
+                return Err(format!("lzf: back-reference exceeds expected {expected_len} bytes"));
+            }
+            for _ in 0..total {
                 let byte = out[pos];
                 out.push(byte);
                 pos += 1;
@@ -1381,5 +1388,13 @@ mod tests {
             .eof();
         let entries = parse_all(&data);
         assert_eq!(entries[0].expire_at_ms, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn malformed_lzf_backref_cannot_overrun_expected_length() {
+        // 1-byte literal 'a', followed by extended back-ref of 264 bytes when expected_len is 4.
+        let bad = [0x00, b'a', 0xe0, 0xff, 0x00];
+        let err = lzf_decompress(&bad, 4).expect_err("must reject overrun");
+        assert!(err.contains("exceeds expected"), "{err}");
     }
 }

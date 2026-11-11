@@ -95,7 +95,7 @@ pub(super) async fn clients(
     headers: HeaderMap,
 ) -> ApiResult<Json<ClientsReply>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = account_api::authorize_admin(&state, &headers, &mut origin, "list clients")?;
+    let account = account_api::authorize_admin(&state, &headers, &mut origin, "list clients").await?;
     let mut clients = state.presence.online();
     // Each client's servers by name — and only those the asker may see: an
     // entry of someone else's is not confirmed to exist by who uses it.
@@ -196,12 +196,12 @@ mod online_servers_tests {
         };
         let bob = basic("bob:bobs-password");
         let mut origin = Origin::new(peer, &bob);
-        assert!(authorize(&state, &bob, &mut origin).is_ok());
+        assert!(authorize(&state, &bob, &mut origin).await.is_ok());
         note_server(&state, &origin, "online-bobs");
         note_server(&state, &origin, "online-prod");
         let ops = basic("ops:secret");
         let mut origin = Origin::new(peer, &ops);
-        assert!(authorize(&state, &ops, &mut origin).is_ok());
+        assert!(authorize(&state, &ops, &mut origin).await.is_ok());
         note_server(&state, &origin, "online-opss");
 
         let Ok(Json(reply)) = clients(State(state.clone()), ConnectInfo(peer), ops.clone()).await else {
@@ -265,7 +265,7 @@ mod online_servers_tests {
         ));
         for headers in [&ops, &script, &root] {
             let mut origin = Origin::new(peer, headers);
-            assert!(authorize(&state, headers, &mut origin).is_ok());
+            assert!(runtime.block_on(authorize(&state, headers, &mut origin)).is_ok());
         }
 
         let list = |headers: HeaderMap| runtime.block_on(clients(State(state.clone()), ConnectInfo(peer), headers));

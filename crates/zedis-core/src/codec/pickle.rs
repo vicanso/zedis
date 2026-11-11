@@ -97,43 +97,72 @@ struct PObject {
     dict_items: Vec<(PVal, PVal)>,
 }
 
-impl PVal {
-    /// The values this one holds directly.
-    fn children(&self) -> Vec<&PVal> {
-        match self {
-            PVal::List(items) | PVal::Tuple(items) | PVal::Set(items) => items.iter().collect(),
-            PVal::Dict(entries) => entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-            PVal::Object(obj) => std::iter::once(&obj.class)
-                .chain(&obj.args)
-                .chain(&obj.kwargs)
-                .chain(&obj.state)
-                .chain(&obj.list_items)
-                .chain(obj.dict_items.iter().flat_map(|(k, v)| [k, v]))
-                .collect(),
-            PVal::Persistent(id) => vec![id],
-            _ => Vec::new(),
+#[derive(Clone, Debug)]
+struct Node {
+    val: PVal,
+    /// Total node count in this subtree (1 + sum of children's weights).
+    weight: usize,
+    /// Nesting depth of containers in this subtree (0 for leaves and empty containers).
+    depth: usize,
+}
+
+impl Node {
+    fn leaf(val: PVal) -> Self {
+        Self {
+            val,
+            weight: 1,
+            depth: 0,
         }
     }
-}
 
-/// Whether `value` nests no deeper than `levels`.
-fn within_depth(value: &PVal, levels: usize) -> bool {
-    let children = value.children();
-    children.is_empty() || (levels > 0 && children.into_iter().all(|child| within_depth(child, levels - 1)))
-}
+    fn seq(ctor: fn(Vec<PVal>) -> PVal, items: Vec<Node>) -> Self {
+        let mut weight = 1usize;
+        let mut depth = 0usize;
+        let mut vals = Vec::with_capacity(items.len());
+        for item in items {
+            weight = weight.saturating_add(item.weight);
+            depth = depth.max(item.depth.saturating_add(1));
+            vals.push(item.val);
+        }
+        Self {
+            val: ctor(vals),
+            weight,
+            depth,
+        }
+    }
 
-/// A value's size in nodes, what a memo lookup of it copies.
-fn weight(value: &PVal) -> usize {
-    1 + value.children().into_iter().map(weight).sum::<usize>()
+    fn dict(entries: Vec<(Node, Node)>) -> Self {
+        let mut weight = 1usize;
+        let mut depth = 0usize;
+        let mut vals = Vec::with_capacity(entries.len());
+        for (k, v) in entries {
+            weight = weight.saturating_add(k.weight).saturating_add(v.weight);
+            depth = depth.max(k.depth.saturating_add(1)).max(v.depth.saturating_add(1));
+            vals.push((k.val, v.val));
+        }
+        Self {
+            val: PVal::Dict(vals),
+            weight,
+            depth,
+        }
+    }
+
+    fn persistent(id: Node) -> Self {
+        Self {
+            weight: 1usize.saturating_add(id.weight),
+            depth: id.depth.saturating_add(1),
+            val: PVal::Persistent(Box::new(id.val)),
+        }
+    }
 }
 
 struct Vm<'a> {
     bytes: &'a [u8],
     pos: usize,
-    stack: Vec<PVal>,
-    /// Memoized values with their [`weight`].
-    memo: HashMap<u32, (PVal, usize)>,
-    /// Nodes copied by memo lookups so far (see [`MAX_EXPANDED`]).
+    stack: Vec<Node>,
+    /// Memoized values with their precomputed `weight` and `depth`.
+    memo: HashMap<u32, Node>,
+    /// Nodes copied by memo lookups or `DUP` so far (see [`MAX_EXPANDED`]).
     expanded: usize,
     /// A value nested past [`MAX_DEPTH`]; the run stops at the next opcode.
     too_deep: bool,
@@ -181,41 +210,39 @@ impl Vm<'_> {
         Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
     }
 
-    fn push(&mut self, value: PVal) {
-        self.check_depth(&value, MAX_DEPTH);
-        self.stack.push(value);
-    }
-    /// Mark the run too deep if `value` nests past `levels`.
-    fn check_depth(&mut self, value: &PVal, levels: usize) {
-        if !within_depth(value, levels) {
+    fn push(&mut self, node: Node) {
+        if node.depth > MAX_DEPTH {
             self.too_deep = true;
         }
+        self.stack.push(node);
     }
-    fn pop(&mut self) -> Step<PVal> {
+    fn push_leaf(&mut self, value: PVal) {
+        self.stack.push(Node::leaf(value));
+    }
+    fn pop(&mut self) -> Step<Node> {
         self.stack.pop().ok_or(())
     }
-    fn top(&mut self) -> Step<&mut PVal> {
+    fn top(&mut self) -> Step<&mut Node> {
         self.stack.last_mut().ok_or(())
     }
     /// Everything above the last `MARK`, the mark removed.
-    fn pop_mark(&mut self) -> Step<Vec<PVal>> {
-        let mark = self.stack.iter().rposition(|v| matches!(v, PVal::Mark)).ok_or(())?;
+    fn pop_mark(&mut self) -> Step<Vec<Node>> {
+        let mark = self.stack.iter().rposition(|n| matches!(n.val, PVal::Mark)).ok_or(())?;
         let items = self.stack.split_off(mark + 1);
         self.stack.pop();
         Ok(items)
     }
-    fn get(&mut self, key: u32) -> Step<PVal> {
-        let (value, size) = self.memo.get(&key).ok_or(())?;
-        if self.expanded + size > MAX_EXPANDED {
-            return Ok(PVal::Str(format!("<memo {key}>")));
+    fn get(&mut self, key: u32) -> Step<Node> {
+        let node = self.memo.get(&key).ok_or(())?;
+        if self.expanded.saturating_add(node.weight) > MAX_EXPANDED {
+            return Ok(Node::leaf(PVal::Str(format!("<memo {key}>"))));
         }
-        self.expanded += size;
-        Ok(value.clone())
+        self.expanded += node.weight;
+        Ok(node.clone())
     }
     fn put(&mut self, key: u32) -> Step<()> {
-        let value = self.stack.last().ok_or(())?.clone();
-        let size = weight(&value);
-        self.memo.insert(key, (value, size));
+        let node = self.stack.last().ok_or(())?.clone();
+        self.memo.insert(key, node);
         Ok(())
     }
 
@@ -233,10 +260,10 @@ impl Vm<'_> {
                     self.u64()?;
                 }
                 b'.' => {
-                    let value = self.pop()?;
-                    return if self.stack.is_empty() { Ok(value) } else { Err(()) };
+                    let node = self.pop()?;
+                    return if self.stack.is_empty() { Ok(node.val) } else { Err(()) };
                 }
-                b'(' => self.push(PVal::Mark),
+                b'(' => self.push_leaf(PVal::Mark),
                 b'0' => {
                     self.pop()?;
                 }
@@ -244,27 +271,33 @@ impl Vm<'_> {
                     self.pop_mark()?;
                 }
                 b'2' => {
-                    let top = self.stack.last().ok_or(())?.clone();
-                    self.push(top);
+                    let top = self.stack.last().ok_or(())?;
+                    let duped = if self.expanded.saturating_add(top.weight) > MAX_EXPANDED {
+                        Node::leaf(PVal::Str("<dup>".into()))
+                    } else {
+                        self.expanded += top.weight;
+                        top.clone()
+                    };
+                    self.push(duped);
                 }
-                b'N' => self.push(PVal::None),
-                0x88 => self.push(PVal::Bool(true)),
-                0x89 => self.push(PVal::Bool(false)),
+                b'N' => self.push_leaf(PVal::None),
+                0x88 => self.push_leaf(PVal::Bool(true)),
+                0x89 => self.push_leaf(PVal::Bool(false)),
                 b'J' => {
                     let n = self.i32()?;
-                    self.push(PVal::Int(n.into()));
+                    self.push_leaf(PVal::Int(n.into()));
                 }
                 b'K' => {
                     let n = self.u8()?;
-                    self.push(PVal::Int(n.into()));
+                    self.push_leaf(PVal::Int(n.into()));
                 }
                 b'M' => {
                     let n = self.u16()?;
-                    self.push(PVal::Int(n.into()));
+                    self.push_leaf(PVal::Int(n.into()));
                 }
                 b'I' => {
                     let line = self.line()?;
-                    self.push(match line.as_str() {
+                    self.push_leaf(match line.as_str() {
                         "00" => PVal::Bool(false),
                         "01" => PVal::Bool(true),
                         _ => PVal::Int(line.parse().map_err(|_| ())?),
@@ -272,26 +305,26 @@ impl Vm<'_> {
                 }
                 b'L' => {
                     let line = self.line()?;
-                    self.push(long_from_text(line.trim_end_matches('L')));
+                    self.push_leaf(long_from_text(line.trim_end_matches('L')));
                 }
                 0x8a => {
                     let n = self.u8()? as usize;
                     let raw = self.bytes_of(n)?;
-                    self.push(long_from_le(&raw));
+                    self.push_leaf(long_from_le(&raw));
                 }
                 0x8b => {
                     let n = self.i32()?;
                     let n = self.len(n.try_into().map_err(|_| ())?)?;
                     let raw = self.bytes_of(n)?;
-                    self.push(long_from_le(&raw));
+                    self.push_leaf(long_from_le(&raw));
                 }
                 b'G' => {
                     let f = f64::from_be_bytes(self.take(8)?.try_into().map_err(|_| ())?);
-                    self.push(PVal::Float(f));
+                    self.push_leaf(PVal::Float(f));
                 }
                 b'F' => {
                     let line = self.line()?;
-                    self.push(PVal::Float(line.parse().map_err(|_| ())?));
+                    self.push_leaf(PVal::Float(line.parse().map_err(|_| ())?));
                 }
                 b'S' => {
                     let line = self.line()?;
@@ -300,142 +333,193 @@ impl Vm<'_> {
                         .and_then(|s| s.strip_suffix('\''))
                         .or_else(|| line.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
                         .unwrap_or(&line);
-                    self.push(PVal::Str(unquoted.to_string()));
+                    self.push_leaf(PVal::Str(unquoted.to_string()));
                 }
                 b'T' => {
                     let n = self.i32()?;
                     let n = self.len(n.try_into().map_err(|_| ())?)?;
                     let s = self.text_of(n)?;
-                    self.push(PVal::Str(s));
+                    self.push_leaf(PVal::Str(s));
                 }
                 b'U' => {
                     let n = self.u8()? as usize;
                     let s = self.text_of(n)?;
-                    self.push(PVal::Str(s));
+                    self.push_leaf(PVal::Str(s));
                 }
                 b'V' => {
                     let line = self.line()?;
-                    self.push(PVal::Str(line));
+                    self.push_leaf(PVal::Str(line));
                 }
                 b'X' => {
                     let n = self.u32()? as usize;
                     let s = self.text_of(n)?;
-                    self.push(PVal::Str(s));
+                    self.push_leaf(PVal::Str(s));
                 }
                 0x8c => {
                     let n = self.u8()? as usize;
                     let s = self.text_of(n)?;
-                    self.push(PVal::Str(s));
+                    self.push_leaf(PVal::Str(s));
                 }
                 0x8d => {
                     let n = self.u64()?;
                     let n = self.len(n)?;
                     let s = self.text_of(n)?;
-                    self.push(PVal::Str(s));
+                    self.push_leaf(PVal::Str(s));
                 }
                 b'B' => {
                     let n = self.u32()? as usize;
                     let b = self.bytes_of(n)?;
-                    self.push(PVal::Bytes(b));
+                    self.push_leaf(PVal::Bytes(b));
                 }
                 b'C' => {
                     let n = self.u8()? as usize;
                     let b = self.bytes_of(n)?;
-                    self.push(PVal::Bytes(b));
+                    self.push_leaf(PVal::Bytes(b));
                 }
                 0x8e | 0x96 => {
                     let n = self.u64()?;
                     let n = self.len(n)?;
                     let b = self.bytes_of(n)?;
-                    self.push(PVal::Bytes(b));
+                    self.push_leaf(PVal::Bytes(b));
                 }
-                b')' => self.push(PVal::Tuple(Vec::new())),
+                b')' => self.push_leaf(PVal::Tuple(Vec::new())),
                 0x85 => {
                     let a = self.pop()?;
-                    self.push(PVal::Tuple(vec![a]));
+                    self.push(Node::seq(PVal::Tuple, vec![a]));
                 }
                 0x86 => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(PVal::Tuple(vec![a, b]));
+                    self.push(Node::seq(PVal::Tuple, vec![a, b]));
                 }
                 0x87 => {
                     let c = self.pop()?;
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(PVal::Tuple(vec![a, b, c]));
+                    self.push(Node::seq(PVal::Tuple, vec![a, b, c]));
                 }
                 b't' => {
                     let items = self.pop_mark()?;
-                    self.push(PVal::Tuple(items));
+                    self.push(Node::seq(PVal::Tuple, items));
                 }
-                b']' => self.push(PVal::List(Vec::new())),
+                b']' => self.push_leaf(PVal::List(Vec::new())),
                 b'l' => {
                     let items = self.pop_mark()?;
-                    self.push(PVal::List(items));
+                    self.push(Node::seq(PVal::List, items));
                 }
                 b'a' => {
                     let item = self.pop()?;
-                    self.check_depth(&item, MAX_DEPTH - 1);
-                    match self.top()? {
-                        PVal::List(items) => items.push(item),
-                        PVal::Object(obj) => obj.list_items.push(item),
+                    let top = self.top()?;
+                    top.weight = top.weight.saturating_add(item.weight);
+                    top.depth = top.depth.max(item.depth.saturating_add(1));
+                    let overflow = top.depth > MAX_DEPTH;
+                    match &mut top.val {
+                        PVal::List(items) => items.push(item.val),
+                        PVal::Object(obj) => obj.list_items.push(item.val),
                         _ => return Err(()),
+                    }
+                    if overflow {
+                        self.too_deep = true;
                     }
                 }
                 b'e' => {
                     let new = self.pop_mark()?;
-                    for item in &new {
-                        self.check_depth(item, MAX_DEPTH - 1);
+                    let mut extra_weight = 0usize;
+                    let mut extra_depth = 0usize;
+                    let mut vals = Vec::with_capacity(new.len());
+                    for item in new {
+                        extra_weight = extra_weight.saturating_add(item.weight);
+                        extra_depth = extra_depth.max(item.depth.saturating_add(1));
+                        vals.push(item.val);
                     }
-                    match self.top()? {
-                        PVal::List(items) => items.extend(new),
-                        PVal::Object(obj) => obj.list_items.extend(new),
+                    let top = self.top()?;
+                    top.weight = top.weight.saturating_add(extra_weight);
+                    top.depth = top.depth.max(extra_depth);
+                    let overflow = top.depth > MAX_DEPTH;
+                    match &mut top.val {
+                        PVal::List(items) => items.extend(vals),
+                        PVal::Object(obj) => obj.list_items.extend(vals),
                         _ => return Err(()),
                     }
+                    if overflow {
+                        self.too_deep = true;
+                    }
                 }
-                b'}' => self.push(PVal::Dict(Vec::new())),
+                b'}' => self.push_leaf(PVal::Dict(Vec::new())),
                 b'd' => {
                     let items = self.pop_mark()?;
-                    self.push(PVal::Dict(pairs(items)?));
+                    self.push(Node::dict(pairs(items)?));
                 }
                 b's' => {
                     let value = self.pop()?;
                     let key = self.pop()?;
-                    self.check_depth(&key, MAX_DEPTH - 1);
-                    self.check_depth(&value, MAX_DEPTH - 1);
-                    match self.top()? {
-                        PVal::Dict(entries) => entries.push((key, value)),
-                        PVal::Object(obj) => obj.dict_items.push((key, value)),
+                    let top = self.top()?;
+                    top.weight = top.weight.saturating_add(key.weight).saturating_add(value.weight);
+                    top.depth = top
+                        .depth
+                        .max(key.depth.saturating_add(1))
+                        .max(value.depth.saturating_add(1));
+                    let overflow = top.depth > MAX_DEPTH;
+                    match &mut top.val {
+                        PVal::Dict(entries) => entries.push((key.val, value.val)),
+                        PVal::Object(obj) => obj.dict_items.push((key.val, value.val)),
                         _ => return Err(()),
+                    }
+                    if overflow {
+                        self.too_deep = true;
                     }
                 }
                 b'u' => {
                     let new = pairs(self.pop_mark()?)?;
-                    for (key, value) in &new {
-                        self.check_depth(key, MAX_DEPTH - 1);
-                        self.check_depth(value, MAX_DEPTH - 1);
+                    let mut extra_weight = 0usize;
+                    let mut extra_depth = 0usize;
+                    let mut vals = Vec::with_capacity(new.len());
+                    for (key, value) in new {
+                        extra_weight = extra_weight.saturating_add(key.weight).saturating_add(value.weight);
+                        extra_depth = extra_depth
+                            .max(key.depth.saturating_add(1))
+                            .max(value.depth.saturating_add(1));
+                        vals.push((key.val, value.val));
                     }
-                    match self.top()? {
-                        PVal::Dict(entries) => entries.extend(new),
-                        PVal::Object(obj) => obj.dict_items.extend(new),
+                    let top = self.top()?;
+                    top.weight = top.weight.saturating_add(extra_weight);
+                    top.depth = top.depth.max(extra_depth);
+                    let overflow = top.depth > MAX_DEPTH;
+                    match &mut top.val {
+                        PVal::Dict(entries) => entries.extend(vals),
+                        PVal::Object(obj) => obj.dict_items.extend(vals),
                         _ => return Err(()),
+                    }
+                    if overflow {
+                        self.too_deep = true;
                     }
                 }
-                0x8f => self.push(PVal::Set(Vec::new())),
+                0x8f => self.push_leaf(PVal::Set(Vec::new())),
                 0x90 => {
                     let new = self.pop_mark()?;
-                    for item in &new {
-                        self.check_depth(item, MAX_DEPTH - 1);
+                    let mut extra_weight = 0usize;
+                    let mut extra_depth = 0usize;
+                    let mut vals = Vec::with_capacity(new.len());
+                    for item in new {
+                        extra_weight = extra_weight.saturating_add(item.weight);
+                        extra_depth = extra_depth.max(item.depth.saturating_add(1));
+                        vals.push(item.val);
                     }
-                    match self.top()? {
-                        PVal::Set(items) => items.extend(new),
+                    let top = self.top()?;
+                    top.weight = top.weight.saturating_add(extra_weight);
+                    top.depth = top.depth.max(extra_depth);
+                    let overflow = top.depth > MAX_DEPTH;
+                    match &mut top.val {
+                        PVal::Set(items) => items.extend(vals),
                         _ => return Err(()),
+                    }
+                    if overflow {
+                        self.too_deep = true;
                     }
                 }
                 0x91 => {
                     let items = self.pop_mark()?;
-                    self.push(PVal::Set(items));
+                    self.push(Node::seq(PVal::Set, items));
                 }
                 b'p' => {
                     let key: u32 = self.line()?.parse().map_err(|_| ())?;
@@ -471,13 +555,13 @@ impl Vm<'_> {
                 b'c' => {
                     let module = self.line()?;
                     let name = self.line()?;
-                    self.push(PVal::Global(format!("{module}.{name}")));
+                    self.push_leaf(PVal::Global(format!("{module}.{name}")));
                 }
                 0x93 => {
                     let name = self.pop()?;
                     let module = self.pop()?;
-                    match (module, name) {
-                        (PVal::Str(m), PVal::Str(n)) => self.push(PVal::Global(format!("{m}.{n}"))),
+                    match (module.val, name.val) {
+                        (PVal::Str(m), PVal::Str(n)) => self.push_leaf(PVal::Global(format!("{m}.{n}"))),
                         _ => return Err(()),
                     }
                 }
@@ -503,44 +587,52 @@ impl Vm<'_> {
                         return Err(());
                     }
                     let class = items.remove(0);
-                    self.push(object(class, PVal::Tuple(items), None));
+                    self.push(object(class, Node::seq(PVal::Tuple, items), None));
                 }
                 b'i' => {
                     let module = self.line()?;
                     let name = self.line()?;
                     let items = self.pop_mark()?;
                     self.push(object(
-                        PVal::Global(format!("{module}.{name}")),
-                        PVal::Tuple(items),
+                        Node::leaf(PVal::Global(format!("{module}.{name}"))),
+                        Node::seq(PVal::Tuple, items),
                         None,
                     ));
                 }
                 b'b' => {
                     let state = self.pop()?;
                     let target = self.pop()?;
-                    let built = match target {
+                    let built = match target.val {
                         PVal::Object(mut obj) => {
-                            obj.state = Some(state);
-                            PVal::Object(obj)
+                            obj.state = Some(state.val);
+                            Node {
+                                val: PVal::Object(obj),
+                                weight: target.weight.saturating_add(state.weight),
+                                depth: target.depth.max(state.depth.saturating_add(1)),
+                            }
                         }
-                        other => PVal::Object(Box::new(PObject {
-                            class: PVal::Global("(built)".into()),
-                            args: vec![other],
-                            kwargs: None,
-                            state: Some(state),
-                            list_items: Vec::new(),
-                            dict_items: Vec::new(),
-                        })),
+                        other => Node {
+                            val: PVal::Object(Box::new(PObject {
+                                class: PVal::Global("(built)".into()),
+                                args: vec![other],
+                                kwargs: None,
+                                state: Some(state.val),
+                                list_items: Vec::new(),
+                                dict_items: Vec::new(),
+                            })),
+                            weight: 2usize.saturating_add(target.weight).saturating_add(state.weight),
+                            depth: target.depth.max(state.depth).saturating_add(1),
+                        },
                     };
                     self.push(built);
                 }
                 b'P' => {
                     let id = self.line()?;
-                    self.push(PVal::Persistent(Box::new(PVal::Str(id))));
+                    self.push(Node::persistent(Node::leaf(PVal::Str(id))));
                 }
                 b'Q' => {
                     let id = self.pop()?;
-                    self.push(PVal::Persistent(Box::new(id)));
+                    self.push(Node::persistent(id));
                 }
                 // EXT1/2/4 (copyreg extension registry), NEXT_BUFFER,
                 // READONLY_BUFFER: nothing to show without the registry or
@@ -551,22 +643,33 @@ impl Vm<'_> {
     }
 }
 
-fn object(class: PVal, args: PVal, kwargs: Option<PVal>) -> PVal {
-    let args = match args {
-        PVal::Tuple(items) | PVal::List(items) => items,
-        other => vec![other],
+fn object(class: Node, args: Node, kwargs: Option<Node>) -> Node {
+    let (args_vals, args_weight, args_depth) = match args.val {
+        PVal::Tuple(items) | PVal::List(items) => (items, args.weight.saturating_sub(1), args.depth),
+        other => (vec![other], args.weight, args.depth.saturating_add(1)),
     };
-    PVal::Object(Box::new(PObject {
-        class,
-        args,
-        kwargs,
-        state: None,
-        list_items: Vec::new(),
-        dict_items: Vec::new(),
-    }))
+    let (kw_val, kw_weight, kw_depth) = match kwargs {
+        Some(kw) => (Some(kw.val), kw.weight, kw.depth.saturating_add(1)),
+        None => (None, 0, 0),
+    };
+    Node {
+        weight: 1usize
+            .saturating_add(class.weight)
+            .saturating_add(args_weight)
+            .saturating_add(kw_weight),
+        depth: class.depth.saturating_add(1).max(args_depth).max(kw_depth),
+        val: PVal::Object(Box::new(PObject {
+            class: class.val,
+            args: args_vals,
+            kwargs: kw_val,
+            state: None,
+            list_items: Vec::new(),
+            dict_items: Vec::new(),
+        })),
+    }
 }
 
-fn pairs(items: Vec<PVal>) -> Step<Vec<(PVal, PVal)>> {
+fn pairs(items: Vec<Node>) -> Step<Vec<(Node, Node)>> {
     if !items.len().is_multiple_of(2) {
         return Err(());
     }
@@ -753,6 +856,20 @@ mod tests {
         // the value.
         let decoded = decode(&bytes).expect("decoded");
         assert!(decoded.to_string().contains("<memo "), "the rest name their slot");
+    }
+
+    /// `DUP` (`b'2'`) + `TUPLE2` (`0x86`) doubles the stack top each pair of
+    /// bytes without touching the memo table; it shares the same expansion
+    /// cap so 65 bytes cannot materialize `2^30` nodes.
+    #[test]
+    fn dup_opcode_cannot_expand_without_bound() {
+        let mut bytes = vec![0x80, 0x04, b']'];
+        for _ in 0..30 {
+            bytes.extend_from_slice(&[b'2', 0x86]);
+        }
+        bytes.push(b'.');
+        let decoded = decode(&bytes).expect("decoded within budget");
+        assert!(decoded.to_string().contains("<dup>"));
     }
 
     #[test]

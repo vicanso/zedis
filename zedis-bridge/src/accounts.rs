@@ -57,7 +57,7 @@
 //! An upgraded deployment's `ZEDIS_BRIDGE_USERS` or users file is read once,
 //! into an empty store ([`import_records`]), and never again.
 
-use crate::auth::{ServerRule, basic_credentials, bearer_token, hex, new_mcp_token, now_secs, parse_expiry, same};
+use crate::auth::{ServerRule, bearer_token, hex, new_mcp_token, now_secs, parse_expiry, same};
 use crate::store::{AccountStore, AccountsAt, SetupStore, StoreFuture, blocking};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
@@ -499,17 +499,16 @@ impl Accounts {
         self.read().accounts.values().map(|e| e.tokens.len()).sum()
     }
 
-    /// What an `Authorization: Basic …` header comes to. The first request
-    /// of an account pays one Argon2 check; for [`VERIFIED_FOR`] after it
-    /// the same password is known by a keyed fingerprint, until the
-    /// account's version moves.
-    pub fn check_basic(&self, header: Option<&str>) -> Basic {
-        let Some((name, password)) = basic_credentials(header) else {
-            return Basic::Absent;
-        };
+    /// Keyed SHA-256 fingerprint of `(name, password)` under this process's
+    /// random pepper, plus the stored `(hash, version)` if `name` is a live
+    /// password-bearing account. Returns `Ok(Basic::Accepted)` immediately on
+    /// a valid cache hit, `Ok(Basic::Refused)` if the account has no password
+    /// or is disabled/missing, or `Err((hash, version, fingerprint))` when an
+    /// Argon2 check is required.
+    fn lookup_basic_cached(&self, name: &str, password: &str) -> Result<Basic, (String, u64, [u8; 32])> {
         let (hash, version) = {
             let state = self.read();
-            match state.live(&name) {
+            match state.live(name) {
                 Some(Entry {
                     record:
                         AccountRecord {
@@ -519,7 +518,7 @@ impl Accounts {
                         },
                     ..
                 }) => (hash.clone(), *version),
-                _ => return Basic::Refused(name),
+                _ => return Ok(Basic::Refused(name.to_string())),
             }
         };
         let mut fingerprint = Sha256::new();
@@ -530,15 +529,16 @@ impl Accounts {
         let fingerprint: [u8; 32] = fingerprint.finalize().into();
         {
             let verified = self.0.verified.lock().unwrap_or_else(PoisonError::into_inner);
-            if verified.get(&name).is_some_and(|v| {
+            if verified.get(name).is_some_and(|v| {
                 v.version == version && v.at.elapsed() < VERIFIED_FOR && same(&v.fingerprint, &fingerprint)
             }) {
-                return Basic::Accepted(name);
+                return Ok(Basic::Accepted(name.to_string()));
             }
         }
-        if !verify_password(&hash, &password) {
-            return Basic::Refused(name);
-        }
+        Err((hash, version, fingerprint))
+    }
+
+    fn record_basic_verified(&self, name: String, fingerprint: [u8; 32], version: u64) -> Basic {
         self.0.verified.lock().unwrap_or_else(PoisonError::into_inner).insert(
             name.clone(),
             Verified {
@@ -548,6 +548,25 @@ impl Accounts {
             },
         );
         Basic::Accepted(name)
+    }
+
+    /// Check a decoded HTTP Basic `(name, password)` pair for route handlers:
+    /// answers synchronously on an unknown/passwordless account or a warm
+    /// [`VERIFIED_FOR`] cache hit, and offloads Argon2id to `spawn_blocking`
+    /// on a cache miss so Tokio worker threads never block on hashing.
+    pub async fn check_basic_credentials(&self, name: String, password: String) -> Basic {
+        match self.lookup_basic_cached(&name, &password) {
+            Ok(verdict) => verdict,
+            Err((hash, version, fingerprint)) => {
+                let valid = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
+                    .await
+                    .unwrap_or(false);
+                if !valid {
+                    return Basic::Refused(name);
+                }
+                self.record_basic_verified(name, fingerprint, version)
+            }
+        }
     }
 
     /// Whether `password` is `name`'s, for the sign-in form and setup. Slow
@@ -966,35 +985,42 @@ servers = []
         );
     }
 
-    #[test]
-    fn a_basic_header_signs_in_as_the_account_it_names() {
+    #[tokio::test]
+    async fn a_basic_header_signs_in_as_the_account_it_names() {
+        use crate::auth::basic_credentials;
         let accounts = Accounts::from_inline("alice@se:cret,bob@hunter2").expect("accounts");
-        let accepted = |name: &str| Basic::Accepted(name.to_string());
-        assert_eq!(accounts.check_basic(Some(&basic("alice:se:cret"))), accepted("alice"));
+        let check = |header: Option<&str>| {
+            let accounts = accounts.clone();
+            let parsed = basic_credentials(header);
+            async move {
+                match parsed {
+                    Some((name, password)) => Some(accounts.check_basic_credentials(name, password).await),
+                    None => None,
+                }
+            }
+        };
+        let accepted = |name: &str| Some(Basic::Accepted(name.to_string()));
+        assert_eq!(check(Some(&basic("alice:se:cret"))).await, accepted("alice"));
         assert_eq!(
-            accounts.check_basic(Some(&basic("alice:se:cret"))),
+            check(Some(&basic("alice:se:cret"))).await,
             accepted("alice"),
             "again, from the fingerprint"
         );
-        assert_eq!(accounts.check_basic(Some(&basic("bob:hunter2"))), accepted("bob"));
+        assert_eq!(check(Some(&basic("bob:hunter2"))).await, accepted("bob"));
         let lowercase = format!("basic {}", B64.encode("alice:se:cret"));
-        assert_eq!(accounts.check_basic(Some(&lowercase)), accepted("alice"));
+        assert_eq!(check(Some(&lowercase)).await, accepted("alice"));
         assert_eq!(
-            accounts.check_basic(Some(&basic("alice:wrong"))),
-            Basic::Refused("alice".to_string())
+            check(Some(&basic("alice:wrong"))).await,
+            Some(Basic::Refused("alice".to_string()))
         );
         assert_eq!(
-            accounts.check_basic(Some(&basic("carol:se:cret"))),
-            Basic::Refused("carol".to_string())
+            check(Some(&basic("carol:se:cret"))).await,
+            Some(Basic::Refused("carol".to_string()))
         );
-        assert_eq!(
-            accounts.check_basic(Some(&basic("alice"))),
-            Basic::Absent,
-            "no password at all"
-        );
-        assert_eq!(accounts.check_basic(Some("Bearer se:cret")), Basic::Absent);
-        assert_eq!(accounts.check_basic(Some("Basic not-base64!")), Basic::Absent);
-        assert_eq!(accounts.check_basic(None), Basic::Absent);
+        assert_eq!(check(Some(&basic("alice"))).await, None, "no password at all");
+        assert_eq!(check(Some("Bearer se:cret")).await, None);
+        assert_eq!(check(Some("Basic not-base64!")).await, None);
+        assert_eq!(check(None).await, None);
     }
 
     /// The fingerprint a checked password is remembered by lapses with the
@@ -1004,7 +1030,9 @@ servers = []
     async fn a_new_password_ends_the_old_one_at_once() {
         let accounts = Accounts::from_inline("alice@secret-one").expect("accounts");
         assert_eq!(
-            accounts.check_basic(Some(&basic("alice:secret-one"))),
+            accounts
+                .check_basic_credentials("alice".to_string(), "secret-one".to_string())
+                .await,
             Basic::Accepted("alice".to_string())
         );
         accounts
@@ -1012,11 +1040,15 @@ servers = []
             .await
             .expect("password");
         assert_eq!(
-            accounts.check_basic(Some(&basic("alice:secret-one"))),
+            accounts
+                .check_basic_credentials("alice".to_string(), "secret-one".to_string())
+                .await,
             Basic::Refused("alice".to_string())
         );
         assert_eq!(
-            accounts.check_basic(Some(&basic("alice:secret-two"))),
+            accounts
+                .check_basic_credentials("alice".to_string(), "secret-two".to_string())
+                .await,
             Basic::Accepted("alice".to_string())
         );
     }

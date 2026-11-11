@@ -785,7 +785,16 @@ impl ZedisGeoMap {
         let lat_label = i18n_geo_map(cx, "add_lat");
         let member_label = i18n_geo_map(cx, "add_member");
         let hint = i18n_geo_map(cx, "add_hint");
-        let body = (lon_state.clone(), lat_state.clone(), member_state.clone());
+        let body_view = cx.new(|_| GeoAddForm {
+            lon: lon_state.clone(),
+            lat: lat_state.clone(),
+            member: member_state.clone(),
+            lon_label,
+            lat_label,
+            member_label,
+            hint,
+        });
+        let focus_lon = lon_state.clone();
         let submit = (lon_state, lat_state, member_state);
         let map = cx.entity().downgrade();
 
@@ -798,18 +807,7 @@ impl ZedisGeoMap {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(lon_label.clone()).text_xs())
-                    .child(Input::new(&body.0).small().h(px(32.)))
-                    .child(Label::new(lat_label.clone()).text_xs())
-                    .child(Input::new(&body.1).small().h(px(32.)))
-                    .child(Label::new(member_label.clone()).text_xs())
-                    .child(Input::new(&body.2).small().h(px(32.)))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let member = submit.2.read(cx).value().trim().to_string();
                 let (Ok(lon), Ok(lat)) = (
@@ -830,6 +828,7 @@ impl ZedisGeoMap {
                 true
             })
             .open(window, cx);
+        focus_lon.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `GEOADD`, then a reload so the new point is on the map.
@@ -859,7 +858,13 @@ impl ZedisGeoMap {
         let to_state = cx.new(|cx| InputState::new(window, cx));
         let from_label = i18n_geo_map(cx, "dist_from");
         let to_label = i18n_geo_map(cx, "dist_to");
-        let body = (from_state.clone(), to_state.clone());
+        let body_view = cx.new(|_| GeoDistanceForm {
+            from: from_state.clone(),
+            to: to_state.clone(),
+            from_label,
+            to_label,
+        });
+        let focus_from = from_state.clone();
         let submit = (from_state, to_state);
         let map = cx.entity().downgrade();
 
@@ -872,15 +877,7 @@ impl ZedisGeoMap {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(from_label.clone()).text_xs())
-                    .child(Input::new(&body.0).small().h(px(32.)))
-                    .child(Label::new(to_label.clone()).text_xs())
-                    .child(Input::new(&body.1).small().h(px(32.)))
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let from = submit.0.read(cx).value().trim().to_string();
                 let to = submit.1.read(cx).value().trim().to_string();
@@ -893,6 +890,7 @@ impl ZedisGeoMap {
                 true
             })
             .open(window, cx);
+        focus_from.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `GEODIST`, with the answer (or "one of them is not in the key")
@@ -1404,6 +1402,50 @@ fn project_geo(sample: GeoSample) -> GeoData {
         total: sample.total as usize,
         bbox,
         degenerate,
+    }
+}
+
+struct GeoAddForm {
+    lon: Entity<InputState>,
+    lat: Entity<InputState>,
+    member: Entity<InputState>,
+    lon_label: SharedString,
+    lat_label: SharedString,
+    member_label: SharedString,
+    hint: SharedString,
+}
+
+impl Render for GeoAddForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.lon_label.clone()).text_xs())
+            .child(Input::new(&self.lon).small().h(px(32.)))
+            .child(Label::new(self.lat_label.clone()).text_xs())
+            .child(Input::new(&self.lat).small().h(px(32.)))
+            .child(Label::new(self.member_label.clone()).text_xs())
+            .child(Input::new(&self.member).small().h(px(32.)))
+            .child(Label::new(self.hint.clone()).text_xs())
+    }
+}
+
+struct GeoDistanceForm {
+    from: Entity<InputState>,
+    to: Entity<InputState>,
+    from_label: SharedString,
+    to_label: SharedString,
+}
+
+impl Render for GeoDistanceForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.from_label.clone()).text_xs())
+            .child(Input::new(&self.from).small().h(px(32.)))
+            .child(Label::new(self.to_label.clone()).text_xs())
+            .child(Input::new(&self.to).small().h(px(32.)))
     }
 }
 

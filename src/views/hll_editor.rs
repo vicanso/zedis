@@ -195,8 +195,13 @@ impl ZedisHllEditor {
         let sources_state = cx.new(|cx| TextareaState::new(window, cx).rows(4));
         let label = i18n_hll(cx, "merge_sources");
         let hint = i18n_hll(cx, "merge_hint");
-        let body = sources_state.clone();
-        let submit = sources_state;
+        let body_view = cx.new(|_| HllMergeForm {
+            sources: sources_state.clone(),
+            label,
+            hint,
+        });
+        let submit = sources_state.clone();
+        let focus = sources_state;
         let editor = cx.entity().downgrade();
 
         ZedisDialog::new(i18n_hll(cx, "merge"))
@@ -208,14 +213,7 @@ impl ZedisHllEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(label.clone()).text_xs())
-                    .child(Textarea::new(&body))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let sources: Vec<String> = submit
                     .read(cx)
@@ -233,6 +231,7 @@ impl ZedisHllEditor {
                 true
             })
             .open(window, cx);
+        focus.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `PFMERGE`, then reload so the cardinality reflects it.
@@ -337,6 +336,23 @@ impl Render for ZedisHllEditor {
             .child(header)
             .child(body)
             .child(add_row)
+    }
+}
+
+struct HllMergeForm {
+    sources: Entity<TextareaState>,
+    label: SharedString,
+    hint: SharedString,
+}
+
+impl Render for HllMergeForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.label.clone()).text_xs())
+            .child(Textarea::new(&self.sources))
+            .child(Label::new(self.hint.clone()).text_xs())
     }
 }
 

@@ -173,6 +173,9 @@ pub(crate) async fn settle(
         let reference = ServerRef::from(&server);
         if *disposition == Disposition::Delete {
             if state.servers.swap(server.clone(), None).await.map_err(store_error)? {
+                zedis_connection::get_connection_manager().remove_server(&server);
+                state.sessions.close_server(&server.id).await;
+                state.watches.close_server(&server.id);
                 // What was kept for it goes with it, as when an entry is deleted.
                 let _ = state.trash.remove_server(server.id.clone()).await;
                 let _ = state.metrics.remove_server(server.id.clone()).await;
@@ -196,6 +199,9 @@ pub(crate) async fn settle(
                 server.name
             )));
         }
+        zedis_connection::get_connection_manager().remove_server(&server);
+        state.sessions.close_server(&server.id).await;
+        state.watches.close_server(&server.id);
         let to = new_owner.clone().map_or(serde_json::Value::Null, Into::into);
         state.audit.record(
             admin,

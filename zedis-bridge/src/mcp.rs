@@ -179,7 +179,7 @@ pub async fn post(
 ) -> Response {
     let mut origin = Origin::new(peer, &headers);
     origin.via = Some("mcp");
-    let account = match authorize_mcp(&state, &headers, &mut origin) {
+    let account = match authorize_mcp(&state, &headers, &mut origin).await {
         Ok(account) => account,
         Err(refusal) => return refusal.into_response(),
     };
@@ -656,7 +656,9 @@ async fn run(
         }
     }
     let req = ExecRequest::decoded(&server.id, db, nodes, every_master);
-    forward_values(state, &req, &commands).await.map_err(|e| e.describe())
+    forward_values(state, "", &req, &commands)
+        .await
+        .map_err(|e| e.describe())
 }
 
 /// One command on one routed connection, its reply.

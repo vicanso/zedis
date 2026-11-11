@@ -50,7 +50,7 @@ pub(super) async fn put_metrics(
     Path(id): Path<String>,
     Json(req): Json<PutMetricsRequest>,
 ) -> ApiResult<StatusCode> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     let kept = state
         .metrics
@@ -77,7 +77,7 @@ pub(super) async fn metrics_since(
     Path(id): Path<String>,
     Query(query): Query<MetricsQuery>,
 ) -> ApiResult<Json<MetricsResponse>> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     let samples = state
         .metrics
@@ -121,7 +121,7 @@ pub(super) async fn list_trash(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<TrashEntryBody>>> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     let metas = state
         .trash
@@ -147,7 +147,7 @@ pub(super) async fn put_trash(
     Json(req): Json<PutTrashRequest>,
 ) -> ApiResult<Json<TrashEntryBody>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "trash")?;
+    let account = authorize_write(&state, &headers, &mut origin, "trash").await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &server, &origin, "trash")?;
     let payload = B64
@@ -204,7 +204,7 @@ pub(super) async fn get_trash(
     headers: HeaderMap,
     Path((id, entry)): Path<(String, String)>,
 ) -> ApiResult<Json<Option<TrashEntryBody>>> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     let found = state
         .trash
@@ -233,7 +233,7 @@ pub(super) async fn remove_trash(
     Path((id, entry)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "trash")?;
+    let account = authorize_write(&state, &headers, &mut origin, "trash").await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &server, &origin, "trash")?;
     let reference = ServerRef::from(&server);

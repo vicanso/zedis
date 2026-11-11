@@ -251,10 +251,9 @@ impl std::fmt::Display for AccountError {
 
 impl std::error::Error for AccountError {}
 
-/// What an `Authorization: Basic …` header comes to.
+/// What an `Authorization: Basic …` credential pair comes to.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Basic {
-    Absent,
     Accepted(String),
     /// The name it tried, for the throttle and the log.
     Refused(String),

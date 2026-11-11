@@ -165,6 +165,13 @@ pub fn forget_client(at: &ServerDb) {
     get_connection_manager().remove_client(at.server_id(), at.db());
 }
 
+/// Drop every pooled client and per-node connection for `config` across all
+/// databases, plus its cached feature probe. Used when an entry is edited or
+/// deleted (even after `config` has already left the live server list).
+pub fn forget_server(config: &RedisServer) {
+    get_connection_manager().remove_server(config);
+}
+
 /// Unlock the entry's writes for `WRITE_UNLOCK_SECS`, wherever something
 /// other than this process enforces the lock. On the desktop nothing does —
 /// the lock is the app's own `AccessMode::SafeMode`, re-engaged by its

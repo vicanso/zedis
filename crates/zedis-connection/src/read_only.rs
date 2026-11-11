@@ -295,36 +295,58 @@ pub fn reveals_secrets(name: &str, args: &[&str]) -> bool {
 
 /// Whether `CONFIG GET`'s glob `pattern` can match `name`, erring towards
 /// yes: `*` and `?` as Redis reads them, case folded, and a `[…]` set (or an
-/// escape) read as any one character — a superset of what the server would
-/// match, which is the safe direction for a refusal.
+/// escape) read as any one byte — a superset of what the server's byte-level
+/// `stringmatchlen_impl` would match, which is the safe direction for a refusal.
 fn config_pattern_may_match(pattern: &str, name: &str) -> bool {
-    let mut simplified = Vec::new();
-    let mut chars = pattern.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '[' => {
-                for inner in chars.by_ref() {
-                    if inner == ']' {
+    let bytes = pattern.as_bytes();
+    let mut simplified = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'^' {
+                    i += 1;
+                }
+                loop {
+                    if i >= bytes.len() {
+                        // Unclosed `[` — err on the side of refusal.
+                        return true;
+                    }
+                    let rem = bytes.len() - i;
+                    if bytes[i] == b'\\' && rem >= 2 {
+                        i += 2;
+                    } else if bytes[i] == b']' {
+                        i += 1;
                         break;
+                    } else if rem >= 3 && bytes[i + 1] == b'-' {
+                        // `a-z` (including `a-]`) consumes all three bytes in
+                        // Redis `stringmatchlen_impl` without closing `[`.
+                        i += 3;
+                    } else {
+                        i += 1;
                     }
                 }
-                simplified.push('?');
+                simplified.push(b'?');
             }
-            '\\' => {
-                chars.next();
-                simplified.push('?');
+            b'\\' => {
+                i += if bytes.len() - i >= 2 { 2 } else { 1 };
+                simplified.push(b'?');
             }
-            other => simplified.push(other.to_ascii_lowercase()),
+            other => {
+                simplified.push(other.to_ascii_lowercase());
+                i += 1;
+            }
         }
     }
-    let text: Vec<char> = name.chars().collect();
+    let text = name.as_bytes();
     let (mut pi, mut ti) = (0, 0);
     let (mut star, mut star_ti) = (None, 0);
     while ti < text.len() {
-        if pi < simplified.len() && (simplified[pi] == '?' || simplified[pi] == text[ti]) {
+        if pi < simplified.len() && (simplified[pi] == b'?' || simplified[pi] == text[ti]) {
             pi += 1;
             ti += 1;
-        } else if pi < simplified.len() && simplified[pi] == '*' {
+        } else if pi < simplified.len() && simplified[pi] == b'*' {
             star = Some(pi);
             star_ti = ti;
             pi += 1;
@@ -336,7 +358,7 @@ fn config_pattern_may_match(pattern: &str, name: &str) -> bool {
             return false;
         }
     }
-    simplified[pi..].iter().all(|c| *c == '*')
+    simplified[pi..].iter().all(|c| *c == b'*')
 }
 
 #[cfg(test)]
@@ -352,6 +374,13 @@ mod tests {
             ("CONFIG GET *pass*", true),
             ("CONFIG GET maxmemory requirepass", true),
             ("CONFIG GET re[q]uirepass", true),
+            (r"CONFIG GET [^\]]*", true),
+            (r"CONFIG GET [\]r]equirepass", true),
+            (r"CONFIG GET [\\]*", true),
+            ("CONFIG GET [A-]]*", true),
+            ("CONFIG GET [^a-]]*", true),
+            ("CONFIG GET [unclosed", true),
+            (r"CONFIG GET [trailing\", true),
             ("CONFIG GET primary*", true),
             ("CONFIG GET maxmemory", false),
             ("CONFIG GET max*", false),

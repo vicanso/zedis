@@ -64,8 +64,20 @@ impl<K: Eq + Hash + Debug, V: Clone> TtlCache<K, V> {
             },
         );
     }
-    pub fn remove(&self, key: &K) {
-        self.cache.remove(key);
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.cache.remove(key).map(|(_, item)| item.value)
+    }
+    pub fn retain_removed(&self, mut keep: impl FnMut(&K, &V) -> bool) -> Vec<V> {
+        let mut removed = Vec::new();
+        self.cache.retain(|key, item| {
+            if keep(key, &item.value) {
+                true
+            } else {
+                removed.push(item.value.clone());
+                false
+            }
+        });
+        removed
     }
     pub fn clear_expired(&self) -> (usize, usize) {
         let now = now_secs();

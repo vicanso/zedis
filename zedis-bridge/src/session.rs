@@ -35,8 +35,21 @@ use zedis_connection::{RedisAsyncConn, get_connection_manager};
 /// How long a session may go unused before it is swept. Long enough that a
 /// human typing a transaction in the web terminal does not lose it.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How many dedicated terminal sessions one account may hold open at once.
+pub const MAX_PER_ACCOUNT: usize = 8;
+/// Total dedicated terminal sessions the bridge holds across all accounts.
+pub const MAX_TOTAL: usize = 256;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionError {
+    /// Either [`MAX_PER_ACCOUNT`] for this caller or [`MAX_TOTAL`] overall.
+    TooMany(&'static str),
+    /// Upstream Redis refused or timed out opening the dedicated connection.
+    Upstream(String),
+}
 
 struct Entry {
+    account: String,
     conn: RedisAsyncConn,
     server_id: String,
     db: usize,
@@ -52,19 +65,47 @@ impl Sessions {
         Self::default()
     }
 
-    /// Pin a fresh dedicated connection and return its token.
+    fn check_counts(total: usize, mine: usize) -> Result<(), SessionError> {
+        if total >= MAX_TOTAL {
+            return Err(SessionError::TooMany(
+                "too many active terminal sessions on this bridge; try again shortly",
+            ));
+        }
+        if mine >= MAX_PER_ACCOUNT {
+            return Err(SessionError::TooMany(
+                "at most 8 terminal sessions at once; close one first",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_limits(guard: &HashMap<String, Entry>, account: &str) -> Result<(), SessionError> {
+        let mine = guard.values().filter(|entry| entry.account == account).count();
+        Self::check_counts(guard.len(), mine)
+    }
+
+    /// Pin a fresh dedicated connection for `account` and return its token.
     ///
     /// Dedicated, never pooled: the whole point is that what this caller does
     /// to the connection is not seen by anyone else.
-    pub async fn open(&self, server_id: &str, db: usize) -> Result<String, String> {
+    pub async fn open(&self, account: &str, server_id: &str, db: usize) -> Result<String, SessionError> {
+        {
+            let mut guard = self.0.lock().await;
+            guard.retain(|_, entry| entry.last_used.elapsed() < IDLE_TIMEOUT);
+            Self::check_limits(&guard, account)?;
+        }
         let conn = get_connection_manager()
             .open_dedicated_connection(server_id, db)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SessionError::Upstream(e.to_string()))?;
         let token = Uuid::new_v4().simple().to_string();
-        self.0.lock().await.insert(
+        let mut guard = self.0.lock().await;
+        guard.retain(|_, entry| entry.last_used.elapsed() < IDLE_TIMEOUT);
+        Self::check_limits(&guard, account)?;
+        guard.insert(
             token.clone(),
             Entry {
+                account: account.to_string(),
                 conn,
                 server_id: server_id.to_string(),
                 db,
@@ -74,24 +115,42 @@ impl Sessions {
         Ok(token)
     }
 
-    /// The connection behind `token`, if it is live and addresses the same
-    /// server and database the request names.
+    /// The connection behind `token`, if it is live, belongs to `account`, and
+    /// addresses the same server and database the request names.
     ///
-    /// The server/db check is not bookkeeping: a token that could be pointed
-    /// at another entry would let a caller run a command on a connection
-    /// authenticated for a different server.
-    pub async fn take(&self, token: &str, server_id: &str, db: usize) -> Option<RedisAsyncConn> {
+    /// The account and server/db checks are not bookkeeping: a token that
+    /// could be borrowed across accounts or pointed at another entry would let
+    /// a caller run a command on a connection authenticated for someone else.
+    pub async fn take(&self, token: &str, account: &str, server_id: &str, db: usize) -> Option<RedisAsyncConn> {
         let mut guard = self.0.lock().await;
         let entry = guard.get_mut(token)?;
-        if entry.server_id != server_id || entry.db != db {
+        if entry.account != account || entry.server_id != server_id || entry.db != db {
+            return None;
+        }
+        if entry.last_used.elapsed() >= IDLE_TIMEOUT {
+            guard.remove(token);
             return None;
         }
         entry.last_used = Instant::now();
         Some(entry.conn.clone())
     }
 
-    pub async fn close(&self, token: &str) -> bool {
-        self.0.lock().await.remove(token).is_some()
+    pub async fn close(&self, token: &str, account: &str) -> bool {
+        let mut guard = self.0.lock().await;
+        if guard.get(token).is_some_and(|entry| entry.account == account) {
+            guard.remove(token).is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Drop every session bound to `server_id` (e.g. when the server's
+    /// credentials or visibility change, or the entry is deleted).
+    pub async fn close_server(&self, server_id: &str) -> usize {
+        let mut guard = self.0.lock().await;
+        let before = guard.len();
+        guard.retain(|_, entry| entry.server_id != server_id);
+        before - guard.len()
     }
 
     /// Drop everything idle past [`IDLE_TIMEOUT`], returning how many went.
@@ -104,5 +163,24 @@ impl Sessions {
 
     pub async fn len(&self) -> usize {
         self.0.lock().await.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_counts_enforces_per_account_and_total_caps() {
+        assert_eq!(Sessions::check_counts(0, 0), Ok(()));
+        assert_eq!(Sessions::check_counts(MAX_TOTAL - 1, MAX_PER_ACCOUNT - 1), Ok(()));
+        assert!(matches!(
+            Sessions::check_counts(MAX_PER_ACCOUNT, MAX_PER_ACCOUNT),
+            Err(SessionError::TooMany(_))
+        ));
+        assert!(matches!(
+            Sessions::check_counts(MAX_TOTAL, 0),
+            Err(SessionError::TooMany(_))
+        ));
     }
 }

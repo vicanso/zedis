@@ -472,16 +472,17 @@ pub fn remove_connection_from_pool(config: &RedisServer, db: usize) {
     CONNECTION_POOL.remove(&key);
 }
 
-/// Drop the pooled per-node connection [`open_node_connection_cached`]
-/// keeps for `host_port` of `server_name` — the same key it was stored
-/// under: the entry with the node's address, database 0.
-pub fn remove_node_connection_from_pool(server_name: &str, host_port: &str) {
-    let (Some((host, port)), Ok(mut config)) = (split_host_port(host_port), get_server(server_name)) else {
+/// Drop the pooled per-node connection kept for `host_port` of `config` on
+/// `db` — matching the key `query_async_masters` / [`open_node_connection_cached`]
+/// stored it under.
+pub fn remove_node_connection_for_config(config: &RedisServer, host_port: &str, db: usize) {
+    let Some((host, port)) = split_host_port(host_port) else {
         return;
     };
-    config.host = host.to_string();
-    config.port = port;
-    remove_connection_from_pool(&config, 0);
+    let mut node_config = config.clone();
+    node_config.host = host.to_string();
+    node_config.port = port;
+    remove_connection_from_pool(&node_config, db);
 }
 /// Creates a Redis client from the server configuration.
 ///

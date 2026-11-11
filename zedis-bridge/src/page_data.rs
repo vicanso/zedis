@@ -508,7 +508,7 @@ async fn page_data(
 }
 
 async fn gather(state: &AppState, headers: &HeaderMap, peer: SocketAddr) -> ApiResult<PageData> {
-    let account = authorize(state, headers, &mut Origin::new(peer, headers))?;
+    let account = authorize(state, headers, &mut Origin::new(peer, headers)).await?;
     let rows_kept = !state.accounts.is_locked(&account);
     let rows = if rows_kept {
         state.page_rows.rows(account.clone()).await.map_err(store_error)?
@@ -581,7 +581,7 @@ async fn put_row(
     headers: HeaderMap,
     Json(req): Json<RowRequest>,
 ) -> ApiResult<StatusCode> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     if state.accounts.is_locked(&account) {
         return Err(ApiError::Forbidden(
             "this account is locked: the bridge keeps no rows of its own for it".to_string(),
@@ -623,7 +623,7 @@ async fn put_key_note(
     Json(req): Json<KeyNoteRequest>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let server = visible_server(&state.accounts, &id, &account)?;
     refuse_read_only_on(&state, &account, &server, &origin, "key_note")?;
     if req.key.is_empty() || req.key.len() > MAX_KEY_BYTES {
@@ -671,7 +671,7 @@ async fn put_script(
     Json(req): Json<ScriptRequest>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "script_save")?;
+    let account = authorize_write(&state, &headers, &mut origin, "script_save").await?;
     if id.is_empty() || id.len() > 128 {
         return Err(ApiError::BadRequest("a script's id is 1 to 128 bytes".to_string()));
     }
@@ -712,7 +712,7 @@ async fn delete_script(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize_write(&state, &headers, &mut origin, "script_delete")?;
+    let account = authorize_write(&state, &headers, &mut origin, "script_delete").await?;
     let visible = state
         .scripts
         .list()

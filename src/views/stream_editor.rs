@@ -17,7 +17,7 @@ use crate::{
     assets::CustomIconName,
     components::ZedisKvFetcher,
     components::{KvTableColumn, KvTableMode},
-    connection::{ServerDb, StreamTail},
+    connection::{Capability, ServerDb, StreamTail},
     helpers::{fast_contains_ignore_case, format_duration},
     states::{
         ConnectionErrorKind, GlobalEvent, KeyType, NotificationAction, RedisStreamEntry, RedisValue, ServerEvent,
@@ -627,6 +627,9 @@ impl ZedisStreamEditor {
                     this.tailing = false;
                     cx.notify();
                 }
+                ServerEvent::ServerInfoUpdated | ServerEvent::FeaturesProbed => {
+                    cx.notify();
+                }
                 _ => {}
             },
         );
@@ -792,10 +795,16 @@ impl ZedisStreamEditor {
         let name_label = i18n_stream_editor(cx, "group_name");
         let id_label = i18n_stream_editor(cx, "start_id");
         let id_hint = i18n_stream_editor(cx, "start_id_hint");
-        let body_name = name_state.clone();
-        let body_id = id_state.clone();
-        let submit_name = name_state.clone();
-        let submit_id = id_state.clone();
+        let body = cx.new(|_| StreamCreateGroupForm {
+            name: name_state.clone(),
+            id: id_state.clone(),
+            name_label,
+            id_label,
+            id_hint,
+        });
+        let focus_name = name_state.clone();
+        let submit_name = name_state;
+        let submit_id = id_state;
         let server_state = self.server_state.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "create_group_title"))
@@ -807,16 +816,7 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Label::new(name_label.clone()).text_xs())
-                    .child(Input::new(&body_name))
-                    .child(Label::new(id_label.clone()).text_xs())
-                    .child(Input::new(&body_id))
-                    .child(Label::new(id_hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
                 let name = submit_name.read(cx).value().to_string();
                 if name.trim().is_empty() {
@@ -835,14 +835,19 @@ impl ZedisStreamEditor {
                 true
             })
             .open(window, cx);
+        focus_name.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XGROUP SETID dialog for a specific group.
     fn setid_group_dialog(&mut self, group: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let id_state = cx.new(|cx| InputState::new(window, cx).default_value("$"));
         let id_hint = i18n_stream_editor(cx, "setid_hint");
-        let body_id = id_state.clone();
-        let submit_id = id_state.clone();
+        let body = cx.new(|_| StreamSingleInputForm {
+            input: id_state.clone(),
+            hint: id_hint,
+        });
+        let focus_id = id_state.clone();
+        let submit_id = id_state;
         let server_state = self.server_state.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "setid_title"))
@@ -854,13 +859,7 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_id))
-                    .child(Label::new(id_hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
                 let raw_id = submit_id.read(cx).value().to_string();
                 if raw_id.trim().is_empty() {
@@ -873,6 +872,7 @@ impl ZedisStreamEditor {
                 true
             })
             .open(window, cx);
+        focus_id.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XGROUP CREATECONSUMER dialog: a consumer name (Redis 6.2+).
@@ -880,8 +880,12 @@ impl ZedisStreamEditor {
         let name_state =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_stream_editor(cx, "create_consumer_placeholder")));
         let hint = i18n_stream_editor(cx, "create_consumer_hint");
-        let body_name = name_state.clone();
-        let submit_name = name_state.clone();
+        let body = cx.new(|_| StreamSingleInputForm {
+            input: name_state.clone(),
+            hint,
+        });
+        let focus_name = name_state.clone();
+        let submit_name = name_state;
         let server_state = self.server_state.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "create_consumer_title"))
@@ -893,13 +897,7 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_name))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
                 let name = submit_name.read(cx).value().trim().to_string();
                 if name.is_empty() {
@@ -912,6 +910,7 @@ impl ZedisStreamEditor {
                 true
             })
             .open(window, cx);
+        focus_name.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XGROUP DELCONSUMER: pick one of the group's consumers.
@@ -931,50 +930,24 @@ impl ZedisStreamEditor {
         if consumers.is_empty() {
             return;
         }
-        let picked: Entity<Option<SharedString>> = cx.new(|_| None);
-        let body_picked = picked.clone();
-        let body_consumers = consumers.clone();
         let hint = i18n_stream_editor(cx, "delete_consumer_hint");
+        let picker = cx.new(|_| StreamDeleteConsumerPicker {
+            consumers,
+            selected: None,
+            hint,
+        });
+        let body = picker.clone();
         let server_state = self.server_state.clone();
-        let submit_picked = picked.clone();
 
         ZedisDialog::new(i18n_stream_editor(cx, "delete_consumer_title"))
+            .alert()
+            .danger()
             .w(px(480.))
-            .ok_text(i18n_common(cx, "confirm"))
+            .ok_text(i18n_common(cx, "delete"))
             .cancel_text(i18n_common(cx, "cancel"))
-            .button_props(
-                dialog_button_props(cx)
-                    .ok_text(i18n_common(cx, "confirm"))
-                    .cancel_text(i18n_common(cx, "cancel")),
-            )
-            .child(move || {
-                let selected = body_picked.clone();
-                let mut row = h_flex().gap_2().flex_wrap();
-                for (name, pending) in &body_consumers {
-                    let name = name.clone();
-                    let choose = name.clone();
-                    let target = selected.clone();
-                    row = row.child(
-                        Button::new(SharedString::from(format!("stream-del-consumer-{name}")))
-                            .small()
-                            .label(format!("{name} ({pending})"))
-                            .on_click(move |_, _window, cx: &mut App| {
-                                target.update(cx, |state, cx| {
-                                    *state = Some(choose.clone());
-                                    cx.notify();
-                                });
-                            }),
-                    );
-                }
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(row)
-                    .child(Label::new(hint.clone()).text_xs())
-                    .into_any_element()
-            })
+            .child(move || body.clone())
             .on_ok(move |_, _window, cx| {
-                let Some(consumer) = submit_picked.read(cx).clone() else {
+                let Some(consumer) = picker.read(cx).selected.clone() else {
                     return false;
                 };
                 let group = group.clone();
@@ -994,8 +967,12 @@ impl ZedisStreamEditor {
     fn set_stream_id_dialog(&mut self, current_last_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let id_state = cx.new(|cx| InputState::new(window, cx).default_value(current_last_id.to_string()));
         let hint = i18n_stream_editor(cx, "setid_stream_hint");
-        let body_id = id_state.clone();
-        let submit_id = id_state.clone();
+        let body = cx.new(|_| StreamSingleInputForm {
+            input: id_state.clone(),
+            hint,
+        });
+        let focus_id = id_state.clone();
+        let submit_id = id_state;
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
 
@@ -1008,13 +985,7 @@ impl ZedisStreamEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                gpui_kit::component::v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Input::new(&body_id))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body.clone())
             .on_ok(move |_, window, cx| {
                 let id = submit_id.read(cx).value().trim().to_string();
                 if id.is_empty() {
@@ -1044,6 +1015,7 @@ impl ZedisStreamEditor {
                 false
             })
             .open(window, cx);
+        focus_id.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XGROUP DESTROY confirmation. Destructive — drops the group and
@@ -1088,6 +1060,7 @@ impl ZedisStreamEditor {
         cx: &mut Context<Self>,
     ) {
         let form = cx.new(|cx| StreamClaimForm::new(consumers, window, cx));
+        let focus_consumer = form.read(cx).consumer.clone();
         let body = form.clone();
         let server_state = self.server_state.clone();
 
@@ -1114,6 +1087,7 @@ impl ZedisStreamEditor {
                 true
             })
             .open(window, cx);
+        focus_consumer.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XAUTOCLAIM dialog for one group: target consumer, minimum idle
@@ -1126,6 +1100,7 @@ impl ZedisStreamEditor {
         cx: &mut Context<Self>,
     ) {
         let form = cx.new(|cx| StreamAutoclaimForm::new(consumers, window, cx));
+        let focus_consumer = form.read(cx).consumer.clone();
         let body = form.clone();
         let server_state = self.server_state.clone();
 
@@ -1167,6 +1142,7 @@ impl ZedisStreamEditor {
                 true
             })
             .open(window, cx);
+        focus_consumer.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// XTRIM dialog: one input — a plain number trims by MAXLEN (keep
@@ -1177,6 +1153,7 @@ impl ZedisStreamEditor {
     fn trim_stream_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let show_policy = self.server_state.read(cx).supports_stream_ref_policies();
         let form = cx.new(|cx| StreamTrimForm::new(show_policy, window, cx));
+        let focus_threshold = form.read(cx).threshold.clone();
         let body = form.clone();
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
@@ -1238,6 +1215,7 @@ impl ZedisStreamEditor {
                 false
             })
             .open(window, cx);
+        focus_threshold.update(cx, |state, cx| state.focus(window, cx));
     }
 
     fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {
@@ -1384,52 +1362,57 @@ impl ZedisStreamEditor {
         }
 
         // ── Manage groups: header + create, then per-group actions ───────────
-        result = result.child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .child(
-                    Label::new(i18n_stream_editor(cx, "manage_groups_title"))
-                        .text_xs()
-                        .text_color(muted),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("stream-setid-stream")
-                                .small()
-                                .icon(IconName::Asterisk)
-                                .label(i18n_stream_editor(cx, "setid_stream"))
-                                .tooltip(i18n_stream_editor(cx, "setid_stream_tooltip"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_stream_id_dialog(last_generated_id.clone(), window, cx);
-                                })),
+        let can_mutate = self.server_state.read(cx).can(Capability::MutateContainer);
+        if can_mutate || !info.groups.is_empty() {
+            result = result.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        Label::new(i18n_stream_editor(cx, "manage_groups_title"))
+                            .text_xs()
+                            .text_color(muted),
+                    )
+                    .when(can_mutate, |this| {
+                        this.child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("stream-setid-stream")
+                                        .small()
+                                        .icon(IconName::Asterisk)
+                                        .label(i18n_stream_editor(cx, "setid_stream"))
+                                        .tooltip(i18n_stream_editor(cx, "setid_stream_tooltip"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.set_stream_id_dialog(last_generated_id.clone(), window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("stream-trim")
+                                        .small()
+                                        .icon(Icon::new(CustomIconName::ListX))
+                                        .label(i18n_stream_editor(cx, "trim"))
+                                        .tooltip(i18n_stream_editor(cx, "trim_tooltip"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.trim_stream_dialog(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("stream-create-group")
+                                        .small()
+                                        .icon(IconName::Plus)
+                                        .label(i18n_stream_editor(cx, "create_group"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_group_dialog(window, cx);
+                                        })),
+                                ),
                         )
-                        .child(
-                            Button::new("stream-trim")
-                                .small()
-                                .icon(Icon::new(CustomIconName::ListX))
-                                .label(i18n_stream_editor(cx, "trim"))
-                                .tooltip(i18n_stream_editor(cx, "trim_tooltip"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.trim_stream_dialog(window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("stream-create-group")
-                                .small()
-                                .icon(IconName::Plus)
-                                .label(i18n_stream_editor(cx, "create_group"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.create_group_dialog(window, cx);
-                                })),
-                        ),
-                ),
-        );
+                    }),
+            );
+        }
 
-        let can_create_consumer = self.server_state.read(cx).supports_stream_create_consumer();
+        let can_create_consumer = can_mutate && self.server_state.read(cx).supports_stream_create_consumer();
         for (idx, g) in info.groups.iter().enumerate() {
             let setid_group = g.name.clone();
             let autoclaim_group = g.name.clone();
@@ -1455,7 +1438,7 @@ impl ZedisStreamEditor {
                     .child(Label::new(g.last_delivered_id.clone()).text_xs().text_color(muted))
                     .child(div().flex_1())
                     // Batch XACK for all loaded pending entries of this group.
-                    .when(!group_pending_ids.is_empty(), |this| {
+                    .when(can_mutate && !group_pending_ids.is_empty(), |this| {
                         let ack_group = ack_group.clone();
                         let ids = group_pending_ids.clone();
                         this.child(
@@ -1487,51 +1470,53 @@ impl ZedisStreamEditor {
                     })
                     // Only where there is a consumer to remove; an empty
                     // group has nothing for the picker to offer.
-                    .when(!g.consumers.is_empty(), |this| {
+                    .when(can_mutate && !g.consumers.is_empty(), |this| {
                         let group = delete_consumer_group.clone();
                         let consumers = group_consumers.clone();
                         this.child(
                             Button::new(("stream-delete-consumer", idx))
                                 .small()
                                 .ghost()
-                                .icon(Icon::new(CustomIconName::UserRoundPlus))
+                                .icon(IconName::Delete)
                                 .tooltip(i18n_stream_editor(cx, "delete_consumer_tooltip"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.delete_consumer_dialog(group.clone(), consumers.clone(), window, cx);
                                 })),
                         )
                     })
-                    .child(
-                        Button::new(("stream-setid", idx))
-                            .small()
-                            .ghost()
-                            .icon(IconName::Asterisk)
-                            .tooltip(i18n_stream_editor(cx, "setid_tooltip"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.setid_group_dialog(setid_group.clone(), window, cx);
-                            })),
-                    )
-                    .child({
+                    .when(can_mutate, |this| {
                         let consumers = consumer_names.clone();
-                        Button::new(("stream-autoclaim", idx))
-                            .small()
-                            .ghost()
-                            .icon(Icon::new(CustomIconName::ListCheck))
-                            .tooltip(i18n_stream_editor(cx, "autoclaim_tooltip"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.autoclaim_dialog(autoclaim_group.clone(), consumers.clone(), window, cx);
-                            }))
-                    })
-                    .child(
-                        Button::new(("stream-destroy", idx))
-                            .small()
-                            .danger()
-                            .icon(IconName::Close)
-                            .tooltip(i18n_stream_editor(cx, "destroy_tooltip"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.confirm_destroy_group(destroy_group.clone(), window, cx);
-                            })),
-                    ),
+                        this.child(
+                            Button::new(("stream-setid", idx))
+                                .small()
+                                .ghost()
+                                .icon(IconName::Asterisk)
+                                .tooltip(i18n_stream_editor(cx, "setid_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.setid_group_dialog(setid_group.clone(), window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(("stream-autoclaim", idx))
+                                .small()
+                                .ghost()
+                                .icon(Icon::new(CustomIconName::ListCheck))
+                                .tooltip(i18n_stream_editor(cx, "autoclaim_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.autoclaim_dialog(autoclaim_group.clone(), consumers.clone(), window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(("stream-destroy", idx))
+                                .small()
+                                .danger()
+                                .icon(IconName::Close)
+                                .tooltip(i18n_stream_editor(cx, "destroy_tooltip"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_destroy_group(destroy_group.clone(), window, cx);
+                                })),
+                        )
+                    }),
             );
         }
 
@@ -1655,24 +1640,27 @@ impl ZedisStreamEditor {
                             .w(px(220.))
                             .child(Input::new(&self.pending_filter_input).small().cleanable(true)),
                     )
-                    .when(has_shown, |this| {
-                        let batches = shown_batches.clone();
-                        this.child(
-                            Button::new("stream-ack-shown")
-                                .small()
-                                .outline()
-                                .icon(IconName::Check)
-                                .label(i18n_stream_editor(cx, "ack_shown"))
-                                .tooltip(i18n_stream_editor(cx, "ack_shown_tooltip"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.server_state.update(cx, |state, cx| {
-                                        for (group, ids) in batches.iter() {
-                                            state.ack_stream_entries(group.clone(), ids.clone(), cx);
-                                        }
-                                    });
-                                })),
-                        )
-                    }),
+                    .when(
+                        has_shown && self.server_state.read(cx).can(Capability::MutateContainer),
+                        |this| {
+                            let batches = shown_batches.clone();
+                            this.child(
+                                Button::new("stream-ack-shown")
+                                    .small()
+                                    .outline()
+                                    .icon(IconName::Check)
+                                    .label(i18n_stream_editor(cx, "ack_shown"))
+                                    .tooltip(i18n_stream_editor(cx, "ack_shown_tooltip"))
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.server_state.update(cx, |state, cx| {
+                                            for (group, ids) in batches.iter() {
+                                                state.ack_stream_entries(group.clone(), ids.clone(), cx);
+                                            }
+                                        });
+                                    })),
+                            )
+                        },
+                    ),
             )
     }
 
@@ -1732,8 +1720,9 @@ impl ZedisStreamEditor {
             );
 
         let mut list = v_flex().w_full();
-        let can_ackdel = self.server_state.read(cx).supports_stream_ref_policies();
-        let can_nack = self.server_state.read(cx).supports_stream_nack();
+        let can_mutate = self.server_state.read(cx).can(Capability::MutateContainer);
+        let can_ackdel = can_mutate && self.server_state.read(cx).supports_stream_ref_policies();
+        let can_nack = can_mutate && self.server_state.read(cx).supports_stream_nack();
         let mut row_ix = 0usize;
         let mut matched_rows = 0usize;
         for g in info.groups.iter() {
@@ -1814,18 +1803,22 @@ impl ZedisStreamEditor {
                                     this.jump_to_entry(inspect_id.clone(), window, cx);
                                 })),
                         )
-                        .child(
-                            Button::new(("stream-ack", row_ix))
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Check)
-                                .tooltip(i18n_stream_editor(cx, "ack_tooltip"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.server_state.update(cx, |state, cx| {
-                                        state.ack_stream_entry(ack_group.clone(), ack_id.clone(), cx);
-                                    });
-                                })),
-                        )
+                        .when(can_mutate, |this| {
+                            let ack_group = ack_group.clone();
+                            let ack_id = ack_id.clone();
+                            this.child(
+                                Button::new(("stream-ack", row_ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Check)
+                                    .tooltip(i18n_stream_editor(cx, "ack_tooltip"))
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.server_state.update(cx, |state, cx| {
+                                            state.ack_stream_entry(ack_group.clone(), ack_id.clone(), cx);
+                                        });
+                                    })),
+                            )
+                        })
                         // Ack + delete in one atomic XACKDEL (Redis 8.2+ —
                         // hidden elsewhere, incl. Valkey).
                         .when(can_ackdel, |this| {
@@ -1863,22 +1856,27 @@ impl ZedisStreamEditor {
                                     })),
                             )
                         })
-                        .child(
-                            Button::new(("stream-claim", row_ix))
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::CircleUser)
-                                .tooltip(i18n_stream_editor(cx, "claim_tooltip"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.claim_entry_dialog(
-                                        claim_group.clone(),
-                                        claim_id.clone(),
-                                        claim_consumers.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        ),
+                        .when(can_mutate, |this| {
+                            let claim_group = claim_group.clone();
+                            let claim_id = claim_id.clone();
+                            let claim_consumers = claim_consumers.clone();
+                            this.child(
+                                Button::new(("stream-claim", row_ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::CircleUser)
+                                    .tooltip(i18n_stream_editor(cx, "claim_tooltip"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.claim_entry_dialog(
+                                            claim_group.clone(),
+                                            claim_id.clone(),
+                                            claim_consumers.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        }),
                 );
                 row_ix += 1;
             }
@@ -2124,6 +2122,74 @@ impl Render for StreamAutoclaimForm {
             .child(Label::new(i18n_stream_editor(cx, "autoclaim_count")).text_xs())
             .child(Input::new(&self.count))
             .child(Label::new(i18n_stream_editor(cx, "autoclaim_hint")).text_xs())
+    }
+}
+
+struct StreamCreateGroupForm {
+    name: Entity<InputState>,
+    id: Entity<InputState>,
+    name_label: SharedString,
+    id_label: SharedString,
+    id_hint: SharedString,
+}
+
+impl Render for StreamCreateGroupForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(Label::new(self.name_label.clone()).text_xs())
+            .child(Input::new(&self.name))
+            .child(Label::new(self.id_label.clone()).text_xs())
+            .child(Input::new(&self.id))
+            .child(Label::new(self.id_hint.clone()).text_xs())
+    }
+}
+
+struct StreamSingleInputForm {
+    input: Entity<InputState>,
+    hint: SharedString,
+}
+
+impl Render for StreamSingleInputForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(Input::new(&self.input))
+            .child(Label::new(self.hint.clone()).text_xs())
+    }
+}
+
+struct StreamDeleteConsumerPicker {
+    consumers: Vec<(SharedString, u64)>,
+    selected: Option<SharedString>,
+    hint: SharedString,
+}
+
+impl Render for StreamDeleteConsumerPicker {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut row = h_flex().gap_2().flex_wrap();
+        for (name, pending) in &self.consumers {
+            let active = self.selected.as_ref() == Some(name);
+            let choose = name.clone();
+            row = row.child(
+                Button::new(SharedString::from(format!("stream-del-consumer-{name}")))
+                    .small()
+                    .when(active, |b| b.primary())
+                    .when(!active, |b| b.outline())
+                    .label(format!("{name} ({pending})"))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.selected = Some(choose.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(row)
+            .child(Label::new(self.hint.clone()).text_xs())
     }
 }
 

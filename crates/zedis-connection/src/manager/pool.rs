@@ -702,19 +702,54 @@ impl ConnectionManager {
             return;
         };
         let key = config.get_hash(db);
+        let removed = self.clients.remove(&key);
+        Self::evict_client_connections(&config, db, removed.as_ref());
+    }
+
+    /// Evict every pooled client and per-node connection for `config` across
+    /// all databases, plus its cached feature probe — without requiring
+    /// `config` to still be present in `SERVER_CONFIG_MAP`.
+    pub fn remove_server(&self, config: &RedisServer) {
+        let removed = self.clients.retain_removed(|_, client| client.server_id != config.id);
+        Self::evict_server_connections(config, &removed);
+        crate::probe::invalidate_server_features(&config.id);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn evict_client_connections(config: &RedisServer, db: usize, client: Option<&RedisClient>) {
         // A cluster's per-node connections are pooled under each node's own
-        // address, so forgetting the entry's alone left them in use for
-        // their idle window — the very connections a failover had broken.
-        #[cfg(not(target_family = "wasm"))]
-        if let Some(client) = self.clients.get(&key) {
+        // address and database, so forgetting the entry's alone left them in
+        // use for their idle window — the very connections a failover had broken.
+        if let Some(client) = client {
+            for node in &client.nodes {
+                remove_connection_from_pool(&node.server, db);
+            }
             for addr in client.node_addrs() {
-                remove_node_connection_from_pool(server_id, &addr);
+                remove_node_connection_for_config(config, &addr, db);
             }
         }
-        self.clients.remove(&key);
-        #[cfg(not(target_family = "wasm"))]
-        remove_connection_from_pool(&config, db);
+        remove_connection_from_pool(config, db);
     }
+
+    #[cfg(target_family = "wasm")]
+    fn evict_client_connections(_config: &RedisServer, _db: usize, _client: Option<&RedisClient>) {}
+
+    #[cfg(not(target_family = "wasm"))]
+    fn evict_server_connections(config: &RedisServer, removed: &[RedisClient]) {
+        for client in removed {
+            remove_connection_from_pool(config, client.db);
+            for node in &client.nodes {
+                remove_connection_from_pool(&node.server, client.db);
+            }
+            for addr in client.node_addrs() {
+                remove_node_connection_for_config(config, &addr, client.db);
+            }
+        }
+        remove_connection_from_pool(config, 0);
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn evict_server_connections(_config: &RedisServer, _removed: &[RedisClient]) {}
     /// A long-lived push stream, which the bridge's request/response protocol
     /// has no shape for — the web build drops the panels that subscribe
     /// (ADR 9).
@@ -772,6 +807,7 @@ impl ConnectionManager {
                 .unwrap_or(1),
         };
         let mut client = RedisClient {
+            server_id: config.id.clone(),
             db,
             databases,
             modules,

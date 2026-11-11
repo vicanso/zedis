@@ -124,6 +124,8 @@ struct Buffer {
 
 struct Watch {
     account: String,
+    server_id: String,
+    kind: WatchKind,
     buffer: Mutex<Buffer>,
     notify: Notify,
     last_polled: Mutex<Instant>,
@@ -240,6 +242,8 @@ impl Watches {
         let now = Instant::now();
         let watch = Arc::new(Watch {
             account: account.to_string(),
+            server_id: server_id.to_string(),
+            kind,
             buffer: Mutex::default(),
             notify: Notify::new(),
             last_polled: Mutex::new(now),
@@ -327,6 +331,12 @@ impl Watches {
         Ok(batch)
     }
 
+    /// Which server and [`WatchKind`] `token` watches, if it belongs to `account`.
+    pub fn inspect(&self, token: &str, account: &str) -> Result<(String, WatchKind), WatchError> {
+        let watch = self.find(token, account)?;
+        Ok((watch.server_id.clone(), watch.kind))
+    }
+
     /// End `token` now. Answers whether there was such a watch of `account`'s.
     pub fn close(&self, token: &str, account: &str) -> bool {
         let mut watches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -336,6 +346,23 @@ impl Watches {
             watch.abort();
         }
         mine
+    }
+
+    /// End and remove every watch bound to `server_id` (when the entry is
+    /// edited, handed over, or deleted).
+    pub fn close_server(&self, server_id: &str) -> usize {
+        let mut watches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = watches.len();
+        watches.retain(|_, watch| {
+            if watch.server_id == server_id {
+                watch.end("server changed");
+                watch.abort();
+                false
+            } else {
+                true
+            }
+        });
+        before - watches.len()
     }
 
     /// Close every watch past its idle timeout or its time limit. Answers
@@ -447,6 +474,8 @@ mod tests {
     fn watch(account: &str, kind: WatchKind) -> Arc<Watch> {
         Arc::new(Watch {
             account: account.to_string(),
+            server_id: "srv".to_string(),
+            kind,
             buffer: Mutex::default(),
             notify: Notify::new(),
             last_polled: Mutex::new(Instant::now()),
@@ -584,5 +613,34 @@ mod tests {
         assert!(check_channels(&["news.*".to_string()]).is_ok());
         assert_eq!(WatchKind::from_name("keyspace_events"), Some(WatchKind::KeyspaceEvents));
         assert_eq!(WatchKind::from_name("subscribe"), None);
+    }
+
+    #[test]
+    fn inspect_checks_owner_and_close_server_drops_bound_watches() {
+        let watches = Watches::new();
+        insert(&watches, "t1", watch("alice", WatchKind::Monitor));
+        let other_srv = Arc::new(Watch {
+            account: "bob".to_string(),
+            server_id: "other".to_string(),
+            kind: WatchKind::Patterns,
+            buffer: Mutex::default(),
+            notify: Notify::new(),
+            last_polled: Mutex::new(Instant::now()),
+            ends_at: None,
+            readers: Mutex::default(),
+        });
+        insert(&watches, "t2", other_srv);
+
+        assert_eq!(
+            watches.inspect("t1", "alice"),
+            Ok(("srv".to_string(), WatchKind::Monitor))
+        );
+        assert_eq!(watches.inspect("t1", "bob"), Err(WatchError::Unknown));
+        assert_eq!(watches.close_server("srv"), 1);
+        assert_eq!(watches.inspect("t1", "alice"), Err(WatchError::Unknown));
+        assert_eq!(
+            watches.inspect("t2", "bob"),
+            Ok(("other".to_string(), WatchKind::Patterns))
+        );
     }
 }

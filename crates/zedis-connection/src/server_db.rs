@@ -121,7 +121,6 @@ impl ServerDb {
         let Some(node) = client.debug_node_config(slot, cluster_node_addr) else {
             return Ok(None);
         };
-        let db = if client.is_cluster() { 0 } else { self.db };
-        Ok(Some(RawConnection::open(&node, db).await?))
+        Ok(Some(RawConnection::open(&node, self.db).await?))
     }
 }

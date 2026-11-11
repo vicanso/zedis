@@ -137,13 +137,13 @@ async fn password_is(state: &AppState, name: &str, password: &str) -> bool {
 
 /// Who is calling, for a route only an administrator may use. A refusal is
 /// an audit line, as a read-only account's is.
-pub(crate) fn authorize_admin(
+pub(crate) async fn authorize_admin(
     state: &AppState,
     headers: &HeaderMap,
     origin: &mut Origin,
     action: &'static str,
 ) -> ApiResult<String> {
-    let account = authorize(state, headers, origin)?;
+    let account = authorize(state, headers, origin).await?;
     if !state.accounts.is_admin(&account) {
         state.audit.record(&account, origin, Event::Refused { action });
         return Err(ApiError::Forbidden("administrators only".to_string()));
@@ -424,7 +424,7 @@ async fn own_account(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> ApiResult<Json<OwnAccount>> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     let view = state
         .accounts
         .view(&account)
@@ -451,7 +451,7 @@ async fn change_password(
     Json(req): Json<PasswordRequest>,
 ) -> ApiResult<Response> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     refuse_locked(&state, &account, &origin, "password_change")?;
     if !state.accounts.view(&account).is_some_and(|v| v.has_password) {
         // A password would let it sign in around the proxy that is its door.
@@ -550,7 +550,7 @@ async fn issue_own_token(
     Json(req): Json<TokenRequest>,
 ) -> ApiResult<Json<NewToken>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     refuse_locked(&state, &account, &origin, "token_issue")?;
     issue_token(&state, &account, &account, req, &origin).await
 }
@@ -562,7 +562,7 @@ async fn revoke_own_token(
     Path(token): Path<String>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     refuse_locked(&state, &account, &origin, "token_revoke")?;
     revoke_token(&state, &account, &account, &token, &origin).await
 }
@@ -574,7 +574,7 @@ async fn list_accounts(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<AccountView>>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts").await?;
     Ok(Json(state.accounts.list()))
 }
 
@@ -604,7 +604,7 @@ async fn update_account(
     Json(req): Json<UpdateRequest>,
 ) -> ApiResult<Json<AccountView>> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "account_update")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "account_update").await?;
     let changed = state
         .accounts
         .update(
@@ -655,7 +655,7 @@ async fn owned_of(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Owned>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts").await?;
     if !state.accounts.exists(&name) {
         return Err(AccountError::NotFound.into());
     }
@@ -674,7 +674,7 @@ async fn delete_account(
     body: Option<Json<HandoverRequest>>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "account_delete")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "account_delete").await?;
     // Refused before anything is handed over: a deletion that then fails
     // must not have moved the account's entries first.
     if !state.accounts.exists(&name) {
@@ -719,7 +719,7 @@ async fn list_orphans(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<Orphans>>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "accounts").await?;
     let orphans = handover::orphans(&state).await?;
     Ok(Json(
         orphans
@@ -737,7 +737,7 @@ async fn settle_orphans(
     Json(request): Json<HandoverRequest>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "orphans_settle")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "orphans_settle").await?;
     // An account's own is settled by deleting the account, never from here.
     if state.accounts.exists(&owner) {
         return Err(ApiError::BadRequest(format!(
@@ -783,7 +783,7 @@ async fn reset_link(
     body: Option<Json<DaysRequest>>,
 ) -> ApiResult<Json<NewInvite>> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "password_reset")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "password_reset").await?;
     let days = body.and_then(|Json(b)| b.days).unwrap_or(INVITE_DAYS);
     let (invite, code) = state
         .accounts
@@ -812,7 +812,7 @@ async fn issue_token_for(
     Json(req): Json<TokenRequest>,
 ) -> ApiResult<Json<NewToken>> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "token_issue")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "token_issue").await?;
     issue_token(&state, &admin, &name, req, &origin).await
 }
 
@@ -823,7 +823,7 @@ async fn revoke_token_of(
     Path((name, token)): Path<(String, String)>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "token_revoke")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "token_revoke").await?;
     revoke_token(&state, &admin, &name, &token, &origin).await
 }
 
@@ -836,7 +836,7 @@ async fn audit_lines(
     headers: HeaderMap,
     Query(query): Query<AuditQuery>,
 ) -> ApiResult<Json<AuditPage>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "audit")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "audit").await?;
     let Some(log) = state.audit.log() else {
         return Err(ApiError::NotFound(
             "this bridge keeps no audit: start it with --audit-log, or on a database".to_string(),
@@ -853,7 +853,7 @@ async fn list_invites(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<InviteView>>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "invites")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "invites").await?;
     Ok(Json(state.accounts.invites()))
 }
 
@@ -875,7 +875,7 @@ async fn create_invite(
     Json(req): Json<InviteRequest>,
 ) -> ApiResult<Json<NewInvite>> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "invite_create")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "invite_create").await?;
     if req.proxy && state.trusted.is_none() {
         return Err(ApiError::BadRequest(
             "no --trusted-header is configured: nothing would assert the name".to_string(),
@@ -912,7 +912,7 @@ async fn revoke_invite(
     Path(id): Path<String>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "invite_revoke")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "invite_revoke").await?;
     state.accounts.invite_revoke(&id).await?;
     state.audit.record(&admin, &origin, Event::InviteRevoked { invite: id });
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -923,7 +923,7 @@ async fn list_signups(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<SignupView>>> {
-    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "signups")?;
+    authorize_admin(&state, &headers, &mut Origin::new(peer, &headers), "signups").await?;
     Ok(Json(state.accounts.signups()))
 }
 
@@ -944,7 +944,7 @@ async fn approve_signup(
     Json(req): Json<ApproveRequest>,
 ) -> ApiResult<Json<AccountView>> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "signup_approve")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "signup_approve").await?;
     let account = state.accounts.approve_signup(&id, req.role, req.servers).await?;
     state.audit.record(
         &admin,
@@ -971,7 +971,7 @@ async fn reject_signup(
     Path(id): Path<String>,
 ) -> ApiResult<axum::http::StatusCode> {
     let mut origin = Origin::new(peer, &headers);
-    let admin = authorize_admin(&state, &headers, &mut origin, "signup_reject")?;
+    let admin = authorize_admin(&state, &headers, &mut origin, "signup_reject").await?;
     let name = state.accounts.reject_signup(&id).await?;
     state.audit.record(
         &admin,
@@ -1175,7 +1175,10 @@ mod tests {
         let value = format!("Bearer {}", issued.token);
         bearer.insert("authorization", value.parse().expect("header"));
         let mut origin = Origin::default();
-        assert_eq!(authorize_mcp(&state, &bearer, &mut origin).ok().as_deref(), Some("ai"));
+        assert_eq!(
+            authorize_mcp(&state, &bearer, &mut origin).await.ok().as_deref(),
+            Some("ai")
+        );
 
         let demote = update_account(
             State(state.clone()),

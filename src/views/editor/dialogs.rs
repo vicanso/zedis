@@ -21,6 +21,16 @@ use super::*;
 /// The rename dialog's field, by which a UI test finds it.
 const RENAME_INPUT_ID: &str = "rename-key-input";
 
+struct RenameKeyForm {
+    input: Entity<InputState>,
+}
+
+impl Render for RenameKeyForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Input::new(&self.input).id(RENAME_INPUT_ID)
+    }
+}
+
 impl ZedisEditor {
     /// Open the rename dialog, prefilled with the current key name. OK
     /// fires a `RENAMENX`; a destination collision comes back via
@@ -36,6 +46,7 @@ impl ZedisEditor {
             state.set_value(key.clone(), window, cx);
         });
         let input_child = self.rename_input_state.clone();
+        let body_view = cx.new(|_| RenameKeyForm { input: input_child });
         let input_ok = self.rename_input_state.clone();
         let input_focus = self.rename_input_state.clone();
         let server_state = self.server_state.clone();
@@ -49,7 +60,7 @@ impl ZedisEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || Input::new(&input_child).id(RENAME_INPUT_ID))
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let typed = input_ok.read(cx).value();
                 // Unchanged is decided before trimming: a key whose name

@@ -87,7 +87,7 @@ pub(super) async fn open_watch(
     Json(req): Json<WatchRequest>,
 ) -> ApiResult<Json<WatchResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     let kind = WatchKind::from_name(&req.kind)
         .ok_or_else(|| ApiError::BadRequest(format!("unknown watch kind {:?}", req.kind)))?;
     let server = visible_server(&state.accounts, &req.server, &account)?;
@@ -153,6 +153,20 @@ pub(super) async fn open_watch(
     }))
 }
 
+fn verify_watch_access(
+    state: &AppState,
+    account: &str,
+    server_id: &str,
+    kind: WatchKind,
+    origin: &Origin,
+) -> ApiResult<()> {
+    let server = visible_server(&state.accounts, server_id, account)?;
+    if kind == WatchKind::Monitor {
+        refuse_read_only_on(state, account, &server, origin, "monitor")?;
+    }
+    Ok(())
+}
+
 /// What has arrived on a watch, waiting up to `wait_ms` for something to.
 pub(super) async fn poll_watch(
     State(state): State<AppState>,
@@ -161,10 +175,34 @@ pub(super) async fn poll_watch(
     Path(token): Path<String>,
     body: Option<Json<PollRequest>>,
 ) -> ApiResult<Json<Batch>> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let mut origin = Origin::new(peer, &headers);
+    let account = authorize(&state, &headers, &mut origin).await?;
+    let (server_id, kind) = match state.watches.inspect(&token, &account) {
+        Ok(meta) => meta,
+        Err(WatchError::Unknown) => {
+            return Ok(Json(Batch {
+                closed: Some("gone".to_string()),
+                ..Batch::default()
+            }));
+        }
+        Err(e) => return Err(watch_error(e)),
+    };
+    if let Err(refusal) = verify_watch_access(&state, &account, &server_id, kind, &origin) {
+        state.watches.close(&token, &account);
+        return Err(refusal);
+    }
+    note_server(&state, &origin, &server_id);
     let wait = std::time::Duration::from_millis(body.map(|Json(b)| b.wait_ms).unwrap_or_default());
     match state.watches.poll(&token, &account, wait).await {
-        Ok(batch) => Ok(Json(batch)),
+        Ok(batch) => {
+            if !batch.items.is_empty()
+                && let Err(refusal) = verify_watch_access(&state, &account, &server_id, kind, &origin)
+            {
+                state.watches.close(&token, &account);
+                return Err(refusal);
+            }
+            Ok(Json(batch))
+        }
         // Ended and gone, or swept while the page was away: it has ended,
         // which is an answer the page acts on rather than an error.
         Err(WatchError::Unknown) => Ok(Json(Batch {
@@ -182,7 +220,7 @@ pub(super) async fn close_watch(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
     state.watches.close(&token, &account);
     Ok(StatusCode::NO_CONTENT)
 }

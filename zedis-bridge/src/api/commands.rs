@@ -36,14 +36,17 @@ pub(super) async fn open_session(
     Json(req): Json<SessionRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     visible_server(&state.accounts, &req.server, &account)?;
     note_server(&state, &origin, &req.server);
     let session = state
         .sessions
-        .open(&req.server, req.db)
+        .open(&account, &req.server, req.db)
         .await
-        .map_err(ApiError::Upstream)?;
+        .map_err(|e| match e {
+            SessionError::TooMany(msg) => ApiError::BadRequest(msg.to_string()),
+            SessionError::Upstream(msg) => ApiError::Upstream(msg),
+        })?;
     Ok(Json(SessionResponse { session }))
 }
 
@@ -53,8 +56,8 @@ pub(super) async fn close_session(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult<StatusCode> {
-    authorize(&state, &headers, &mut Origin::new(peer, &headers))?;
-    state.sessions.close(&token).await;
+    let account = authorize(&state, &headers, &mut Origin::new(peer, &headers)).await?;
+    state.sessions.close(&token, &account).await;
     // Idempotent: closing a session that has already expired is not an error.
     Ok(StatusCode::NO_CONTENT)
 }
@@ -159,7 +162,7 @@ pub(super) async fn exec(
     Json(req): Json<ExecRequest>,
 ) -> ApiResult<Json<ExecResponse>> {
     let mut origin = Origin::new(peer, &headers);
-    let account = authorize(&state, &headers, &mut origin)?;
+    let account = authorize(&state, &headers, &mut origin).await?;
     if req.commands.is_empty() {
         return Err(ApiError::BadRequest("no commands".to_string()));
     }
@@ -223,7 +226,7 @@ pub(super) async fn exec(
         decoded.iter().zip(&verdicts),
         state.audit.logs_writes(),
     );
-    let result = forward(&state, &req, &decoded).await;
+    let result = forward(&state, &account, &req, &decoded).await;
     let error = result.as_ref().err().map(ApiError::describe);
     for mut line in lines {
         line.error.clone_from(&error);
@@ -233,8 +236,13 @@ pub(super) async fn exec(
 }
 
 /// Send the judged commands of `req` and collect the replies as frames.
-async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) -> ApiResult<ExecResponse> {
-    let (values, nodes) = forward_values(state, req, decoded).await?;
+async fn forward(
+    state: &AppState,
+    account: &str,
+    req: &ExecRequest,
+    decoded: &[Vec<Vec<u8>>],
+) -> ApiResult<ExecResponse> {
+    let (values, nodes) = forward_values(state, account, req, decoded).await?;
     let replies = values
         .iter()
         .map(|value| {
@@ -251,6 +259,7 @@ async fn forward(state: &AppState, req: &ExecRequest, decoded: &[Vec<Vec<u8>>]) 
 /// page's route encodes them as frames; the MCP tools (`mcp.rs`) read them.
 pub(crate) async fn forward_values(
     state: &AppState,
+    account: &str,
     req: &ExecRequest,
     decoded: &[Vec<Vec<u8>>],
 ) -> ApiResult<(Vec<redis::Value>, Vec<String>)> {
@@ -356,7 +365,7 @@ pub(crate) async fn forward_values(
     let mut conn = match &req.session {
         Some(token) => state
             .sessions
-            .take(token, &req.server, req.db)
+            .take(token, account, &req.server, req.db)
             .await
             .ok_or_else(|| ApiError::BadRequest("unknown or mismatched session".to_string()))?,
         None => get_connection_manager()

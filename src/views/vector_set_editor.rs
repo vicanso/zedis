@@ -365,8 +365,12 @@ impl ZedisVectorSetEditor {
             .unwrap_or_default();
         let attrs_state = cx.new(|cx| TextareaState::new(window, cx).default_value(current).rows(6));
         let hint = i18n_vector_set(cx, "attrs_hint");
-        let body_attrs = attrs_state.clone();
+        let body_view = cx.new(|_| VectorAttrsForm {
+            attrs: attrs_state.clone(),
+            hint,
+        });
         let submit_attrs = attrs_state.clone();
+        let focus_attrs = attrs_state;
         let view = cx.entity().downgrade();
 
         ZedisDialog::new(i18n_vector_set(cx, "attrs_title"))
@@ -378,13 +382,7 @@ impl ZedisVectorSetEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .gap_2()
-                    .w_full()
-                    .child(Textarea::new(&body_attrs))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let raw = submit_attrs.read(cx).value().trim().to_string();
                 if !raw.is_empty() && serde_json::from_str::<serde_json::Value>(&raw).is_err() {
@@ -396,6 +394,7 @@ impl ZedisVectorSetEditor {
                 true
             })
             .open(window, cx);
+        focus_attrs.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `VSETATTR` then re-run the search so the attrs line refreshes.
@@ -762,5 +761,21 @@ impl Render for ZedisVectorSetEditor {
             .p_3()
             .child(header)
             .child(body)
+    }
+}
+
+struct VectorAttrsForm {
+    attrs: Entity<TextareaState>,
+    hint: SharedString,
+}
+
+impl Render for VectorAttrsForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex().w_full().gap_2().child(Textarea::new(&self.attrs)).child(
+            Label::new(self.hint.clone())
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .whitespace_normal(),
+        )
     }
 }

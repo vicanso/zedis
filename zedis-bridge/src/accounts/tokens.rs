@@ -97,13 +97,13 @@ impl Accounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::tests::{basic, with_admin};
+    use crate::accounts::tests::with_admin;
 
     /// A token signs its read-only account in by its hash, until the first
     /// second of its expiry day, and names itself for the audit log. It is
     /// no password (ADR 15).
-    #[test]
-    fn a_token_signs_in_its_account_until_it_expires() {
+    #[tokio::test]
+    async fn a_token_signs_in_its_account_until_it_expires() {
         let (token, sha256) = new_mcp_token();
         let (expiring, expiring_sha256) = new_mcp_token();
         let accounts = Accounts::from_toml(&format!(
@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(accounts.account_for_token(Some("Bearer zdt_not-a-listed-token")), None);
         assert_eq!(accounts.account_for_token(None), None);
         assert_eq!(
-            accounts.check_basic(Some(&basic(&format!("ai:{token}")))),
+            accounts.check_basic_credentials("ai".to_string(), token).await,
             Basic::Refused("ai".to_string())
         );
     }

@@ -192,7 +192,7 @@ impl Accounts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::tests::{basic, with_admin};
+    use crate::accounts::tests::with_admin;
 
     /// A request is no account: it signs nobody in until an administrator
     /// approves it, and then the account is the name and password it asked
@@ -211,7 +211,9 @@ mod tests {
             "a request signs nobody in"
         );
         assert_eq!(
-            accounts.check_basic(Some(&basic("dana:dana-password"))),
+            accounts
+                .check_basic_credentials("dana".to_string(), "dana-password".to_string())
+                .await,
             Basic::Refused("dana".to_string())
         );
         let waiting = accounts.signups();

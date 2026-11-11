@@ -70,6 +70,84 @@ impl ExportLabels {
     }
 }
 
+struct SingleServerExportBody {
+    server: RedisServer,
+    include_secrets: bool,
+    json_state: Entity<TextareaState>,
+}
+
+impl SingleServerExportBody {
+    fn new(server: RedisServer, json_state: Entity<TextareaState>) -> Self {
+        Self {
+            server,
+            include_secrets: false,
+            json_state,
+        }
+    }
+
+    fn toggle_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.include_secrets = !self.include_secrets;
+        let new_json = self.server.to_export_json(self.include_secrets).unwrap_or_default();
+        self.json_state.update(cx, |state, cx| {
+            state.set_value(SharedString::from(new_json), window, cx);
+        });
+        cx.notify();
+    }
+
+    fn copy_to_clipboard(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.json_state.read(cx).value().to_string();
+        cx.write_to_clipboard(ClipboardItem::new_string(value));
+        window.push_notification(Notification::success(i18n_servers(cx, "export_copied")), cx);
+    }
+}
+
+impl Render for SingleServerExportBody {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let include_on = self.include_secrets;
+        let danger_color = cx.theme().danger;
+        let muted = cx.theme().muted_foreground;
+
+        let mut toggle_btn = Button::new("export-toggle-secrets")
+            .small()
+            .label(i18n_servers(cx, "export_include_secrets"));
+        toggle_btn = if include_on {
+            toggle_btn.primary()
+        } else {
+            toggle_btn.outline()
+        };
+        let toggle_btn = toggle_btn.on_click(cx.listener(|this, _, window, cx| {
+            this.toggle_secrets(window, cx);
+        }));
+
+        let copy_btn = Button::new("export-copy-clipboard")
+            .small()
+            .outline()
+            .label(i18n_servers(cx, "export_copy_clipboard"))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.copy_to_clipboard(window, cx);
+            }));
+
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(Label::new(i18n_servers(cx, "export_hint")).text_xs().text_color(muted))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(toggle_btn)
+                    .when(saves_files(), |this| this.child(copy_btn)),
+            )
+            .when(include_on, |this| {
+                this.child(
+                    Label::new(i18n_servers(cx, "export_secrets_warning"))
+                        .text_xs()
+                        .text_color(danger_color),
+                )
+            })
+            .child(Textarea::new(&self.json_state).appearance(true))
+    }
+}
+
 impl ZedisServers {
     /// Show the JSON export for a single server config. Defaults to
     /// "stripped" mode where credential fields (passwords, SSH key,
@@ -77,31 +155,18 @@ impl ZedisServers {
     /// pasting into chat / wiki / git. A toggle reveals the
     /// with-secrets variant for users doing personal backups.
     pub(super) fn export_server_dialog(&mut self, server: &RedisServer, window: &mut Window, cx: &mut Context<Self>) {
-        let include_secrets = Rc::new(Cell::new(false));
         let initial_json = server.to_export_json(false).unwrap_or_default();
         let json_state = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(6, 16)
                 .default_value(initial_json)
         });
-        let server_clone = server.clone();
-
-        // Strings captured into the dialog body closure — i18n calls
-        // can't happen inside (no cx parameter there).
-        let hint = i18n_servers(cx, "export_hint");
-        let include_label = i18n_servers(cx, "export_include_secrets");
-        let warning_label = i18n_servers(cx, "export_secrets_warning");
-        let warning_color = cx.theme().yellow;
-        let copied_label = i18n_servers(cx, "export_copied");
-        let copy_label = i18n_servers(cx, "export_copy_clipboard");
+        let body_view = cx.new(|_| SingleServerExportBody::new(server.clone(), json_state.clone()));
+        let submit_json = json_state.clone();
+        let focus_json = json_state;
         let labels = ExportLabels::new(cx);
         let ok_label = export_ok_label(cx);
         let suggested_name = export_filename(&server.name);
-
-        let body_json = json_state.clone();
-        let body_flag = include_secrets.clone();
-        let body_server = server_clone.clone();
-        let submit_json = json_state.clone();
 
         ZedisDialog::new(i18n_servers(cx, "export_title"))
             .w(px(620.))
@@ -112,58 +177,7 @@ impl ZedisServers {
                     .ok_text(ok_label)
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                let include_on = body_flag.get();
-                let json_input = body_json.clone();
-                let server = body_server.clone();
-                let flag = body_flag.clone();
-
-                let mut toggle_btn = Button::new("export-toggle-secrets")
-                    .small()
-                    .label(include_label.clone());
-                toggle_btn = if include_on {
-                    toggle_btn.primary()
-                } else {
-                    toggle_btn.outline()
-                };
-                let toggle_btn = toggle_btn.on_click(move |_, window, cx| {
-                    let new_state = !flag.get();
-                    flag.set(new_state);
-                    let new_json = server.to_export_json(new_state).unwrap_or_default();
-                    json_input.update(cx, |state, cx| {
-                        state.set_value(SharedString::from(new_json), window, cx);
-                    });
-                });
-
-                // "Copy to clipboard" alongside the secrets toggle — Save to
-                // file is now the dialog's primary OK action.
-                let copy_json = body_json.clone();
-                let copied = copied_label.clone();
-                let copy_btn = Button::new("export-copy-clipboard")
-                    .small()
-                    .outline()
-                    .label(copy_label.clone())
-                    .on_click(move |_, window, cx| {
-                        let value = copy_json.read(cx).value().to_string();
-                        cx.write_to_clipboard(ClipboardItem::new_string(value));
-                        window.push_notification(Notification::success(copied.clone()), cx);
-                    });
-
-                gpui_kit::component::v_flex()
-                    .gap_3()
-                    .w_full()
-                    .child(Label::new(hint.clone()).text_xs())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(toggle_btn)
-                            .when(saves_files(), |this| this.child(copy_btn)),
-                    )
-                    .when(include_on, |this| {
-                        this.child(Label::new(warning_label.clone()).text_xs().text_color(warning_color))
-                    })
-                    .child(Textarea::new(&body_json).appearance(true))
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, window, cx| {
                 // The displayed JSON, to a file — or, in a page, to the
                 // clipboard (`deliver_export`).
@@ -172,6 +186,7 @@ impl ZedisServers {
                 true
             })
             .open(window, cx);
+        focus_json.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// Show the multi-server export picker: tick which connections to export
@@ -341,5 +356,6 @@ impl ZedisServers {
                 }
             })
             .open(window, cx);
+        json_state.update(cx, |state, cx| state.focus(window, cx));
     }
 }

@@ -312,7 +312,14 @@ impl ZedisTimeSeriesEditor {
         let ts_label = i18n_timeseries(cx, "add_timestamp");
         let value_label = i18n_timeseries(cx, "add_value");
         let hint = i18n_timeseries(cx, "add_hint");
-        let body = (ts_state.clone(), value_state.clone());
+        let body_view = cx.new(|_| TsAddForm {
+            ts: ts_state.clone(),
+            value: value_state.clone(),
+            ts_label,
+            value_label,
+            hint,
+        });
+        let focus_ts = ts_state.clone();
         let submit = (ts_state, value_state);
         let editor = cx.entity().downgrade();
 
@@ -325,16 +332,7 @@ impl ZedisTimeSeriesEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(ts_label.clone()).text_xs())
-                    .child(Input::new(&body.0).small().h(px(32.)))
-                    .child(Label::new(value_label.clone()).text_xs())
-                    .child(Input::new(&body.1).small().h(px(32.)))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let raw_ts = submit.0.read(cx).value().trim().to_string();
                 let Ok(value) = submit.1.read(cx).value().trim().parse::<f64>() else {
@@ -364,6 +362,7 @@ impl ZedisTimeSeriesEditor {
                 true
             })
             .open(window, cx);
+        focus_ts.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `TS.ALTER`: retention and labels, prefilled from what the panel shows.
@@ -388,7 +387,14 @@ impl ZedisTimeSeriesEditor {
         let retention_label = i18n_timeseries(cx, "alter_retention");
         let labels_label = i18n_timeseries(cx, "alter_labels");
         let hint = i18n_timeseries(cx, "alter_hint");
-        let body = (retention_state.clone(), labels_state.clone());
+        let body_view = cx.new(|_| TsAlterForm {
+            retention: retention_state.clone(),
+            labels: labels_state.clone(),
+            retention_label,
+            labels_label,
+            hint,
+        });
+        let focus_retention = retention_state.clone();
         let submit = (retention_state, labels_state);
         let before_retention = info.retention_ms;
         let editor = cx.entity().downgrade();
@@ -402,16 +408,7 @@ impl ZedisTimeSeriesEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(retention_label.clone()).text_xs())
-                    .child(Input::new(&body.0).small().h(px(32.)))
-                    .child(Label::new(labels_label.clone()).text_xs())
-                    .child(Textarea::new(&body.1))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let Ok(retention) = submit.0.read(cx).value().trim().parse::<i64>() else {
                     return false;
@@ -451,6 +448,7 @@ impl ZedisTimeSeriesEditor {
                 true
             })
             .open(window, cx);
+        focus_retention.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `TS.CREATERULE`: destination series, aggregator, bucket duration.
@@ -462,7 +460,16 @@ impl ZedisTimeSeriesEditor {
         let bucket_label = i18n_timeseries(cx, "rule_bucket");
         let agg_label = i18n_timeseries(cx, "rule_aggregation");
         let hint: SharedString = format!("{} — {}", i18n_timeseries(cx, "rule_hint"), TS_AGGREGATORS.join(", ")).into();
-        let body = (dest_state.clone(), bucket_state.clone(), agg_state.clone());
+        let body_view = cx.new(|_| TsCreateRuleForm {
+            dest: dest_state.clone(),
+            bucket: bucket_state.clone(),
+            agg: agg_state.clone(),
+            dest_label,
+            bucket_label,
+            agg_label,
+            hint,
+        });
+        let focus_dest = dest_state.clone();
         let submit = (dest_state, bucket_state, agg_state);
         let editor = cx.entity().downgrade();
 
@@ -475,18 +482,7 @@ impl ZedisTimeSeriesEditor {
                     .ok_text(i18n_common(cx, "confirm"))
                     .cancel_text(i18n_common(cx, "cancel")),
             )
-            .child(move || {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(Label::new(dest_label.clone()).text_xs())
-                    .child(Input::new(&body.0).small().h(px(32.)))
-                    .child(Label::new(bucket_label.clone()).text_xs())
-                    .child(Input::new(&body.1).small().h(px(32.)))
-                    .child(Label::new(agg_label.clone()).text_xs())
-                    .child(Input::new(&body.2).small().h(px(32.)))
-                    .child(Label::new(hint.clone()).text_xs())
-            })
+            .child(move || body_view.clone())
             .on_ok(move |_, _window, cx| {
                 let destination = submit.0.read(cx).value().trim().to_string();
                 let aggregation = submit.2.read(cx).value().trim().to_lowercase();
@@ -517,6 +513,7 @@ impl ZedisTimeSeriesEditor {
                 true
             })
             .open(window, cx);
+        focus_dest.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// `TS.DELETERULE` for one destination, behind a confirmation: the
@@ -720,5 +717,72 @@ fn human_ms(ms: i64) -> String {
         format!("{}h", secs / 3600)
     } else {
         format!("{}d", secs / 86_400)
+    }
+}
+
+struct TsAddForm {
+    ts: Entity<InputState>,
+    value: Entity<InputState>,
+    ts_label: SharedString,
+    value_label: SharedString,
+    hint: SharedString,
+}
+
+impl Render for TsAddForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.ts_label.clone()).text_xs())
+            .child(Input::new(&self.ts).small().h(px(32.)))
+            .child(Label::new(self.value_label.clone()).text_xs())
+            .child(Input::new(&self.value).small().h(px(32.)))
+            .child(Label::new(self.hint.clone()).text_xs())
+    }
+}
+
+struct TsAlterForm {
+    retention: Entity<InputState>,
+    labels: Entity<TextareaState>,
+    retention_label: SharedString,
+    labels_label: SharedString,
+    hint: SharedString,
+}
+
+impl Render for TsAlterForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.retention_label.clone()).text_xs())
+            .child(Input::new(&self.retention).small().h(px(32.)))
+            .child(Label::new(self.labels_label.clone()).text_xs())
+            .child(Textarea::new(&self.labels))
+            .child(Label::new(self.hint.clone()).text_xs())
+    }
+}
+
+struct TsCreateRuleForm {
+    dest: Entity<InputState>,
+    bucket: Entity<InputState>,
+    agg: Entity<InputState>,
+    dest_label: SharedString,
+    bucket_label: SharedString,
+    agg_label: SharedString,
+    hint: SharedString,
+}
+
+impl Render for TsCreateRuleForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new(self.dest_label.clone()).text_xs())
+            .child(Input::new(&self.dest).small().h(px(32.)))
+            .child(Label::new(self.bucket_label.clone()).text_xs())
+            .child(Input::new(&self.bucket).small().h(px(32.)))
+            .child(Label::new(self.agg_label.clone()).text_xs())
+            .child(Input::new(&self.agg).small().h(px(32.)))
+            .child(Label::new(self.hint.clone()).text_xs())
     }
 }
