@@ -63,13 +63,20 @@ When working on any of the following subsystems, read the corresponding lines in
 
 ---
 
-## Code Quality & Lint Rules
+## Code Quality, Modularity & Lint Rules
 
 - **`unwrap_used = "deny"` crate-wide including tests** — use `.expect("…")` or proper matching in tests, never `.unwrap()`.
 - **Avoid `#[allow(clippy::…)]` and `#[allow(dead_code)]`.** Fix the underlying smell (e.g. group `too_many_arguments` into a struct; delete or wire up dead code — never park dead code behind `#[allow(dead_code)]`).
 - **Imports**: bring items into scope with `use` declarations at the top of the file and refer to them by short name. Do **not** write inline fully-qualified paths (`crate::views::…`, `crate::states::…`) except to disambiguate same-named types or inside macros.
 - **Lib crate constructors**: clippy `should_implement_trait` fires on `pub fn from_str` in lib crates — name such constructors `from_name`.
 - **Rust dependencies**: before planning/adding any crate, run `cargo info <crate>` (or `cargo search <crate>`) to check the current latest version on crates.io, and use `cargo add <crate>`. Keep the dependency surface lean.
+
+### File & Function Size Limits (No Monolith Bloat)
+- **Never pile new features into entry shells or oversized files**: keep crate/shell entry files (`src/lib.rs`, `src/root.rs`, `src/views.rs`, `src/states.rs`, `zedis-bridge/src/main.rs`, and crate `lib.rs` files) strictly for app wiring, lifecycle, and re-exports. Any new standalone panel, dialog view entity, sub-view, state slice, or bridge route group must live in its own submodule file using Rust 2018+ `foo.rs` + `foo/*.rs` layout (do **not** introduce new `mod.rs` files), e.g. `src/views/<feature>/*.rs`, `src/states/server/*.rs`, `zedis-bridge/src/api/*.rs`.
+- **Line-count red lines**:
+  - **Module files**: target **≤ 800 lines**, hard ceiling **1,500 lines** of production code (excluding `#[cfg(test)]` modules) for every new or split module.
+  - **Functions**: aim for **≤ 120 lines** per function/method; decompose sprawling GPUI `render` trees, parsers, and state handlers into focused helpers or child view components.
+- **Progressive splitting on legacy oversized files**: when touching files already past or near the 1,500-line ceiling — notably `src/states/server/key.rs` (~2.6k), `zedis-bridge/src/redis_store.rs` (~2.3k), `src/views/stream_editor.rs` (~2.2k), `crates/zedis-ui/src/form.rs` (~2.0k), `src/views/monitor.rs` (~2.0k), `src/states/app.rs` (~1.8k), `src/views/servers.rs` (~1.7k), `src/views/lua_script_library.rs` (~1.7k), `src/states/server.rs` (~1.6k), `src/states/migration.rs` (~1.6k), `zedis-bridge/src/mcp.rs` (~1.6k), `src/views/search_manager{,/render}.rs` (~1.5k), `src/views/benchmark.rs` (~1.5k), `src/views/config_editor.rs` (~1.5k), `src/views/geo_map.rs` (~1.5k), `src/states/server/value.rs` (~1.4k), and `src/views/function_editor.rs` (~1.4k) — **never append new multi-item blocks, dialogs, or sub-views in place**. Extract the new or touched cohesive block into a `<module>/*.rs` submodule instead (keeping structural moves cleanly reviewable and preserving shared UI test control IDs).
 
 ---
 

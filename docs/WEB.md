@@ -10,7 +10,7 @@ Zedis also runs in the browser: the same app, compiled to WebAssembly and drawn 
 
 > **Early preview.** The image is published for linux/amd64 and linux/arm64 (~26 MB): `:latest` and the release version for tagged releases, `:nightly` for the rolling build from `main`.
 >
-> **Live demo:** <https://zedis.pingap.io/> — Account: `zedis` / Password: `zedis123123` (read-only public demo account).
+> **Live demo:** <https://zedis.vicanso.dev/> — Account: `zedis` / Password: `zedis123123` (read-only public demo account).
 
 ## Try it
 

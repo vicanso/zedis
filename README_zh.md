@@ -17,7 +17,7 @@
   <a href="#-功能">功能</a> ·
   <a href="#-安装">安装</a> ·
   <a href="#-web-版自托管">Web 版</a> ·
-  <a href="https://zedis.pingap.io/">在线演示</a> ·
+  <a href="https://zedis.vicanso.dev/">在线演示</a> ·
   <a href="./docs/FEATURES_zh.md">完整功能介绍</a> ·
   <a href="https://zedis.net/zh/">官网</a>
 </p>
@@ -123,7 +123,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 同一套 GUI，编译成 WebAssembly。部署在 Redis 旁边，打开浏览器标签页就能用。`zedis-bridge` 提供页面并代替浏览器访问 Redis —— 密码只保存在 bridge 上（加密存储），不会到达页面。
 
-👉 **在线演示：** <https://zedis.pingap.io/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
+👉 **在线演示：** <https://zedis.vicanso.dev/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
 
 <p align="center">
   <img src="docs/images/architecture.svg" width="100%" alt="Zedis 的界面和 Redis 连接层是同一份代码、两套程序。桌面应用是一个原生进程，两者都在其中。Web 版把同一套界面以 WebAssembly 跑在标签页里，通过 HTTP 访问 zedis-bridge；bridge 用同一套连接层把请求变成 Redis 命令。桌面应用和 bridge 都以 RESP 连接单机、哨兵与集群的 Redis 和 Valkey。">

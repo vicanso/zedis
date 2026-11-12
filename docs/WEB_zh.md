@@ -10,7 +10,7 @@ Zedis 也能在浏览器里运行：同一套代码编译成 WebAssembly，用 c
 
 > **早期预览。** 镜像已发布 linux/amd64 与 linux/arm64 两个架构（约 26 MB）：正式发布对应 `:latest` 与版本号标签，`:nightly` 是跟随 `main` 的滚动构建。
 >
-> **在线演示：** <https://zedis.pingap.io/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
+> **在线演示：** <https://zedis.vicanso.dev/> —— 账号：`zedis` / 密码：`zedis123123`（公开演示环境，该账号为只读权限）。
 
 ## 快速试用
 

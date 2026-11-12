@@ -17,7 +17,7 @@
   <a href="#-features">Features</a> ·
   <a href="#-installation">Install</a> ·
   <a href="#-web-version-self-hosted">Web version</a> ·
-  <a href="https://zedis.pingap.io/">Live demo</a> ·
+  <a href="https://zedis.vicanso.dev/">Live demo</a> ·
   <a href="./docs/FEATURES.md">Full feature tour</a> ·
   <a href="https://zedis.net">Website</a>
 </p>
@@ -123,7 +123,7 @@ cargo install --git https://github.com/vicanso/zedis --locked zedis-gui
 
 The same GUI, compiled to WebAssembly. Host it next to Redis; the team opens a tab. `zedis-bridge` serves the page and talks to Redis — passwords stay on the bridge, encrypted at rest, and never reach the browser.
 
-👉 **Live demo:** <https://zedis.pingap.io/> — Account: `zedis` / Password: `zedis123123` (read-only public demo account).
+👉 **Live demo:** <https://zedis.vicanso.dev/> — Account: `zedis` / Password: `zedis123123` (read-only public demo account).
 
 <p align="center">
   <img src="docs/images/architecture.svg" width="100%" alt="The Zedis UI and the Redis layer are one codebase in two programs. The desktop app is a native process holding both. The web build runs that UI as WebAssembly in a tab and calls zedis-bridge over HTTP; the bridge turns those calls into Redis commands with the same layer. Both talk RESP to standalone, Sentinel and Cluster Redis and Valkey.">
