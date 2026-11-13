@@ -53,38 +53,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// What the server marks the end of a session with.
 const END_SESSION: &str = "<endsession>";
 
-/// Computes the Redis Cluster hash slot (`0..16384`) for `key` using
-/// CRC16-XMODEM, honoring `{tag}` hash tags when `{` and `}` enclose at
-/// least one byte.
-pub fn cluster_key_slot(key: &str) -> u16 {
-    let bytes = key.as_bytes();
-    let hashed = if let Some(open) = bytes.iter().position(|&b| b == b'{') {
-        if let Some(close_rel) = bytes[open + 1..].iter().position(|&b| b == b'}') {
-            if close_rel > 0 {
-                &bytes[open + 1..open + 1 + close_rel]
-            } else {
-                bytes
-            }
-        } else {
-            bytes
-        }
-    } else {
-        bytes
-    };
-
-    let mut crc: u16 = 0;
-    for &byte in hashed {
-        crc ^= u16::from(byte) << 8;
-        for _ in 0..8 {
-            if (crc & 0x8000) != 0 {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc & 0x3FFF
-}
+pub use crate::reply::cluster_key_slot;
 
 /// Validates that all `keys` for a cluster Lua debugging session map to the
 /// same hash slot (`0..16384`).

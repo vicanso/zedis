@@ -414,3 +414,112 @@ fn cluster_benchmark_pipelined_and_cancel_leave_zero_throwaway_keys() {
         assert_eq!(leftover.keys, 0, "cancelled P=64 run left throwaway keys on cluster");
     });
 }
+
+/// `RENAME` and `RENAMENX` are refused by Redis Cluster (`CrossSlot`) whenever
+/// the old and new key names hash to different slots. `rename_key` falls back
+/// to `PTTL` + `DUMP` → `RESTORE` → `DEL`, preserving the value and remaining
+/// TTL, refusing to clobber an existing target unless `overwrite` is set, and
+/// leaving the source untouched when refused.
+#[test]
+#[ignore]
+fn cluster_rename_key_spans_hash_slots() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-rename", addr)).await;
+        let at = ServerDb::new(&id, 0);
+        let prefix = unique("rename-slot");
+        // Different `{tag}` hash tags guarantee distinct slots on the cluster.
+        let src = format!("{{slot-a}}:{prefix}:src");
+        let dst = format!("{{slot-b}}:{prefix}:dst");
+        let taken = format!("{{slot-c}}:{prefix}:taken");
+
+        create_key(&at, &src, "HSET", &["field".into(), "val".into()], Some(300))
+            .await
+            .expect("create src");
+        create_key(&at, &taken, "SET", &["keep".into()], None)
+            .await
+            .expect("create taken");
+
+        // Cross-slot rename to a free key preserves type, value, and TTL.
+        assert!(rename_key(&at, &src, &dst, false).await.expect("cross-slot renamenx"));
+        assert_eq!(
+            key_type_and_ttl(&at, &src).await.expect("old gone"),
+            ("none".to_string(), -2)
+        );
+        let (ty, ttl) = key_type_and_ttl(&at, &dst).await.expect("new present");
+        assert_eq!(ty, "hash");
+        assert!((1..=300).contains(&ttl), "TTL preserved across slots: {ttl}");
+
+        // Cross-slot rename onto an existing key without overwrite returns false
+        // and leaves both keys intact.
+        assert!(
+            !rename_key(&at, &dst, &taken, false)
+                .await
+                .expect("cross-slot collision"),
+            "existing target must not be overwritten without confirmation"
+        );
+        assert_eq!(key_type_and_ttl(&at, &dst).await.expect("dst still there").0, "hash");
+        assert_eq!(string_get(&at, &taken).await.expect("taken untouched"), b"keep");
+
+        // With overwrite = true, the target is replaced and the source removed.
+        assert!(rename_key(&at, &dst, &taken, true).await.expect("cross-slot overwrite"));
+        assert_eq!(
+            key_type_and_ttl(&at, &dst).await.expect("dst deleted"),
+            ("none".to_string(), -2)
+        );
+        let (ty, ttl) = key_type_and_ttl(&at, &taken).await.expect("taken replaced");
+        assert_eq!(ty, "hash");
+        assert!((1..=300).contains(&ttl), "TTL preserved on overwrite: {ttl}");
+
+        // Missing source key returns an error.
+        assert!(rename_key(&at, &src, &dst, false).await.is_err());
+
+        delete_key(&at, &taken).await.expect("cleanup");
+
+        // Cross-slot BITOP (`AND` / `OR` / `XOR` / `NOT`).
+        let bit_a = format!("{{slot-a}}:{prefix}:bit-a");
+        let bit_b = format!("{{slot-b}}:{prefix}:bit-b");
+        let bit_dst = format!("{{slot-c}}:{prefix}:bit-dst");
+        set_bit(&at, &bit_a, 0, true).await.expect("setbit a");
+        set_bit(&at, &bit_b, 1, true).await.expect("setbit b");
+        let len = bit_op(&at, BitOpKind::Or, &bit_dst, &[bit_a.clone(), bit_b.clone()])
+            .await
+            .expect("cross-slot bitop or");
+        assert_eq!(len, 1);
+        let dst_info = bitmap_info(&at, &bit_dst, 64).await.expect("bitmap info");
+        assert_eq!(dst_info.set_bits, 2);
+        delete_keys(&at, vec![bit_a, bit_b, bit_dst])
+            .await
+            .expect("cleanup bit");
+
+        // Cross-slot PFMERGE.
+        let hll_a = format!("{{slot-a}}:{prefix}:hll-a");
+        let hll_b = format!("{{slot-b}}:{prefix}:hll-b");
+        let hll_dst = format!("{{slot-c}}:{prefix}:hll-dst");
+        pf_add(&at, &hll_a, &["u1".into(), "u2".into()]).await.expect("pfadd a");
+        pf_add(&at, &hll_b, &["u2".into(), "u3".into()]).await.expect("pfadd b");
+        pf_merge(&at, &hll_dst, &[hll_a.clone(), hll_b.clone()])
+            .await
+            .expect("cross-slot pfmerge");
+        let merged = hll_info(&at, &hll_dst).await.expect("hll info");
+        assert_eq!(merged.cardinality, 3);
+        delete_keys(&at, vec![hll_a, hll_b, hll_dst])
+            .await
+            .expect("cleanup hll");
+
+        // StreamTail across slots (ensures XREAD BLOCK routes to the slot's master).
+        for tag in ["slot-a", "slot-b", "slot-c"] {
+            let stream_key = format!("{{{tag}}}:{prefix}:stream");
+            stream_add(&at, &stream_key, "*", &[("f".into(), "v0".into())])
+                .await
+                .expect("xadd initial");
+            let mut tail = StreamTail::open(&at, &stream_key).await.expect("open cluster tail");
+            stream_add(&at, &stream_key, "*", &[("f".into(), "v1".into())])
+                .await
+                .expect("xadd live");
+            let batch = tail.next_batch(500, 10).await.expect("xread block on cluster");
+            assert_eq!(batch.len(), 1);
+            delete_key(&at, &stream_key).await.expect("cleanup stream");
+        }
+    });
+}

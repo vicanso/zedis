@@ -21,9 +21,11 @@
 
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
+use crate::conn::RedisAsyncConn;
 use crate::error::Error;
 use crate::floors;
 use crate::manager::{ExpireCondition, HeatMetric, HeatProbe};
+use crate::reply::is_cross_slot;
 use crate::server_db::ServerDb;
 use futures::stream::{self, StreamExt};
 use redis::{cmd, pipe};
@@ -327,16 +329,68 @@ pub async fn delete_keys_matching(at: &ServerDb, pattern: &str) -> Result<bool> 
     Ok(false)
 }
 
+/// Cross-slot fallback when `RENAME` / `RENAMENX` is refused on a cluster
+/// because `old` and `new` hash to different slots: `PTTL` + `DUMP` on the
+/// source slot, `RESTORE` (with `REPLACE` only when `overwrite`) on the
+/// target slot, and `DEL` on the source slot only after `RESTORE` succeeds.
+async fn rename_key_cross_slot(conn: &mut RedisAsyncConn, old: &str, new: &str, overwrite: bool) -> Result<bool> {
+    let (pttl_ms, payload): (i64, Option<Vec<u8>>) = pipe()
+        .cmd("PTTL")
+        .arg(old)
+        .cmd("DUMP")
+        .arg(old)
+        .query_async(conn)
+        .await?;
+    let Some(payload) = payload else {
+        return Err(Error::Redis {
+            source: redis::RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "ERR no such key",
+            )),
+        });
+    };
+    let mut restore = cmd("RESTORE");
+    restore.arg(new).arg(pttl_ms.max(0)).arg(&payload);
+    if overwrite {
+        restore.arg("REPLACE");
+    }
+    match restore.query_async::<()>(conn).await {
+        Ok(()) => {}
+        Err(err) if !overwrite && err.to_string().contains("BUSYKEY") => {
+            return Ok(false);
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let _: () = cmd("DEL").arg(old).query_async(conn).await?;
+    Ok(true)
+}
+
 /// `RENAME`, or `RENAMENX` unless `overwrite` — then `false` means the new
-/// name is taken and nothing moved.
+/// name is taken and nothing moved. On a cluster where `old` and `new` hash
+/// to different slots (`CrossSlot`), falls back to `PTTL` + `DUMP` →
+/// `RESTORE` → `DEL`.
 pub async fn rename_key(at: &ServerDb, old: &str, new: &str, overwrite: bool) -> Result<bool> {
     let conn = &mut at.connection().await?;
-    if overwrite {
-        let _: () = cmd("RENAME").arg(old).arg(new).query_async(conn).await?;
-        return Ok(true);
+    let res: std::result::Result<bool, redis::RedisError> = if overwrite {
+        cmd("RENAME")
+            .arg(old)
+            .arg(new)
+            .query_async::<()>(conn)
+            .await
+            .map(|()| true)
+    } else {
+        cmd("RENAMENX")
+            .arg(old)
+            .arg(new)
+            .query_async::<i64>(conn)
+            .await
+            .map(|renamed| renamed == 1)
+    };
+    match res {
+        Ok(renamed) => Ok(renamed),
+        Err(err) if is_cross_slot(&err) => rename_key_cross_slot(conn, old, new, overwrite).await,
+        Err(err) => Err(err.into()),
     }
-    let renamed: i64 = cmd("RENAMENX").arg(old).arg(new).query_async(conn).await?;
-    Ok(renamed == 1)
 }
 
 /// Refuse a duration `EXPIRE` of zero. `EXPIRE key 0` sets a TTL already in
@@ -719,5 +773,32 @@ mod prefix_impact_tests {
             ..sized
         };
         assert_eq!(empty.estimated_bytes(), None);
+    }
+}
+
+#[cfg(test)]
+mod cross_slot_error_tests {
+    use super::is_cross_slot;
+
+    #[test]
+    fn recognizes_direct_and_bridged_cross_slot_errors() {
+        let direct = redis::RedisError::from((
+            redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot),
+            "Keys in request don't hash to the same slot",
+        ));
+        assert!(is_cross_slot(&direct));
+
+        let bridged = redis::RedisError::from((
+            redis::ErrorKind::Extension,
+            "redis bridge",
+            "CrossSlot: Keys in request don't hash to the same slot".to_string(),
+        ));
+        assert!(is_cross_slot(&bridged));
+
+        let no_such_key = redis::RedisError::from((
+            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+            "ERR no such key",
+        ));
+        assert!(!is_cross_slot(&no_such_key));
     }
 }

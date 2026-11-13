@@ -158,6 +158,75 @@ pub fn is_unsupported(err: &RedisError) -> bool {
         .any(|wording| msg.contains(wording))
 }
 
+/// Whether `err` is the cluster refusal for a multi-key command whose keys
+/// hash to different slots (`CrossSlot` on a direct cluster connection, or the
+/// same text forwarded by the web bridge).
+pub fn is_cross_slot(err: &RedisError) -> bool {
+    if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) || err.code() == Some("CROSSSLOT") {
+        return true;
+    }
+    let msg = err.to_string();
+    msg.contains("CrossSlot") || msg.contains("CROSSSLOT")
+}
+
+/// Computes the Redis Cluster hash slot (`0..16384`) for `key` using
+/// CRC16-XMODEM, honoring `{tag}` hash tags when `{` and `}` enclose at
+/// least one byte.
+pub fn cluster_key_slot(key: &str) -> u16 {
+    let bytes = key.as_bytes();
+    let hashed = if let Some(open) = bytes.iter().position(|&b| b == b'{') {
+        if let Some(close_rel) = bytes[open + 1..].iter().position(|&b| b == b'}') {
+            if close_rel > 0 {
+                &bytes[open + 1..open + 1 + close_rel]
+            } else {
+                bytes
+            }
+        } else {
+            bytes
+        }
+    } else {
+        bytes
+    };
+
+    let mut crc: u16 = 0;
+    for &byte in hashed {
+        crc ^= u16::from(byte) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc & 0x3FFF
+}
+
+/// Returns a `{…}` hash-tag prefix guaranteed to map to the exact same Redis
+/// Cluster hash slot as `key`.
+pub fn same_slot_hash_tag(key: &str) -> String {
+    let target_slot = cluster_key_slot(key);
+    let tag = if let Some(open) = key.find('{')
+        && let Some(close_rel) = key[open + 1..].find('}')
+        && close_rel > 0
+    {
+        &key[open + 1..open + 1 + close_rel]
+    } else {
+        key
+    };
+    let candidate = format!("{{{tag}}}");
+    if cluster_key_slot(&candidate) == target_slot {
+        return candidate;
+    }
+    for n in 0u32.. {
+        let fallback = format!("{{s{n:x}}}");
+        if cluster_key_slot(&fallback) == target_slot {
+            return fallback;
+        }
+    }
+    unreachable!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +340,23 @@ mod tests {
             vec![("k".to_string(), "—".to_string())]
         );
         assert!(display_pairs(&Value::Int(1)).is_empty());
+    }
+
+    #[test]
+    fn same_slot_hash_tag_matches_every_key_shape() {
+        for key in [
+            "plain:key",
+            "{user:100}:profile",
+            "{}empty-braces:key",
+            "unmatched}brace{in:key",
+        ] {
+            let tag = same_slot_hash_tag(key);
+            let temp = format!("{tag}:zedis-pfmerge:test");
+            assert_eq!(
+                cluster_key_slot(&temp),
+                cluster_key_slot(key),
+                "temp key {temp} must share slot with {key}"
+            );
+        }
     }
 }

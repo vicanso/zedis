@@ -22,10 +22,8 @@
 
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
-use crate::config::get_server;
 use crate::conn::RedisAsyncConn;
 use crate::error::Error;
-use crate::open_single_connection;
 use crate::reply::{bytes, text, text_lossy};
 use crate::server_db::ServerDb;
 use redis::{Value, cmd};
@@ -46,10 +44,12 @@ pub struct StreamTail {
 
 impl StreamTail {
     /// Dial the tail's connection. Nothing is sent until the first
-    /// [`next_batch`](Self::next_batch).
+    /// [`next_batch`](Self::next_batch). Uses a dedicated topology-aware
+    /// connection (`ServerDb::dedicated_connection`) so `XREAD BLOCK` routes to
+    /// the master owning `key`'s hash slot on a cluster (or the Sentinel master)
+    /// without blocking the shared connection pool.
     pub async fn open(at: &ServerDb, key: &str) -> Result<Self> {
-        let server = get_server(at.server_id())?;
-        let conn = open_single_connection(&server, at.db(), false).await?;
+        let conn = at.dedicated_connection().await?;
         Ok(Self {
             conn,
             key: key.to_string(),
