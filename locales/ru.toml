@@ -580,6 +580,22 @@ export_key_tooltip = "Экспортировать этот ключ…"
 watch_prefix = "Отслеживать этот префикс"
 
 
+pattern_bulk_ops = "Массовые операции по шаблону..."
+pattern_ops_title = "Массовые операции по шаблону"
+pattern_ops_pattern_label = "Шаблон ключей (glob)"
+pattern_ops_pattern_placeholder = "напр. cache:*:v1 или session:*"
+pattern_ops_preview = "Предпросмотр"
+pattern_ops_pattern_empty = "Введите шаблон ключей"
+pattern_ops_action_label = "Действие"
+pattern_ops_delete = "Удалить подходящие ключи"
+pattern_ops_set_ttl = "Установить TTL"
+pattern_ops_persist = "Удалить TTL (PERSIST)"
+pattern_ops_preview_count = "Найдено ключей: %{count}"
+pattern_ops_preview_partial = "Найдено не менее %{count} ключей (достигнут лимит сканирования)"
+pattern_ops_preview_none = "Подходящие ключи не найдены"
+pattern_ops_delete_warning = "Все ключи, соответствующие этому шаблону, будут безвозвратно удалены."
+pattern_ops_apply = "Выполнить"
+
 [status_bar]
 replica_badge = "Реплика"
 replica_badge_tooltip = "Подключение к реплике (role: slave) — команды записи отклоняются с ошибкой READONLY"

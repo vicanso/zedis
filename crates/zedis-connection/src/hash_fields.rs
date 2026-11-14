@@ -240,6 +240,26 @@ pub(crate) fn contains_pattern(keyword: Option<&str>) -> String {
     }
 }
 
+/// `HRANDFIELD key count WITHVALUES` — sample random `(field, value)` pairs
+/// from a hash (Redis 6.2+).
+pub async fn hash_rand_field(at: &ServerDb, key: &str, count: isize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let raw: Vec<Vec<u8>> = cmd("HRANDFIELD")
+        .arg(key)
+        .arg(count)
+        .arg("WITHVALUES")
+        .query_async(&mut at.connection().await?)
+        .await?;
+    let mut pairs = Vec::with_capacity(raw.len() / 2);
+    let mut iter = raw.into_iter();
+    while let (Some(field), Some(value)) = (iter.next(), iter.next()) {
+        pairs.push((field, value));
+    }
+    Ok(pairs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

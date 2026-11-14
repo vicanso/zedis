@@ -173,6 +173,8 @@ fn sentinel_admin_commands_reach_the_sentinels() {
 
         let masters = sentinel_masters(&server).await.expect("masters");
         assert!(masters.len() >= 2, "two monitored masters: {masters:?}");
+        let replicas = sentinel_replicas(&server, &master_name).await.expect("replicas");
+        assert!(!replicas.is_empty(), "sentinel reports replicas: {replicas:?}");
         let before = masters
             .iter()
             .find(|m| m.name == master_name)

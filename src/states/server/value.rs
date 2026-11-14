@@ -92,6 +92,10 @@ pub enum DataFormat {
     Bson,
     /// A Java Object Serialization stream.
     JavaSerialized,
+    /// An XML document or fragment.
+    Xml,
+    /// A YAML document.
+    Yaml,
 }
 
 impl DataFormat {
@@ -120,6 +124,8 @@ impl DataFormat {
             DataFormat::Pickle => "pickle",
             DataFormat::Bson => "bson",
             DataFormat::JavaSerialized => "java",
+            DataFormat::Xml => "xml",
+            DataFormat::Yaml => "yaml",
         }
     }
 }
@@ -554,7 +560,10 @@ impl RedisBytesValue {
         )
     }
     pub fn is_utf8_text(&self) -> bool {
-        matches!(self.format, DataFormat::Text | DataFormat::Json)
+        matches!(
+            self.format,
+            DataFormat::Text | DataFormat::Json | DataFormat::Xml | DataFormat::Yaml
+        )
     }
     /// Whether the text view can be edited and saved back to Redis.
     pub fn is_text_editable(&self) -> bool {

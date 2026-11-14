@@ -187,8 +187,8 @@ pub use functions::{
 };
 pub use geo::{GeoMember, GeoSample, GeoShape, geo_add, geo_dist, geo_sample, geo_search, zset_looks_geo};
 pub use hash_fields::{
-    FieldTtl, hash_delete_fields, hash_field_ttls, hash_len, hash_scan, rename_hash_field, set_hash_field_ttl,
-    set_hash_fields_ttl, write_hash_field,
+    FieldTtl, hash_delete_fields, hash_field_ttls, hash_len, hash_rand_field, hash_scan, rename_hash_field,
+    set_hash_field_ttl, set_hash_fields_ttl, write_hash_field,
 };
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};
@@ -247,8 +247,9 @@ pub use reply_format::{ReplyFormat, format_exec, format_reply, redis_value_to_js
 pub use script_kill::{KillOutcome, KillReply, KillTarget, kill_running};
 #[cfg(not(target_family = "wasm"))]
 pub use sentinel::{
-    SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReply, sentinel_ckquorum, sentinel_failover, sentinel_flushconfig,
-    sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset, sentinel_set, summarize_replies,
+    SENTINEL_SET_OPTIONS, SentinelMaster, SentinelReplica, SentinelReply, sentinel_ckquorum, sentinel_failover,
+    sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_replicas, sentinel_reset,
+    sentinel_set, summarize_replies,
 };
 pub use server_config::{
     ServerConfig, SlowLogSettings, config_get_all, config_get_named, config_get_one, config_load, config_resetstat,
@@ -261,7 +262,7 @@ pub use server_ops::{
     server_summary, server_supports, slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
-pub use set_ops::{set_add, set_card, set_remove, set_replace_member, set_scan};
+pub use set_ops::{set_add, set_card, set_ismember, set_remove, set_replace_member, set_scan};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 #[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_key_approver};
@@ -272,7 +273,7 @@ pub use stream_ops::{
     stream_delete, stream_entry, stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
 };
 pub use stream_tail::{StreamTail, StreamTailEntry};
-pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_prefix, string_set};
+pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_lcs, string_prefix, string_set};
 /// A held socket the server pushes on — Pub/Sub, `MONITOR`. The page cannot
 /// hold one: there the bridge does, and the same types poll it (ADR 9,
 /// amended 2026-10-17).

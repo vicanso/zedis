@@ -580,6 +580,22 @@ export_key_tooltip = "Exportar esta clave…"
 watch_prefix = "Vigilar este prefijo"
 
 
+pattern_bulk_ops = "Operaciones masivas por patrón..."
+pattern_ops_title = "Operaciones masivas por patrón"
+pattern_ops_pattern_label = "Patrón de clave (glob)"
+pattern_ops_pattern_placeholder = "p. ej. cache:*:v1 o session:*"
+pattern_ops_preview = "Vista previa"
+pattern_ops_pattern_empty = "Introduce un patrón de clave"
+pattern_ops_action_label = "Acción"
+pattern_ops_delete = "Eliminar claves coincidentes"
+pattern_ops_set_ttl = "Establecer TTL"
+pattern_ops_persist = "Quitar TTL (PERSIST)"
+pattern_ops_preview_count = "%{count} claves coincidentes"
+pattern_ops_preview_partial = "Al menos %{count} claves coincidentes (límite de escaneo alcanzado)"
+pattern_ops_preview_none = "Ninguna clave coincide con este patrón"
+pattern_ops_delete_warning = "Todas las claves que coincidan con este patrón se eliminarán permanentemente."
+pattern_ops_apply = "Ejecutar"
+
 [status_bar]
 replica_badge = "Réplica"
 replica_badge_tooltip = "Conectado a una réplica (role: slave) — los comandos de escritura se rechazan con READONLY"

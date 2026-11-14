@@ -88,6 +88,7 @@ const GATED: &[(&str, &str)] = &[
         "HSETEX",
         "ServerCommand::HSetEx, probed — an unprobed server takes the HSET path",
     ),
+    ("LCS", "floors::LCS — checked in string_lcs"),
     ("SSUBSCRIBE", "floors::SHARDED_PUBSUB"),
     ("XACKDEL", "floors::STREAM_REF_POLICIES"),
     ("XNACK", "floors::STREAM_NACK"),

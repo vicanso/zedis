@@ -580,6 +580,22 @@ export_key_tooltip = "Diesen Key exportieren…"
 watch_prefix = "Dieses Präfix überwachen"
 
 
+pattern_bulk_ops = "Muster-Massenaktionen..."
+pattern_ops_title = "Muster-Massenaktionen"
+pattern_ops_pattern_label = "Schlüsselmuster (Glob)"
+pattern_ops_pattern_placeholder = "z. B. cache:*:v1 oder session:*"
+pattern_ops_preview = "Vorschau"
+pattern_ops_pattern_empty = "Bitte ein Schlüsselmuster eingeben"
+pattern_ops_action_label = "Aktion"
+pattern_ops_delete = "Passende Schlüssel löschen"
+pattern_ops_set_ttl = "TTL setzen"
+pattern_ops_persist = "TTL entfernen (PERSIST)"
+pattern_ops_preview_count = "%{count} Schlüssel gefunden"
+pattern_ops_preview_partial = "Mindestens %{count} Schlüssel gefunden (Scan-Limit erreicht)"
+pattern_ops_preview_none = "Keine passenden Schlüssel gefunden"
+pattern_ops_delete_warning = "Alle passenden Schlüssel werden dauerhaft gelöscht."
+pattern_ops_apply = "Ausführen"
+
 [status_bar]
 replica_badge = "Replikat"
 replica_badge_tooltip = "Mit einem Replikat verbunden (role: slave) — Schreibbefehle werden mit READONLY abgelehnt"

@@ -78,6 +78,7 @@ mod build;
 mod delegate;
 mod folder_delete;
 mod key_actions;
+mod pattern_ops;
 mod render;
 mod row_menu;
 

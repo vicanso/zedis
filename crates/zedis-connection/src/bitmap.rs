@@ -92,19 +92,34 @@ pub async fn set_bit(at: &ServerDb, key: &str, offset: u64, value: bool) -> Resu
     Ok(previous != 0)
 }
 
-/// `BITFIELD key <args>` — the user's own sub-commands, as typed; the reply is
-/// one integer per `GET` / `SET` / `INCRBY`.
+/// Whether a `BITFIELD` argument list only reads (`GET` sub-commands without
+/// `SET`, `INCRBY`, or `OVERFLOW`), so it can be sent via `BITFIELD_RO`.
+fn bitfield_is_read_only(args: &[String]) -> bool {
+    !args.is_empty()
+        && !args.iter().any(|arg| {
+            arg.eq_ignore_ascii_case("SET")
+                || arg.eq_ignore_ascii_case("INCRBY")
+                || arg.eq_ignore_ascii_case("OVERFLOW")
+        })
+}
+
+/// `BITFIELD key <args>` (or `BITFIELD_RO` when `args` only reads and the
+/// server supports Redis 6.0+) — the user's own sub-commands, as typed; the
+/// reply is one integer per `GET` / `SET` / `INCRBY`.
 ///
 /// One reply per sub-command; `None` where `OVERFLOW FAIL` stopped one — the
 /// server answers that with a nil, which a list of integers could not hold,
 /// so the whole command read as failed after it had written.
 pub async fn bit_field(at: &ServerDb, key: &str, args: &[String]) -> Result<Vec<Option<i64>>> {
-    let mut command = cmd("BITFIELD");
+    let client = at.client().await?;
+    let use_ro = bitfield_is_read_only(args) && client.supports(crate::floors::BITFIELD_RO);
+    let mut command = if use_ro { cmd("BITFIELD_RO") } else { cmd("BITFIELD") };
     command.arg(key);
     for arg in args {
         command.arg(arg);
     }
-    Ok(command.query_async(&mut at.connection().await?).await?)
+    let mut conn = client.connection();
+    Ok(command.query_async(&mut conn).await?)
 }
 
 /// The bitwise operations `BITOP` accepts. `NOT` is the odd one out: it

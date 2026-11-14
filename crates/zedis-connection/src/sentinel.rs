@@ -63,6 +63,27 @@ impl SentinelMaster {
     }
 }
 
+/// One replica of a monitored master (`SENTINEL REPLICAS <master>`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SentinelReplica {
+    pub ip: String,
+    pub port: u16,
+    /// `slave`, or with `s_down` / `o_down` / `disconnected` …
+    pub flags: String,
+    pub master_link_status: String,
+    pub slave_priority: u32,
+    pub slave_repl_offset: u64,
+}
+
+impl SentinelReplica {
+    /// Whether the sentinel currently sees this replica as down or disconnected.
+    pub fn is_down(&self) -> bool {
+        self.flags
+            .split(',')
+            .any(|f| f == "s_down" || f == "o_down" || f == "disconnected")
+    }
+}
+
 /// What one sentinel answered to a broadcast command.
 #[derive(Debug)]
 pub struct SentinelReply {
@@ -87,6 +108,19 @@ pub async fn sentinel_masters(server: &RedisServer) -> Result<Vec<SentinelMaster
     let mut masters: Vec<SentinelMaster> = reply.iter().map(parse_master).collect();
     masters.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(masters)
+}
+
+/// The replicas of `master_name`, from the first reachable sentinel (`SENTINEL REPLICAS`).
+pub async fn sentinel_replicas(server: &RedisServer, master_name: &str) -> Result<Vec<SentinelReplica>> {
+    let mut conn = first_sentinel(server).await?;
+    let reply: Vec<HashMap<String, String>> = cmd("SENTINEL")
+        .arg("REPLICAS")
+        .arg(master_name)
+        .query_async(&mut conn)
+        .await?;
+    let mut replicas: Vec<SentinelReplica> = reply.iter().map(parse_replica).collect();
+    replicas.sort_by(|a, b| (&a.ip, a.port).cmp(&(&b.ip, b.port)));
+    Ok(replicas)
 }
 
 /// `SENTINEL FAILOVER name` on one sentinel — the quorum runs it.
@@ -278,6 +312,22 @@ fn parse_master(map: &HashMap<String, String>) -> SentinelMaster {
     }
 }
 
+/// One `SENTINEL REPLICAS` reply map.
+fn parse_replica(map: &HashMap<String, String>) -> SentinelReplica {
+    let field = |key: &str| map.get(key).cloned().unwrap_or_default();
+    fn number<T: FromStr + Default>(map: &HashMap<String, String>, key: &str) -> T {
+        map.get(key).and_then(|v| v.parse().ok()).unwrap_or_default()
+    }
+    SentinelReplica {
+        ip: field("ip"),
+        port: number(map, "port"),
+        flags: field("flags"),
+        master_link_status: field("master-link-status"),
+        slave_priority: number(map, "slave-priority"),
+        slave_repl_offset: number(map, "slave-repl-offset"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +375,27 @@ mod tests {
         );
         assert!(master.is_down());
         assert!(!SentinelMaster::default().is_down());
+    }
+
+    #[test]
+    fn parses_a_replicas_reply_and_reads_down_flags() {
+        let map: HashMap<String, String> = [
+            ("ip", "10.0.0.6"),
+            ("port", "6380"),
+            ("flags", "slave,s_down"),
+            ("master-link-status", "down"),
+            ("slave-priority", "100"),
+            ("slave-repl-offset", "4242"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let replica = parse_replica(&map);
+        assert_eq!((replica.ip.as_str(), replica.port), ("10.0.0.6", 6380));
+        assert_eq!(replica.master_link_status, "down");
+        assert_eq!((replica.slave_priority, replica.slave_repl_offset), (100, 4242));
+        assert!(replica.is_down());
+        assert!(!SentinelReplica::default().is_down());
     }
 
     #[test]

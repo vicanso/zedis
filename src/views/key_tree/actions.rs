@@ -98,6 +98,8 @@ pub(super) enum KeyTreeAction {
     RenameKey(SharedString),
     /// Add / remove the key from the local favorites list.
     ToggleFavoriteKey(SharedString),
+    /// Open the arbitrary glob-pattern bulk operations dialog.
+    PatternBulkOps,
 }
 
 impl Render for ZedisKeyTree {
@@ -356,6 +358,7 @@ fn on_tree_action(this: &mut ZedisKeyTree, e: &KeyTreeAction, window: &mut Windo
         KeyTreeAction::ExportSelectedKeys => export_picks(this, window, cx),
         KeyTreeAction::ExportFolder(folder) => export_folder(this, folder, window, cx),
         KeyTreeAction::ExportKey(id) => export_key(this, id, window, cx),
+        KeyTreeAction::PatternBulkOps => pattern_ops::open_pattern_ops_dialog(this, window, cx),
     }
 }
 

@@ -580,6 +580,22 @@ export_key_tooltip = "このキーをエクスポート…"
 watch_prefix = "この接頭辞を監視"
 
 
+pattern_bulk_ops = "パターン一括操作..."
+pattern_ops_title = "パターン一括操作"
+pattern_ops_pattern_label = "キーパターン (glob)"
+pattern_ops_pattern_placeholder = "例: cache:*:v1 または session:*"
+pattern_ops_preview = "プレビュー"
+pattern_ops_pattern_empty = "キーパターンを入力してください"
+pattern_ops_action_label = "操作"
+pattern_ops_delete = "一致するキーを削除"
+pattern_ops_set_ttl = "TTL を設定"
+pattern_ops_persist = "TTL を削除 (PERSIST)"
+pattern_ops_preview_count = "%{count} 件のキーが一致しました"
+pattern_ops_preview_partial = "少なくとも %{count} 件のキーが一致しました（スキャン上限に到達）"
+pattern_ops_preview_none = "一致するキーはありません"
+pattern_ops_delete_warning = "このパターンに一致するすべてのキーは完全に削除されます。"
+pattern_ops_apply = "実行"
+
 [status_bar]
 replica_badge = "レプリカ"
 replica_badge_tooltip = "レプリカに接続中（role: slave）— 書き込みコマンドは READONLY で拒否されます"

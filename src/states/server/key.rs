@@ -1587,30 +1587,52 @@ impl ZedisServerState {
     }
 
     pub fn delete_folder(&mut self, folder: SharedString, cx: &mut Context<Self>) {
-        let at = self.at_confirmed();
         let prefix = self.folder_prefix(&folder);
         let pattern = self.folder_pattern(&folder);
+        self.delete_matching_with_prefix(pattern, Some(prefix), cx);
+    }
+
+    /// Delete every key matching an arbitrary `SCAN MATCH` glob `pattern`
+    /// across all masters (bounded like `delete_folder`).
+    pub fn delete_keys_by_pattern(&mut self, pattern: SharedString, cx: &mut Context<Self>) {
+        self.delete_matching_with_prefix(pattern.to_string(), None, cx);
+    }
+
+    fn delete_matching_with_prefix(&mut self, pattern: String, prefix: Option<String>, cx: &mut Context<Self>) {
+        let at = self.at_confirmed();
+        let label = prefix.clone().unwrap_or_else(|| pattern.clone());
         self.spawn_with_arg(
             ServerTask::DeleteKeys,
-            prefix.clone(),
+            label,
             move || async move { Ok(delete_keys_matching(&at, &pattern).await?) },
             move |this, result, cx| {
                 match result {
                     Ok(true) => {
-                        this.forget_deleted_keys(DeletedKeys::Prefix(prefix.clone()), cx);
+                        if let Some(prefix) = prefix.as_ref() {
+                            this.forget_deleted_keys(DeletedKeys::Prefix(prefix.clone()), cx);
+                        } else {
+                            this.open.histories.clear();
+                            this.refresh_dbsize_now(cx);
+                            this.refresh_prefix(SharedString::default(), cx);
+                        }
                     }
                     // The walk stopped at its round limit: some keys may
-                    // still be there. Scan the folder again rather than take
-                    // every loaded key under it out of the tree as deleted,
-                    // and load the open key again if it was under it, so the
-                    // editor shows whether it is still there.
+                    // still be there. Scan again rather than drop every
+                    // loaded key as deleted.
                     Ok(false) => {
-                        this.open.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
-                        this.refresh_prefix(prefix.clone().into(), cx);
-                        this.refresh_dbsize_now(cx);
-                        if let Some(key) = this.open.key.clone().filter(|key| key.starts_with(prefix.as_str())) {
-                            this.reload_value(key, cx);
+                        if let Some(prefix) = prefix.as_ref() {
+                            this.open.histories.retain_keys(|key| !key.starts_with(prefix.as_str()));
+                            this.refresh_prefix(prefix.clone().into(), cx);
+                            if let Some(key) = this.open.key.clone().filter(|key| key.starts_with(prefix.as_str())) {
+                                this.reload_value(key, cx);
+                            }
+                        } else {
+                            this.refresh_prefix(SharedString::default(), cx);
+                            if let Some(key) = this.open.key.clone() {
+                                this.reload_value(key, cx);
+                            }
                         }
+                        this.refresh_dbsize_now(cx);
                     }
                     Err(_) => {}
                 }
@@ -2033,12 +2055,36 @@ impl ZedisServerState {
         condition: Option<ExpireCondition>,
         cx: &mut Context<Self>,
     ) {
-        let at = self.at();
         let prefix = self.folder_prefix(&folder);
         let pattern = self.folder_pattern(&folder);
+        self.batch_set_ttl_matching_inner(prefix, pattern, ttl_secs, condition, cx);
+    }
+
+    /// Batch-apply a TTL (or remove it when `ttl_secs` is `None`) to every
+    /// key matching an arbitrary `SCAN MATCH` glob `pattern`.
+    pub fn batch_set_ttl_by_pattern(
+        &mut self,
+        pattern: SharedString,
+        ttl_secs: Option<u64>,
+        condition: Option<ExpireCondition>,
+        cx: &mut Context<Self>,
+    ) {
+        let pattern = pattern.to_string();
+        self.batch_set_ttl_matching_inner(pattern.clone(), pattern, ttl_secs, condition, cx);
+    }
+
+    fn batch_set_ttl_matching_inner(
+        &mut self,
+        label: String,
+        pattern: String,
+        ttl_secs: Option<u64>,
+        condition: Option<ExpireCondition>,
+        cx: &mut Context<Self>,
+    ) {
+        let at = self.at();
         self.spawn_with_arg(
             ServerTask::UpdateKeyTtl,
-            prefix,
+            label,
             move || async move { Ok(set_ttl_matching(&at, &pattern, ttl_secs, condition).await?) },
             move |this, result, cx| {
                 if let Ok((changed, skipped)) = result {

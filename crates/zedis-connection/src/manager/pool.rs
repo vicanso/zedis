@@ -671,8 +671,44 @@ impl ConnectionManager {
                             message: "the sentinel monitors no master".to_string(),
                         })?,
                 };
+                let chosen_name = chosen.master_name.clone().unwrap_or_default();
+                let mut nodes = vec![chosen];
+                if !chosen_name.is_empty()
+                    && let Ok(replicas) = cmd("SENTINEL")
+                        .arg("REPLICAS")
+                        .arg(&chosen_name)
+                        .query_async::<Vec<HashMap<String, String>>>(&mut conn)
+                        .await
+                {
+                    for item in replicas {
+                        let Some(ip) = item.get("ip").filter(|s| !s.is_empty()) else {
+                            continue;
+                        };
+                        let Some(port) = item.get("port").and_then(|p| p.parse::<u16>().ok()) else {
+                            continue;
+                        };
+                        let flags = item.get("flags").map(String::as_str).unwrap_or_default();
+                        let health = if flags.split(',').any(|f| f == "o_down" || f == "disconnected") {
+                            NodeHealth::Failing
+                        } else if flags.split(',').any(|f| f == "s_down") {
+                            NodeHealth::PossiblyFailing
+                        } else {
+                            NodeHealth::Ok
+                        };
+                        let mut tmp_config = config.clone();
+                        tmp_config.host = ip.clone();
+                        tmp_config.port = port;
+                        nodes.push(RedisNode {
+                            server: tmp_config,
+                            role: NodeRole::Slave,
+                            master_name: Some(chosen_name.clone()),
+                            health,
+                            ..Default::default()
+                        });
+                    }
+                }
                 Ok(NodeDiscovery {
-                    nodes: vec![chosen],
+                    nodes,
                     server_type,
                     sentinel_master_names: names,
                 })

@@ -580,6 +580,22 @@ export_key_tooltip = "Export this key…"
 watch_prefix = "Watch This Prefix"
 
 
+pattern_bulk_ops = "Pattern Bulk Operations..."
+pattern_ops_title = "Pattern Bulk Operations"
+pattern_ops_pattern_label = "Key Pattern (glob)"
+pattern_ops_pattern_placeholder = "e.g. cache:*:v1 or session:*"
+pattern_ops_preview = "Preview"
+pattern_ops_pattern_empty = "Please enter a key pattern"
+pattern_ops_action_label = "Action"
+pattern_ops_delete = "Delete matching keys"
+pattern_ops_set_ttl = "Set TTL"
+pattern_ops_persist = "Remove TTL (PERSIST)"
+pattern_ops_preview_count = "Matched %{count} keys"
+pattern_ops_preview_partial = "Matched at least %{count} keys (scan limit reached)"
+pattern_ops_preview_none = "No keys match this pattern"
+pattern_ops_delete_warning = "All keys matching this pattern will be permanently deleted."
+pattern_ops_apply = "Execute"
+
 [status_bar]
 replica_badge = "Replica"
 replica_badge_tooltip = "Connected to a replica (role: slave) — write commands are rejected with READONLY"

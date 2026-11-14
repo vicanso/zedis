@@ -119,6 +119,18 @@ pub async fn json_merge(at: &ServerDb, key: &str, patch: &str) -> Result<()> {
         .await?)
 }
 
+/// `LCS key1 key2` — longest common subsequence of two string keys (Redis 7.0+).
+pub async fn string_lcs(at: &ServerDb, key1: &str, key2: &str) -> Result<String> {
+    let client = at.client().await?;
+    if !client.supports(crate::floors::LCS) {
+        return Err(Error::Invalid {
+            message: "LCS requires Redis 7.0 or Valkey 7.2+".to_string(),
+        });
+    }
+    let mut conn = client.connection();
+    Ok(cmd("LCS").arg(key1).arg(key2).query_async(&mut conn).await?)
+}
+
 /// `JSON.SET key $ document` — replace the whole document.
 pub async fn json_set(at: &ServerDb, key: &str, document: &str) -> Result<()> {
     Ok(cmd("JSON.SET")

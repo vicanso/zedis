@@ -93,6 +93,10 @@ pub const MEMORY_USAGE: Floor = Floor::since_fork("4.0.0");
 pub const UNLINK: Floor = Floor::since_fork("4.0.0");
 /// `SET … KEEPTTL` (Redis 6.0).
 pub const SET_KEEPTTL: Floor = Floor::since_fork("6.0.0");
+/// `BITFIELD_RO` — read-only bitfield `GET` (Redis 6.0).
+pub const BITFIELD_RO: Floor = Floor::since_fork("6.0.0");
+/// `LCS` — longest common subsequence of two strings (Redis 7.0).
+pub const LCS: Floor = Floor::since_fork("7.0.0");
 /// `SCAN … TYPE` (Redis 6.0).
 pub const SCAN_TYPE: Floor = Floor::since_fork("6.0.0");
 /// The ACL family — `ACL USERS / GETUSER / SETUSER / WHOAMI` (Redis 6.0).

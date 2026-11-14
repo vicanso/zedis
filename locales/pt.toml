@@ -580,6 +580,22 @@ export_key_tooltip = "Exportar esta chave…"
 watch_prefix = "Monitorar este prefixo"
 
 
+pattern_bulk_ops = "Operações em massa por padrão..."
+pattern_ops_title = "Operações em massa por padrão"
+pattern_ops_pattern_label = "Padrão de chave (glob)"
+pattern_ops_pattern_placeholder = "ex.: cache:*:v1 ou session:*"
+pattern_ops_preview = "Visualizar"
+pattern_ops_pattern_empty = "Informe um padrão de chave"
+pattern_ops_action_label = "Ação"
+pattern_ops_delete = "Excluir chaves correspondentes"
+pattern_ops_set_ttl = "Definir TTL"
+pattern_ops_persist = "Remover TTL (PERSIST)"
+pattern_ops_preview_count = "%{count} chaves correspondentes"
+pattern_ops_preview_partial = "Pelo menos %{count} chaves correspondentes (limite de varredura atingido)"
+pattern_ops_preview_none = "Nenhuma chave corresponde a este padrão"
+pattern_ops_delete_warning = "Todas as chaves que correspondem a este padrão serão excluídas permanentemente."
+pattern_ops_apply = "Executar"
+
 [status_bar]
 replica_badge = "Réplica"
 replica_badge_tooltip = "Conectado a uma réplica (role: slave) — comandos de escrita são rejeitados com READONLY"

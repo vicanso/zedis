@@ -699,6 +699,12 @@ pub(super) async fn collections_page_and_write_through_their_operations(id: Stri
         set_add(&at, &set, member).await.expect("sadd");
     }
     assert_eq!(set_card(&at, &set).await.expect("scard"), 4);
+    assert_eq!(
+        set_ismember(&at, &set, &[b"one", b"missing", binary])
+            .await
+            .expect("smismember"),
+        [true, false, true]
+    );
     let (cursor, members) = set_scan(&at, &set, None, 0, 100).await.expect("sscan");
     assert_eq!((cursor, members.len()), (0, 4), "one round covers a small set");
     assert!(members.contains(&binary.to_vec()), "bytes as answered");
@@ -729,6 +735,8 @@ pub(super) async fn collections_page_and_write_through_their_operations(id: Stri
             .expect("hset");
     }
     assert_eq!(hash_len(&at, &hash).await.expect("hlen"), 3);
+    let sampled = hash_rand_field(&at, &hash, 2).await.expect("hrandfield");
+    assert_eq!(sampled.len(), 2);
     let (cursor, pairs) = hash_scan(&at, &hash, Some("f"), 0, 100).await.expect("hscan");
     assert_eq!(cursor, 0);
     let mut names: Vec<Vec<u8>> = pairs.iter().map(|(field, _)| field.clone()).collect();
@@ -867,6 +875,15 @@ pub(super) async fn collections_page_and_write_through_their_operations(id: Stri
             "the value moved under us: refused, not clobbered"
         );
         assert_eq!(string_get(&at, &string).await.expect("get"), b"third");
+    }
+    if supports(&id, floors::LCS).await {
+        let lcs_other = format!("{prefix}:lcs-other");
+        string_set(&at, &string, b"ohmytext", 0, None).await.expect("set lcs1");
+        string_set(&at, &lcs_other, b"mynewtext", 0, None)
+            .await
+            .expect("set lcs2");
+        assert_eq!(string_lcs(&at, &string, &lcs_other).await.expect("lcs"), "mytext");
+        let _: () = cmd("DEL").arg(&lcs_other).query_async(&mut c).await.expect("del lcs");
     }
 
     let _: () = cmd("DEL")

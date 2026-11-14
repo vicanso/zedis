@@ -826,6 +826,7 @@ mod tests {
                 "RefreshAll",
                 "CollapseAllKeys",
                 "ToggleMultiSelectMode",
+                "PatternBulkOps",
                 "[AutoRefresh(0), AutoRefresh(1), AutoRefresh(5), AutoRefresh(10), AutoRefresh(30), AutoRefresh(60), AutoRefresh(120)]",
                 "ChangeChannelMode",
                 "-",

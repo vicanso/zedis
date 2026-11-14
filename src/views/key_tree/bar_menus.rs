@@ -428,6 +428,16 @@ impl TreeMoreMenu {
                 Label::new(i18n_key_tree(cx, "toggle_multi_select_mode"))
             })
         })
+        .when(
+            Capability::DeleteKeys.allowed(readonly) || Capability::SetTtl.allowed(readonly),
+            |this| {
+                this.menu_element_with_icon(
+                    Icon::new(CustomIconName::Eraser),
+                    Box::new(KeyTreeAction::PatternBulkOps),
+                    move |_, cx| Label::new(i18n_key_tree(cx, "pattern_bulk_ops")),
+                )
+            },
+        )
         .submenu_with_icon(
             Some(Icon::new(CustomIconName::RotateCw)),
             i18n_key_tree(cx, "auto_refresh"),

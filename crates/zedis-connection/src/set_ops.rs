@@ -86,3 +86,17 @@ pub async fn set_replace_member(at: &ServerDb, key: &str, old: &[u8], new: &[u8]
         .await?;
     Ok(added > 0)
 }
+
+/// `SMISMEMBER key member…` — batch membership check (Redis 6.2+).
+pub async fn set_ismember(at: &ServerDb, key: &str, members: &[&[u8]]) -> Result<Vec<bool>> {
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut c = cmd("SMISMEMBER");
+    c.arg(key);
+    for member in members {
+        c.arg(*member);
+    }
+    let flags: Vec<i64> = c.query_async(&mut at.connection().await?).await?;
+    Ok(flags.into_iter().map(|flag| flag != 0).collect())
+}

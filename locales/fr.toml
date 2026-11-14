@@ -580,6 +580,22 @@ export_key_tooltip = "Exporter cette clé…"
 watch_prefix = "Surveiller ce préfixe"
 
 
+pattern_bulk_ops = "Opérations en masse par motif..."
+pattern_ops_title = "Opérations en masse par motif"
+pattern_ops_pattern_label = "Motif de clé (glob)"
+pattern_ops_pattern_placeholder = "ex. cache:*:v1 ou session:*"
+pattern_ops_preview = "Aperçu"
+pattern_ops_pattern_empty = "Veuillez saisir un motif de clé"
+pattern_ops_action_label = "Action"
+pattern_ops_delete = "Supprimer les clés correspondantes"
+pattern_ops_set_ttl = "Définir le TTL"
+pattern_ops_persist = "Supprimer le TTL (PERSIST)"
+pattern_ops_preview_count = "%{count} clés correspondantes"
+pattern_ops_preview_partial = "Au moins %{count} clés correspondantes (limite d’analyse atteinte)"
+pattern_ops_preview_none = "Aucune clé ne correspond à ce motif"
+pattern_ops_delete_warning = "Toutes les clés correspondant à ce motif seront supprimées définitivement."
+pattern_ops_apply = "Exécuter"
+
 [status_bar]
 replica_badge = "Réplique"
 replica_badge_tooltip = "Connecté à une réplique (role: slave) — les commandes d'écriture sont rejetées avec READONLY"

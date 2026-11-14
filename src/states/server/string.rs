@@ -31,7 +31,7 @@ use serde_json::Value;
 use snap::read::FrameDecoder;
 use std::io::Read;
 use tracing::warn;
-use zedis_core::codec::{base64_text, bson, java, jwt, php, pickle, url};
+use zedis_core::codec::{base64_text, bson, java, jwt, php, pickle, url, xml, yaml};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -180,6 +180,12 @@ fn decode_text(data: &[u8], max_truncate_length: usize) -> Option<(DataFormat, S
             && let Some(text) = base64_payload_text(&bytes, max_truncate_length)
         {
             return Some((DataFormat::Base64, text));
+        }
+        if let Some(pretty) = xml::decode(trimmed) {
+            return Some((DataFormat::Xml, SharedString::from(pretty)));
+        }
+        if yaml::decode(trimmed).is_some() {
+            return Some((DataFormat::Yaml, SharedString::from(text.to_string())));
         }
     }
     format_text(data, max_truncate_length)
@@ -689,6 +695,19 @@ mod tests {
         let (format, text) = detect_and_decode(wrapped.as_bytes(), 1000);
         assert_eq!(format, DataFormat::Base64);
         assert!(text.contains("\"n\": 1"), "{text}");
+
+        // XML: pretty-printed and kept editable.
+        let (format, text) = detect_and_decode(br#"<user id="1"><name>Alice</name></user>"#, 1000);
+        assert_eq!(format, DataFormat::Xml);
+        assert!(
+            text.contains("<user id=\"1\">\n  <name>Alice</name>\n</user>"),
+            "{text}"
+        );
+
+        // YAML: multi-line mapping detected as YAML.
+        let (format, text) = detect_and_decode(b"server:\n  host: 127.0.0.1\n  port: 6379\n", 1000);
+        assert_eq!(format, DataFormat::Yaml);
+        assert!(text.contains("host: 127.0.0.1"), "{text}");
     }
 
     #[test]

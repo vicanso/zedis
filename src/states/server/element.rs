@@ -79,7 +79,10 @@ impl KvElement {
 
     /// The text is a decoding rather than the bytes themselves.
     pub fn is_decoded(&self) -> bool {
-        !matches!(self.format, DataFormat::Text | DataFormat::Json | DataFormat::Bytes) && !is_image(self.format)
+        !matches!(
+            self.format,
+            DataFormat::Text | DataFormat::Json | DataFormat::Xml | DataFormat::Yaml | DataFormat::Bytes
+        ) && !is_image(self.format)
     }
 
     /// What the edit form starts from: the text itself, or a hex dump of a
@@ -130,11 +133,17 @@ pub(super) fn decode_element(raw: &[u8]) -> (DataFormat, SharedString) {
         // holds and the form edits exactly that. A number that looks like
         // a timestamp stays the number — a column of counters must not
         // turn into dates.
-        DataFormat::Text | DataFormat::Json | DataFormat::Timestamp | DataFormat::Bytes if !binary => {
-            let label = if format == DataFormat::Json {
-                DataFormat::Json
-            } else {
-                DataFormat::Text
+        DataFormat::Text
+        | DataFormat::Json
+        | DataFormat::Xml
+        | DataFormat::Yaml
+        | DataFormat::Timestamp
+        | DataFormat::Bytes
+            if !binary =>
+        {
+            let label = match format {
+                DataFormat::Json | DataFormat::Xml | DataFormat::Yaml => format,
+                _ => DataFormat::Text,
             };
             (label, SharedString::new(String::from_utf8_lossy(raw)))
         }

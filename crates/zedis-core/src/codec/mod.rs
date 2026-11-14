@@ -33,6 +33,8 @@ pub mod jwt;
 pub mod php;
 pub mod pickle;
 pub mod url;
+pub mod xml;
+pub mod yaml;
 
 use serde_json::{Map, Number, Value};
 use std::time::Duration;

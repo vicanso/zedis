@@ -294,6 +294,8 @@ fn value_export_extension(format: DataFormat) -> &'static str {
         DataFormat::Bson => "bson",
         DataFormat::Pickle => "pkl",
         DataFormat::JavaSerialized => "ser",
+        DataFormat::Xml => "xml",
+        DataFormat::Yaml => "yaml",
         _ => "bin",
     }
 }
