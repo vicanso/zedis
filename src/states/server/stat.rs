@@ -863,6 +863,8 @@ impl ZedisServerState {
             return;
         }
         let changed = self.link.go_offline();
+        #[cfg(not(target_family = "wasm"))]
+        self.stop_sentinel_watch();
         forget_client(&self.at());
         if changed {
             cx.emit(ServerEvent::ConnectionHealthChanged);

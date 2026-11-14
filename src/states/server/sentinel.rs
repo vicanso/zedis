@@ -33,10 +33,46 @@ use crate::connection::{
     sentinel_failover, sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_reset,
     sentinel_set, summarize_replies,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::connection::{SentinelEvent, SentinelEventSubscription, ServerDb, forget_client, server_summary};
+#[cfg(not(target_family = "wasm"))]
+use crate::states::i18n_status_bar;
 use crate::states::{GlobalEvent, ServerEvent, ServerTask, ZedisGlobalStore, ZedisServerState, i18n_topology};
+#[cfg(not(target_family = "wasm"))]
+use gpui::Task;
 use gpui::{SharedString, prelude::*};
 use rust_i18n::t;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+#[cfg(not(target_family = "wasm"))]
+use std::time::Duration;
 use tracing::error;
+#[cfg(not(target_family = "wasm"))]
+use tracing::{debug, info, warn};
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+pub(super) struct SentinelWatchHandle {
+    _task: Arc<Task<()>>,
+    stop: Arc<AtomicBool>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::fmt::Debug for SentinelWatchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SentinelWatchHandle").finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl SentinelWatchHandle {
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
 
 impl ZedisServerState {
     /// The monitored masters as the sentinels describe them (quorum, timing,
@@ -355,5 +391,153 @@ impl ZedisServerState {
             locale = &locale
         );
         self.emit_warning_notification(message.to_string().into(), cx);
+    }
+
+    /// Stops any active Sentinel Pub/Sub event listener.
+    pub(super) fn stop_sentinel_watch(&mut self) {
+        if let Some(handle) = self.sentinel_watch.take() {
+            handle.stop();
+        }
+    }
+
+    /// Subscribes to `+switch-master` / `+sdown` / `+odown` on the Sentinel
+    /// node so failovers evict the stale master pool and refresh topology at once.
+    pub(super) fn start_sentinel_watch(&mut self, cx: &mut Context<Self>) {
+        self.stop_sentinel_watch();
+        if self.server_id.is_empty() || self.link.manually_offline {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let Ok(server) = get_server(server_id.as_ref()) else {
+            return;
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let task = cx.spawn(async move |handle, cx| {
+            while !stop_flag.load(Ordering::Relaxed) {
+                let server_clone = server.clone();
+                let opened = cx
+                    .background_spawn(async move { SentinelEventSubscription::open(&server_clone).await })
+                    .await;
+                let mut sub = match opened {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        debug!(server_id = server_id.as_str(), error = %err, "sentinel watch connect failed");
+                        smol::Timer::after(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+                loop {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let (event, returned_sub) = cx
+                        .background_spawn(async move {
+                            let ev = sub.next_event().await;
+                            (ev, sub)
+                        })
+                        .await;
+                    sub = returned_sub;
+                    if stop_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let Some(event) = event else {
+                        break;
+                    };
+                    let still_alive = handle
+                        .update(cx, |this, cx| this.handle_sentinel_event(&server_id, event, cx))
+                        .unwrap_or(false);
+                    if !still_alive {
+                        return;
+                    }
+                }
+                smol::Timer::after(Duration::from_secs(2)).await;
+            }
+        });
+        self.sentinel_watch = Some(SentinelWatchHandle {
+            _task: Arc::new(task),
+            stop,
+        });
+    }
+
+    fn handle_sentinel_event(
+        &mut self,
+        expected_server_id: &SharedString,
+        event: SentinelEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if &self.server_id != expected_server_id || self.link.manually_offline {
+            return false;
+        }
+        let active_master = self
+            .facts
+            .nodes_description()
+            .topology
+            .first()
+            .map(|m| m.master.master_name.clone())
+            .filter(|name| !name.is_empty());
+
+        match event {
+            SentinelEvent::SwitchMaster {
+                master_name,
+                old_addr,
+                new_addr,
+            } => {
+                if active_master.as_deref().is_some_and(|active| active != master_name) {
+                    return true;
+                }
+                info!(
+                    server_id = self.server_id.as_str(),
+                    master_name, old_addr, new_addr, "sentinel +switch-master received; refreshing pool and topology"
+                );
+                forget_client(&self.at());
+                if self.link.link_notice_due() {
+                    self.emit_warning_notification(i18n_status_bar(cx, "conn_master_changed"), cx);
+                }
+                self.refresh_sentinel_failover(cx);
+            }
+            SentinelEvent::DownStateChanged {
+                channel,
+                instance_type,
+                name,
+                addr,
+                ..
+            } => {
+                debug!(
+                    server_id = self.server_id.as_str(),
+                    channel, instance_type, name, addr, "sentinel health event received"
+                );
+                self.load_sentinel_masters(cx);
+            }
+        }
+        true
+    }
+
+    fn refresh_sentinel_failover(&mut self, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let at = ServerDb::new(server_id.as_str(), db);
+        self.spawn(
+            ServerTask::SelectServer,
+            move || async move { Ok(server_summary(&at).await?) },
+            move |this, result, cx| {
+                if this.server_id != server_id {
+                    return;
+                }
+                match result {
+                    Ok(summary) => {
+                        this.facts.set_topology(summary.nodes, summary.description);
+                        cx.emit(ServerEvent::ServerInfoUpdated);
+                        this.load_sentinel_masters(cx);
+                        this.refresh_redis_info(cx);
+                        cx.notify();
+                    }
+                    Err(err) => {
+                        warn!(server_id = server_id.as_str(), error = %err, "sentinel failover refresh failed");
+                    }
+                }
+            },
+            cx,
+        );
     }
 }

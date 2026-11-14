@@ -223,6 +223,10 @@ pub struct ZedisServerState {
 
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
+
+    /// Active Sentinel Pub/Sub failover watcher (desktop only).
+    #[cfg(not(target_family = "wasm"))]
+    sentinel_watch: Option<sentinel::SentinelWatchHandle>,
 }
 
 /// Why a workspace has nothing to show: the link, not an empty database.
@@ -455,6 +459,8 @@ impl ZedisServerState {
         // a meaningless all-changed diff on the next server.
         self.info_snapshot = None;
         self.pending_keyspace_prefix = None;
+        #[cfg(not(target_family = "wasm"))]
+        self.stop_sentinel_watch();
     }
 
     /// Add new keys with their types to the loaded ones ([`KeyScan::extend`]).
@@ -1529,7 +1535,12 @@ impl ZedisServerState {
                             this.readings.set_dbsize(dbsize);
                             this.facts.set_topology(nodes, nodes_description);
                             #[cfg(not(target_family = "wasm"))]
-                            this.note_sentinel_master_choice(cx);
+                            {
+                                this.note_sentinel_master_choice(cx);
+                                if this.nodes_description().server_type == "Sentinel" {
+                                    this.start_sentinel_watch(cx);
+                                }
+                            }
                             this.facts.note_connect(
                                 version.into(),
                                 databases,

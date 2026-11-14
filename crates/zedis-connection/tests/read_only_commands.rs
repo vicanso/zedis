@@ -163,6 +163,7 @@ const WRITES: &[&str] = &[
     "MONITOR",
     "PSUBSCRIBE",
     "SSUBSCRIBE",
+    "SUBSCRIBE",
 ];
 
 /// Container commands whose subcommand the scanner could not read off the

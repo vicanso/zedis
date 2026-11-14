@@ -26,6 +26,7 @@ pub mod reply_format;
 pub mod script_kill;
 #[cfg(not(target_family = "wasm"))]
 pub mod sentinel;
+pub mod sentinel_watch;
 pub mod string;
 pub mod time;
 
@@ -255,6 +256,9 @@ pub use sentinel::{
     sentinel_flushconfig, sentinel_masters, sentinel_monitor, sentinel_remove, sentinel_replicas, sentinel_reset,
     sentinel_set, summarize_replies,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use sentinel_watch::SentinelEventSubscription;
+pub use sentinel_watch::{SENTINEL_EVENT_CHANNELS, SentinelEvent, parse_sentinel_event};
 pub use server_config::{
     ServerConfig, SlowLogSettings, config_get_all, config_get_named, config_get_one, config_load, config_resetstat,
     config_rewrite, config_set, info_everything, slowlog_settings,
