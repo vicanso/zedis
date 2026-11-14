@@ -514,11 +514,25 @@ fn cluster_rename_key_spans_hash_slots() {
                 .await
                 .expect("xadd initial");
             let mut tail = StreamTail::open(&at, &stream_key).await.expect("open cluster tail");
-            stream_add(&at, &stream_key, "*", &[("f".into(), "v1".into())])
-                .await
-                .expect("xadd live");
-            let batch = tail.next_batch(500, 10).await.expect("xread block on cluster");
-            assert_eq!(batch.len(), 1);
+            let writer = smol::spawn({
+                let at = at.clone();
+                let stream_key = stream_key.clone();
+                async move {
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+                    stream_add(&at, &stream_key, "*", &[("f".into(), "v1".into())])
+                        .await
+                        .expect("xadd live");
+                }
+            });
+            let mut seen = Vec::new();
+            for _ in 0..10 {
+                seen.extend(tail.next_batch(500, 10).await.expect("xread block on cluster"));
+                if !seen.is_empty() {
+                    break;
+                }
+            }
+            writer.await;
+            assert_eq!(seen.len(), 1);
             delete_key(&at, &stream_key).await.expect("cleanup stream");
         }
     });
