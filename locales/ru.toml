@@ -497,6 +497,9 @@ lcs_other_key_empty = "Введите имя ключа для сравнени�
 lcs_source_key = "Сравнение «%{key}» с другим строковым ключом в той же базе данных:"
 lcs_empty_result = "Нет общей подпоследовательности (0 байт)"
 lcs_result_summary = "Наибольшая общая подпоследовательность: %{bytes} байт"
+value_preview_range_banner = "Показаны байты %{start}–%{end} из %{size} (поблочный просмотр только для чтения)"
+preview_prev_chunk = "Предыдущий блок 256 КБ"
+preview_next_chunk = "Следующий блок 256 КБ"
 
 [key_tree]
 copy_key_tooltip = "Скопировать имя ключа"
@@ -605,6 +608,13 @@ pattern_ops_preview_partial = "Найдено не менее %{count} ключ�
 pattern_ops_preview_none = "Подходящие ключи не найдены"
 pattern_ops_delete_warning = "Все ключи, соответствующие этому шаблону, будут безвозвратно удалены."
 pattern_ops_apply = "Выполнить"
+ts_retention_ms = "Хранение (мс, 0 = бессрочно)"
+ts_duplicate_policy = "Политика дубликатов"
+bf_error_rate = "Доля ошибок (0 < rate < 1)"
+bf_capacity = "Ёмкость"
+bf_nonscaling = "Без масштабирования (NONSCALING)"
+cf_capacity = "Ёмкость"
+cf_bucket_size = "Размер корзины (необязательно)"
 
 [status_bar]
 replica_badge = "Реплика"
@@ -682,6 +692,18 @@ position = "Позиция"
 update_tooltip = "Обновить элемент списка"
 delete_tooltip = "Удалить элемент списка"
 add_value_tooltip = "Добавить новое значение в список"
+move_or_mpop = "LMOVE / LMPOP…"
+mode_lmove = "LMOVE (Переместить 1)"
+mode_lmpop = "LMPOP (Мульти-извлечение)"
+destination_key = "Целевой ключ списка"
+extra_keys = "Дополнительные ключи списков (необязательно)"
+from_side = "Извлечь со стороны"
+to_side = "Добавить в цель со стороны"
+side_left = "LEFT (Начало)"
+side_right = "RIGHT (Конец)"
+pop_count = "Количество"
+moved_toast = "Перемещено в %{dest}: %{value}"
+mpop_empty_toast = "Элементы не извлечены (список пуст)"
 
 [set_editor]
 add_value_tooltip = "Добавить новый элемент в множество"
@@ -709,6 +731,13 @@ add_value_success = "Значение добавлено"
 add_value_success_tips = "Значение добавлено. Его позиция определяется счётом; возможно, потребуется обновить страницу для просмотра."
 sort_asc_tooltip = "Сортировать по возрастанию score (ZRANGE)"
 sort_desc_tooltip = "Сортировать по убыванию score (ZREVRANGE)"
+zmpop_button = "ZMPOP…"
+zmpop_title = "ZMPOP (Мульти-извлечение)"
+zmpop_min = "MIN (Наименьший счёт)"
+zmpop_max = "MAX (Наибольший счёт)"
+zmpop_count = "Количество"
+zmpop_extra_keys = "Дополнительные ключи ZSet (необязательно)"
+zmpop_empty_toast = "Элементы не извлечены (множество пусто)"
 
 [hash_editor]
 add_value_tooltip = "Добавить новое поле в хэш"
@@ -1271,6 +1300,10 @@ types_unknown = "неизвестна"
 types_summary = "Типов в выборке: %{types} · кодировок: %{encodings}"
 prefix_root_all = "Все ключи"
 prefix_drill_tooltip = "Показать следующий уровень префикса"
+remediate_pattern_ops = "Пакетные операции по шаблону…"
+remediate_open_config = "Открыть конфигурацию"
+remediate_memory_purge = "MEMORY PURGE"
+memory_purge_done = "MEMORY PURGE выполнен на всех мастер-узлах"
 
 [monitor]
 pause = "Пауза"
@@ -1424,6 +1457,9 @@ ack_shown_tooltip = "Подтвердить все ожидающие запис
 pending_filter_placeholder = "Фильтр по ID, потребителю, группе…"
 pending_all_groups = "Все"
 inspect_entry_tooltip = "Показать запись в таблице потока"
+tail_mode_plain = "Обычный XREAD ($)"
+tail_mode_group = "Группа потребителей (XREADGROUP >)"
+tail_noack = "NOACK (не добавлять записи в PEL)"
 
 [config_editor]
 title = "Управление конфигурацией"
@@ -1547,6 +1583,7 @@ follow_status_active = "Слежение за изменениями · синх
 follow_keyspace_disabled_warning = "Уведомления пространства ключей (K) отключены на исходном сервере."
 follow_enable_on_source = "Включить на источнике (CONFIG SET notify-keyspace-events KEA)"
 follow_disconnected_notice = "Поток слежения отключён (запустите «Проверить копию» для сверки)."
+format_redis_commands = "Команды Redis CLI (.redis)"
 
 [compare]
 title = "Сравнение ключей"
@@ -1641,6 +1678,9 @@ delete_key_title = "Удалить «%{key}»?"
 delete_key_body_bin = "Ключ можно восстановить из корзины в течение 24 часов, если его значение не больше 1 МБ."
 delete_key_body = "Это действие нельзя отменить."
 type_name_prompt = "Введите «%{server}», чтобы подтвердить"
+memory_purge_title = "Очистить память аллокатора на %{server}?"
+memory_purge_body = "MEMORY PURGE запрашивает у jemalloc на %{target} возврат грязных страниц ОС в основном потоке, что может кратковременно увеличить задержку."
+memory_purge_confirm = "Очистить память"
 
 [acl]
 title = "Пользователи ACL"
@@ -1803,6 +1843,10 @@ tag_values_label = "Значения %{field}"
 tag_values_empty = "Значений пока нет."
 tag_values_more = "… ещё %{count} — лучше сузьте их запросом"
 did_you_mean = "Возможно, вы имели в виду:"
+use_cursor = "WITHCURSOR"
+cursor_next = "Следующий пакет"
+cursor_close = "Закрыть курсор"
+cursor_active = "Курсор #%{id}"
 
 [functions]
 title = "Functions"
@@ -2048,6 +2092,7 @@ cmd_settings = "Открыть настройки"
 cmd_about = "О Zedis"
 about_keywords = "version build sha версия"
 recycle_bin_keywords = "корзина удалённые ключи восстановить trash deleted recycle"
+cmd_workbench = "Рабочая среда запросов"
 
 [persistence]
 title = "Персистентность"
@@ -3220,3 +3265,23 @@ empty_description = "Выберите команду, число потоков,
 stopped_toast = "Бенчмарк остановлен"
 completed_toast = "Бенчмарк завершён"
 
+[workbench]
+title = "Рабочая среда запросов"
+new_tab = "Новая вкладка запроса"
+close_tab = "Закрыть вкладку"
+run_all = "Выполнить всё"
+run_selection = "Выполнить выделенное"
+stop = "Стоп"
+snippets = "Сниппеты"
+save_snippet = "Сохранить сниппет"
+snippet_name = "Название сниппета"
+snippet_description = "Описание (необязательно)"
+no_snippets = "Сохранённых сниппетов пока нет."
+delete_snippet = "Удалить сниппет"
+params_label = "Параметры"
+results_text = "Текст"
+results_table = "Таблица"
+results_json = "JSON"
+empty_results = "Введите по одной команде Redis на строку ({{param}} для параметров) и нажмите «Выполнить всё»."
+statement_ok = "ОК"
+statement_err = "ОШИБКА"

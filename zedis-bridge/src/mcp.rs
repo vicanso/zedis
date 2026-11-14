@@ -1857,6 +1857,8 @@ mod tests {
                 access_mode: zedis_connection::AccessMode::ReadWrite,
                 supports_rejson: false,
                 supports_search: false,
+                supports_timeseries: false,
+                supports_bf: false,
             }),
             info: Ok(vec![(
                 "10.0.0.1:6379".to_string(),

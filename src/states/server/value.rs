@@ -845,10 +845,12 @@ pub struct RedisValue {
     /// LFU access counter or LRU idle seconds — whichever this server's
     /// `maxmemory-policy` makes meaningful. The two are mutually exclusive.
     pub(crate) heat: HeatMetric,
-    /// Set when `data` is only the string's first [`VALUE_PREVIEW_BYTES`]:
+    /// Set when `data` is only a [`VALUE_PREVIEW_BYTES`] slice of the string:
     /// the string's whole length in bytes. Such a value is a read-only
     /// preview — saved, it would cut the key down to what was fetched.
     pub(crate) preview_of: Option<u64>,
+    /// Starting byte offset of the currently loaded preview chunk.
+    pub(crate) preview_offset: u64,
 }
 
 impl RedisValue {
@@ -899,10 +901,15 @@ impl RedisValue {
         (self.is_loading() && self.key_type == KeyType::Unknown && self.size > 0).then_some(self.size)
     }
 
-    /// The string's whole length when only its first bytes were loaded (a
-    /// read-only preview), else `None`.
+    /// The string's whole length when only a chunk was loaded (a read-only
+    /// preview), else `None`.
     pub fn preview_of(&self) -> Option<u64> {
         self.preview_of
+    }
+
+    /// Byte offset of the loaded preview chunk (0 for the head or whole value).
+    pub fn preview_offset(&self) -> u64 {
+        self.preview_offset
     }
 
     /// The probed size when the load was skipped by the oversized-value

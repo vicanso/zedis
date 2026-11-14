@@ -30,7 +30,7 @@ use crate::{
         get_session_option, i18n_acl, i18n_benchmark, i18n_common, i18n_config_editor, i18n_functions, i18n_hotkeys,
         i18n_key_tree, i18n_keyspace_notifications, i18n_lua_scripts, i18n_monitor, i18n_persistence, i18n_search,
         i18n_server_info, i18n_server_load, i18n_sidebar, i18n_status_bar, i18n_timeseries, i18n_topology,
-        i18n_value_search, save_session_option,
+        i18n_value_search, i18n_workbench, save_session_option,
     },
     views::confirm_dangerous_command,
 };
@@ -854,7 +854,7 @@ mod tests {
                     "Server Info (INFO)",
                     "Benchmark"
                 ],
-                vec!["Value Search", "Lua Scripts"],
+                vec!["Value Search", "Lua Scripts", "Query Workbench"],
                 vec![
                     "Recycle Bin…",
                     "Import Keys…",

@@ -70,6 +70,7 @@ pub mod json;
 pub mod key;
 mod link;
 pub mod list;
+pub mod module_create;
 mod open_key;
 pub mod persistence;
 mod prefs;
@@ -695,6 +696,16 @@ impl ZedisServerState {
     /// Whether the server has the RediSearch module loaded.
     pub fn supports_search(&self) -> bool {
         self.facts.supports_search()
+    }
+
+    /// Whether the server has the RedisTimeSeries module loaded.
+    pub fn supports_timeseries(&self) -> bool {
+        self.facts.supports_timeseries()
+    }
+
+    /// Whether the server has the RedisBloom (`bf`) module loaded.
+    pub fn supports_bf(&self) -> bool {
+        self.facts.supports_bf()
     }
 
     /// Whether writes are refused by something the user cannot switch: a
@@ -1510,6 +1521,8 @@ impl ZedisServerState {
                             access_mode,
                             supports_rejson,
                             supports_search,
+                            supports_timeseries,
+                            supports_bf,
                         }) => {
                             this.link.load_retries = 0;
                             this.link.link_failure = None;
@@ -1517,8 +1530,16 @@ impl ZedisServerState {
                             this.facts.set_topology(nodes, nodes_description);
                             #[cfg(not(target_family = "wasm"))]
                             this.note_sentinel_master_choice(cx);
-                            this.facts
-                                .note_connect(version.into(), databases, supports_rejson, supports_search);
+                            this.facts.note_connect(
+                                version.into(),
+                                databases,
+                                facts::ModuleFlags {
+                                    rejson: supports_rejson,
+                                    search: supports_search,
+                                    timeseries: supports_timeseries,
+                                    bf: supports_bf,
+                                },
+                            );
                             // Stamp the connection for the server list's
                             // "last used" order. Once per successful connect,
                             // and the write itself is a background task.

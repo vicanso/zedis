@@ -443,13 +443,14 @@ mod tests {
 
     const LOCALES: [&str; 8] = ["en", "zh", "de", "es", "fr", "ja", "pt", "ru"];
 
-    const KINDS: [DangerKind; 17] = [
+    const KINDS: [DangerKind; 18] = [
         DangerKind::FlushAll,
         DangerKind::FlushDb,
         DangerKind::ConfigSet,
         DangerKind::ConfigResetStat,
         DangerKind::ConfigRewrite,
         DangerKind::Debug,
+        DangerKind::MemoryPurge,
         DangerKind::Shutdown,
         DangerKind::ScriptFlush,
         DangerKind::FunctionDelete,

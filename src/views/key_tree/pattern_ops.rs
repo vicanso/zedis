@@ -316,24 +316,32 @@ impl Render for PatternOpsForm {
 
 /// Open the pattern-based bulk operations dialog.
 pub(super) fn open_pattern_ops_dialog(tree: &ZedisKeyTree, window: &mut Window, cx: &mut Context<ZedisKeyTree>) {
-    let server_state = tree.server_state.clone();
-    let (server_id, at, can_delete, can_mutate, show_condition, initial_pattern) = {
+    let keyword = tree.keyword_state.read(cx).value().trim().to_string();
+    let initial = if keyword.is_empty() {
+        String::new()
+    } else if keyword.contains('*') || keyword.contains('?') {
+        keyword
+    } else {
+        format!("*{keyword}*")
+    };
+    open_pattern_ops_dialog_with_pattern(tree.server_state.clone(), initial, window, cx);
+}
+
+/// Open the pattern-based bulk operations dialog pre-populated with `initial_pattern`.
+pub(crate) fn open_pattern_ops_dialog_with_pattern(
+    server_state: Entity<ZedisServerState>,
+    initial_pattern: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (server_id, at, can_delete, can_mutate, show_condition) = {
         let state = server_state.read(cx);
-        let keyword = tree.keyword_state.read(cx).value().trim().to_string();
-        let initial = if keyword.is_empty() {
-            String::new()
-        } else if keyword.contains('*') || keyword.contains('?') {
-            keyword
-        } else {
-            format!("*{keyword}*")
-        };
         (
             state.server_id().to_string(),
             state.at(),
             state.can(Capability::DeleteKeys),
             state.can(Capability::SetTtl),
             state.supports(floors::EXPIRE_CONDITIONS),
-            initial,
         )
     };
     if !can_delete && !can_mutate {

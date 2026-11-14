@@ -38,7 +38,7 @@ const REPLICATION_REJECT_MSG: &str =
 /// `[subscribe, channel, 1]`, nothing published ever appeared, and the next
 /// line was refused by the server until `UNSUBSCRIBE` (#191). Where the app
 /// has a panel for the job, the reason names it.
-pub(super) fn refusal(cmd_name: &str, args: &[String]) -> Option<String> {
+pub(crate) fn refusal(cmd_name: &str, args: &[String]) -> Option<String> {
     if is_blocking_command(cmd_name, args) {
         return Some(BLOCKING_REJECT_MSG.to_string());
     }
@@ -62,7 +62,7 @@ pub(super) fn refusal(cmd_name: &str, args: &[String]) -> Option<String> {
 /// typed. A line that does not parse is left to the run, which reports it,
 /// and so is one the terminal refuses ([`refusal`]): it is never sent, so
 /// there is nothing to unlock or confirm for it.
-pub(super) fn first_write_line(input: &str) -> Option<String> {
+pub(crate) fn first_write_line(input: &str) -> Option<String> {
     input.lines().map(str::trim).find_map(|line| {
         let parts = shlex::split(line)?;
         let (name, args) = parts.split_first()?;
@@ -104,7 +104,7 @@ fn is_blocking_command(cmd_name: &str, args: &[String]) -> bool {
 /// command. Any connection flags after it (`-h`, `-p`, …) are left untouched —
 /// the terminal already talks to the selected server, and a pasted flag
 /// failing loudly beats silently pretending to honor it.
-pub(super) fn strip_redis_cli_prefix(line: &str) -> &str {
+pub(crate) fn strip_redis_cli_prefix(line: &str) -> &str {
     let trimmed = line.trim_start();
     match trimmed.split_once(char::is_whitespace) {
         Some((first, rest)) if first.eq_ignore_ascii_case("redis-cli") => rest.trim_start(),

@@ -17,8 +17,9 @@
 //! `Render` impl. Split out of `editor.rs`.
 
 use super::*;
+use crate::connection::Capability;
 use crate::helpers::{has_file_dialogs, value_write_limit};
-use crate::views::past_write_limit;
+use crate::views::{open_zmpop_dialog, past_write_limit};
 
 /// The no-key screen's shortcut list, by hot key id — only actions that work
 /// with nothing selected (key-bound ones like save / TTL / rename / delete
@@ -277,26 +278,47 @@ impl ZedisEditor {
             )
     }
 
-    /// The strip above a preview: how much of the value is shown, that it is
-    /// read-only, and the way to the whole value.
+    /// The strip above a preview: how much of the value is shown, chunk
+    /// pagination (`GETRANGE`), that it is read-only, and the way to load the
+    /// whole value.
     fn render_preview_banner(&self, total: u64, cx: &mut Context<Self>) -> impl IntoElement {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-        let shown = self
-            .server_state
-            .read(cx)
-            .value()
-            .and_then(|v| v.bytes_value())
-            .map_or(0, |b| b.bytes.len() as u64);
-        let message: SharedString = t!(
-            "editor.value_preview_banner",
-            // Whole units: a text preview ends a byte or three short of the
-            // cap where the cut split a character, and "255.99 kB" is noise.
-            shown = format_size(shown, DECIMAL.decimal_places(0)),
-            size = format_size(total, DECIMAL),
-            locale = locale
-        )
-        .to_string()
-        .into();
+        let (offset, shown, busy) = {
+            let state = self.server_state.read(cx);
+            let val = state.value();
+            let offset = val.map_or(0, |v| v.preview_offset());
+            let shown = val.and_then(|v| v.bytes_value()).map_or(0, |b| b.bytes.len() as u64);
+            let busy = val.is_some_and(|v| v.is_busy());
+            (offset, shown, busy)
+        };
+        let step = VALUE_PREVIEW_BYTES as u64;
+        let end_byte = offset.saturating_add(shown).min(total);
+        let message: SharedString = if offset == 0 {
+            t!(
+                "editor.value_preview_banner",
+                shown = format_size(shown, DECIMAL.decimal_places(0)),
+                size = format_size(total, DECIMAL),
+                locale = locale
+            )
+            .to_string()
+            .into()
+        } else {
+            t!(
+                "editor.value_preview_range_banner",
+                start = format_size(offset, DECIMAL.decimal_places(0)),
+                end = format_size(end_byte, DECIMAL.decimal_places(0)),
+                size = format_size(total, DECIMAL),
+                locale = locale
+            )
+            .to_string()
+            .into()
+        };
+        let page_count = total.max(1).div_ceil(step);
+        let current_page = (offset / step) + 1;
+        let has_prev = offset > 0 && !busy;
+        let prev_offset = offset.saturating_sub(step);
+        let next_offset = (offset / step).saturating_add(1).saturating_mul(step);
+        let has_next = next_offset < total && !busy;
         let theme = cx.theme();
         h_flex()
             .flex_none()
@@ -316,6 +338,46 @@ impl ZedisEditor {
             )
             .child(Label::new(message).text_xs().text_color(theme.muted_foreground))
             .child(div().flex_1())
+            .when(page_count > 1, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(
+                            Button::new("value-preview-prev")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::ChevronLeft)
+                                .disabled(!has_prev)
+                                .tooltip(i18n_editor(cx, "preview_prev_chunk"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    if let Some(key) = this.server_state.read(cx).key() {
+                                        this.server_state
+                                            .update(cx, |state, cx| state.load_value_range(key, prev_offset, cx));
+                                    }
+                                })),
+                        )
+                        .child(
+                            Label::new(format!("{current_page} / {page_count}"))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child(
+                            Button::new("value-preview-next")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::ChevronRight)
+                                .disabled(!has_next)
+                                .tooltip(i18n_editor(cx, "preview_next_chunk"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    if let Some(key) = this.server_state.read(cx).key() {
+                                        this.server_state
+                                            .update(cx, |state, cx| state.load_value_range(key, next_offset, cx));
+                                    }
+                                })),
+                        ),
+                )
+            })
             .child(
                 Button::new("value-preview-load-whole")
                     .xsmall()
@@ -455,6 +517,22 @@ impl ZedisEditor {
                                     // current walk (ZRANGE up, ZREVRANGE
                                     // down), a click flips it.
                                     let server_state = ed.read(cx).server_state.clone();
+                                    let zmpop_eligible = {
+                                        let s = server_state.read(cx);
+                                        s.supports(floors::ZMPOP) && s.can(Capability::MutateContainer)
+                                    };
+                                    if zmpop_eligible {
+                                        let state_for_zmpop = server_state.clone();
+                                        buttons.push(
+                                            Button::new("zset-zmpop-btn")
+                                                .ghost()
+                                                .icon(IconName::ArrowRight)
+                                                .tooltip(i18n_zset_editor(cx, "zmpop_button"))
+                                                .on_click(move |_, window, cx| {
+                                                    open_zmpop_dialog(state_for_zmpop.clone(), window, cx);
+                                                }),
+                                        );
+                                    }
                                     if let Some(order) = server_state.read(cx).zset_sort_order() {
                                         let (icon, tooltip) = match order {
                                             SortOrder::Asc => {
@@ -1151,6 +1229,5 @@ impl Render for ZedisEditor {
             .into_any_element()
     }
 }
-use crate::connection::Capability;
 use crate::states::{MAX_MODULE_DUMP_BYTES, ModuleTypeId};
 use crate::states::{SortOrder, i18n_zset_editor};

@@ -18,6 +18,14 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ModuleFlags {
+    pub rejson: bool,
+    pub search: bool,
+    pub timeseries: bool,
+    pub bf: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct ServerFacts {
     /// Redis server version string
@@ -39,6 +47,12 @@ pub(super) struct ServerFacts {
     /// "Search" entry in the Tools dropdown so unrelated servers don't
     /// surface a useless menu item.
     supports_search: bool,
+
+    /// Whether the server has RedisTimeSeries loaded.
+    supports_timeseries: bool,
+
+    /// Whether the server has RedisBloom (`bf`) loaded.
+    supports_bf: bool,
 
     /// Which commands this server offers the connected user — probed in the
     /// background after connect, cached per server (shared across dbs), and
@@ -71,11 +85,13 @@ impl ServerFacts {
     }
 
     /// What else a connect learned.
-    pub(super) fn note_connect(&mut self, version: SharedString, databases: usize, rejson: bool, search: bool) {
+    pub(super) fn note_connect(&mut self, version: SharedString, databases: usize, modules: ModuleFlags) {
         self.version = version;
         self.databases = databases;
-        self.supports_rejson = rejson;
-        self.supports_search = search;
+        self.supports_rejson = modules.rejson;
+        self.supports_search = modules.search;
+        self.supports_timeseries = modules.timeseries;
+        self.supports_bf = modules.bf;
     }
 
     pub(super) fn set_features(&mut self, features: Arc<ServerFeatures>) {
@@ -138,6 +154,14 @@ impl ServerFacts {
 
     pub(super) fn supports_search(&self) -> bool {
         self.supports_search
+    }
+
+    pub(super) fn supports_timeseries(&self) -> bool {
+        self.supports_timeseries
+    }
+
+    pub(super) fn supports_bf(&self) -> bool {
+        self.supports_bf
     }
 
     #[cfg(not(target_family = "wasm"))]

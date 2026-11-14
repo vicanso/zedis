@@ -97,6 +97,10 @@ pub const SET_KEEPTTL: Floor = Floor::since_fork("6.0.0");
 pub const BITFIELD_RO: Floor = Floor::since_fork("6.0.0");
 /// `LCS` — longest common subsequence of two strings (Redis 7.0).
 pub const LCS: Floor = Floor::since_fork("7.0.0");
+/// `LMPOP` — pop elements from the first non-empty list (Redis 7.0).
+pub const LMPOP: Floor = Floor::since_fork("7.0.0");
+/// `ZMPOP` — pop members from the first non-empty sorted set (Redis 7.0).
+pub const ZMPOP: Floor = Floor::since_fork("7.0.0");
 /// `SCAN … TYPE` (Redis 6.0).
 pub const SCAN_TYPE: Floor = Floor::since_fork("6.0.0");
 /// The ACL family — `ACL USERS / GETUSER / SETUSER / WHOAMI` (Redis 6.0).

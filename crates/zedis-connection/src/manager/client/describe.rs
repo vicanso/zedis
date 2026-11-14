@@ -407,6 +407,18 @@ impl RedisClient {
         self.modules.iter().any(|(name, _)| name == "search")
     }
 
+    /// Whether RedisTimeSeries is loaded (`timeseries`).
+    pub fn supports_timeseries(&self) -> bool {
+        self.modules
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("timeseries"))
+    }
+
+    /// Whether RedisBloom / Valkey-Bloom is loaded (`bf`).
+    pub fn supports_bf(&self) -> bool {
+        self.modules.iter().any(|(name, _)| name.eq_ignore_ascii_case("bf"))
+    }
+
     /// Returns the number of master nodes.
     /// # Returns
     /// * `usize` - The number of master nodes.

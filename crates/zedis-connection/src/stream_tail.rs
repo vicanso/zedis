@@ -34,12 +34,24 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// value as its bytes, like a page's ([`crate::StreamEntry`]).
 pub type StreamTailEntry = (String, Vec<(String, Vec<u8>)>);
 
-/// A tail in progress. It starts at `$`, so only entries that arrive after
-/// [`open`](Self::open) are ever returned.
+/// Consumer-group mode for [`StreamTail::open_group`]: tails new entries (`>`)
+/// via `XREADGROUP GROUP group consumer …`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamGroupTailSpec {
+    pub group: String,
+    pub consumer: String,
+    /// Pass `NOACK` so tailed entries are not added to the PEL unless the
+    /// user explicitly wants consumer-group delivery tracking.
+    pub noack: bool,
+}
+
+/// A tail in progress. Plain mode starts at `$` (`XREAD`), consumer-group mode
+/// reads `>` (`XREADGROUP`), so only entries arriving after open are returned.
 pub struct StreamTail {
     conn: RedisAsyncConn,
     key: String,
     last_id: String,
+    group: Option<StreamGroupTailSpec>,
 }
 
 impl StreamTail {
@@ -54,24 +66,57 @@ impl StreamTail {
             conn,
             key: key.to_string(),
             last_id: "$".to_string(),
+            group: None,
         })
     }
 
-    /// One `XREAD COUNT count BLOCK block_ms` round. Empty when the block
-    /// timed out with nothing new; an error ends the tail.
+    /// Dial a dedicated connection for `XREADGROUP GROUP group consumer … >`.
+    pub async fn open_group(at: &ServerDb, key: &str, spec: StreamGroupTailSpec) -> Result<Self> {
+        let conn = at.dedicated_connection().await?;
+        Ok(Self {
+            conn,
+            key: key.to_string(),
+            last_id: ">".to_string(),
+            group: Some(spec),
+        })
+    }
+
+    /// One `XREAD` / `XREADGROUP` round. Empty when the block timed out with
+    /// nothing new; an error ends the tail.
     pub async fn next_batch(&mut self, block_ms: u64, count: usize) -> Result<Vec<StreamTailEntry>> {
-        let reply: Value = cmd("XREAD")
-            .arg("COUNT")
-            .arg(count)
-            .arg("BLOCK")
-            .arg(block_ms)
-            .arg("STREAMS")
-            .arg(&self.key)
-            .arg(&self.last_id)
-            .query_async(&mut self.conn)
-            .await?;
+        let reply: Value = if let Some(spec) = &self.group {
+            let mut c = cmd("XREADGROUP");
+            c.arg("GROUP")
+                .arg(&spec.group)
+                .arg(&spec.consumer)
+                .arg("COUNT")
+                .arg(count)
+                .arg("BLOCK")
+                .arg(block_ms);
+            if spec.noack {
+                c.arg("NOACK");
+            }
+            c.arg("STREAMS")
+                .arg(&self.key)
+                .arg(">")
+                .query_async(&mut self.conn)
+                .await?
+        } else {
+            cmd("XREAD")
+                .arg("COUNT")
+                .arg(count)
+                .arg("BLOCK")
+                .arg(block_ms)
+                .arg("STREAMS")
+                .arg(&self.key)
+                .arg(&self.last_id)
+                .query_async(&mut self.conn)
+                .await?
+        };
         let entries = parse_xread(&reply);
-        if let Some((id, _)) = entries.last() {
+        if self.group.is_none()
+            && let Some((id, _)) = entries.last()
+        {
             self.last_id = id.clone();
         }
         Ok(entries)

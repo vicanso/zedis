@@ -229,6 +229,13 @@ impl ZedisStatusBar {
                 &[],
                 false,
             ),
+            tool(
+                i18n_workbench(cx, "title"),
+                Icon::new(IconName::SquareTerminal),
+                ServerToolsAction::Workbench,
+                &[],
+                false,
+            ),
         ]
         .into_iter()
         .flatten()

@@ -74,6 +74,10 @@ use zedis_connection::{
     script_flush, stream_ack_delete, stream_nack,
 };
 use zedis_connection::{
+    BfReserve, CfReserve, StreamGroupTailSpec, TsCreate, bf_reserve, cf_reserve, ft_aggregate_cursor, ft_cursor_del,
+    ft_cursor_read, list_move, list_mpop, memory_purge, string_range, ts_create, zset_mpop,
+};
+use zedis_connection::{
     CopyLoss, SearchableType, ValueSearchSpec, copy_preflight, multi_search_exact, multi_search_scan, scan_values_round,
 };
 use zedis_connection::{DebugCommand, DebugLine, DebugMode, LuaDebugSession};

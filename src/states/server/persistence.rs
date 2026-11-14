@@ -21,8 +21,8 @@
 //! command to all masters and kicks an immediate `INFO` refresh so the
 //! in-progress flag flips into the UI without waiting for the heartbeat.
 
-use crate::connection::{Capability, bgrewriteaof, bgsave, bgsave_cancel};
-use crate::states::{ServerTask, ZedisServerState, i18n_persistence};
+use crate::connection::{Capability, bgrewriteaof, bgsave, bgsave_cancel, memory_purge};
+use crate::states::{ServerTask, ZedisServerState, i18n_memory_analysis, i18n_persistence};
 use gpui::prelude::*;
 
 impl ZedisServerState {
@@ -110,6 +110,32 @@ impl ZedisServerState {
                     this.emit_success_notification(
                         i18n_persistence(cx, "bgrewriteaof_started_message"),
                         i18n_persistence(cx, "bgrewriteaof_started_title"),
+                        cx,
+                    );
+                    this.refresh_redis_info(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Fan-out `MEMORY PURGE` across every master to release dirty jemalloc
+    /// pages back to the OS, then refresh `INFO memory` metrics immediately.
+    pub fn memory_purge(&mut self, cx: &mut Context<Self>) {
+        if !self.can(Capability::PersistenceWrite) {
+            self.emit_warning_notification(i18n_persistence(cx, "readonly_blocked"), cx);
+            return;
+        }
+
+        let at = self.at_confirmed();
+        self.spawn(
+            ServerTask::MemoryPurge,
+            move || async move { Ok(memory_purge(&at).await?) },
+            |this, result, cx| {
+                if result.is_ok() {
+                    this.emit_success_notification(
+                        i18n_memory_analysis(cx, "memory_purge_done"),
+                        i18n_memory_analysis(cx, "remediate_memory_purge"),
                         cx,
                     );
                     this.refresh_redis_info(cx);

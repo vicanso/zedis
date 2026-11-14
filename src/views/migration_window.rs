@@ -1412,7 +1412,7 @@ mod tests {
 
         frame(cx, handle, |window, cx| {
             assert_eq!(radios(window, "migration-destination"), 2);
-            assert_eq!(radios(window, "migration-export-format"), 3);
+            assert_eq!(radios(window, "migration-export-format"), 4);
             assert_eq!(radios(window, "migration-copy-conflict"), 0);
             assert_eq!(radios(window, "migration-conflict-mode"), 0);
             assert_eq!(

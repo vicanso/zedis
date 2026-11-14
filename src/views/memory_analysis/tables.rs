@@ -18,6 +18,7 @@
 //! write out.
 
 use super::*;
+use crate::views::open_pattern_ops_dialog_with_pattern;
 use gpui::WeakEntity;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -352,6 +353,7 @@ pub(super) fn prefix_table(
     ];
     let search_tooltip = i18n_common(cx, "search_prefix_tooltip");
     let drill_tooltip = i18n_memory_analysis(cx, "prefix_drill_tooltip");
+    let pattern_tooltip = i18n_memory_analysis(cx, "remediate_pattern_ops");
     let jump: CellActionProvider = Rc::new(move |col_ix, cells| {
         let mut actions = Vec::new();
         if col_ix != 0 {
@@ -375,11 +377,23 @@ pub(super) fn prefix_table(
         if !offline.get()
             && let Some(prefix) = cells.first().cloned()
         {
-            let server_state = server_state.clone();
+            let server_state_search = server_state.clone();
+            let prefix_search = prefix.clone();
             actions.push(CellAction {
                 icon: IconName::Search,
                 tooltip: search_tooltip.clone(),
-                on_click: Rc::new(move |_window, cx| search_keys_in_tree(&server_state, prefix.clone(), cx)),
+                on_click: Rc::new(move |_window, cx| {
+                    search_keys_in_tree(&server_state_search, prefix_search.clone(), cx)
+                }),
+            });
+            let server_state_ops = server_state.clone();
+            let pattern = normalize_prefix_glob(prefix.as_ref());
+            actions.push(CellAction {
+                icon: IconName::Settings,
+                tooltip: pattern_tooltip.clone(),
+                on_click: Rc::new(move |window, cx| {
+                    open_pattern_ops_dialog_with_pattern(server_state_ops.clone(), pattern.clone(), window, cx);
+                }),
             });
         }
         actions

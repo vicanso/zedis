@@ -19,12 +19,16 @@ use super::{
 };
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{ServerDb, list_len, list_push_many, list_range, list_set_if_unchanged, remove_list_indexes},
+    connection::{
+        Capability, FromEnd, ServerDb, list_len, list_move, list_mpop, list_push_many, list_range,
+        list_set_if_unchanged, remove_list_indexes,
+    },
     error::Error,
-    states::ServerEvent,
+    states::{ServerEvent, ZedisGlobalStore, i18n_list_editor},
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
+use rust_i18n::t;
 use std::sync::Arc;
 use zedis_core::change_log::ChangeEntry;
 
@@ -384,6 +388,136 @@ impl ZedisServerState {
                     value.status = RedisValueStatus::Idle;
                 }
                 cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Atomically pop one element from the selected list and push it onto
+    /// `destination` (`LMOVE source destination LEFT|RIGHT LEFT|RIGHT`).
+    pub fn move_list_element(&mut self, destination: SharedString, from: FromEnd, to: FromEnd, cx: &mut Context<Self>) {
+        if !self.can(Capability::MutateContainer) || self.refuse_while_offline(cx) {
+            return;
+        }
+        let Some(source) = self.open.key.clone() else {
+            return;
+        };
+        let destination: SharedString = destination.trim().to_string().into();
+        if destination.is_empty() {
+            return;
+        }
+        let at = self.at();
+        let src_arg = source.to_string();
+        let dst_arg = destination.to_string();
+        let from_label = match from {
+            FromEnd::Head => "LEFT",
+            FromEnd::Tail => "RIGHT",
+        };
+        let to_label = match to {
+            FromEnd::Head => "LEFT",
+            FromEnd::Tail => "RIGHT",
+        };
+        let log_desc = format!("LMOVE {dst_arg} {from_label} {to_label}");
+        self.spawn_with_arg(
+            ServerTask::RunKeyOperation,
+            source.clone(),
+            move || async move { Ok(list_move(&at, &src_arg, &dst_arg, from, to).await?) },
+            move |this, result, cx| {
+                let Ok(moved) = result else {
+                    return;
+                };
+                this.record_changes(source.clone(), vec![ChangeEntry::operation(unix_ts(), log_desc)]);
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match moved {
+                    Some(raw) => {
+                        let preview = String::from_utf8_lossy(&raw).to_string();
+                        let msg: SharedString = t!(
+                            "list_editor.moved_toast",
+                            dest = destination.as_ref(),
+                            value = preview,
+                            locale = locale
+                        )
+                        .to_string()
+                        .into();
+                        this.emit_info_notification(msg, cx);
+                        if !this.scan.keys.contains_key(&destination) {
+                            this.scan.keys.insert(destination.clone(), KeyType::List);
+                            Arc::make_mut(&mut this.scan.key_ttls).insert(destination, -1);
+                            this.scan.renew_tree_id();
+                            cx.emit(ServerEvent::KeyTreeUpdated);
+                            this.refresh_dbsize_now(cx);
+                        }
+                    }
+                    None => {
+                        this.emit_info_notification(i18n_list_editor(cx, "mpop_empty_toast"), cx);
+                    }
+                }
+                this.reload_value(source, cx);
+            },
+            cx,
+        );
+    }
+
+    /// Multi-key list pop (`LMPOP numkeys key… LEFT|RIGHT COUNT count`, Redis 7.0+).
+    pub fn mpop_list_elements(
+        &mut self,
+        extra_keys: Vec<SharedString>,
+        side: FromEnd,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can(Capability::MutateContainer) || self.refuse_while_offline(cx) {
+            return;
+        }
+        let Some(primary_key) = self.open.key.clone() else {
+            return;
+        };
+        let mut keys = vec![primary_key.to_string()];
+        for extra in extra_keys {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() && !keys.iter().any(|k| k == trimmed) {
+                keys.push(trimmed.to_string());
+            }
+        }
+        let at = self.at();
+        let count = count.max(1);
+        let side_label = match side {
+            FromEnd::Head => "LEFT",
+            FromEnd::Tail => "RIGHT",
+        };
+        let log_desc = format!("LMPOP {} {side_label} COUNT {count}", keys.len());
+        self.spawn_with_arg(
+            ServerTask::RunKeyOperation,
+            primary_key.clone(),
+            move || async move {
+                let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                Ok(list_mpop(&at, &refs, side, count).await?)
+            },
+            move |this, result, cx| {
+                let Ok(popped) = result else {
+                    return;
+                };
+                this.record_changes(primary_key.clone(), vec![ChangeEntry::operation(unix_ts(), log_desc)]);
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match popped {
+                    Some((popped_key, items)) => {
+                        let rendered: Vec<String> =
+                            items.iter().map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+                        let msg: SharedString = t!(
+                            "key_ops.result_removed",
+                            count = rendered.len(),
+                            items = format!("[{popped_key}] {}", rendered.join(", ")),
+                            locale = locale
+                        )
+                        .to_string()
+                        .into();
+                        this.emit_info_notification(msg, cx);
+                    }
+                    None => {
+                        this.emit_info_notification(i18n_list_editor(cx, "mpop_empty_toast"), cx);
+                    }
+                }
+                this.reload_value(primary_key, cx);
             },
             cx,
         );

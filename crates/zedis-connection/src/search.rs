@@ -32,6 +32,9 @@ use crate::reply;
 use crate::server_db::ServerDb;
 use redis::{Cmd, Value, cmd};
 
+mod cursor;
+pub use cursor::{AggregateCursorResult, ft_aggregate_cursor, ft_cursor_del, ft_cursor_read};
+
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Field categories RediSearch can index. The set tracks the official
@@ -596,6 +599,16 @@ fn aggregate_fields(opts: &AggregateOptions) -> Vec<String> {
 /// single `count`. RediSearch is sent no `LOAD`: there a SORTABLE field is
 /// read from the index, and `LOAD` would read the hash instead.
 fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions, load_fields: bool) -> Cmd {
+    aggregate_cmd_with_cursor(index, query, opts, load_fields, None)
+}
+
+pub(super) fn aggregate_cmd_with_cursor(
+    index: &str,
+    query: &str,
+    opts: &AggregateOptions,
+    load_fields: bool,
+    cursor_count: Option<u32>,
+) -> Cmd {
     let mut c = cmd("FT.AGGREGATE");
     c.arg(index).arg(query);
     if !opts.group_by.is_empty() {
@@ -623,8 +636,13 @@ fn aggregate_cmd(index: &str, query: &str, opts: &AggregateOptions, load_fields:
             }
         }
     }
-    if let Some((offset, count)) = opts.limit {
+    if cursor_count.is_none()
+        && let Some((offset, count)) = opts.limit
+    {
         c.arg("LIMIT").arg(offset).arg(count);
+    }
+    if let Some(read_count) = cursor_count {
+        c.arg("WITHCURSOR").arg("COUNT").arg(read_count.max(1));
     }
     push_params(&mut c, &opts.params);
     push_dialect(&mut c, opts.dialect);
@@ -1136,7 +1154,7 @@ fn extract_scalar_pairs(items: &[Value]) -> Option<Vec<(String, String)>> {
         .collect()
 }
 
-fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
+pub(super) fn parse_aggregate(value: &Value) -> Option<AggregateResult> {
     let items = match value {
         Value::Array(items) => items,
         _ => return None,

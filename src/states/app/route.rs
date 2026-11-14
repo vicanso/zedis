@@ -69,6 +69,8 @@ pub enum ServerView {
     /// Built-in interactive Redis benchmark (`GET`, `SET`, `INCR`, `LPUSH`,
     /// `HSET`, `ZADD` with pipelining, latency histogram, and run comparison).
     Benchmark,
+    /// Multi-tab parameterized Redis query workbench with saved snippets.
+    Workbench,
 }
 
 impl Route {
@@ -137,6 +139,7 @@ impl ServerView {
             ServerView::ServerInfo => "serverinfo",
             ServerView::TimeSeriesExplorer => "timeseriesexplorer",
             ServerView::Benchmark => "benchmark",
+            ServerView::Workbench => "workbench",
         }
     }
     /// The probed commands this panel cannot function without — when one is
@@ -165,7 +168,8 @@ impl ServerView {
             | ServerView::Search
             | ServerView::LuaScripts
             | ServerView::Topology
-            | ServerView::Benchmark => &[],
+            | ServerView::Benchmark
+            | ServerView::Workbench => &[],
         }
     }
 
@@ -183,7 +187,7 @@ impl ServerView {
     pub const fn survives_navigation(self) -> bool {
         matches!(
             self,
-            ServerView::MemoryAnalysis | ServerView::ValueSearch | ServerView::Benchmark
+            ServerView::MemoryAnalysis | ServerView::ValueSearch | ServerView::Benchmark | ServerView::Workbench
         )
     }
 
@@ -215,6 +219,7 @@ impl ServerView {
             "serverinfo" => ServerView::ServerInfo,
             "timeseriesexplorer" => ServerView::TimeSeriesExplorer,
             "benchmark" => ServerView::Benchmark,
+            "workbench" => ServerView::Workbench,
             _ => return None,
         })
     }
@@ -249,13 +254,14 @@ mod tests {
             "serverinfo",
             "timeseriesexplorer",
             "benchmark",
+            "workbench",
         ] {
             let view = ServerView::from_name(name).expect(name);
             assert_eq!(view.as_str(), name);
             assert!(view.in_this_build(), "{name}");
             // A result the user ran is kept across navigation; a panel that
             // only shows what the server says now is rebuilt.
-            let ran_by_the_user = matches!(name, "memoryanalysis" | "valuesearch" | "benchmark");
+            let ran_by_the_user = matches!(name, "memoryanalysis" | "valuesearch" | "benchmark" | "workbench");
             assert_eq!(view.survives_navigation(), ran_by_the_user, "{name}");
         }
     }

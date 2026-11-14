@@ -29,8 +29,11 @@
 #[cfg(target_family = "wasm")]
 use crate::bridge::{BridgePipeline as _, BridgeQuery as _};
 use crate::error::Error;
+use crate::floors;
+use crate::key_ops::FromEnd;
+use crate::reply;
 use crate::server_db::ServerDb;
-use redis::{cmd, pipe};
+use redis::{Value, cmd, pipe};
 use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -115,4 +118,98 @@ pub async fn list_set_if_unchanged(
     }
     let _: () = cmd("LSET").arg(key).arg(index).arg(value).query_async(conn).await?;
     Ok(true)
+}
+
+fn end_side(end: FromEnd) -> &'static str {
+    match end {
+        FromEnd::Head => "LEFT",
+        FromEnd::Tail => "RIGHT",
+    }
+}
+
+/// `LMOVE source destination LEFT|RIGHT LEFT|RIGHT` (Redis 6.2+).
+/// Returns the moved element, or `None` when `source` was empty.
+pub async fn list_move(
+    at: &ServerDb,
+    source: &str,
+    destination: &str,
+    from: FromEnd,
+    to: FromEnd,
+) -> Result<Option<Vec<u8>>> {
+    let reply: Option<Vec<u8>> = cmd("LMOVE")
+        .arg(source)
+        .arg(destination)
+        .arg(end_side(from))
+        .arg(end_side(to))
+        .query_async(&mut at.connection().await?)
+        .await?;
+    Ok(reply)
+}
+
+/// `LMPOP numkeys key… LEFT|RIGHT COUNT count` (Redis 7.0+).
+/// Returns `(popped_key, elements)`, or `None` when every list was empty.
+pub async fn list_mpop(
+    at: &ServerDb,
+    keys: &[&str],
+    side: FromEnd,
+    count: usize,
+) -> Result<Option<(String, Vec<Vec<u8>>)>> {
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    let client = at.client().await?;
+    if !client.supports(floors::LMPOP) {
+        return Err(Error::Invalid {
+            message: "LMPOP requires Redis 7.0 or Valkey 7.2+".to_string(),
+        });
+    }
+    let mut conn = client.connection();
+    let mut c = cmd("LMPOP");
+    c.arg(keys.len());
+    for key in keys {
+        c.arg(*key);
+    }
+    c.arg(end_side(side)).arg("COUNT").arg(count.max(1));
+    let raw: Value = c.query_async(&mut conn).await?;
+    Ok(parse_list_mpop(&raw))
+}
+
+fn parse_list_mpop(value: &Value) -> Option<(String, Vec<Vec<u8>>)> {
+    match value {
+        Value::Nil => None,
+        Value::Array(pair) if pair.len() == 2 => {
+            let key = reply::text_lossy(&pair[0])?;
+            let Value::Array(items) = &pair[1] else {
+                return None;
+            };
+            let elems = items
+                .iter()
+                .filter_map(|v| reply::bytes(v).or_else(|| reply::text_lossy(v).map(String::into_bytes)))
+                .collect();
+            Some((key, elems))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_list_mpop;
+    use redis::Value;
+
+    #[test]
+    fn list_mpop_parses_nil_and_popped_elements() {
+        assert_eq!(parse_list_mpop(&Value::Nil), None);
+        let reply = Value::Array(vec![
+            Value::BulkString(b"queue:a".to_vec()),
+            Value::Array(vec![
+                Value::BulkString(b"job-1".to_vec()),
+                Value::BulkString(vec![0xff, 0x00]),
+            ]),
+        ]);
+        assert_eq!(
+            parse_list_mpop(&reply),
+            Some(("queue:a".to_string(), vec![b"job-1".to_vec(), vec![0xff, 0x00]]))
+        );
+    }
 }

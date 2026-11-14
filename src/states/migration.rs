@@ -21,8 +21,9 @@
 use crate::connection::{
     ConflictMode, DumpEntry, DumpHeader, DumpReader, DumpWriter, ImportFormat, ReadLimits, ReadableEntry,
     ReadableWriteStatus, RestoreStatus, ServerDb, csv_header, detect_import_format, dump_keys_chunk, entry_to_csv,
-    entry_to_json, get_server, is_foreign_payload, parse_readable_entries, read_readable_chunk, restore_keys_chunk,
-    restore_or_recreate_chunk, scan_pattern_batch, server_summary, ttl_left, write_readable_chunk,
+    entry_to_json, entry_to_redis_commands, get_server, is_foreign_payload, parse_readable_entries,
+    read_readable_chunk, restore_keys_chunk, restore_or_recreate_chunk, scan_pattern_batch, server_summary, ttl_left,
+    write_readable_chunk,
 };
 use crate::db::{JobManager, StoredJobRecord};
 use crate::error::Error;
@@ -346,6 +347,7 @@ pub enum ExportFormat {
     Binary,
     Json,
     Csv,
+    CommandScript,
 }
 
 impl ExportFormat {
@@ -355,12 +357,14 @@ impl ExportFormat {
             ExportFormat::Binary => 0,
             ExportFormat::Json => 1,
             ExportFormat::Csv => 2,
+            ExportFormat::CommandScript => 3,
         }
     }
     pub fn from_index(index: usize) -> Self {
         match index {
             1 => ExportFormat::Json,
             2 => ExportFormat::Csv,
+            3 => ExportFormat::CommandScript,
             _ => ExportFormat::Binary,
         }
     }
@@ -370,6 +374,7 @@ impl ExportFormat {
             ExportFormat::Binary => "zedis-dump",
             ExportFormat::Json => "json",
             ExportFormat::Csv => "csv",
+            ExportFormat::CommandScript => "redis",
         }
     }
 }
@@ -831,7 +836,7 @@ async fn run_export(
 
     let result = match spec.format {
         ExportFormat::Binary => export_worker(handle.clone(), cx, spec, &mut checkpoint, cancel.clone()).await,
-        ExportFormat::Json | ExportFormat::Csv => {
+        ExportFormat::Json | ExportFormat::Csv | ExportFormat::CommandScript => {
             readable_export_worker(handle.clone(), cx, spec, &mut checkpoint, cancel.clone()).await
         }
     };
@@ -1020,6 +1025,7 @@ async fn readable_export_worker(
             match format {
                 ExportFormat::Json => writer.write_all(b"[")?,
                 ExportFormat::Csv => writer.write_all(csv_header().as_bytes())?,
+                ExportFormat::CommandScript => {}
                 ExportFormat::Binary => unreachable!("binary goes through export_worker"),
             }
             Ok(writer)
@@ -1061,6 +1067,7 @@ async fn readable_export_worker(
                             payload.push_str(&entry_to_json(entry).to_string());
                         }
                         ExportFormat::Csv => payload.push_str(&entry_to_csv(entry)),
+                        ExportFormat::CommandScript => payload.push_str(&entry_to_redis_commands(entry)),
                         ExportFormat::Binary => unreachable!(),
                     }
                     let (status, message) = if entry.value.is_some() {

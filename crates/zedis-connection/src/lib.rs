@@ -202,7 +202,9 @@ pub use keyspace::{
 pub use latency::{
     LatencyEvent, LatencySample, latency_history, latency_latest, latency_monitor_threshold, latency_reset,
 };
-pub use list_ops::{list_len, list_push, list_push_many, list_range, list_set_if_unchanged, remove_list_indexes};
+pub use list_ops::{
+    list_len, list_move, list_mpop, list_push, list_push_many, list_range, list_set_if_unchanged, remove_list_indexes,
+};
 pub use logical_copy::{
     CopyLoss, CopyPreflight, copy_key_logically, copy_preflight, is_foreign_payload, restore_or_recreate_chunk,
 };
@@ -220,15 +222,17 @@ pub use manager::{account_is_read_only_on, set_account_read_only_on};
 #[cfg(not(target_family = "wasm"))]
 pub use master_key::disable_keychain;
 pub use module_ops::{
-    TS_AGGREGATORS, TsAlter, TsInfo, TsMRange, TsRule, TsSeries, TsWindow, has_positive_matcher, ts_add, ts_alter,
-    ts_create_rule, ts_delete_rule, ts_mrange, ts_window,
+    TS_AGGREGATORS, TS_DUPLICATE_POLICIES, TsAlter, TsCreate, TsInfo, TsMRange, TsRule, TsSeries, TsWindow,
+    has_positive_matcher, ts_add, ts_alter, ts_create, ts_create_rule, ts_delete_rule, ts_mrange, ts_window,
 };
 pub use multi_search::{MultiSearchHit, MultiSearchServerResult, multi_search_exact, multi_search_scan};
 pub use panel_ops::{
     cluster_slot_stats, command_stats, hotkeys_report, hotkeys_reset, hotkeys_start, hotkeys_stop, key_bytes,
     key_size_distributions, maxmemory_policy, pubsub_channels, sample_memory_usage, scan_values_round, value_preview,
 };
-pub use probabilistic::{ProbInfo, ProbKind, ProbeOutcome, prob_info, prob_probe};
+pub use probabilistic::{
+    BfReserve, CfReserve, ProbInfo, ProbKind, ProbeOutcome, bf_reserve, cf_reserve, prob_info, prob_probe,
+};
 pub use probe::{
     get_server_features, get_server_heat_probe, invalidate_server_features, note_server_command_error,
     probe_server_features,
@@ -236,7 +240,7 @@ pub use probe::{
 pub use read_only::{is_read_only_command, reveals_secrets};
 pub use readable_export::{
     ReadLimits, ReadableDocument, ReadableEntry, ReadableValue, csv_header, entry_to_csv, entry_to_json,
-    next_stream_id, read_readable_chunk,
+    entry_to_redis_commands, next_stream_id, read_readable_chunk,
 };
 pub use readable_import::{
     ImportFormat, ReadableWriteStatus, parse_readable_entries, sniff_import_format, write_readable_chunk,
@@ -258,8 +262,8 @@ pub use server_config::{
 pub use server_db::ServerDb;
 pub use server_ops::{
     ServerSummary, bgrewriteaof, bgsave, bgsave_cancel, dbsize, failover, failover_abort, flush_all, flush_db,
-    forget_client, forget_server, heartbeat_probe, lock_writes, master_infos, replicaof, replicaof_no_one,
-    server_summary, server_supports, slow_logs, unlock_writes,
+    forget_client, forget_server, heartbeat_probe, lock_writes, master_infos, memory_purge, replicaof,
+    replicaof_no_one, server_summary, server_supports, slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
 pub use set_ops::{set_add, set_card, set_ismember, set_remove, set_replace_member, set_scan};
@@ -272,8 +276,10 @@ pub use stream_ops::{
     pending_page, stream_ack, stream_ack_delete, stream_ack_many, stream_add, stream_autoclaim, stream_claim,
     stream_delete, stream_entry, stream_info, stream_len, stream_nack, stream_page, stream_set_id, stream_trim,
 };
-pub use stream_tail::{StreamTail, StreamTailEntry};
-pub use string_ops::{StringWrite, json_get, json_merge, json_set, string_get, string_lcs, string_prefix, string_set};
+pub use stream_tail::{StreamGroupTailSpec, StreamTail, StreamTailEntry};
+pub use string_ops::{
+    StringWrite, json_get, json_merge, json_set, string_get, string_lcs, string_prefix, string_range, string_set,
+};
 /// A held socket the server pushes on — Pub/Sub, `MONITOR`. The page cannot
 /// hold one: there the bridge does, and the same types poll it (ADR 9,
 /// amended 2026-10-17).
@@ -332,10 +338,10 @@ pub use manager::{
     unassigned_slot_ranges,
 };
 pub use search::{
-    AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind, FieldSchema, IndexInfo,
-    ReducerFn, ReducerSpec, SearchOptions, SearchResult, SpellingSuggestion, escape_tag_value, ft_aggregate,
-    ft_alter_add, ft_create, ft_dropindex, ft_explain, ft_info, ft_list, ft_profile, ft_search, ft_spellcheck,
-    ft_tagvals,
+    AggregateCursorResult, AggregateOptions, AggregateResult, CreateFieldSpec, CreateIndexOptions, FieldKind,
+    FieldSchema, IndexInfo, ReducerFn, ReducerSpec, SearchOptions, SearchResult, SpellingSuggestion, escape_tag_value,
+    ft_aggregate, ft_aggregate_cursor, ft_alter_add, ft_create, ft_cursor_del, ft_cursor_read, ft_dropindex,
+    ft_explain, ft_info, ft_list, ft_profile, ft_search, ft_spellcheck, ft_tagvals,
 };
 // The capability matrix is pure logic and lives in `zedis-core`; re-exported
 // here so call sites keep using `crate::connection::Capability` unchanged.
@@ -343,7 +349,8 @@ pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
 pub use zset_ops::{
-    ScoredMember, zset_card, zset_count_by_score, zset_put, zset_range, zset_range_by_score, zset_remove, zset_scan,
+    ScoredMember, zset_card, zset_count_by_score, zset_mpop, zset_put, zset_range, zset_range_by_score, zset_remove,
+    zset_scan,
 };
 /// Sweep what has gone stale. The client cache is swept on both targets; the
 /// socket pool and the SSH session store exist only where there are sockets.

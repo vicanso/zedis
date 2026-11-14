@@ -70,6 +70,7 @@ use zedis_ui::ZedisTextTable;
 use zedis_ui::{ZedisDivider, fitted_table, help_popover, hint_banner};
 
 mod export;
+mod remediation;
 mod render;
 mod report;
 mod rules;
@@ -78,6 +79,7 @@ mod schema_dialog;
 mod stats;
 mod tables;
 
+use remediation::*;
 use rules::*;
 use schema_dialog::*;
 use stats::*;

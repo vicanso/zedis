@@ -61,6 +61,8 @@ const WRITES: &[&str] = &[
     "INCR",
     "INCRBY",
     "INCRBYFLOAT",
+    "LMOVE",
+    "LMPOP",
     "LPUSH",
     "LREM",
     "LSET",
@@ -81,6 +83,7 @@ const WRITES: &[&str] = &[
     "VSETATTR",
     "ZADD",
     "ZINCRBY",
+    "ZMPOP",
     "ZREM",
     // Streams.
     "XACK",
@@ -95,11 +98,14 @@ const WRITES: &[&str] = &[
     "XGROUP DESTROY",
     "XGROUP SETID",
     "XNACK",
+    "XREADGROUP",
     "XSETID",
     "XTRIM",
     // Modules.
     "BF.ADD",
+    "BF.RESERVE",
     "CF.ADD",
+    "CF.RESERVE",
     "CMS.INCRBY",
     "FT.ALTER",
     "FT.CREATE",
@@ -110,6 +116,7 @@ const WRITES: &[&str] = &[
     "TOPK.ADD",
     "TS.ADD",
     "TS.ALTER",
+    "TS.CREATE",
     "TS.CREATERULE",
     "TS.DELETERULE",
     // Scripting: may write whatever the script says.
@@ -140,6 +147,7 @@ const WRITES: &[&str] = &[
     "HOTKEYS RESET",
     "HOTKEYS STOP",
     "LATENCY",
+    "MEMORY PURGE",
     "MIGRATE",
     "REPLICAOF",
     "REPLICAOF NO",
@@ -164,7 +172,7 @@ const WRITES: &[&str] = &[
 /// nothing to decide here; naming them keeps the scanner's blind spot
 /// visible instead of letting it look like an unclassified command.
 const JUDGED_BY_SUBCOMMAND: &[&str] = &[
-    "ACL", "CLIENT", "CLUSTER", "CONFIG", "HOTKEYS", "OBJECT", "PUBSUB", "SENTINEL",
+    "ACL", "CLIENT", "CLUSTER", "CONFIG", "HOTKEYS", "MEMORY", "OBJECT", "PUBSUB", "SENTINEL",
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -25,8 +25,8 @@
 
 use crate::error::Error;
 use crate::{
-    KeyMetadata, LuaScript, LuaScriptManager, ProtoConfig, ProtoManager, ScriptConfig, ScriptManager,
-    get_favorites_manager, get_key_metadata_manager,
+    KeyMetadata, LuaScript, LuaScriptManager, ProtoConfig, ProtoManager, ScriptConfig, ScriptManager, WorkbenchManager,
+    WorkbenchSnippet, get_favorites_manager, get_key_metadata_manager,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,6 +49,7 @@ pub struct LocalDataBackup {
     pub favorites: Vec<ServerFavorites>,
     pub script_viewers: Vec<Stored<ScriptConfig>>,
     pub lua_scripts: Vec<Stored<LuaScript>>,
+    pub workbench_snippets: Vec<Stored<WorkbenchSnippet>>,
     pub protos: Vec<Stored<ProtoConfig>>,
 }
 
@@ -84,6 +85,7 @@ pub struct ImportSummary {
     pub favorites: usize,
     pub script_viewers: usize,
     pub lua_scripts: usize,
+    pub workbench_snippets: usize,
     pub protos: usize,
     /// Rows the store rejected (a proto that no longer compiles, …); logged
     /// individually.
@@ -92,7 +94,12 @@ pub struct ImportSummary {
 
 impl ImportSummary {
     pub fn total(&self) -> usize {
-        self.key_metadata + self.favorites + self.script_viewers + self.lua_scripts + self.protos
+        self.key_metadata
+            + self.favorites
+            + self.script_viewers
+            + self.lua_scripts
+            + self.workbench_snippets
+            + self.protos
     }
 }
 
@@ -118,6 +125,11 @@ pub fn export_local_data(app_version: &str, exported_at: i64) -> Result<LocalDat
         .map(|(id, value)| Stored { id, value })
         .collect();
     lua_scripts.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut workbench_snippets: Vec<Stored<WorkbenchSnippet>> = WorkbenchManager::list_with_id()
+        .into_iter()
+        .map(|(id, value)| Stored { id, value })
+        .collect();
+    workbench_snippets.sort_by(|a, b| a.id.cmp(&b.id));
     // The listing is the in-memory index, which leaves `content` out to keep
     // every definition out of memory; the definition itself — the one part
     // of a binding that cannot be recreated — is read from the store. A
@@ -137,6 +149,7 @@ pub fn export_local_data(app_version: &str, exported_at: i64) -> Result<LocalDat
         favorites,
         script_viewers,
         lua_scripts,
+        workbench_snippets,
         protos,
     })
 }
@@ -184,6 +197,10 @@ pub fn import_local_data(backup: &LocalDataBackup) -> Result<ImportSummary> {
     for item in &backup.lua_scripts {
         LuaScriptManager::upsert(&item.id, item.value.clone())?;
         summary.lua_scripts += 1;
+    }
+    for item in &backup.workbench_snippets {
+        WorkbenchManager::upsert(&item.id, item.value.clone())?;
+        summary.workbench_snippets += 1;
     }
     for item in &backup.protos {
         let mut value = item.value.clone();

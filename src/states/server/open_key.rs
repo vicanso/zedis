@@ -45,10 +45,11 @@ pub(super) struct OpenKey {
     pub(super) size_gate_bypassed: Option<SharedString>,
 
     /// Key whose oversized String the user chose to preview ("Preview" on
-    /// the too-large panel): `get_value` then fetches its first
-    /// `VALUE_PREVIEW_BYTES` instead of stopping at the gate, so a refresh
-    /// keeps the preview. Cleared on server switch.
-    pub(super) size_gate_preview: Option<SharedString>,
+    /// the too-large panel), paired with its current byte offset: `get_value`
+    /// fetches `VALUE_PREVIEW_BYTES` from that offset instead of stopping at
+    /// the gate, so a refresh stays on the current chunk. Cleared on server
+    /// switch.
+    pub(super) size_gate_preview: Option<(SharedString, u64)>,
 
     /// What a "load anyway" still in flight replaced, with its key: the
     /// gate panel's value, or a preview. Cancel puts it back as it was —

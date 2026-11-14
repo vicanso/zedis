@@ -795,7 +795,8 @@ impl ZedisSearchManager {
                                 this.child(Input::new(&self.reducer_args_input).small().flex_1())
                             })
                             .child(Label::new(i18n_search(cx, "alias_label")).text_xs().text_color(muted))
-                            .child(Input::new(&self.reducer_alias_input).small().w(px(120.0))),
+                            .child(Input::new(&self.reducer_alias_input).small().w(px(120.0)))
+                            .child(self.render_cursor_checkbox(cx)),
                     )
                     .into_any_element()
             }
@@ -1402,85 +1403,6 @@ impl ZedisSearchManager {
                     )
                     .child(
                         Button::new("search-page-next")
-                            .outline()
-                            .xsmall()
-                            .label(i18n_search(cx, "page_next"))
-                            .disabled(!can_next || self.running_query)
-                            .on_click(cx.listener(|this, _, window, cx| this.page_by(1, window, cx))),
-                    ),
-            )
-            .children(rows)
-    }
-
-    pub(super) fn render_aggregate_result(&self, r: AggregateResult, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let offset = parse_u32(&self.limit_offset_input.read(cx).value()).unwrap_or(0);
-        let count = parse_u32(&self.limit_count_input.read(cx).value())
-            .unwrap_or(DEFAULT_LIMIT_COUNT)
-            .max(1);
-        let can_prev = offset > 0;
-        // The reply's first element is not a trustworthy total (see
-        // `AggregateResult::total`), so page on the full-page heuristic:
-        // a full page may have more behind it, a short page is the end.
-        let can_next = r.rows.len() as u32 >= count;
-        // Show the server-reported total only when it is credible —
-        // i.e. it exceeds what this page already proves exists.
-        let server_total = (r.total > r.rows.len() as u64).then_some(r.total);
-        let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(r.rows.len());
-        for row in &r.rows {
-            let mut cells: Vec<gpui::AnyElement> = Vec::with_capacity(row.len());
-            for (k, v) in row {
-                cells.push(
-                    h_flex()
-                        .gap_1()
-                        .child(Label::new(k.clone()).text_xs().text_color(muted))
-                        .child(Label::new(v.clone()).text_sm())
-                        .into_any_element(),
-                );
-            }
-            rows.push(
-                h_flex()
-                    .gap_4()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .children(cells)
-                    .into_any_element(),
-            );
-        }
-        v_flex()
-            .w_full()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .items_center()
-                    .bg(cx.theme().muted.opacity(0.4))
-                    .child(
-                        Label::new(format!("{} {}", i18n_search(cx, "rows_label"), r.rows.len()))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    .when_some(server_total, |this, total| {
-                        this.child(
-                            Label::new(format!("{} {}", i18n_search(cx, "total_label"), total))
-                                .text_xs()
-                                .text_color(muted),
-                        )
-                    })
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("aggregate-page-prev")
-                            .outline()
-                            .xsmall()
-                            .label(i18n_search(cx, "page_prev"))
-                            .disabled(!can_prev || self.running_query)
-                            .on_click(cx.listener(|this, _, window, cx| this.page_by(-1, window, cx))),
-                    )
-                    .child(
-                        Button::new("aggregate-page-next")
                             .outline()
                             .xsmall()
                             .label(i18n_search(cx, "page_next"))

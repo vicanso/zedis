@@ -102,6 +102,7 @@ mod update_prompt;
 mod value_diff;
 mod value_search;
 mod vector_set_editor;
+mod workbench;
 mod zset_editor;
 
 pub use about::open_about_window;
@@ -143,6 +144,7 @@ pub use key_op_dialog::{
 pub use key_tag_dialog::{OnTagDialogDone, open_batch_key_tag_dialog, open_key_tag_dialog};
 pub use key_timeline_dialog::{open_key_timeline_dialog, open_key_timeline_dialog_for_key};
 pub use key_tree::ZedisKeyTree;
+pub(crate) use key_tree::open_pattern_ops_dialog_with_pattern;
 pub use keyspace_notifications::ZedisKeyspaceNotifications;
 pub use kv_table::ZedisKvTable;
 pub(crate) use lcs_dialog::open_lcs_dialog;
@@ -195,6 +197,7 @@ pub use slowlog_editor::ZedisSlowlogEditor;
 pub use status_bar::ZedisStatusBar;
 pub use stream_editor::ZedisStreamEditor;
 pub use terminal::ZedisTerminal;
+pub(crate) use terminal::{first_write_line, refusal, strip_redis_cli_prefix};
 pub use timeseries_editor::ZedisTimeSeriesEditor;
 pub use title_bar::ZedisTitleBar;
 pub use topology::ZedisTopology;
@@ -205,7 +208,9 @@ pub use update_prompt::update_prompt;
 pub use value_diff::{DiffCloseCallback, ZedisValueDiff};
 pub use value_search::ZedisValueSearch;
 pub use vector_set_editor::ZedisVectorSetEditor;
+pub use workbench::ZedisWorkbench;
 pub use zset_editor::ZedisZsetEditor;
+pub(crate) use zset_editor::open_zmpop_dialog;
 
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_features};

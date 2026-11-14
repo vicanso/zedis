@@ -89,9 +89,11 @@ const GATED: &[(&str, &str)] = &[
         "ServerCommand::HSetEx, probed — an unprobed server takes the HSET path",
     ),
     ("LCS", "floors::LCS — checked in string_lcs"),
+    ("LMPOP", "floors::LMPOP — checked in list_mpop"),
     ("SSUBSCRIBE", "floors::SHARDED_PUBSUB"),
     ("XACKDEL", "floors::STREAM_REF_POLICIES"),
     ("XNACK", "floors::STREAM_NACK"),
+    ("ZMPOP", "floors::ZMPOP — checked in zset_mpop"),
 ];
 
 fn parse_version(text: &str) -> Option<(u32, u32, u32)> {

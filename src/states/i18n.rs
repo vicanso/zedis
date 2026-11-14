@@ -328,6 +328,11 @@ pub fn i18n_benchmark<'a>(cx: &'a App, key: &'a str) -> SharedString {
     t!(format!("benchmark.{key}"), locale = locale).into()
 }
 
+pub fn i18n_workbench<'a>(cx: &'a App, key: &'a str) -> SharedString {
+    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+    t!(format!("workbench.{key}"), locale = locale).into()
+}
+
 /// Localized name of a server panel — every panel section carries a `title`
 /// key, so the placeholder page, the capability dialog and the status-bar
 /// chips can all name a panel the same way.
@@ -353,6 +358,7 @@ pub fn server_view_title(cx: &App, view: ServerView) -> SharedString {
         ServerView::ValueSearch => i18n_value_search(cx, "title"),
         ServerView::ServerInfo => i18n_server_info(cx, "title"),
         ServerView::Benchmark => i18n_benchmark(cx, "title"),
+        ServerView::Workbench => i18n_workbench(cx, "title"),
     }
 }
 

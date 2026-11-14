@@ -23,6 +23,8 @@
 //! - Filtering members with pattern matching
 //! - Incremental loading of large ZSETs with pagination
 
+mod zmpop_dialog;
+
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
@@ -32,6 +34,7 @@ use crate::{
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use gpui_kit::component::button::Button;
 use zedis_ui::ZedisFormFieldType;
+pub(crate) use zmpop_dialog::open_zmpop_dialog;
 
 /// Factory producing extra footer buttons each render (e.g. the Table/Map
 /// toggle). Mirrors the kv table's own factory type.

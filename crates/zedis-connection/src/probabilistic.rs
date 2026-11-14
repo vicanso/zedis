@@ -81,6 +81,60 @@ pub enum ProbeOutcome {
     TopkDropped(String),
 }
 
+/// Parameters for `BF.RESERVE key error_rate capacity [NONSCALING]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BfReserve {
+    pub error_rate: f64,
+    pub capacity: u64,
+    pub nonscaling: bool,
+}
+
+impl Default for BfReserve {
+    fn default() -> Self {
+        Self {
+            error_rate: 0.01,
+            capacity: 1_000,
+            nonscaling: false,
+        }
+    }
+}
+
+/// `BF.RESERVE key error_rate capacity [NONSCALING]`.
+pub async fn bf_reserve(at: &ServerDb, key: &str, spec: &BfReserve) -> Result<()> {
+    let mut c = cmd("BF.RESERVE");
+    c.arg(key).arg(spec.error_rate).arg(spec.capacity.max(1));
+    if spec.nonscaling {
+        c.arg("NONSCALING");
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
+}
+
+/// Parameters for `CF.RESERVE key capacity [BUCKETSIZE size]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfReserve {
+    pub capacity: u64,
+    pub bucket_size: Option<u32>,
+}
+
+impl Default for CfReserve {
+    fn default() -> Self {
+        Self {
+            capacity: 1_024,
+            bucket_size: None,
+        }
+    }
+}
+
+/// `CF.RESERVE key capacity [BUCKETSIZE size]`.
+pub async fn cf_reserve(at: &ServerDb, key: &str, spec: &CfReserve) -> Result<()> {
+    let mut c = cmd("CF.RESERVE");
+    c.arg(key).arg(spec.capacity.max(1));
+    if let Some(bucket_size) = spec.bucket_size.filter(|b| *b > 0) {
+        c.arg("BUCKETSIZE").arg(bucket_size);
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
+}
+
 /// One probe round-trip. A query answers the structure's defining question;
 /// an add inserts (`CMS.INCRBY … 1` for the sketch — its "add" is a count
 /// increment by definition).

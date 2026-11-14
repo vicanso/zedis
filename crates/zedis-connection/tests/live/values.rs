@@ -1369,3 +1369,86 @@ fn standalone_stream_ack_delete_and_nack_settle_one_pending_entry() {
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
 }
+
+#[test]
+#[ignore]
+fn standalone_string_range_queue_moves_mpop_and_group_tail() {
+    smol::block_on(async {
+        let id = register(server("it-phase2-values", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+
+        // string_range slices arbitrary chunks and reports total STRLEN.
+        let skey = unique("str-range");
+        string_set(&at, &skey, b"0123456789abcdef", 0, None)
+            .await
+            .expect("string_set");
+        let (chunk, total) = string_range(&at, &skey, 4, 6).await.expect("string_range");
+        assert_eq!((chunk.as_slice(), total), (b"456789".as_slice(), 16));
+        let (past_end, total2) = string_range(&at, &skey, 20, 6).await.expect("past end");
+        assert!(past_end.is_empty());
+        assert_eq!(total2, 16);
+
+        // LMOVE + LMPOP + ZMPOP.
+        let q1 = unique("queue-1");
+        let q2 = unique("queue-2");
+        list_push_many(&at, &q1, &[b"a", b"b", b"c"], false)
+            .await
+            .expect("rpush");
+        let moved = list_move(&at, &q1, &q2, FromEnd::Head, FromEnd::Tail)
+            .await
+            .expect("lmove");
+        assert_eq!(moved.as_deref(), Some(b"a".as_slice()));
+
+        if supports(&id, floors::LMPOP).await {
+            let popped = list_mpop(&at, &[q1.as_str(), q2.as_str()], FromEnd::Head, 2)
+                .await
+                .expect("lmpop");
+            assert_eq!(popped, Some((q1.clone(), vec![b"b".to_vec(), b"c".to_vec()])));
+        }
+
+        let zkey = unique("zmpop");
+        zset_put(&at, &zkey, b"low", 1.0, None).await.expect("zadd");
+        zset_put(&at, &zkey, b"high", 10.0, None).await.expect("zadd");
+        if supports(&id, floors::ZMPOP).await {
+            let zpopped = zset_mpop(&at, &[zkey.as_str()], true, 1).await.expect("zmpop");
+            assert_eq!(zpopped, Some((zkey.clone(), vec![(b"high".to_vec(), 10.0)])));
+        }
+
+        // StreamTail::open_group reads '>' via XREADGROUP.
+        let st = unique("group-tail");
+        stream_add(&at, &st, "*", &[("k".to_string(), "before".to_string())])
+            .await
+            .expect("xadd");
+        group_create(&at, &st, "g1", "$").await.expect("xgroup create");
+        let mut tail = StreamTail::open_group(
+            &at,
+            &st,
+            StreamGroupTailSpec {
+                group: "g1".to_string(),
+                consumer: "zedis-it".to_string(),
+                noack: true,
+            },
+        )
+        .await
+        .expect("open_group");
+        stream_add(&at, &st, "*", &[("k".to_string(), "after".to_string())])
+            .await
+            .expect("xadd after");
+        let batch = tail.next_batch(200, 10).await.expect("next_batch");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].1, vec![("k".to_string(), b"after".to_vec())]);
+
+        let _ = memory_purge(&at).await;
+
+        cmd("DEL")
+            .arg(&skey)
+            .arg(&q1)
+            .arg(&q2)
+            .arg(&zkey)
+            .arg(&st)
+            .exec_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}

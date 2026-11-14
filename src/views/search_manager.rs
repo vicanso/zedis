@@ -63,6 +63,7 @@ use tracing::info;
 use zedis_core::search_params::{ParamKind, encode_param, is_vector_param, param_names};
 use zedis_ui::ZedisDialog;
 
+mod cursor;
 mod render;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -224,6 +225,10 @@ pub struct ZedisSearchManager {
     params: Vec<ParamRow>,
 
     reducer_fn: ReducerFn,
+    /// Whether `FT.AGGREGATE` uses `WITHCURSOR` server-side pagination.
+    use_cursor: bool,
+    /// Active `(index, cursor_id)` from `FT.AGGREGATE … WITHCURSOR`.
+    active_cursor: Option<(SharedString, u64)>,
     /// When SORTBY is set: `true` = DESC, `false` = ASC.
     sort_desc: bool,
     /// Collapse the schema inspector to free space for results.
@@ -263,6 +268,7 @@ impl ZedisSearchManager {
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&server_state, |this, _state, event, cx| match event {
             ServerEvent::ServerSelected(_) => {
+                this.close_active_cursor(cx);
                 this.indexes.clear();
                 this.selected_index = None;
                 this.index_info = None;
@@ -336,6 +342,8 @@ impl ZedisSearchManager {
             dialect_input,
             params: Vec::new(),
             reducer_fn: ReducerFn::Count,
+            use_cursor: false,
+            active_cursor: None,
             sort_desc: false,
             schema_collapsed: false,
             last_result: None,
@@ -409,6 +417,7 @@ impl ZedisSearchManager {
     }
 
     fn select_index(&mut self, name: SharedString, cx: &mut gpui::Context<Self>) {
+        self.close_active_cursor(cx);
         self.selected_index = Some(name.clone());
         self.index_info = None;
         self.last_result = None;
@@ -831,6 +840,7 @@ impl ZedisSearchManager {
         if self.running_query {
             return;
         }
+        self.close_active_cursor(cx);
         let Some(index) = self.selected_index.clone() else {
             self.error = Some(i18n_search(cx, "no_index_selected"));
             cx.notify();
@@ -951,27 +961,31 @@ impl ZedisSearchManager {
                     dialect,
                     params,
                 };
-                let index_for_task = index.clone();
-                self._query_task = Some(cx.spawn(async move |handle, cx| {
-                    let task = cx.background_spawn(async move {
-                        let at = ServerDb::new(&*server_id, db);
-                        ft_aggregate(&at, index_for_task.as_ref(), &query, &opts).await
-                    });
-                    let result: Result<AggregateResult> = task.await.map_err(Into::into);
-                    let _ = handle.update(cx, |this, cx| {
-                        this.running_query = false;
-                        match result {
-                            Ok(r) => {
-                                this.last_result = Some(LastResult::Aggregate(r));
-                                this.error = None;
+                if self.use_cursor {
+                    self.run_aggregate_with_cursor(ServerDb::new(server_id, db), index, query, opts, count, cx);
+                } else {
+                    let index_for_task = index.clone();
+                    self._query_task = Some(cx.spawn(async move |handle, cx| {
+                        let task = cx.background_spawn(async move {
+                            let at = ServerDb::new(&*server_id, db);
+                            ft_aggregate(&at, index_for_task.as_ref(), &query, &opts).await
+                        });
+                        let result: Result<AggregateResult> = task.await.map_err(Into::into);
+                        let _ = handle.update(cx, |this, cx| {
+                            this.running_query = false;
+                            match result {
+                                Ok(r) => {
+                                    this.last_result = Some(LastResult::Aggregate(r));
+                                    this.error = None;
+                                }
+                                Err(e) => {
+                                    this.error = Some(e.to_string().into());
+                                }
                             }
-                            Err(e) => {
-                                this.error = Some(e.to_string().into());
-                            }
-                        }
-                        cx.notify();
-                    });
-                }));
+                            cx.notify();
+                        });
+                    }));
+                }
             }
         }
         cx.notify();

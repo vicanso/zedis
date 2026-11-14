@@ -12,14 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod pop_move_dialog;
+
 use crate::{
     components::KvTableColumn,
     components::ZedisKvFetcher,
+    connection::Capability,
     helpers::fast_contains_ignore_case,
-    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table, i18n_list_editor},
     views::{ZedisKvTable, kv_table::define_kv_editor},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui_kit::component::{
+    IconName,
+    button::{Button, ButtonVariants},
+};
+use pop_move_dialog::open_list_pop_move_dialog;
 use tracing::info;
 use zedis_ui::ZedisFormFieldType;
 
@@ -264,8 +272,9 @@ define_kv_editor!(ZedisListEditor, ZedisListValues);
 
 impl ZedisListEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let action_server_state = server_state.clone();
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisListValues>::new(
+            let mut table = ZedisKvTable::<ZedisListValues>::new(
                 vec![
                     KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
                         .field_type(ZedisFormFieldType::Editor)
@@ -274,7 +283,23 @@ impl ZedisListEditor {
                 server_state,
                 window,
                 cx,
-            )
+            );
+            table.set_action_button_factory(Box::new(move |_window, cx| {
+                if !action_server_state.read(cx).can(Capability::MutateContainer) {
+                    return Vec::new();
+                }
+                let state_for_click = action_server_state.clone();
+                vec![
+                    Button::new("list-pop-move-btn")
+                        .ghost()
+                        .icon(IconName::ArrowRight)
+                        .tooltip(i18n_list_editor(cx, "move_or_mpop"))
+                        .on_click(move |_, window, cx| {
+                            open_list_pop_move_dialog(state_for_click.clone(), window, cx);
+                        }),
+                ]
+            }));
+            table
         });
 
         info!("Creating new list editor view");

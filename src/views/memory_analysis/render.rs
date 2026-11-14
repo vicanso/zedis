@@ -497,8 +497,9 @@ impl ZedisMemoryAnalysis {
                 .into_any_element()
         } else {
             let mut list = v_flex().w_full().gap_2();
-            for reco in &self.recommendations {
+            for (ix, reco) in self.recommendations.iter().enumerate() {
                 let (title, subject, detail) = self.reco_text(reco, cx);
+                let action = self.render_reco_action(ix, reco, cx);
                 let color = sev_color(reco.severity);
                 list = list.child(
                     h_flex()
@@ -521,7 +522,8 @@ impl ZedisMemoryAnalysis {
                                         }),
                                 )
                                 .child(Label::new(detail).text_sm().text_color(muted_fg)),
-                        ),
+                        )
+                        .when_some(action, |this, btn| this.child(btn)),
                 );
             }
             list.into_any_element()

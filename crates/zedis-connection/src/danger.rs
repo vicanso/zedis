@@ -30,6 +30,9 @@ pub enum DangerKind {
     /// `FUNCTION FLUSH` / `FUNCTION DELETE`: Redis Functions libraries gone,
     /// and every `FCALL` that used them failing until they are loaded again.
     FunctionDelete,
+    /// `MEMORY PURGE`: jemalloc dirty-page purge across masters (may briefly
+    /// pause the event loop while arenas are reclaimed).
+    MemoryPurge,
     /// `SWAPDB`: two whole databases exchanged under every client of either.
     SwapDb,
     ClusterReset,
@@ -72,6 +75,7 @@ impl DangerKind {
             DangerKind::Shutdown => "danger.shutdown",
             DangerKind::ScriptFlush => "danger.script_flush",
             DangerKind::FunctionDelete => "danger.function_delete",
+            DangerKind::MemoryPurge => "danger.memory_purge",
             DangerKind::SwapDb => "danger.swapdb",
             DangerKind::ClusterReset => "danger.cluster_reset",
             DangerKind::Replication => "danger.replication",
@@ -166,6 +170,10 @@ pub fn classify_dangerous(cmd_name: &str, args: &[String]) -> Option<DangerKind>
         },
         "FUNCTION" => match args.first().map(|s| s.to_ascii_uppercase()).as_deref() {
             Some("FLUSH" | "DELETE") => Some(DangerKind::FunctionDelete),
+            _ => None,
+        },
+        "MEMORY" => match args.first().map(|s| s.to_ascii_uppercase()).as_deref() {
+            Some("PURGE") => Some(DangerKind::MemoryPurge),
             _ => None,
         },
         "SWAPDB" => Some(DangerKind::SwapDb),

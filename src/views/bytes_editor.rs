@@ -243,22 +243,23 @@ fn small_image_scale(width: i32, height: i32) -> Option<i32> {
 
 /// The read-only hex dump: offset, bytes and their ASCII on each row, as
 /// many bytes a row as the pane is wide enough for.
-fn hex_dump_data(bytes: &[u8], cx: &App) -> ByteEditorData {
+fn hex_dump_data(bytes: &[u8], display_offset: usize, cx: &App) -> ByteEditorData {
     let cfg = HexConfig {
         title: false,
         width: hex_bytes_per_row(cx),
         group: 0,
+        display_offset,
         ..Default::default()
     };
     ByteEditorData::Hex(HexViewerListDelegate::new(&config_hex(&bytes, cfg)))
 }
 
-fn format_byte_editor_data(value: &Arc<RedisBytesValue>, cx: &App) -> ByteEditorData {
+fn format_byte_editor_data(value: &Arc<RedisBytesValue>, display_offset: usize, cx: &App) -> ByteEditorData {
     if value.bytes.is_empty() {
         return ByteEditorData::Text(value.text.clone().unwrap_or_default());
     }
 
-    let create_hex_view = || hex_dump_data(&value.bytes, cx);
+    let create_hex_view = || hex_dump_data(&value.bytes, display_offset, cx);
 
     match value.view_mode {
         ViewMode::Hex => ByteEditorData::Text(bytes_to_hex_text(&value.bytes, hex_bytes_per_row(cx)).into()),
@@ -639,10 +640,11 @@ impl ZedisBytesEditor {
                 || unsendable
                 || hex_dump
                 || (!hex_mode && !redis_bytes_value.is_text_editable());
+            let display_offset = value.map_or(0, |v| v.preview_offset() as usize);
             self.data = if hex_dump {
-                hex_dump_data(&redis_bytes_value.bytes, cx)
+                hex_dump_data(&redis_bytes_value.bytes, display_offset, cx)
             } else {
-                format_byte_editor_data(redis_bytes_value, cx)
+                format_byte_editor_data(redis_bytes_value, display_offset, cx)
             };
         } else {
             self.data = ByteEditorData::Text(SharedString::default());

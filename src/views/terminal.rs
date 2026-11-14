@@ -65,6 +65,7 @@ mod execution;
 mod transcript;
 
 use completion::ReverseSearchState;
+pub(crate) use execution::{first_write_line, refusal, strip_redis_cli_prefix};
 use transcript::{Block, render_transcript, reply_format_label, trim_output_scrollback};
 
 type Result<T, E = Error> = std::result::Result<T, E>;

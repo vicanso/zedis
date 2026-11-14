@@ -86,6 +86,7 @@ pub use i18n::i18n_troubleshoot;
 pub use i18n::i18n_update;
 pub use i18n::i18n_value_search;
 pub use i18n::i18n_vector_set;
+pub use i18n::i18n_workbench;
 pub use i18n::i18n_zset_editor;
 pub use i18n::key_tree_no_scan_body;
 pub use i18n::save_ui_locale;
@@ -118,6 +119,7 @@ pub use server::element::KvElement;
 pub use server::event::ServerEvent;
 pub use server::event::ServerTask;
 pub use server::key::{RestoredKey, recycles_deleted_keys};
+pub use server::module_create::ModuleKeyCreateSpec;
 pub use server::report::ReportFinding;
 pub use server::stream::project_stream_entries;
 // Used by the value-diff view to render the same RFC 7396 merge patch

@@ -1004,3 +1004,131 @@ fn stack_search_index_is_created_altered_aggregated_and_dropped() {
         assert!(ft_info(&at, &index).await.is_err(), "the index is gone");
     });
 }
+
+#[test]
+#[ignore]
+fn stack_module_reserves_and_aggregate_cursor_round_trip() {
+    smol::block_on(async {
+        if env::var("ZEDIS_IT_STACK").is_err() {
+            eprintln!("skipped: ZEDIS_IT_STACK not set");
+            return;
+        }
+        let id = register(server("it-stack-phase2", standalone())).await;
+        let mut c = conn(&id, 0).await;
+        let at = ServerDb::new(&id, 0);
+
+        if has_command(&mut c, "TS.CREATE").await {
+            let ts_key = unique("ts-init");
+            ts_create(
+                &at,
+                &ts_key,
+                &TsCreate {
+                    retention_ms: Some(60_000),
+                    duplicate_policy: Some("last".to_string()),
+                    labels: vec![("env".to_string(), "it".to_string())],
+                },
+            )
+            .await
+            .expect("ts_create");
+            let win = ts_window(&at, &ts_key, None, 64).await.expect("ts_window");
+            assert_eq!(win.info.retention_ms, 60_000);
+            cmd("DEL").arg(&ts_key).exec_async(&mut c).await.expect("del ts");
+        }
+
+        if has_command(&mut c, "BF.RESERVE").await {
+            let bf_key = unique("bf-init");
+            bf_reserve(
+                &at,
+                &bf_key,
+                &BfReserve {
+                    error_rate: 0.01,
+                    capacity: 500,
+                    nonscaling: false,
+                },
+            )
+            .await
+            .expect("bf_reserve");
+            let info = prob_info(&at, &bf_key, ProbKind::Bloom).await.expect("bf.info");
+            assert!(!info.info.is_empty());
+            cmd("DEL").arg(&bf_key).exec_async(&mut c).await.expect("del bf");
+        }
+
+        if has_command(&mut c, "CF.RESERVE").await {
+            let cf_key = unique("cf-init");
+            cf_reserve(
+                &at,
+                &cf_key,
+                &CfReserve {
+                    capacity: 1024,
+                    bucket_size: Some(4),
+                },
+            )
+            .await
+            .expect("cf_reserve");
+            let info = prob_info(&at, &cf_key, ProbKind::Cuckoo).await.expect("cf.info");
+            assert!(!info.info.is_empty());
+            cmd("DEL").arg(&cf_key).exec_async(&mut c).await.expect("del cf");
+        }
+
+        if has_command(&mut c, "FT.CURSOR").await {
+            let index = unique("idx-cursor");
+            let prefix = unique("doc-cursor");
+            ft_create(
+                &at,
+                &CreateIndexOptions {
+                    index: index.clone(),
+                    on_json: false,
+                    prefixes: vec![format!("{prefix}:")],
+                    fields: vec![CreateFieldSpec {
+                        name: "kind".to_string(),
+                        field_type: "TAG".to_string(),
+                        sortable: true,
+                        ..Default::default()
+                    }],
+                },
+            )
+            .await
+            .expect("ft.create");
+            for (k, tag) in [("1", "a"), ("2", "b"), ("3", "c")] {
+                cmd("HSET")
+                    .arg(format!("{prefix}:{k}"))
+                    .arg("kind")
+                    .arg(tag)
+                    .exec_async(&mut c)
+                    .await
+                    .expect("hset");
+            }
+            for _ in 0..30 {
+                let info = ft_info(&at, &index).await.expect("ft.info");
+                if !info.indexing && info.num_docs == 3 {
+                    break;
+                }
+                smol::Timer::after(std::time::Duration::from_millis(100)).await;
+            }
+            let opts = AggregateOptions {
+                group_by: vec!["kind".to_string()],
+                reducer: Some(ReducerSpec {
+                    func: Some(ReducerFn::Count),
+                    args: Vec::new(),
+                    alias: Some("n".to_string()),
+                }),
+                ..Default::default()
+            };
+            let first = ft_aggregate_cursor(&at, &index, "*", &opts, 1)
+                .await
+                .expect("ft.aggregate withcursor");
+            let mut seen = first.result.rows.len();
+            let mut cursor = first.cursor_id;
+            if cursor != 0 {
+                let next = ft_cursor_read(&at, &index, cursor, 10).await.expect("ft.cursor read");
+                seen += next.result.rows.len();
+                cursor = next.cursor_id;
+            }
+            if cursor != 0 {
+                ft_cursor_del(&at, &index, cursor).await.expect("ft.cursor del");
+            }
+            assert_eq!(seen, 3);
+            drop_index_and_docs(&mut c, &index, &prefix).await;
+        }
+    });
+}

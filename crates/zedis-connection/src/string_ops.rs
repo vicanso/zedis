@@ -35,18 +35,27 @@ pub async fn string_get(at: &ServerDb, key: &str) -> Result<Vec<u8>> {
 /// `GETRANGE`) — the preview of a value too large to load whole. A string
 /// shorter than `len` comes back whole, a missing key empty with length 0.
 pub async fn string_prefix(at: &ServerDb, key: &str, len: usize) -> Result<(Vec<u8>, u64)> {
+    string_range(at, key, 0, len).await
+}
+
+/// Up to `len` bytes of a string starting at `offset`, and its whole length
+/// (`STRLEN` + `GETRANGE`) — how the editor pages a value too large to load
+/// whole. An `offset` at or past the end returns empty bytes with the current
+/// length; a missing key returns empty with length 0.
+pub async fn string_range(at: &ServerDb, key: &str, offset: u64, len: usize) -> Result<(Vec<u8>, u64)> {
     let mut conn = at.connection().await?;
     let total: u64 = cmd("STRLEN").arg(key).query_async(&mut conn).await?;
-    if len == 0 {
+    if len == 0 || offset >= total {
         return Ok((Vec::new(), total));
     }
-    let head: Vec<u8> = cmd("GETRANGE")
+    let end = offset.saturating_add(len as u64 - 1).min(total - 1);
+    let slice: Vec<u8> = cmd("GETRANGE")
         .arg(key)
-        .arg(0)
-        .arg(len - 1)
+        .arg(offset)
+        .arg(end)
         .query_async(&mut conn)
         .await?;
-    Ok((head, total))
+    Ok((slice, total))
 }
 
 /// `JSON.GET key` — the whole document, as the server serialises it.

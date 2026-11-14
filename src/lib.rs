@@ -23,7 +23,7 @@ extern crate gpui_kit as gpui;
 compile_error!("`gpui-fast` is a desktop build: zedis-web names the default engine's web platform");
 
 use crate::connection::{get_server, get_servers};
-use crate::db::{LuaScriptManager, ProtoManager};
+use crate::db::{LuaScriptManager, ProtoManager, WorkbenchManager};
 #[cfg(not(target_family = "wasm"))]
 use crate::db::{ScriptManager, init_database, open_failure_kind};
 #[cfg(not(target_family = "wasm"))]
@@ -341,6 +341,9 @@ pub fn init_caches() {
     }
     if let Err(e) = LuaScriptManager::init() {
         error!(error = %e, "init lua scripts fail");
+    }
+    if let Err(e) = WorkbenchManager::init() {
+        error!(error = %e, "init workbench snippets fail");
     }
 }
 

@@ -122,6 +122,7 @@ pub(super) fn on_server_tool(this: &mut Zedis, e: &ServerToolsAction, window: &m
         ServerToolsAction::ValueSearch => ServerView::ValueSearch,
         ServerToolsAction::ServerInfo => ServerView::ServerInfo,
         ServerToolsAction::Benchmark => ServerView::Benchmark,
+        ServerToolsAction::Workbench => ServerView::Workbench,
         // FLUSHDB / FLUSHALL: a confirm dialog over whatever view
         // is active, never a route. The menu entry is already
         // disabled on a read-only connection and

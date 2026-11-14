@@ -59,6 +59,7 @@ mod protos;
 #[cfg(not(target_family = "wasm"))]
 mod scripts;
 mod trash;
+mod workbench;
 
 pub use alerts::*;
 #[cfg(not(target_family = "wasm"))]
@@ -78,6 +79,7 @@ pub use protos::*;
 #[cfg(not(target_family = "wasm"))]
 pub use scripts::*;
 pub use trash::*;
+pub use workbench::*;
 
 const SEARCH_HISTORY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("search_history");
 const PROTO_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("proto");
@@ -91,6 +93,8 @@ const FAVORITES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("favor
 const RECENT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("recent_keys");
 // Saved Lua scripts: globally shared across servers, persisted to disk.
 const LUA_SCRIPT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("lua_script");
+// Saved Query Workbench snippets: globally shared across servers.
+const WORKBENCH_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("workbench");
 // Per-server client-side key tags + free-form notes. Value is a JSON
 // document keyed by Redis key name:
 //   {"v": 1, "entries": {"<key>": {"tag": "<color>"|null, "note": "..."}}}
@@ -193,6 +197,7 @@ fn ensure_schema(db: &Database) -> Result<()> {
         write_txn.open_table(FAVORITES_TABLE)?;
         write_txn.open_table(RECENT_KEYS_TABLE)?;
         write_txn.open_table(LUA_SCRIPT_TABLE)?;
+        write_txn.open_table(WORKBENCH_TABLE)?;
         write_txn.open_table(KEY_METADATA_TABLE)?;
         write_txn.open_table(METRICS_HISTORY_TABLE)?;
         write_txn.open_table(ALERT_RULES_TABLE)?;
@@ -411,6 +416,7 @@ mod schema_tests {
                 "recent_keys",
                 "script_viewer",
                 "search_history",
+                "workbench",
             ]
         );
     }

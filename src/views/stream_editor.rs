@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod tail;
+
 use crate::helpers::channel;
 use crate::{
     assets::CustomIconName,
@@ -432,23 +434,16 @@ pub struct ZedisStreamEditor {
     pending_filter_input: Entity<InputState>,
     /// Optional group filter for the Pending Entries (XPENDING) table.
     pending_group_filter: Option<SharedString>,
-    /// Whether live tail (XREAD BLOCK loop) is running.
+    /// Whether live tail (XREAD / XREADGROUP BLOCK loop) is running.
     tailing: bool,
+    /// Optional consumer-group tail configuration (`XREADGROUP`).
+    tail_mode: tail::StreamTailMode,
     /// The cancellable tail loop. Dropping it (stop, key/server
     /// switch, or view teardown) cancels the loop and its dedicated
     /// connection.
     tail_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
-
-/// Block timeout per `XREAD` round (ms). Short enough that a stop /
-/// key-switch is reflected promptly when the loop next wakes.
-const TAIL_BLOCK_MS: u64 = 2000;
-/// Max entries per `XREAD` round.
-const TAIL_COUNT: usize = 200;
-/// Ring-buffer cap — a hot stream trims oldest entries beyond this so
-/// a long-running tail can't grow memory unbounded.
-const TAIL_CAP: usize = 5000;
 
 impl ZedisStreamEditor {
     /// Select exactly `entry_id` and scroll it into view. A keyword filter
@@ -555,7 +550,9 @@ impl ZedisStreamEditor {
                 );
                 let weak_click = weak.clone();
                 let weak_tail = weak.clone();
-                vec![
+                let writable = editor.read(cx).server_state.read(cx).can(Capability::MutateContainer);
+                let has_group_mode = editor.read(cx).tail_mode.group.is_some();
+                let mut actions = vec![
                     Button::new("info-view-btn")
                         .icon(icon)
                         .tooltip(tooltip)
@@ -578,7 +575,23 @@ impl ZedisStreamEditor {
                                 editor.update(cx, |this, cx| this.toggle_tail(cx));
                             }
                         }),
-                ]
+                ];
+                if writable && !is_tailing {
+                    let weak_mode = weak.clone();
+                    actions.push(
+                        Button::new("stream-tail-mode-btn")
+                            .when(has_group_mode, |b| b.primary())
+                            .when(!has_group_mode, |b| b.ghost())
+                            .icon(IconName::Settings2)
+                            .tooltip(i18n_stream_editor(cx, "tail_mode_group"))
+                            .on_click(move |_, window, cx| {
+                                if let Some(editor) = weak_mode.upgrade() {
+                                    editor.update(cx, |this, cx| this.open_tail_mode_dialog(window, cx));
+                                }
+                            }),
+                    );
+                }
+                actions
             }));
         });
 
@@ -625,6 +638,7 @@ impl ZedisStreamEditor {
                     // dropping the task cancels it and its connection.
                     this.tail_task = None;
                     this.tailing = false;
+                    this.tail_mode = tail::StreamTailMode::default();
                     cx.notify();
                 }
                 ServerEvent::ServerInfoUpdated | ServerEvent::FeaturesProbed => {
@@ -642,101 +656,10 @@ impl ZedisStreamEditor {
             pending_filter_input,
             pending_group_filter: None,
             tailing: false,
+            tail_mode: tail::StreamTailMode::default(),
             tail_task: None,
             _subscriptions: vec![sub, filter_sub],
         }
-    }
-
-    /// Start/stop the live-tail loop. Stopping just drops the task
-    /// (which cancels the loop + its dedicated connection). Starting
-    /// spawns: a background `XREAD BLOCK` loop feeding a channel, and
-    /// a foreground drainer that ring-appends batches into the stream
-    /// value. Tails from `$` so only entries arriving after Start are
-    /// shown; existing loaded entries are kept.
-    fn toggle_tail(&mut self, cx: &mut Context<Self>) {
-        if self.tailing {
-            self.tail_task = None;
-            self.tailing = false;
-            cx.notify();
-            return;
-        }
-
-        let server_state = self.server_state.clone();
-        let server_id = server_state.read(cx).server_id().to_string();
-        let db = server_state.read(cx).db();
-        let Some(key) = server_state.read(cx).key() else {
-            return;
-        };
-        let key = key.to_string();
-        let entity = cx.entity().downgrade();
-        let (tx, rx) = channel::unbounded::<Vec<RedisStreamEntry>>();
-
-        let task = cx.spawn(async move |_handle, cx| {
-            // Open the dedicated tail connection on the foreground task (we
-            // still have `cx` here) so a failure can be surfaced. The old code
-            // opened it inside `background_spawn`, where a failure just ended
-            // the loop silently — the tail button sprang back with no hint why.
-            let mut tail = match StreamTail::open(&ServerDb::new(server_id, db), &key).await {
-                Ok(tail) => tail,
-                Err(e) => {
-                    let kind = e.connection_kind();
-                    let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
-                        this.tailing = false;
-                        this.tail_task = None;
-                        this.notify_tail_failed(kind, cx);
-                        cx.notify();
-                    });
-                    return;
-                }
-            };
-            let bg = cx.background_spawn(async move {
-                // A read error ends the while-let (and the loop).
-                while let Ok(entries) = tail.next_batch(TAIL_BLOCK_MS, TAIL_COUNT).await {
-                    if entries.is_empty() {
-                        continue;
-                    }
-                    let entries = project_stream_entries(entries);
-                    if tx.send(entries).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            while let Ok(batch) = rx.recv().await {
-                let key_cl = key.clone();
-                let r = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
-                    this.server_state.update(cx, |state, cx| {
-                        state.append_tail_entries(&key_cl, batch, TAIL_CAP, cx);
-                    });
-                });
-                if r.is_err() {
-                    break;
-                }
-            }
-
-            // Channel closed or server entity gone → tear down.
-            drop(bg);
-            let _ = entity.update(cx, |this: &mut ZedisStreamEditor, cx| {
-                this.tailing = false;
-                this.tail_task = None;
-                cx.notify();
-            });
-        });
-
-        self.tail_task = Some(task);
-        self.tailing = true;
-        cx.notify();
-    }
-
-    /// Toast that the live tail couldn't start, naming the reason (connection
-    /// timed out / auth failed / …) so the user isn't left wondering why the
-    /// tail button sprang back.
-    fn notify_tail_failed(&self, kind: ConnectionErrorKind, cx: &mut Context<Self>) {
-        let reason = i18n_status_bar(cx, kind.reason_key());
-        let msg: SharedString = format!("{}: {}", i18n_stream_editor(cx, "tail_stopped"), reason).into();
-        cx.global::<ZedisGlobalStore>().clone().update(cx, |_, cx| {
-            cx.emit(GlobalEvent::Notification(NotificationAction::new_error(msg)));
-        });
     }
 
     /// Rebuilds the two info DataTables from freshly-fetched `StreamInfoData`.

@@ -32,6 +32,37 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 // ── TimeSeries ───────────────────────────────────────────────────────────
 
+/// Policies `TS.CREATE … DUPLICATE_POLICY` accepts.
+pub const TS_DUPLICATE_POLICIES: &[&str] = &["block", "first", "last", "min", "max", "sum"];
+
+/// Parameters for `TS.CREATE key [RETENTION ms] [DUPLICATE_POLICY policy] [LABELS k v …]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TsCreate {
+    /// Retention in milliseconds; `None` or `Some(0)` keeps samples indefinitely.
+    pub retention_ms: Option<i64>,
+    pub duplicate_policy: Option<String>,
+    pub labels: Vec<(String, String)>,
+}
+
+/// `TS.CREATE key [RETENTION ms] [DUPLICATE_POLICY policy] [LABELS …]`.
+pub async fn ts_create(at: &ServerDb, key: &str, spec: &TsCreate) -> Result<()> {
+    let mut command = cmd("TS.CREATE");
+    command.arg(key);
+    if let Some(retention) = spec.retention_ms.filter(|r| *r >= 0) {
+        command.arg("RETENTION").arg(retention);
+    }
+    if let Some(policy) = spec.duplicate_policy.as_deref().filter(|p| !p.is_empty()) {
+        command.arg("DUPLICATE_POLICY").arg(policy);
+    }
+    if !spec.labels.is_empty() {
+        command.arg("LABELS");
+        for (name, value) in &spec.labels {
+            command.arg(name).arg(value);
+        }
+    }
+    Ok(command.query_async(&mut at.connection().await?).await?)
+}
+
 /// `TS.ADD key timestamp value` — append or backfill one sample.
 ///
 /// `timestamp` is `None` for "now" (`*`). A sample older than the series'

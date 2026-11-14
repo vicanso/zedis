@@ -441,13 +441,178 @@ pub fn entry_to_csv(entry: &ReadableEntry) -> String {
     build_csv_record(&[&entry.key, &entry.key_type, &ttl, &value, truncated])
 }
 
+/// Arguments per write command in [`entry_to_redis_commands`] so one huge
+/// collection stays well under server argument limits.
+const SCRIPT_CMD_BATCH: usize = 500;
+
+/// Quote one CLI token for `redis-cli` / Zedis Workbench (`sdssplitargs`
+/// syntax): bare ASCII words stay unquoted for readability; anything with
+/// spaces, quotes, backslashes, or control bytes is double-quoted.
+fn quote_redis_arg(arg: &str) -> String {
+    let bare_safe = !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| matches!(b, b'!'..=b'~') && !matches!(b, b'"' | b'\'' | b'\\'));
+    if bare_safe {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 4);
+    out.push('"');
+    for ch in arg.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u8));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn format_redis_score(score: f64) -> String {
+    if score.is_finite() {
+        score.to_string()
+    } else if score > 0.0 {
+        "+inf".to_string()
+    } else {
+        "-inf".to_string()
+    }
+}
+
+/// Render one key as executable Redis CLI commands (`.redis` script):
+/// `SET` (with `PX` when expiring) for strings, `DEL` + chunked write
+/// commands + `PEXPIRE` for collections, and empty for unsupported module
+/// entries whose `value` is `None`.
+pub fn entry_to_redis_commands(entry: &ReadableEntry) -> String {
+    let Some(value) = &entry.value else {
+        return String::new();
+    };
+    let key = quote_redis_arg(&entry.key);
+    let mut out = String::new();
+    match value {
+        ReadableValue::Text(s) => {
+            out.push_str("SET ");
+            out.push_str(&key);
+            out.push(' ');
+            out.push_str(&quote_redis_arg(s));
+            if entry.pttl_ms > 0 {
+                out.push_str(&format!(" PX {}", entry.pttl_ms));
+            }
+            out.push('\n');
+            return out;
+        }
+        ReadableValue::List(items) => {
+            if items.is_empty() {
+                return out;
+            }
+            out.push_str(&format!("DEL {key}\n"));
+            for chunk in items.chunks(SCRIPT_CMD_BATCH) {
+                out.push_str("RPUSH ");
+                out.push_str(&key);
+                for item in chunk {
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(item));
+                }
+                out.push('\n');
+            }
+        }
+        ReadableValue::Set(items) => {
+            if items.is_empty() {
+                return out;
+            }
+            out.push_str(&format!("DEL {key}\n"));
+            for chunk in items.chunks(SCRIPT_CMD_BATCH) {
+                out.push_str("SADD ");
+                out.push_str(&key);
+                for item in chunk {
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(item));
+                }
+                out.push('\n');
+            }
+        }
+        ReadableValue::Hash(pairs) => {
+            if pairs.is_empty() {
+                return out;
+            }
+            out.push_str(&format!("DEL {key}\n"));
+            for chunk in pairs.chunks(SCRIPT_CMD_BATCH / 2) {
+                out.push_str("HSET ");
+                out.push_str(&key);
+                for (field, val) in chunk {
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(field));
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(val));
+                }
+                out.push('\n');
+            }
+        }
+        ReadableValue::Zset(pairs) => {
+            if pairs.is_empty() {
+                return out;
+            }
+            out.push_str(&format!("DEL {key}\n"));
+            for chunk in pairs.chunks(SCRIPT_CMD_BATCH / 2) {
+                out.push_str("ZADD ");
+                out.push_str(&key);
+                for (member, score) in chunk {
+                    out.push(' ');
+                    out.push_str(&format_redis_score(*score));
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(member));
+                }
+                out.push('\n');
+            }
+        }
+        ReadableValue::Stream(entries) => {
+            let non_empty: Vec<_> = entries.iter().filter(|(_, f)| !f.is_empty()).collect();
+            if non_empty.is_empty() {
+                return out;
+            }
+            out.push_str(&format!("DEL {key}\n"));
+            for (id, fields) in non_empty {
+                out.push_str("XADD ");
+                out.push_str(&key);
+                out.push(' ');
+                out.push_str(&quote_redis_arg(id));
+                for (field, val) in fields {
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(field));
+                    out.push(' ');
+                    out.push_str(&quote_redis_arg(val));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    if entry.pttl_ms > 0 {
+        out.push_str(&format!("PEXPIRE {key} {}\n", entry.pttl_ms));
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocFormat {
+    Json,
+    Csv,
+    Redis,
+}
+
 /// A readable export kept in memory instead of streamed to a file — what a
 /// page downloads, having no file to write into as it goes. The text is the
 /// one the desktop's export writes: a JSON array of [`entry_to_json`]
-/// objects, one to a line, or [`csv_header`] and [`entry_to_csv`] rows.
+/// objects, [`csv_header`] and [`entry_to_csv`] rows, or
+/// [`entry_to_redis_commands`] statements.
 #[derive(Debug, Clone)]
 pub struct ReadableDocument {
-    csv: bool,
+    format: DocFormat,
     text: String,
     entries: usize,
 }
@@ -458,7 +623,7 @@ const JSON_CLOSE: &str = "\n]\n";
 impl ReadableDocument {
     pub fn json() -> Self {
         Self {
-            csv: false,
+            format: DocFormat::Json,
             text: "[".to_string(),
             entries: 0,
         }
@@ -466,8 +631,16 @@ impl ReadableDocument {
 
     pub fn csv() -> Self {
         Self {
-            csv: true,
+            format: DocFormat::Csv,
             text: csv_header(),
+            entries: 0,
+        }
+    }
+
+    pub fn redis() -> Self {
+        Self {
+            format: DocFormat::Redis,
+            text: String::new(),
             entries: 0,
         }
     }
@@ -475,13 +648,19 @@ impl ReadableDocument {
     /// Add `entry` — unless the finished document would then be larger than
     /// `max_bytes`, when nothing is added and the answer is `false`.
     pub fn push(&mut self, entry: &ReadableEntry, max_bytes: usize) -> bool {
-        let piece = if self.csv {
-            entry_to_csv(entry)
-        } else {
-            let separator = if self.entries == 0 { "\n" } else { ",\n" };
-            format!("{separator}{}", entry_to_json(entry))
+        let piece = match self.format {
+            DocFormat::Csv => entry_to_csv(entry),
+            DocFormat::Redis => entry_to_redis_commands(entry),
+            DocFormat::Json => {
+                let separator = if self.entries == 0 { "\n" } else { ",\n" };
+                format!("{separator}{}", entry_to_json(entry))
+            }
         };
-        let closing = if self.csv { 0 } else { JSON_CLOSE.len() };
+        let closing = if self.format == DocFormat::Json {
+            JSON_CLOSE.len()
+        } else {
+            0
+        };
         if self.text.len() + piece.len() + closing > max_bytes {
             return false;
         }
@@ -496,7 +675,7 @@ impl ReadableDocument {
     }
 
     pub fn finish(mut self) -> String {
-        if !self.csv {
+        if self.format == DocFormat::Json {
             self.text.push_str(JSON_CLOSE);
         }
         self.text
@@ -629,5 +808,35 @@ mod tests {
         // Not `ms-seq`, or a sequence that cannot step: no next id.
         assert!(next_stream_id("garbage").is_none());
         assert!(next_stream_id("5-18446744073709551615").is_none());
+    }
+
+    #[test]
+    fn redis_command_script_quotes_and_preserves_ttl() {
+        let text = ReadableEntry {
+            key: "greeting 1".into(),
+            key_type: "string".into(),
+            pttl_ms: 5_000,
+            value: Some(ReadableValue::Text("hello \"world\"\nline2".into())),
+            truncated: false,
+        };
+        assert_eq!(
+            entry_to_redis_commands(&text),
+            "SET \"greeting 1\" \"hello \\\"world\\\"\\nline2\" PX 5000\n"
+        );
+
+        let hash = entry(Some(ReadableValue::Hash(vec![
+            ("name".into(), "alice".into()),
+            ("bio".into(), "two words".into()),
+        ])));
+        assert_eq!(
+            entry_to_redis_commands(&hash),
+            "DEL user:1\nHSET user:1 name alice bio \"two words\"\nPEXPIRE user:1 60000\n"
+        );
+
+        let mut doc = ReadableDocument::redis();
+        assert!(doc.push(&text, usize::MAX));
+        assert!(doc.push(&entry(None), usize::MAX));
+        assert_eq!(doc.entries(), 2);
+        assert_eq!(doc.finish(), entry_to_redis_commands(&text));
     }
 }

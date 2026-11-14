@@ -19,7 +19,7 @@ use super::{
     list::first_load_list_value,
     set::first_load_set_value,
     stream::first_load_stream_value,
-    string::{get_redis_bytes_preview, get_redis_bytes_value},
+    string::{get_redis_bytes_range, get_redis_bytes_value},
     value::{
         KeyType, MAX_INLINE_VALUE_SIZE, MAX_MODULE_DUMP_BYTES, ModuleTypeId, RedisBytesValue, RedisValue,
         RedisValueData, RedisValueStatus, SortOrder, VALUE_PREVIEW_BYTES, ViewMode,
@@ -1024,7 +1024,12 @@ impl ZedisServerState {
         let current_key = key.clone();
         let max_truncate_length = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
         let bypass_size_gate = self.open.size_gate_bypassed.as_ref() == Some(&key);
-        let preview = self.open.size_gate_preview.as_ref() == Some(&key);
+        let preview_offset = self
+            .open
+            .size_gate_preview
+            .as_ref()
+            .filter(|(k, _)| k == &key)
+            .map(|(_, offset)| *offset);
         // Header decorations, both resolved from what the connect-time probe
         // already learned: whether `OBJECT ENCODING` answers here at all, and
         // which of FREQ / IDLETIME this server's eviction policy makes
@@ -1061,22 +1066,25 @@ impl ZedisServerState {
                     && size > MAX_INLINE_VALUE_SIZE
                 {
                     // A String can be read in part (`GETRANGE`), so its
-                    // preview is its first bytes; RedisJSON has no such read.
-                    if preview && key_type == KeyType::String {
-                        let (head, (encoding, heat)) = join(
-                            get_redis_bytes_preview(&at, &key, VALUE_PREVIEW_BYTES),
+                    // preview is a bounded chunk; RedisJSON has no such read.
+                    if let Some(offset) = preview_offset
+                        && key_type == KeyType::String
+                    {
+                        let (chunk, (encoding, heat)) = join(
+                            get_redis_bytes_range(&at, &key, offset, VALUE_PREVIEW_BYTES),
                             key_object_meta(&at, key.as_str(), with_encoding, heat_probe),
                         )
                         .await;
-                        let (head, total) = head?;
+                        let (chunk, total, actual_offset) = chunk?;
                         return Ok(RedisValue {
                             key_type,
-                            data: Some(RedisValueData::Bytes(Arc::new(head))),
+                            data: Some(RedisValueData::Bytes(Arc::new(chunk))),
                             size,
                             expire_at,
                             encoding: encoding.into(),
                             heat,
                             preview_of: Some(total),
+                            preview_offset: actual_offset,
                             ..Default::default()
                         });
                     }
@@ -1445,7 +1453,8 @@ impl ZedisServerState {
         }
         self.open.size_gate_bypassed = None;
         if replaced.preview_of().is_some() {
-            self.open.size_gate_preview = Some(key);
+            let offset = replaced.preview_offset();
+            self.open.size_gate_preview = Some((key, offset));
         }
         self.open.next_epoch();
         self.open.value = Some(replaced);
@@ -1453,16 +1462,27 @@ impl ZedisServerState {
         cx.notify();
     }
     /// Loads the first [`VALUE_PREVIEW_BYTES`] of a String too large to load
-    /// whole ("Preview" on the too-large panel), as a read-only value. The
-    /// choice is remembered for the key like the bypass, so a refresh keeps
-    /// showing the preview rather than the panel.
+    /// whole ("Preview" on the too-large panel), as a read-only value.
     pub fn load_value_preview(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        self.open.size_gate_preview = Some(key.clone());
+        self.load_value_range(key, 0, cx);
+    }
+
+    /// Loads a [`VALUE_PREVIEW_BYTES`] chunk starting at `offset` (`GETRANGE`)
+    /// of an oversized String, keeping existing preview data visible while the
+    /// next chunk arrives so stepping pages does not flash a blank skeleton.
+    pub fn load_value_range(&mut self, key: SharedString, offset: u64, cx: &mut Context<Self>) {
+        self.open.size_gate_preview = Some((key.clone(), offset));
         self.open.next_epoch();
-        self.open.value = Some(RedisValue {
-            status: RedisValueStatus::Loading,
-            ..Default::default()
-        });
+        if let Some(current) = self.open.value.as_mut()
+            && current.preview_of().is_some()
+        {
+            current.status = RedisValueStatus::Loading;
+        } else {
+            self.open.value = Some(RedisValue {
+                status: RedisValueStatus::Loading,
+                ..Default::default()
+            });
+        }
         self.get_value(key, ServerTask::ReloadValue, cx);
     }
     pub fn is_channel_mode(&self) -> bool {

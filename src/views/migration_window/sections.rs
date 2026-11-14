@@ -222,6 +222,7 @@ impl ZedisMigrationWindow {
             i18n_migration(cx, "format_binary").to_string(),
             "JSON".to_string(),
             "CSV".to_string(),
+            i18n_migration(cx, "format_redis_commands").to_string(),
         ];
         let destination_labels = vec![
             i18n_migration(cx, "destination_file").to_string(),

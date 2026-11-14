@@ -70,6 +70,7 @@ enum Destination {
 enum Format {
     Json,
     Csv,
+    CommandScript,
 }
 
 impl Format {
@@ -77,6 +78,7 @@ impl Format {
         match self {
             Format::Json => "json",
             Format::Csv => "csv",
+            Format::CommandScript => "redis",
         }
     }
 }
@@ -277,6 +279,7 @@ impl ZedisKeyExport {
             let mut document = match format {
                 Format::Json => ReadableDocument::json(),
                 Format::Csv => ReadableDocument::csv(),
+                Format::CommandScript => ReadableDocument::redis(),
             };
             let mut stopped_early = false;
             let mut done = 0;
@@ -534,8 +537,9 @@ impl ZedisKeyExport {
 
     fn export_button(&self, format: Format, filtered_count: usize, cx: &mut Context<Self>) -> Button {
         let (id, label) = match format {
-            Format::Json => ("key-export-json", "export_json"),
-            Format::Csv => ("key-export-csv", "export_csv"),
+            Format::Json => ("key-export-json", i18n_common(cx, "export_json")),
+            Format::Csv => ("key-export-csv", i18n_common(cx, "export_csv")),
+            Format::CommandScript => ("key-export-redis", i18n_migration(cx, "format_redis_commands")),
         };
         let running_this = matches!(self.phase, Phase::RunningFile { format: running, .. } if running == format);
         Button::new(id)
@@ -544,7 +548,7 @@ impl ZedisKeyExport {
             // The spinner takes the icon's place; without one, loading shows
             // nothing at all.
             .icon(Icon::new(CustomIconName::Download))
-            .label(i18n_common(cx, label))
+            .label(label)
             .loading(running_this)
             .disabled(self.is_running() || filtered_count == 0)
             .on_click(cx.listener(move |this, _, _window, cx| this.start_file_export(format, cx)))
@@ -798,6 +802,7 @@ impl Render for ZedisKeyExport {
                 .w_full()
                 .gap_2()
                 .justify_end()
+                .child(self.export_button(Format::CommandScript, filtered_count, cx))
                 .child(self.export_button(Format::Csv, filtered_count, cx))
                 .child(self.export_button(Format::Json, filtered_count, cx))
         };

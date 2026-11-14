@@ -18,7 +18,7 @@ use crate::db::ProtoManager;
 use crate::db::ScriptManager;
 use crate::helpers::{configured_time_zone, format_datetime_in, format_datetime_other_zone};
 use crate::{
-    connection::{ServerDb, string_get, string_prefix},
+    connection::{ServerDb, string_get, string_range},
     error::Error,
 };
 use bytes::Bytes;
@@ -381,31 +381,65 @@ fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
     Some(SharedString::from(text))
 }
 
-/// The first `len` bytes of a string, as its preview shows them, and the
-/// string's whole length. Text when the bytes are text — cut back to the last
-/// whole character, since the cut may land inside one — and hex otherwise.
-/// Never decoded: a compressed or serialized value cannot be read from its
-/// first bytes, and a guess at its format from them would mislead.
-pub(crate) async fn get_redis_bytes_preview(at: &ServerDb, key: &str, len: usize) -> Result<(RedisBytesValue, u64)> {
-    let (head, total) = string_prefix(at, key, len).await?;
-    Ok((preview_bytes_value(head), total))
+/// Up to `len` bytes of a string starting at `offset`, as its preview shows
+/// them, plus `(total_len, actual_offset)`. Text when the bytes are text —
+/// trimmed past any leading UTF-8 continuation bytes (when `offset > 0` landed
+/// inside a multi-byte character) and cut back from any trailing partial
+/// character — and hex otherwise.
+pub(crate) async fn get_redis_bytes_range(
+    at: &ServerDb,
+    key: &str,
+    offset: u64,
+    len: usize,
+) -> Result<(RedisBytesValue, u64, u64)> {
+    let (chunk, total) = string_range(at, key, offset, len).await?;
+    let (val, actual_offset) = preview_bytes_value_at(chunk, offset);
+    Ok((val, total, actual_offset))
 }
 
-fn preview_bytes_value(mut head: Vec<u8>) -> RedisBytesValue {
-    let text = match std::str::from_utf8(&head) {
-        Ok(_) => true,
-        // Invalid only in its last few bytes: a character the cut split.
-        Err(error) if error.error_len().is_none() => {
-            head.truncate(error.valid_up_to());
-            true
-        }
-        Err(_) => false,
+fn preview_bytes_value_at(chunk: Vec<u8>, offset: u64) -> (RedisBytesValue, u64) {
+    // When `offset > 0` splits a multi-byte UTF-8 scalar, up to 3 leading
+    // continuation bytes (`10xxxxxx`) appear at the head. Only skip them if
+    // what remains is valid UTF-8 (apart from a split trailing scalar), so a
+    // genuinely binary payload keeps its exact starting byte and hex address.
+    let lead_trim = if offset > 0 {
+        chunk
+            .iter()
+            .take(3)
+            .take_while(|&&b| (b & 0b1100_0000) == 0b1000_0000)
+            .count()
+    } else {
+        0
     };
-    RedisBytesValue {
-        format: if text { DataFormat::Text } else { DataFormat::Bytes },
-        bytes: Bytes::from(head),
-        view_mode: if text { ViewMode::Plain } else { ViewMode::Hex },
-        ..Default::default()
+    let candidate = &chunk[lead_trim..];
+    match std::str::from_utf8(candidate) {
+        Ok(_) => (
+            RedisBytesValue {
+                format: DataFormat::Text,
+                bytes: Bytes::copy_from_slice(candidate),
+                view_mode: ViewMode::Plain,
+                ..Default::default()
+            },
+            offset + lead_trim as u64,
+        ),
+        Err(error) if error.error_len().is_none() => (
+            RedisBytesValue {
+                format: DataFormat::Text,
+                bytes: Bytes::copy_from_slice(&candidate[..error.valid_up_to()]),
+                view_mode: ViewMode::Plain,
+                ..Default::default()
+            },
+            offset + lead_trim as u64,
+        ),
+        Err(_) => (
+            RedisBytesValue {
+                format: DataFormat::Bytes,
+                bytes: Bytes::from(chunk),
+                view_mode: ViewMode::Hex,
+                ..Default::default()
+            },
+            offset,
+        ),
     }
 }
 
@@ -587,13 +621,23 @@ mod tests {
     fn a_preview_is_text_up_to_the_split_character_else_hex() {
         let mut head = b"abc".to_vec();
         head.extend_from_slice(&"é".as_bytes()[..1]);
-        let value = preview_bytes_value(head);
+        let (value, offset) = preview_bytes_value_at(head, 0);
+        assert_eq!(offset, 0);
         assert!(matches!(value.format, DataFormat::Text));
         assert!(matches!(value.view_mode, ViewMode::Plain));
         assert_eq!(value.bytes.as_ref(), b"abc");
 
+        // Mid-scalar start at non-zero offset skips leading continuation bytes.
+        let mut mid = Vec::new();
+        mid.extend_from_slice(&"é".as_bytes()[1..]);
+        mid.extend_from_slice(b"hello");
+        let (mid_val, actual_offset) = preview_bytes_value_at(mid, 256_000);
+        assert_eq!(actual_offset, 256_001);
+        assert_eq!(mid_val.bytes.as_ref(), b"hello");
+
         let binary = vec![0xff, 0x00, b'a', 0xfe];
-        let value = preview_bytes_value(binary.clone());
+        let (value, bin_offset) = preview_bytes_value_at(binary.clone(), 0);
+        assert_eq!(bin_offset, 0);
         assert!(matches!(value.format, DataFormat::Bytes));
         assert!(matches!(value.view_mode, ViewMode::Hex));
         assert_eq!(value.bytes.as_ref(), binary.as_slice());
@@ -725,5 +769,21 @@ mod tests {
             ..Default::default()
         };
         assert!(bidirectional.is_text_editable());
+    }
+
+    #[test]
+    fn preview_chunk_trims_split_utf8_at_both_boundaries_and_keeps_binary_intact() {
+        let full = "你好世界hello".as_bytes(); // each CJK char is 3 bytes
+        // Slice starting 1 byte into '你' and ending 2 bytes into '界' (bytes 1..11).
+        let (text_chunk, actual_offset) = super::preview_bytes_value_at(full[1..11].to_vec(), 1);
+        assert_eq!(text_chunk.format, DataFormat::Text);
+        assert_eq!(actual_offset, 3);
+        assert_eq!(text_chunk.bytes.as_ref(), "好世".as_bytes());
+
+        // Arbitrary binary bytes starting with 0x80 keep exact offset and Hex mode.
+        let (bin_chunk, bin_offset) = super::preview_bytes_value_at(vec![0x80, 0xff, 0x00, 0xfe], 256);
+        assert_eq!(bin_chunk.format, DataFormat::Bytes);
+        assert_eq!(bin_offset, 256);
+        assert_eq!(bin_chunk.bytes.as_ref(), &[0x80, 0xff, 0x00, 0xfe]);
     }
 }

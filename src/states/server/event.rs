@@ -170,6 +170,8 @@ pub enum ServerTask {
     ClientUnpause,
     /// `BGREWRITEAOF` — trigger an asynchronous AOF rewrite on all masters.
     Bgrewriteaof,
+    /// `MEMORY PURGE` — ask jemalloc to release dirty pages back to the OS.
+    MemoryPurge,
 
     /// `CLUSTER FAILOVER [FORCE]` — promote a specific replica to master.
     /// Targeted at one replica's `host:port`, not fanned out.
@@ -303,6 +305,7 @@ impl ServerTask {
             ServerTask::BgsaveCancel => "bgsave_cancel",
             ServerTask::ClientUnpause => "client_unpause",
             ServerTask::Bgrewriteaof => "bgrewriteaof",
+            ServerTask::MemoryPurge => "memory_purge",
             ServerTask::ClusterFailover => "cluster_failover",
             ServerTask::ClusterMeet => "cluster_meet",
             ServerTask::ClusterForget => "cluster_forget",

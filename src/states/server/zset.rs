@@ -30,15 +30,16 @@ use super::{
 use crate::helpers::unix_ts;
 use crate::{
     connection::{
-        ScoredMember, ServerDb, zset_card, zset_count_by_score, zset_put, zset_range, zset_range_by_score, zset_remove,
-        zset_scan,
+        Capability, ScoredMember, ServerDb, zset_card, zset_count_by_score, zset_mpop, zset_put, zset_range,
+        zset_range_by_score, zset_remove, zset_scan,
     },
     error::Error,
     helpers::normalize_score_bound,
-    states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_zset_editor},
+    states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, ZedisGlobalStore, i18n_zset_editor},
 };
 use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
+use rust_i18n::t;
 use std::collections::HashSet;
 use std::sync::Arc;
 use zedis_core::change_log::ChangeEntry;
@@ -742,6 +743,70 @@ impl ZedisServerState {
                 }
                 cx.emit(ServerEvent::ValueUpdated);
             },
+        );
+    }
+
+    /// Multi-key sorted-set pop (`ZMPOP numkeys key… MIN|MAX COUNT count`, Redis 7.0+).
+    pub fn mpop_zset_members(
+        &mut self,
+        extra_keys: Vec<SharedString>,
+        max: bool,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can(Capability::MutateContainer) || self.refuse_while_offline(cx) {
+            return;
+        }
+        let Some(primary_key) = self.open.key.clone() else {
+            return;
+        };
+        let mut keys = vec![primary_key.to_string()];
+        for extra in extra_keys {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() && !keys.iter().any(|k| k == trimmed) {
+                keys.push(trimmed.to_string());
+            }
+        }
+        let at = self.at();
+        let count = count.max(1);
+        let dir_label = if max { "MAX" } else { "MIN" };
+        let log_desc = format!("ZMPOP {} {dir_label} COUNT {count}", keys.len());
+        self.spawn_with_arg(
+            ServerTask::RunKeyOperation,
+            primary_key.clone(),
+            move || async move {
+                let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                Ok(zset_mpop(&at, &refs, max, count).await?)
+            },
+            move |this, result, cx| {
+                let Ok(popped) = result else {
+                    return;
+                };
+                this.record_changes(primary_key.clone(), vec![ChangeEntry::operation(unix_ts(), log_desc)]);
+                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                match popped {
+                    Some((popped_key, members)) => {
+                        let rendered: Vec<String> = members
+                            .iter()
+                            .map(|(m, s)| format!("{} ({s})", String::from_utf8_lossy(m)))
+                            .collect();
+                        let msg: SharedString = t!(
+                            "key_ops.result_removed",
+                            count = rendered.len(),
+                            items = format!("[{popped_key}] {}", rendered.join(", ")),
+                            locale = locale
+                        )
+                        .to_string()
+                        .into();
+                        this.emit_info_notification(msg, cx);
+                    }
+                    None => {
+                        this.emit_info_notification(i18n_zset_editor(cx, "zmpop_empty_toast"), cx);
+                    }
+                }
+                this.reload_value(primary_key, cx);
+            },
+            cx,
         );
     }
 }

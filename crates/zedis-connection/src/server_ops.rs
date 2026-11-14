@@ -44,6 +44,8 @@ pub struct ServerSummary {
     pub access_mode: AccessMode,
     pub supports_rejson: bool,
     pub supports_search: bool,
+    pub supports_timeseries: bool,
+    pub supports_bf: bool,
 }
 
 /// Connect (or reuse the pooled client) and describe the server.
@@ -58,6 +60,8 @@ pub async fn server_summary(at: &ServerDb) -> Result<ServerSummary> {
         access_mode: client.access_mode(),
         supports_rejson: client.supports_rejson(),
         supports_search: client.supports_search(),
+        supports_timeseries: client.supports_timeseries(),
+        supports_bf: client.supports_bf(),
     })
 }
 
@@ -125,6 +129,14 @@ pub async fn bgrewriteaof(at: &ServerDb) -> Result<()> {
         .await?
         .query_async_masters(vec![cmd("BGREWRITEAOF")])
         .await?;
+    Ok(())
+}
+
+/// `MEMORY PURGE` on every master (jemalloc dirty-page reclamation).
+pub async fn memory_purge(at: &ServerDb) -> Result<()> {
+    let mut purge = cmd("MEMORY");
+    purge.arg("PURGE");
+    let (_, _replies): (_, Vec<String>) = at.client().await?.query_async_masters(vec![purge]).await?;
     Ok(())
 }
 
