@@ -19,6 +19,7 @@ delete = "Löschen"
 update = "Aktualisieren"
 remove = "Entfernen"
 add = "Hinzufügen"
+add_element = "Element hinzufügen"
 file_dialog_failed = "Der Dateidialog konnte nicht geöffnet werden. Ist xdg-desktop-portal installiert?"
 
 # --- Allgemeine Beschriftungen/Felder ---

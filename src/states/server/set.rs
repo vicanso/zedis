@@ -19,7 +19,7 @@ use super::{
 };
 use crate::helpers::unix_ts;
 use crate::{
-    connection::{ServerDb, set_add, set_card, set_remove, set_replace_member, set_scan},
+    connection::{ServerDb, set_add, set_add_many, set_card, set_remove, set_replace_member, set_scan},
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_set_editor},
 };
@@ -230,6 +230,66 @@ impl ZedisServerState {
                     // Only append to UI if scan is complete to maintain consistency
                     if set.done && !set.values.iter().any(|v| v.raw() == val_clone.raw()) {
                         set.values.push(val_clone);
+                    }
+                    if set.size > SUCCESS_NOTIFY_THRESHOLD {
+                        this.emit_success_notification(
+                            i18n_set_editor(cx, "add_value_success_tips"),
+                            i18n_set_editor(cx, "add_value_success"),
+                            cx,
+                        );
+                    }
+                }
+                cx.emit(ServerEvent::ValueAdded);
+            },
+        );
+    }
+
+    /// Adds multiple members to the Redis SET in a single `SADD` command.
+    pub fn add_set_values(&mut self, new_values: Vec<SharedString>, cx: &mut Context<Self>) {
+        let items: Vec<SharedString> = new_values.into_iter().filter(|v| !v.is_empty()).collect();
+        if items.is_empty() {
+            return;
+        }
+        if items.len() == 1 {
+            self.add_set_value(items[0].clone(), cx);
+            return;
+        }
+        let elements: Vec<KvElement> = items.iter().map(|v| KvElement::from_text(v)).collect();
+        let log_key = self.open.key.clone();
+        let log_members: Vec<String> = items.iter().map(ToString::to_string).collect();
+
+        self.exec_set_op(
+            ServerTask::AddSetValue,
+            cx,
+            |_| {},
+            move |key, at| async move {
+                let slices: Vec<&[u8]> = items.iter().map(|v| v.as_bytes()).collect();
+                Ok(set_add_many(&at, &key, &slices).await?)
+            },
+            move |this, added, cx| {
+                if added > 0
+                    && let Some(log_key) = log_key
+                {
+                    let at = unix_ts();
+                    let entries = log_members
+                        .into_iter()
+                        .map(|m| ChangeEntry::element(at, m, None, Some("")))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
+                if added == 0 {
+                    this.emit_warning_notification(i18n_set_editor(cx, "add_value_exists_tips"), cx);
+                } else if let Some(RedisValueData::Set(set_data)) =
+                    this.open.value.as_mut().and_then(|v| v.data.as_mut())
+                {
+                    let set = Arc::make_mut(set_data);
+                    set.size += added;
+                    if set.done {
+                        for elem in elements {
+                            if !set.values.iter().any(|v| v.raw() == elem.raw()) {
+                                set.values.push(elem);
+                            }
+                        }
                     }
                     if set.size > SUCCESS_NOTIFY_THRESHOLD {
                         this.emit_success_notification(

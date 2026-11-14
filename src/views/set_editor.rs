@@ -58,6 +58,22 @@ impl ZedisKvFetcher for ZedisSetValues {
         });
     }
 
+    fn handle_add_values(&self, batches: Vec<Vec<SharedString>>, _window: &mut Window, cx: &mut App) -> bool {
+        let members: Vec<SharedString> = batches
+            .into_iter()
+            .filter_map(|mut b| (!b.is_empty()).then(|| b.swap_remove(0)))
+            .filter(|m| !m.is_empty())
+            .collect();
+        if members.is_empty() {
+            return true;
+        }
+        let server_state = self.server_state.clone();
+        server_state.update(cx, |this, cx| {
+            this.add_set_values(members, cx);
+        });
+        true
+    }
+
     /// Returns the total cardinality of the SET (from Redis SCARD).
     fn count(&self) -> usize {
         self.value.set_value().map_or(0, |v| v.size)

@@ -19,6 +19,7 @@ delete = "Delete"
 update = "Update"
 remove = "Remove"
 add = "Add"
+add_element = "Add Element"
 file_dialog_failed = "Could not open the file dialog. Is xdg-desktop-portal installed?"
 
 # --- General Labels/Fields ---

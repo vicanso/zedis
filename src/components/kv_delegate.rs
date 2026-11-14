@@ -182,6 +182,16 @@ pub trait ZedisKvFetcher: 'static {
     /// Adds values for a new row.
     fn handle_add_value(&self, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App);
 
+    /// Adds one or more rows submitted from the entry panel in a single batch.
+    /// Returns `false` when client-side validation refuses the batch so the
+    /// entry panel stays open with the user's typed rows intact.
+    fn handle_add_values(&self, batches: Vec<Vec<SharedString>>, window: &mut Window, cx: &mut App) -> bool {
+        for batch in batches {
+            self.handle_add_value(batch, window, cx);
+        }
+        true
+    }
+
     /// Updates values for a specific row.
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 

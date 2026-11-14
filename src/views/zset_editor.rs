@@ -193,6 +193,31 @@ impl ZedisKvFetcher for ZedisZsetValues {
         });
     }
 
+    fn handle_add_values(&self, batches: Vec<Vec<SharedString>>, _window: &mut Window, cx: &mut App) -> bool {
+        let mut parsed = Vec::with_capacity(batches.len());
+        for batch in batches {
+            if batch.len() != 2 || batch[0].is_empty() {
+                continue;
+            }
+            let Some(score) = parse_score(&batch[1]) else {
+                let server_state = self.server_state.clone();
+                server_state.update(cx, |state, cx| {
+                    state.emit_error_notification(i18n_kv_table(cx, "score_invalid"), cx);
+                });
+                return false;
+            };
+            parsed.push((batch[0].clone(), score));
+        }
+        if parsed.is_empty() {
+            return true;
+        }
+        let server_state = self.server_state.clone();
+        server_state.update(cx, |this, cx| {
+            this.add_zset_values(parsed, cx);
+        });
+        true
+    }
+
     /// Handles inline editing of a ZSET member's score.
     ///
     /// Called when the user edits the score column directly in the table.

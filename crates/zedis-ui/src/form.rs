@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod add_fields;
+
+pub use add_fields::*;
 use gpui::{
     AnyElement, App, ElementId, Entity, FontWeight, Pixels, Render, SharedString, StyleRefinement, Subscription,
     Window, div, prelude::*, px,
@@ -31,7 +34,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::v_flex;
-use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, StyledExt, WindowExt, h_flex};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::mem::take;
@@ -129,6 +132,10 @@ pub struct ZedisFormField {
     /// allowing multi-line or tab-separated pastes to fill this pair and
     /// overflow remaining lines into dynamic (`+`) rows.
     paste_pair_with: Option<SharedString>,
+    /// When enabled and the active add-fields mode is single-column (e.g. List
+    /// or Set), pasting a multi-line list into this field fills it with the
+    /// first line and distributes remaining lines across dynamic (`+`) rows.
+    paste_single_lines: bool,
 }
 
 /// Runtime state wrapper for each field type, holding a GPUI entity handle.
@@ -209,6 +216,7 @@ impl ZedisFormField {
             stacked: false,
             span: None,
             paste_pair_with: None,
+            paste_single_lines: false,
         }
     }
 
@@ -342,6 +350,14 @@ impl ZedisFormField {
         self.paste_pair_with = Some(companion.into());
         self
     }
+
+    /// Split multi-line pastes into `(self, extra_single_rows…)` whenever the
+    /// form's active add-fields mode is single-column (e.g. List or Set), while
+    /// keeping pretty-printed single JSON/XML documents intact.
+    pub fn paste_single_lines(mut self) -> Self {
+        self.paste_single_lines = true;
+        self
+    }
 }
 
 impl Styled for ZedisFormField {
@@ -351,99 +367,6 @@ impl Styled for ZedisFormField {
 }
 
 impl gpui::prelude::FluentBuilder for ZedisFormField {}
-
-/// Key prefix used in the submitted `IndexMap` for single-column dynamic add-field rows.
-pub const EXTRA_SINGLE_ROW_PREFIX: &str = "__extra_single_row_";
-
-/// Key prefix used in the submitted `IndexMap` for two-column dynamic add-field rows
-/// whose first column is empty or collides with an earlier key in the map.
-pub const EXTRA_PAIR_DUP_PREFIX: &str = "__extra_pair_dup_";
-
-/// Shape and placeholders for dynamic (`+`) rows in [`ZedisForm`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ZedisFormAddFieldsMode {
-    /// One input per dynamic row (e.g. List value, Set member).
-    Single {
-        placeholder: SharedString,
-        initial_rows: usize,
-    },
-    /// Two side-by-side inputs per dynamic row (e.g. Hash field+value, Zset score+member, Stream field+value).
-    Pair {
-        field_placeholder: SharedString,
-        value_placeholder: SharedString,
-        initial_rows: usize,
-    },
-}
-
-impl ZedisFormAddFieldsMode {
-    /// Construct a single-column dynamic row mode.
-    pub fn single(placeholder: impl Into<SharedString>, initial_rows: usize) -> Self {
-        Self::Single {
-            placeholder: placeholder.into(),
-            initial_rows,
-        }
-    }
-
-    /// Construct a two-column dynamic row mode.
-    pub fn pair(
-        field_placeholder: impl Into<SharedString>,
-        value_placeholder: impl Into<SharedString>,
-        initial_rows: usize,
-    ) -> Self {
-        Self::Pair {
-            field_placeholder: field_placeholder.into(),
-            value_placeholder: value_placeholder.into(),
-            initial_rows,
-        }
-    }
-
-    fn initial_rows(&self) -> usize {
-        match self {
-            Self::Single { initial_rows, .. } | Self::Pair { initial_rows, .. } => *initial_rows,
-        }
-    }
-
-    fn is_single(&self) -> bool {
-        matches!(self, Self::Single { .. })
-    }
-}
-
-/// Extract all single-column dynamic row values from a submitted form map, in row order.
-pub fn extra_single_rows(values: &IndexMap<SharedString, SharedString>) -> Vec<SharedString> {
-    values
-        .iter()
-        .filter(|(k, _)| k.starts_with(EXTRA_SINGLE_ROW_PREFIX))
-        .map(|(_, v)| v.clone())
-        .collect()
-}
-
-/// Decode a dynamic two-column key if it was disambiguated with [`EXTRA_PAIR_DUP_PREFIX`].
-pub fn decode_extra_pair_key(key: &str) -> SharedString {
-    if let Some(rest) = key.strip_prefix(EXTRA_PAIR_DUP_PREFIX)
-        && let Some((_, raw_field)) = rest.split_once(':')
-    {
-        return SharedString::from(raw_field.to_string());
-    }
-    SharedString::from(key.to_string())
-}
-
-/// Extract all two-column dynamic `(field, value)` rows from a submitted form map,
-/// skipping any static form field names listed in `static_keys` and any single-column rows.
-pub fn extra_pair_rows(
-    values: &IndexMap<SharedString, SharedString>,
-    static_keys: &[&str],
-) -> Vec<(SharedString, SharedString)> {
-    values
-        .iter()
-        .filter_map(|(k, v)| {
-            if k.starts_with(EXTRA_SINGLE_ROW_PREFIX) || static_keys.contains(&k.as_ref()) {
-                return None;
-            }
-            let field = decode_extra_pair_key(k.as_ref());
-            Some((field, v.clone()))
-        })
-        .collect()
-}
 
 /// Configuration for constructing a [`ZedisForm`]. Collects field descriptors,
 /// tab labels, button labels, and event handlers before entity creation.
@@ -458,6 +381,7 @@ pub struct ZedisFormOptions {
     cancel_label: SharedString,
     add_field_placeholder: SharedString,
     add_value_placeholder: SharedString,
+    add_button_label: Option<SharedString>,
     on_submit: Option<ZedisFormSubmitHandler>,
     on_cancel: Option<ZedisFormCancelHandler>,
     foot_actions: Option<ZedisFormActionsBuilder>,
@@ -491,6 +415,7 @@ impl Default for ZedisFormOptions {
             cancel_label: "Cancel".into(),
             add_field_placeholder: "Enter field".into(),
             add_value_placeholder: "Enter value".into(),
+            add_button_label: None,
             on_submit: None,
             on_cancel: None,
             foot_actions: None,
@@ -669,6 +594,12 @@ impl ZedisFormOptions {
         self
     }
 
+    /// Set a visible label on the `+` add-row button so multi-row entry is discoverable.
+    pub fn add_button_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.add_button_label = Some(label.into());
+        self
+    }
+
     /// Set the action buttons for the footer.
     pub fn foot_actions<F, I>(mut self, builder: F) -> Self
     where
@@ -826,6 +757,7 @@ pub struct ZedisForm {
     add_field_states: Vec<(Entity<InputState>, Entity<InputState>)>,
     add_field_placeholder: SharedString,
     add_value_placeholder: SharedString,
+    add_button_label: Option<SharedString>,
     tab_selected_index: Entity<usize>,
     support_add_fields: bool,
     support_add_fields_on: Option<(SharedString, Vec<usize>)>,
@@ -996,6 +928,7 @@ impl ZedisForm {
             add_field_states: Vec::with_capacity(1),
             add_field_placeholder: options.add_field_placeholder,
             add_value_placeholder: options.add_value_placeholder,
+            add_button_label: options.add_button_label,
             support_add_fields: options.support_add_fields,
             support_add_fields_on: options.support_add_fields_on,
             add_fields_mode: options.add_fields_mode,
@@ -1014,49 +947,6 @@ impl ZedisForm {
             }
         }
         this
-    }
-
-    fn default_pair_mode(&self) -> ZedisFormAddFieldsMode {
-        ZedisFormAddFieldsMode::Pair {
-            field_placeholder: self.add_field_placeholder.clone(),
-            value_placeholder: self.add_value_placeholder.clone(),
-            initial_rows: 1,
-        }
-    }
-
-    fn active_add_fields_mode(&self, cx: &App) -> Option<ZedisFormAddFieldsMode> {
-        if !self.should_show_add_fields(cx) {
-            return None;
-        }
-        if let Some((ref radio_name, ref modes)) = self.add_fields_modes_on {
-            let selected = self.radio_group_selected(radio_name, cx);
-            if let Some((_, mode)) = modes.iter().find(|(i, _)| *i == selected) {
-                return Some(mode.clone());
-            }
-        }
-        if let Some(ref mode) = self.add_fields_mode {
-            return Some(mode.clone());
-        }
-        Some(self.default_pair_mode())
-    }
-
-    fn sync_add_fields_for_radio(&mut self, radio_name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let controls_add_fields = self
-            .support_add_fields_on
-            .as_ref()
-            .is_some_and(|(name, _)| name.as_ref() == radio_name)
-            || self
-                .add_fields_modes_on
-                .as_ref()
-                .is_some_and(|(name, _)| name.as_ref() == radio_name);
-        if !controls_add_fields {
-            return;
-        }
-        self.add_field_states.clear();
-        let initial_rows = self.active_add_fields_mode(cx).map_or(0, |mode| mode.initial_rows());
-        for _ in 0..initial_rows {
-            self.add_field(window, cx);
-        }
     }
 
     /// Put the keyboard inside `tab_index`'s first text field.
@@ -1162,18 +1052,6 @@ impl ZedisForm {
             .unwrap_or(0)
     }
 
-    /// Returns `true` if the dynamic add-fields section should be displayed.
-    fn should_show_add_fields(&self, cx: &App) -> bool {
-        if !self.support_add_fields {
-            return false;
-        }
-        if let Some((ref radio_name, ref indices)) = self.support_add_fields_on {
-            let selected = self.radio_group_selected(radio_name, cx);
-            return indices.contains(&selected);
-        }
-        true
-    }
-
     /// Clear the validation error for a specific field when its value changes.
     fn on_value_change(&mut self, name: SharedString, cx: &mut Context<Self>) {
         self.errors.remove(&name);
@@ -1216,23 +1094,7 @@ impl ZedisForm {
             cx.notify();
             return None;
         }
-        if let Some(mode) = self.active_add_fields_mode(cx) {
-            let is_single = mode.is_single();
-            for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
-                if is_single {
-                    let value = value_state.read(cx).value();
-                    values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}{index}").into(), value);
-                } else {
-                    let field = field_state.read(cx).value();
-                    let value = value_state.read(cx).value();
-                    if !field.is_empty() && !values.contains_key(&field) {
-                        values.insert(field, value);
-                    } else {
-                        values.insert(format!("{EXTRA_PAIR_DUP_PREFIX}{index}:{field}").into(), value);
-                    }
-                }
-            }
-        }
+        self.collect_add_field_values(&mut values, cx);
         Some(values)
     }
 
@@ -1320,50 +1182,6 @@ impl ZedisForm {
         cx.notify();
     }
 
-    pub fn remove_add_field(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.add_field_states.remove(index);
-        cx.notify();
-    }
-
-    pub fn add_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (field_placeholder, value_placeholder) = match self.active_add_fields_mode(cx) {
-            Some(ZedisFormAddFieldsMode::Single { placeholder, .. }) => (SharedString::default(), placeholder),
-            Some(ZedisFormAddFieldsMode::Pair {
-                field_placeholder,
-                value_placeholder,
-                ..
-            }) => (field_placeholder, value_placeholder),
-            None => (self.add_field_placeholder.clone(), self.add_value_placeholder.clone()),
-        };
-        self.add_field_states.push((
-            cx.new(|cx| InputState::new(window, cx).placeholder(field_placeholder)),
-            cx.new(|cx| InputState::new(window, cx).placeholder(value_placeholder)),
-        ));
-        cx.notify();
-    }
-
-    /// Return the current number of dynamic add-field rows.
-    pub fn add_field_count(&self) -> usize {
-        self.add_field_states.len()
-    }
-
-    /// Set the value of a dynamic add-field row by index.
-    pub fn set_add_field_values(
-        &mut self,
-        index: usize,
-        field_value: impl Into<SharedString>,
-        value: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some((field_state, value_state)) = self.add_field_states.get(index) {
-            let field_value = field_value.into();
-            let value = value.into();
-            field_state.update(cx, |s, cx| s.set_value(field_value, window, cx));
-            value_state.update(cx, |s, cx| s.set_value(value, window, cx));
-        }
-    }
-
     /// Set the value of a static field by name.
     pub fn set_field_value(
         &mut self,
@@ -1419,131 +1237,6 @@ impl ZedisForm {
     /// Queue a field value update to be applied on the next render (when `Window` is available).
     pub fn schedule_field_update(&mut self, name: SharedString, value: SharedString) {
         self.pending_field_updates.push((name, value));
-    }
-
-    /// Distribute multi-line (or tab-separated pair) clipboard text across
-    /// dynamic add-field rows starting at `start_row`.
-    ///
-    /// Returns `true` when the paste was handled across dynamic rows so the
-    /// caller can stop default single-line paste propagation.
-    pub fn paste_add_field_lines(
-        &mut self,
-        start_row: usize,
-        is_value_col: bool,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mode) = self.active_add_fields_mode(cx) else {
-            return false;
-        };
-        let lines = split_paste_lines(text);
-        if mode.is_single() {
-            if !text.contains('\n') || lines.len() < 2 {
-                return false;
-            }
-            for (offset, line) in lines.into_iter().enumerate() {
-                let row_ix = start_row + offset;
-                while self.add_field_states.len() <= row_ix {
-                    self.add_field(window, cx);
-                }
-                if let Some((_, value_state)) = self.add_field_states.get(row_ix) {
-                    let val: SharedString = line.to_string().into();
-                    value_state.update(cx, |s, cx| s.set_value(val, window, cx));
-                }
-            }
-            cx.notify();
-            return true;
-        }
-
-        let single_line_tab = !is_value_col && lines.len() == 1 && lines[0].contains('\t');
-        if (!text.contains('\n') || lines.len() < 2) && !single_line_tab {
-            return false;
-        }
-
-        for (offset, line) in lines.into_iter().enumerate() {
-            let row_ix = start_row + offset;
-            while self.add_field_states.len() <= row_ix {
-                self.add_field(window, cx);
-            }
-            let Some((field_state, value_state)) = self.add_field_states.get(row_ix) else {
-                continue;
-            };
-            if is_value_col {
-                let val: SharedString = line.to_string().into();
-                value_state.update(cx, |s, cx| s.set_value(val, window, cx));
-            } else {
-                let (field_part, value_part) = split_paste_pair(line);
-                let field_val: SharedString = field_part.to_string().into();
-                field_state.update(cx, |s, cx| s.set_value(field_val, window, cx));
-                if let Some(val_part) = value_part {
-                    let val: SharedString = val_part.to_string().into();
-                    value_state.update(cx, |s, cx| s.set_value(val, window, cx));
-                }
-            }
-        }
-        cx.notify();
-        true
-    }
-
-    /// Distribute multi-line or tab-separated pair clipboard text pasted into
-    /// a static pair field (`field_name`, `companion_name`), filling the
-    /// static pair with the first line and overflowing remaining lines into
-    /// dynamic (`+`) rows.
-    ///
-    /// When `require_all_pairs` is true (used for `Textarea` fields that can
-    /// legitimately hold a single multi-line JSON/text document), the paste
-    /// is only split if every non-empty line parses as a `(left, right)` pair.
-    pub fn paste_static_pair_lines(
-        &mut self,
-        field_name: &str,
-        companion_name: &str,
-        require_all_pairs: bool,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mode) = self.active_add_fields_mode(cx) else {
-            return false;
-        };
-        if mode.is_single() {
-            return false;
-        }
-        let lines = split_paste_lines(text);
-        if lines.is_empty() {
-            return false;
-        }
-        let single_line_tab = lines.len() == 1 && lines[0].contains('\t');
-        if (!text.contains('\n') || lines.len() < 2) && !single_line_tab {
-            return false;
-        }
-        if require_all_pairs && !lines.iter().all(|line| split_paste_pair(line).1.is_some()) {
-            return false;
-        }
-
-        let (first_left, first_right) = split_paste_pair(lines[0]);
-        self.set_field_value(field_name, first_left.to_string(), window, cx);
-        if let Some(right) = first_right {
-            self.set_field_value(companion_name, right.to_string(), window, cx);
-        }
-
-        for (offset, line) in lines.into_iter().skip(1).enumerate() {
-            while self.add_field_states.len() <= offset {
-                self.add_field(window, cx);
-            }
-            let Some((field_state, value_state)) = self.add_field_states.get(offset) else {
-                continue;
-            };
-            let (field_part, value_part) = split_paste_pair(line);
-            let field_val: SharedString = field_part.to_string().into();
-            field_state.update(cx, |s, cx| s.set_value(field_val, window, cx));
-            if let Some(val_part) = value_part {
-                let val: SharedString = val_part.to_string().into();
-                value_state.update(cx, |s, cx| s.set_value(val, window, cx));
-            }
-        }
-        cx.notify();
-        true
     }
 }
 
@@ -1664,6 +1357,17 @@ impl Render for ZedisForm {
                                     )
                                 })
                             });
+                        } else if field.paste_single_lines {
+                            let field_name = field.name.clone();
+                            let form_entity = cx.entity().clone();
+                            input = input.on_paste(move |clipboard, window, cx| {
+                                let Some(text) = clipboard.text() else {
+                                    return false;
+                                };
+                                form_entity.update(cx, |this, cx| {
+                                    this.paste_static_single_lines(field_name.as_ref(), &text, window, cx)
+                                })
+                            });
                         }
                         items.push(FormItem::field(new_field(field).child(input)));
                     }
@@ -1689,6 +1393,17 @@ impl Render for ZedisForm {
                                     window,
                                     cx,
                                 )
+                            })
+                        });
+                    } else if field.paste_single_lines {
+                        let field_name = field.name.clone();
+                        let form_entity = cx.entity().clone();
+                        textarea = textarea.on_paste(move |clipboard, window, cx| {
+                            let Some(text) = clipboard.text() else {
+                                return false;
+                            };
+                            form_entity.update(cx, |this, cx| {
+                                this.paste_static_single_lines(field_name.as_ref(), &text, window, cx)
                             })
                         });
                     }
@@ -1754,58 +1469,8 @@ impl Render for ZedisForm {
             }
         }
 
-        if let Some(mode) = self.active_add_fields_mode(cx) {
-            let is_single = mode.is_single();
-            for (index, (field_state, value_state)) in self.add_field_states.iter().enumerate() {
-                let mut row_flex = h_flex().gap_2();
-                if !is_single {
-                    let form_entity = cx.entity().clone();
-                    row_flex = row_flex.child(Input::new(field_state).disabled(form_disabled).on_paste(
-                        move |clipboard, window, cx| {
-                            let Some(text) = clipboard.text() else {
-                                return false;
-                            };
-                            form_entity.update(cx, |this, cx| {
-                                this.paste_add_field_lines(index, false, &text, window, cx)
-                            })
-                        },
-                    ));
-                }
-                let form_entity = cx.entity().clone();
-                row_flex =
-                    row_flex
-                        .child(Input::new(value_state).disabled(form_disabled).on_paste(
-                            move |clipboard, window, cx| {
-                                let Some(text) = clipboard.text() else {
-                                    return false;
-                                };
-                                form_entity.update(cx, |this, cx| {
-                                    this.paste_add_field_lines(index, true, &text, window, cx)
-                                })
-                            },
-                        ))
-                        .child(
-                            Button::new(("remove-add-field", index))
-                                .icon(IconName::CircleX)
-                                .disabled(form_disabled)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_add_field(index, cx);
-                                })),
-                        );
-                items.push(FormItem::field(row().child(row_flex)));
-            }
-            items.push(FormItem::field(
-                row().child(
-                    h_flex().justify_end().child(
-                        Button::new("add-add-field")
-                            .icon(IconName::Plus)
-                            .disabled(form_disabled)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_field(window, cx);
-                            })),
-                    ),
-                ),
-            ));
+        for add_item in self.render_add_fields_section(form_disabled, cx) {
+            items.push(FormItem::field(add_item));
         }
 
         // Render validation errors as a markdown alert.
@@ -1928,73 +1593,9 @@ fn submitted_value(raw: &str, verbatim: bool) -> String {
     }
 }
 
-/// Non-empty lines extracted from clipboard text, stripping `\r`.
-pub fn split_paste_lines(text: &str) -> Vec<&str> {
-    text.split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .filter(|line| !line.trim().is_empty())
-        .collect()
-}
-
-/// Parse a pasted line into `(first_column, optional_second_column)`.
-///
-/// Recognises:
-/// 1. Tab-delimited (`field\tvalue` — TSV / spreadsheet copy, preserving spacing around `\t`).
-/// 2. Equals-delimited (`field=value` — `.env` / properties).
-/// 3. Colon-space delimited (`field: value` — YAML / header copy; bare `:` without space is
-///    kept whole so Redis colon-namespaced identifiers like `user:1001` are not split).
-/// 4. Whitespace-delimited (`member 42.5`).
-pub fn split_paste_pair(line: &str) -> (&str, Option<&str>) {
-    if let Some((left, right)) = line.split_once('\t')
-        && !left.is_empty()
-    {
-        return (left, Some(right));
-    }
-    if let Some((left, right)) = line.split_once('=')
-        && !left.trim().is_empty()
-    {
-        return (left.trim(), Some(right.trim()));
-    }
-    if let Some((left, right)) = line.split_once(": ")
-        && !left.trim().is_empty()
-    {
-        return (left.trim(), Some(right.trim()));
-    }
-    let trimmed = line.trim();
-    if let Some((left, right)) = trimmed.split_once(char::is_whitespace)
-        && !left.is_empty()
-        && !right.trim().is_empty()
-    {
-        return (left, Some(right.trim()));
-    }
-    (line, None)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        EXTRA_PAIR_DUP_PREFIX, EXTRA_SINGLE_ROW_PREFIX, decode_extra_pair_key, extra_pair_rows, extra_single_rows,
-        split_paste_lines, split_paste_pair, submitted_value,
-    };
-    use gpui::SharedString;
-    use indexmap::IndexMap;
-
-    #[test]
-    fn paste_lines_and_pairs_split_cleanly_while_keeping_redis_colons() {
-        assert_eq!(split_paste_lines("a\r\nb\n\nc\n"), vec!["a", "b", "c"]);
-        // Tab-delimited keeps exact cell values.
-        assert_eq!(
-            split_paste_pair("user:1001\tAlice Smith"),
-            ("user:1001", Some("Alice Smith"))
-        );
-        // Equals and colon-space split and trim.
-        assert_eq!(split_paste_pair("user:1001 = Alice"), ("user:1001", Some("Alice")));
-        assert_eq!(split_paste_pair("user:1001: Alice"), ("user:1001", Some("Alice")));
-        // Space-delimited (e.g. ZSET `member score`).
-        assert_eq!(split_paste_pair("player:1 42.5"), ("player:1", Some("42.5")));
-        // Bare Redis colon identifier stays intact as a single field/member.
-        assert_eq!(split_paste_pair("user:1001"), ("user:1001", None));
-    }
+    use super::submitted_value;
 
     #[test]
     fn only_a_verbatim_field_keeps_its_surrounding_whitespace() {
@@ -2003,53 +1604,5 @@ mod tests {
         // A value is data: an indented YAML line and its final newline stay.
         assert_eq!(submitted_value("  a: 1\n", true), "  a: 1\n");
         assert_eq!(submitted_value("name ", true), "name ");
-    }
-
-    #[test]
-    fn extra_single_rows_preserves_duplicate_values_and_skips_static_fields() {
-        let mut values: IndexMap<SharedString, SharedString> = IndexMap::new();
-        values.insert("key".into(), "my-list".into());
-        values.insert("value".into(), "first".into());
-        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}0").into(), "dup".into());
-        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}1").into(), "dup".into());
-        values.insert(format!("{EXTRA_SINGLE_ROW_PREFIX}2").into(), "third".into());
-
-        let rows = extra_single_rows(&values);
-        assert_eq!(
-            rows,
-            vec![
-                SharedString::from("dup"),
-                SharedString::from("dup"),
-                SharedString::from("third"),
-            ]
-        );
-    }
-
-    #[test]
-    fn extra_pair_rows_decodes_duplicate_and_empty_first_columns() {
-        let mut values: IndexMap<SharedString, SharedString> = IndexMap::new();
-        values.insert("key".into(), "my-zset".into());
-        values.insert("score".into(), "1".into());
-        values.insert("member".into(), "m1".into());
-        // First dynamic row with unique non-empty score "2":
-        values.insert("2".into(), "m2".into());
-        // Second dynamic row with duplicate score "2":
-        values.insert(format!("{EXTRA_PAIR_DUP_PREFIX}1:2").into(), "m3".into());
-        // Third dynamic row with empty score "":
-        values.insert(format!("{EXTRA_PAIR_DUP_PREFIX}2:").into(), "m4".into());
-
-        let pairs = extra_pair_rows(&values, &["key", "score", "member"]);
-        assert_eq!(
-            pairs,
-            vec![
-                (SharedString::from("2"), SharedString::from("m2")),
-                (SharedString::from("2"), SharedString::from("m3")),
-                (SharedString::from(""), SharedString::from("m4")),
-            ]
-        );
-        assert_eq!(
-            decode_extra_pair_key(&format!("{EXTRA_PAIR_DUP_PREFIX}1:2")),
-            SharedString::from("2")
-        );
     }
 }

@@ -344,6 +344,41 @@ impl ZedisKvFetcher for ZedisHashValues {
             this.add_hash_value(field, value, ttl, cx);
         });
     }
+
+    fn handle_add_values(&self, batches: Vec<Vec<SharedString>>, _window: &mut Window, cx: &mut App) -> bool {
+        let mut ttl: Option<i64> = None;
+        let mut items = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let Some(field) = batch.first().cloned() else {
+                continue;
+            };
+            let Some(value) = batch.get(1).cloned() else {
+                continue;
+            };
+            if field.is_empty() {
+                continue;
+            }
+            match batch.get(2).map(|text| field_ttl_input(text)) {
+                None | Some(Ok(None)) => {}
+                Some(Ok(Some(secs))) => ttl = Some(secs),
+                Some(Err(())) => {
+                    self.server_state.update(cx, |this, cx| {
+                        this.emit_error_notification(i18n_kv_table(cx, "field_ttl_invalid"), cx);
+                    });
+                    return false;
+                }
+            }
+            items.push((field, value));
+        }
+        if items.is_empty() {
+            return true;
+        }
+        let server_state = self.server_state.clone();
+        server_state.update(cx, |this, cx| {
+            this.add_hash_values(items, ttl, cx);
+        });
+        true
+    }
 }
 define_kv_editor!(ZedisHashEditor, ZedisHashValues);
 

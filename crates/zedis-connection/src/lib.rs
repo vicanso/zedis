@@ -188,7 +188,7 @@ pub use functions::{
 pub use geo::{GeoMember, GeoSample, GeoShape, geo_add, geo_dist, geo_sample, geo_search, zset_looks_geo};
 pub use hash_fields::{
     FieldTtl, hash_delete_fields, hash_field_ttls, hash_len, hash_rand_field, hash_scan, rename_hash_field,
-    set_hash_field_ttl, set_hash_fields_ttl, write_hash_field,
+    set_hash_field_ttl, set_hash_fields_ttl, write_hash_field, write_hash_fields,
 };
 pub use hotkeys::{HotkeyEntry, HotkeysReport};
 pub use hyperloglog::{HllEncoding, HllInfo, hll_info, pf_add, pf_merge};
@@ -266,7 +266,7 @@ pub use server_ops::{
     replicaof_no_one, server_summary, server_supports, slow_logs, unlock_writes,
 };
 pub use server_report::{NodeReply, latency_doctor, memory_doctor, memory_stats};
-pub use set_ops::{set_add, set_card, set_ismember, set_remove, set_replace_member, set_scan};
+pub use set_ops::{set_add, set_add_many, set_card, set_ismember, set_remove, set_replace_member, set_scan};
 pub use slot_stats::{SlotStatMetric, SlotStatRow};
 #[cfg(not(target_family = "wasm"))]
 pub use ssh_tunnel::{HostKeyApprover, HostKeyDecision, HostKeyPrompt, set_host_key_approver};
@@ -349,8 +349,8 @@ pub use zedis_core::capability::Capability;
 pub use zedis_core::features::{CommandStatus, ServerCommand, ServerFeatures, ServerFlavor};
 pub use zedis_core::replication::{ReplicationInfo, ReplicationReplica, ReplicationRole};
 pub use zset_ops::{
-    ScoredMember, zset_card, zset_count_by_score, zset_mpop, zset_put, zset_range, zset_range_by_score, zset_remove,
-    zset_scan,
+    ScoredMember, zset_add_many, zset_card, zset_count_by_score, zset_mpop, zset_put, zset_range, zset_range_by_score,
+    zset_remove, zset_scan,
 };
 /// Sweep what has gone stale. The client cache is swept on both targets; the
 /// socket pool and the SSH session store exist only where there are sockets.

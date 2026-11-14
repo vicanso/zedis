@@ -54,8 +54,8 @@ impl FieldTtl {
     }
 }
 
-/// `HSETEX key [KEEPTTL | EX secs] FIELDS 1 field value`.
-fn hsetex_cmd(key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) -> Cmd {
+/// `HSETEX key [KEEPTTL | EX secs] FIELDS n field value…`.
+fn hsetex_cmd_many(key: &str, pairs: &[(&[u8], &[u8])], ttl: FieldTtl) -> Cmd {
     let mut c = cmd("HSETEX");
     c.arg(key);
     match ttl {
@@ -67,8 +67,16 @@ fn hsetex_cmd(key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) -> Cmd {
         }
         FieldTtl::Persist => {}
     }
-    c.arg("FIELDS").arg(1).arg(field).arg(value);
+    c.arg("FIELDS").arg(pairs.len());
+    for (field, value) in pairs {
+        c.arg(*field).arg(*value);
+    }
     c
+}
+
+/// `HSETEX key [KEEPTTL | EX secs] FIELDS 1 field value`.
+fn hsetex_cmd(key: &str, field: &[u8], value: &[u8], ttl: FieldTtl) -> Cmd {
+    hsetex_cmd_many(key, &[(field, value)], ttl)
 }
 
 /// The pre-8.0 shape: `HSET`, then `HEXPIRE` if a TTL was asked for.
@@ -111,6 +119,66 @@ pub async fn write_hash_field(
     push_fallback(&mut p, key, field, value, ttl);
     let replies: Vec<Value> = p.query_async(conn).await?;
     Ok(matches!(replies.first(), Some(Value::Int(1))))
+}
+
+/// Set multiple `(field, value)` pairs with a shared TTL decision in a single
+/// round-trip, returning how many fields were newly created rather than
+/// overwritten. Duplicate field names in `pairs` collapse to the last value.
+pub async fn write_hash_fields(
+    at: &ServerDb,
+    key: &str,
+    pairs: &[(&[u8], &[u8])],
+    ttl: FieldTtl,
+    atomic: bool,
+) -> Result<usize> {
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+    let mut deduped: Vec<(&[u8], &[u8])> = Vec::with_capacity(pairs.len());
+    for &(field, value) in pairs {
+        if let Some(existing) = deduped.iter_mut().find(|(f, _)| *f == field) {
+            existing.1 = value;
+        } else {
+            deduped.push((field, value));
+        }
+    }
+    let conn = &mut at.connection().await?;
+    if atomic {
+        let mut p = pipe();
+        p.atomic();
+        for &(field, _) in &deduped {
+            p.cmd("HEXISTS").arg(key).arg(field);
+        }
+        p.add_command(hsetex_cmd_many(key, &deduped, ttl));
+        let replies: Vec<Value> = p.query_async(conn).await?;
+        let created = replies
+            .iter()
+            .take(deduped.len())
+            .filter(|v| matches!(v, Value::Int(0)))
+            .count();
+        return Ok(created);
+    }
+    let mut p = pipe();
+    let mut hset = cmd("HSET");
+    hset.arg(key);
+    for &(field, value) in &deduped {
+        hset.arg(field).arg(value);
+    }
+    p.add_command(hset);
+    if let FieldTtl::Expire(secs) = ttl {
+        let mut hexpire = cmd("HEXPIRE");
+        hexpire.arg(key).arg(secs).arg("FIELDS").arg(deduped.len());
+        for &(field, _) in &deduped {
+            hexpire.arg(field);
+        }
+        p.add_command(hexpire);
+    }
+    let replies: Vec<Value> = p.query_async(conn).await?;
+    let created = match replies.first() {
+        Some(Value::Int(n)) if *n > 0 => *n as usize,
+        _ => 0,
+    };
+    Ok(created)
 }
 
 /// Rename a field while writing its value: the new field is written with

@@ -19,6 +19,7 @@ delete = "删除"
 update = "更新"
 remove = "移除"
 add = "添加"
+add_element = "添加元素"
 file_dialog_failed = "无法打开文件对话框。Linux 上需要安装并运行 xdg-desktop-portal。"
 
 # --- 通用标签/字段 ---

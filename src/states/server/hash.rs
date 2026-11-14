@@ -30,7 +30,7 @@ use crate::helpers::unix_ts;
 use crate::{
     connection::{
         CommandStatus, FieldTtl, ServerCommand, ServerDb, hash_delete_fields, hash_field_ttls, hash_len, hash_scan,
-        rename_hash_field, set_hash_field_ttl, write_hash_field,
+        rename_hash_field, set_hash_field_ttl, write_hash_field, write_hash_fields,
     },
     error::Error,
     states::{SUCCESS_NOTIFY_THRESHOLD, ServerEvent, i18n_hash_editor},
@@ -299,6 +299,89 @@ impl ZedisServerState {
                                 .push((KvElement::from_text(&field_clone), KvElement::from_text(&value_clone)));
                         }
                         None => {}
+                    }
+                    if hash.size > SUCCESS_NOTIFY_THRESHOLD {
+                        this.emit_success_notification(
+                            i18n_hash_editor(cx, "add_value_success_tips"),
+                            i18n_hash_editor(cx, "add_value_success"),
+                            cx,
+                        );
+                    }
+                }
+                cx.emit(ServerEvent::ValueAdded);
+            },
+        );
+    }
+
+    /// Adds multiple `(field, value)` pairs in the Redis HASH in one batched round-trip.
+    pub fn add_hash_values(
+        &mut self,
+        items: Vec<(SharedString, SharedString)>,
+        ttl: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        let items: Vec<(SharedString, SharedString)> = items.into_iter().filter(|(f, _)| !f.is_empty()).collect();
+        if items.is_empty() {
+            return;
+        }
+        if items.len() == 1 {
+            self.add_hash_value(items[0].0.clone(), items[0].1.clone(), ttl, cx);
+            return;
+        }
+        let items_clone = items.clone();
+        let atomic = self.hsetex_available();
+        let field_ttl = match ttl {
+            Some(secs) if secs > 0 => FieldTtl::Expire(secs),
+            _ => FieldTtl::Persist,
+        };
+        let log_key = self.open.key.clone();
+        let log_fields: Vec<String> = items.iter().map(|(f, _)| f.to_string()).collect();
+
+        self.exec_hash_op(
+            ServerTask::AddHashField,
+            cx,
+            |_| {},
+            move |key, at| async move {
+                let pairs: Vec<(&[u8], &[u8])> = items.iter().map(|(f, v)| (f.as_bytes(), v.as_bytes())).collect();
+                Ok(write_hash_fields(&at, &key, &pairs, field_ttl, atomic).await?)
+            },
+            move |this, count, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_fields
+                        .into_iter()
+                        .map(|f| ChangeEntry::operation(at, format!("HSET {f}")))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
+                if let Some(RedisValueData::Hash(hash_data)) = this.open.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let hash = Arc::make_mut(hash_data);
+                    hash.size += count;
+                    for (field_name, field_val) in items_clone {
+                        let loaded = hash
+                            .values
+                            .iter()
+                            .position(|(f, _)| f.raw().as_ref() == field_name.as_bytes());
+                        let apply_ttl = |hash: &mut RedisHashValue, f: &SharedString| match ttl {
+                            Some(secs) if secs > 0 => {
+                                hash.field_ttls.insert(f.clone(), secs);
+                            }
+                            _ => {
+                                hash.field_ttls.remove(f);
+                            }
+                        };
+                        match loaded {
+                            Some(index) => {
+                                hash.values[index].1 = KvElement::from_text(&field_val);
+                                apply_ttl(hash, &field_name);
+                            }
+                            None if hash.done => {
+                                apply_ttl(hash, &field_name);
+                                hash.values
+                                    .push((KvElement::from_text(&field_name), KvElement::from_text(&field_val)));
+                            }
+                            None => {}
+                        }
                     }
                     if hash.size > SUCCESS_NOTIFY_THRESHOLD {
                         this.emit_success_notification(

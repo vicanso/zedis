@@ -27,12 +27,12 @@ const ADD_KEY_STATIC_FIELDS: &[&str] = &[
     "category",
     "key",
     "ttl",
+    "hash_field_ttl",
     "value",
     "score",
     "member",
     "hash_field",
     "hash_value",
-    "hash_field_ttl",
     "stream_id",
     "json_value",
     "ts_retention_ms",
@@ -44,6 +44,297 @@ const ADD_KEY_STATIC_FIELDS: &[&str] = &[
     "cf_bucket_size",
 ];
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct AddKeyServerSupport {
+    pub rejson: bool,
+    pub field_ttl: bool,
+    pub timeseries: bool,
+    pub bf: bool,
+}
+
+fn is_valid_zset_score(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.is_empty() || trimmed.parse::<f64>().is_ok_and(|n| !n.is_nan())
+}
+
+fn has_invalid_extra_zset_score(values: &IndexMap<SharedString, SharedString>) -> bool {
+    extra_pair_rows(values, ADD_KEY_STATIC_FIELDS)
+        .into_iter()
+        .any(|(score, member)| !member.is_empty() && !is_valid_zset_score(&score))
+}
+
+fn build_add_key_categories(support: AddKeyServerSupport) -> Vec<&'static str> {
+    let mut list = vec!["String", "List", "Set", "Zset", "Hash", "Stream"];
+    if support.rejson {
+        list.push("Json");
+    }
+    if support.timeseries {
+        list.push("TimeSeries");
+    }
+    if support.bf {
+        list.push("BloomFilter");
+        list.push("CuckooFilter");
+    }
+    list
+}
+
+fn build_add_key_form_options(
+    prefix: Option<SharedString>,
+    support: AddKeyServerSupport,
+    category_list: &[&'static str],
+    cx: &App,
+) -> ZedisFormOptions {
+    let json_index = category_list.iter().position(|&s| s == "Json");
+    let ts_index = category_list.iter().position(|&s| s == "TimeSeries");
+    let bf_index = category_list.iter().position(|&s| s == "BloomFilter");
+    let cf_index = category_list.iter().position(|&s| s == "CuckooFilter");
+
+    let ttl_invalid = i18n_common(cx, "ttl_invalid");
+    let field_ttl_invalid = i18n_kv_table(cx, "field_ttl_invalid");
+    let score_invalid = i18n_kv_table(cx, "score_invalid");
+    let key_too_long = i18n_key_tree(cx, "key_too_long");
+
+    let mut fields = vec![
+        ZedisFormField::new("category", i18n_key_tree(cx, "category"))
+            .field_type(ZedisFormFieldType::RadioGroup)
+            .options(category_list.iter().map(|s| (*s).into()).collect()),
+        ZedisFormField::new("key", i18n_common(cx, "key"))
+            .placeholder(i18n_common(cx, "key_placeholder"))
+            .required()
+            .when_some(prefix, |this, prefix| this.default_value(prefix))
+            .focus()
+            .validate(move |s| {
+                if validate_long_string(s) {
+                    None
+                } else {
+                    Some(key_too_long.clone())
+                }
+            }),
+        ZedisFormField::new("ttl", i18n_common(cx, "ttl"))
+            .placeholder(i18n_common(cx, "ttl_placeholder"))
+            .validate(move |s| {
+                if s.trim().is_empty() || ttl_secs(s).is_some() {
+                    None
+                } else {
+                    Some(ttl_invalid.clone())
+                }
+            }),
+    ];
+    if support.field_ttl {
+        fields.push(
+            ZedisFormField::new("hash_field_ttl", i18n_kv_table(cx, "field_ttl"))
+                .placeholder(i18n_kv_table(cx, "field_ttl_placeholder"))
+                .validate(move |s| {
+                    if s.trim().is_empty() || ttl_secs(s).is_some() {
+                        None
+                    } else {
+                        Some(field_ttl_invalid.clone())
+                    }
+                })
+                .visible_on("category", &[4]),
+        );
+    }
+    fields.extend([
+        ZedisFormField::new("value", i18n_common(cx, "value"))
+            .placeholder(i18n_common(cx, "value_placeholder"))
+            .field_type(ZedisFormFieldType::AutoGrow(ADD_KEY_VALUE_ROWS.0, ADD_KEY_VALUE_ROWS.1))
+            .verbatim()
+            .paste_single_lines()
+            .required()
+            .visible_on("category", &[0, 1, 2]),
+        ZedisFormField::new("score", i18n_common(cx, "score"))
+            .placeholder(i18n_common(cx, "score_placeholder"))
+            .span(5)
+            .paste_pair_with("member")
+            .validate(move |s| {
+                if is_valid_zset_score(s) {
+                    None
+                } else {
+                    Some(score_invalid.clone())
+                }
+            })
+            .visible_on("category", &[3]),
+        ZedisFormField::new("member", i18n_common(cx, "member"))
+            .placeholder(i18n_common(cx, "member_placeholder"))
+            .span(7)
+            .verbatim()
+            .required()
+            .visible_on("category", &[3]),
+        ZedisFormField::new("hash_field", i18n_common(cx, "field"))
+            .placeholder(i18n_common(cx, "field_placeholder"))
+            .paste_pair_with("hash_value")
+            .verbatim()
+            .required()
+            .visible_on("category", &[4]),
+        ZedisFormField::new("hash_value", i18n_common(cx, "value"))
+            .placeholder(i18n_common(cx, "value_placeholder"))
+            .field_type(ZedisFormFieldType::AutoGrow(ADD_KEY_VALUE_ROWS.0, ADD_KEY_VALUE_ROWS.1))
+            .verbatim()
+            .required()
+            .visible_on("category", &[4]),
+        ZedisFormField::new("stream_id", i18n_common(cx, "stream_id"))
+            .placeholder(i18n_common(cx, "stream_id_placeholder"))
+            .visible_on("category", &[5]),
+        ZedisFormField::new("json_value", i18n_common(cx, "value"))
+            .placeholder("{}")
+            .default_value("{}")
+            .required()
+            .field_type(ZedisFormFieldType::Editor)
+            .h(px(90.))
+            .visible_on("category", &json_index.map_or(vec![], |i| vec![i])),
+    ]);
+    append_module_key_fields(&mut fields, ts_index, bf_index, cf_index, cx);
+
+    let field_placeholder = i18n_common(cx, "field_placeholder");
+    let value_placeholder = i18n_common(cx, "value_placeholder");
+    let member_placeholder = i18n_common(cx, "member_placeholder");
+    let score_placeholder = i18n_common(cx, "score_placeholder");
+
+    let mut form_opts = ZedisFormOptions::new(fields)
+        .title(i18n_key_tree(cx, "add_key_title"))
+        .confirm_label(i18n_common(cx, "confirm"))
+        .cancel_label(i18n_common(cx, "cancel"))
+        .add_button_label(i18n_common(cx, "add_element"))
+        .support_add_fields_mode_on(
+            "category",
+            1,
+            ZedisFormAddFieldsMode::single(value_placeholder.clone(), 0),
+        )
+        .support_add_fields_mode_on(
+            "category",
+            2,
+            ZedisFormAddFieldsMode::single(member_placeholder.clone(), 0),
+        )
+        .support_add_fields_mode_on(
+            "category",
+            3,
+            ZedisFormAddFieldsMode::pair(score_placeholder, member_placeholder, 0),
+        )
+        .support_add_fields_mode_on(
+            "category",
+            4,
+            ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 0),
+        )
+        .support_add_fields_mode_on(
+            "category",
+            5,
+            ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 1),
+        );
+    if let Some(ts_idx) = ts_index {
+        form_opts = form_opts.support_add_fields_mode_on(
+            "category",
+            ts_idx,
+            ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 0),
+        );
+    }
+    form_opts
+        .add_field_placeholder(field_placeholder)
+        .add_value_placeholder(value_placeholder)
+}
+
+fn append_module_key_fields(
+    fields: &mut Vec<ZedisFormField>,
+    ts_index: Option<usize>,
+    bf_index: Option<usize>,
+    cf_index: Option<usize>,
+    cx: &App,
+) {
+    let bf_rate_err = i18n_key_tree(cx, "bf_error_rate");
+    let bf_cap_err = i18n_key_tree(cx, "bf_capacity");
+    let cf_cap_err = i18n_key_tree(cx, "cf_capacity");
+    let cf_bucket_err = i18n_key_tree(cx, "cf_bucket_size");
+    let ts_ret_err = i18n_key_tree(cx, "ts_retention_ms");
+
+    if let Some(ts_idx) = ts_index {
+        let policies: Vec<SharedString> = TS_DUPLICATE_POLICIES.iter().map(|p| (*p).into()).collect();
+        fields.push(
+            ZedisFormField::new("ts_retention_ms", i18n_key_tree(cx, "ts_retention_ms"))
+                .default_value("0")
+                .placeholder("0")
+                .validate(move |s| {
+                    let t = s.trim();
+                    if t.is_empty() || t.parse::<u64>().is_ok() {
+                        None
+                    } else {
+                        Some(ts_ret_err.clone())
+                    }
+                })
+                .visible_on("category", &[ts_idx]),
+        );
+        fields.push(
+            ZedisFormField::new("ts_duplicate_policy", i18n_key_tree(cx, "ts_duplicate_policy"))
+                .field_type(ZedisFormFieldType::RadioGroup)
+                .options(policies)
+                .default_value("0")
+                .visible_on("category", &[ts_idx]),
+        );
+    }
+    if let Some(bf_idx) = bf_index {
+        fields.push(
+            ZedisFormField::new("bf_error_rate", i18n_key_tree(cx, "bf_error_rate"))
+                .default_value("0.01")
+                .required()
+                .validate(move |s| {
+                    if s.trim()
+                        .parse::<f64>()
+                        .is_ok_and(|r| r.is_finite() && r > 0.0 && r < 1.0)
+                    {
+                        None
+                    } else {
+                        Some(bf_rate_err.clone())
+                    }
+                })
+                .visible_on("category", &[bf_idx]),
+        );
+        fields.push(
+            ZedisFormField::new("bf_capacity", i18n_key_tree(cx, "bf_capacity"))
+                .default_value("1000")
+                .required()
+                .validate(move |s| {
+                    if s.trim().parse::<u64>().is_ok_and(|c| c > 0) {
+                        None
+                    } else {
+                        Some(bf_cap_err.clone())
+                    }
+                })
+                .visible_on("category", &[bf_idx]),
+        );
+        fields.push(
+            ZedisFormField::new("bf_nonscaling", i18n_key_tree(cx, "bf_nonscaling"))
+                .field_type(ZedisFormFieldType::Checkbox)
+                .visible_on("category", &[bf_idx]),
+        );
+    }
+    if let Some(cf_idx) = cf_index {
+        fields.push(
+            ZedisFormField::new("cf_capacity", i18n_key_tree(cx, "cf_capacity"))
+                .default_value("1024")
+                .required()
+                .validate(move |s| {
+                    if s.trim().parse::<u64>().is_ok_and(|c| c > 0) {
+                        None
+                    } else {
+                        Some(cf_cap_err.clone())
+                    }
+                })
+                .visible_on("category", &[cf_idx]),
+        );
+        fields.push(
+            ZedisFormField::new("cf_bucket_size", i18n_key_tree(cx, "cf_bucket_size"))
+                .placeholder("2")
+                .validate(move |s| {
+                    let t = s.trim();
+                    if t.is_empty() || t.parse::<u32>().is_ok_and(|b| b > 0) {
+                        None
+                    } else {
+                        Some(cf_bucket_err.clone())
+                    }
+                })
+                .visible_on("category", &[cf_idx]),
+        );
+    }
+}
+
 impl ZedisKeyTree {
     pub(super) fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let separator = self.server_state.read(cx).key_separator().to_string();
@@ -54,247 +345,21 @@ impl ZedisKeyTree {
         } else {
             None
         };
-        let (supports_rejson, supports_field_ttl, supports_ts, supports_bf) = {
+        let support = {
             let s = self.server_state.read(cx);
-            (
-                s.supports_rejson(),
-                s.supports_hash_field_ttl(),
-                s.supports_timeseries(),
-                s.supports_bf(),
-            )
+            AddKeyServerSupport {
+                rejson: s.supports_rejson(),
+                field_ttl: s.supports_hash_field_ttl(),
+                timeseries: s.supports_timeseries(),
+                bf: s.supports_bf(),
+            }
         };
-        let mut category_list = vec!["String", "List", "Set", "Zset", "Hash", "Stream"];
-        if supports_rejson {
-            category_list.push("Json");
-        }
-        if supports_ts {
-            category_list.push("TimeSeries");
-        }
-        if supports_bf {
-            category_list.push("BloomFilter");
-            category_list.push("CuckooFilter");
-        }
-        let json_index = category_list.iter().position(|&s| s == "Json");
-        let ts_index = category_list.iter().position(|&s| s == "TimeSeries");
-        let bf_index = category_list.iter().position(|&s| s == "BloomFilter");
-        let cf_index = category_list.iter().position(|&s| s == "CuckooFilter");
-
-        let ttl_invalid = i18n_common(cx, "ttl_invalid");
-        let field_ttl_invalid = i18n_kv_table(cx, "field_ttl_invalid");
-        let key_too_long = i18n_key_tree(cx, "key_too_long");
-        let bf_rate_err = i18n_key_tree(cx, "bf_error_rate");
-        let bf_cap_err = i18n_key_tree(cx, "bf_capacity");
-        let cf_cap_err = i18n_key_tree(cx, "cf_capacity");
-        let cf_bucket_err = i18n_key_tree(cx, "cf_bucket_size");
-        let ts_ret_err = i18n_key_tree(cx, "ts_retention_ms");
-
-        let mut fields = vec![
-            ZedisFormField::new("category", i18n_key_tree(cx, "category"))
-                .field_type(ZedisFormFieldType::RadioGroup)
-                .options(category_list.iter().map(|s| s.to_string().into()).collect()),
-            ZedisFormField::new("key", i18n_common(cx, "key"))
-                .placeholder(i18n_common(cx, "key_placeholder"))
-                .required()
-                .when_some(prefix, |this, prefix| this.default_value(prefix))
-                .focus()
-                .validate(move |s| {
-                    if validate_long_string(s) {
-                        None
-                    } else {
-                        Some(key_too_long.clone())
-                    }
-                }),
-            ZedisFormField::new("ttl", i18n_common(cx, "ttl"))
-                .placeholder(i18n_common(cx, "ttl_placeholder"))
-                .validate(move |s| {
-                    if s.trim().is_empty() || ttl_secs(s).is_some() {
-                        None
-                    } else {
-                        Some(ttl_invalid.clone())
-                    }
-                }),
-            ZedisFormField::new("value", i18n_common(cx, "value"))
-                .placeholder(i18n_common(cx, "value_placeholder"))
-                .field_type(ZedisFormFieldType::AutoGrow(ADD_KEY_VALUE_ROWS.0, ADD_KEY_VALUE_ROWS.1))
-                .required()
-                .visible_on("category", &[0, 1, 2]),
-            ZedisFormField::new("score", i18n_common(cx, "score"))
-                .placeholder(i18n_common(cx, "score_placeholder"))
-                .paste_pair_with("member")
-                .visible_on("category", &[3]),
-            ZedisFormField::new("member", i18n_common(cx, "member"))
-                .placeholder(i18n_common(cx, "member_placeholder"))
-                .required()
-                .visible_on("category", &[3]),
-            ZedisFormField::new("hash_field", i18n_common(cx, "field"))
-                .placeholder(i18n_common(cx, "field_placeholder"))
-                .paste_pair_with("hash_value")
-                .required()
-                .visible_on("category", &[4]),
-            ZedisFormField::new("hash_value", i18n_common(cx, "value"))
-                .placeholder(i18n_common(cx, "value_placeholder"))
-                .field_type(ZedisFormFieldType::AutoGrow(ADD_KEY_VALUE_ROWS.0, ADD_KEY_VALUE_ROWS.1))
-                .required()
-                .visible_on("category", &[4]),
-            ZedisFormField::new("stream_id", i18n_common(cx, "stream_id"))
-                .placeholder(i18n_common(cx, "stream_id_placeholder"))
-                .visible_on("category", &[5]),
-            ZedisFormField::new("json_value", i18n_common(cx, "value"))
-                .placeholder("{}")
-                .default_value("{}")
-                .required()
-                .field_type(ZedisFormFieldType::Editor)
-                .h(px(90.))
-                .visible_on("category", &json_index.map_or(vec![], |i| vec![i])),
-        ];
-        if supports_field_ttl {
-            fields.push(
-                ZedisFormField::new("hash_field_ttl", i18n_kv_table(cx, "field_ttl"))
-                    .placeholder(i18n_kv_table(cx, "field_ttl_placeholder"))
-                    .validate(move |s| {
-                        if s.trim().is_empty() || ttl_secs(s).is_some() {
-                            None
-                        } else {
-                            Some(field_ttl_invalid.clone())
-                        }
-                    })
-                    .visible_on("category", &[4]),
-            );
-        }
-        if let Some(ts_idx) = ts_index {
-            let policies: Vec<SharedString> = TS_DUPLICATE_POLICIES.iter().map(|p| (*p).into()).collect();
-            fields.push(
-                ZedisFormField::new("ts_retention_ms", i18n_key_tree(cx, "ts_retention_ms"))
-                    .default_value("0")
-                    .placeholder("0")
-                    .validate(move |s| {
-                        let t = s.trim();
-                        if t.is_empty() || t.parse::<u64>().is_ok() {
-                            None
-                        } else {
-                            Some(ts_ret_err.clone())
-                        }
-                    })
-                    .visible_on("category", &[ts_idx]),
-            );
-            fields.push(
-                ZedisFormField::new("ts_duplicate_policy", i18n_key_tree(cx, "ts_duplicate_policy"))
-                    .field_type(ZedisFormFieldType::RadioGroup)
-                    .options(policies)
-                    .default_value("0")
-                    .visible_on("category", &[ts_idx]),
-            );
-        }
-        if let Some(bf_idx) = bf_index {
-            fields.push(
-                ZedisFormField::new("bf_error_rate", i18n_key_tree(cx, "bf_error_rate"))
-                    .default_value("0.01")
-                    .required()
-                    .validate(move |s| {
-                        if s.trim()
-                            .parse::<f64>()
-                            .is_ok_and(|r| r.is_finite() && r > 0.0 && r < 1.0)
-                        {
-                            None
-                        } else {
-                            Some(bf_rate_err.clone())
-                        }
-                    })
-                    .visible_on("category", &[bf_idx]),
-            );
-            fields.push(
-                ZedisFormField::new("bf_capacity", i18n_key_tree(cx, "bf_capacity"))
-                    .default_value("1000")
-                    .required()
-                    .validate(move |s| {
-                        if s.trim().parse::<u64>().is_ok_and(|c| c > 0) {
-                            None
-                        } else {
-                            Some(bf_cap_err.clone())
-                        }
-                    })
-                    .visible_on("category", &[bf_idx]),
-            );
-            fields.push(
-                ZedisFormField::new("bf_nonscaling", i18n_key_tree(cx, "bf_nonscaling"))
-                    .field_type(ZedisFormFieldType::Checkbox)
-                    .visible_on("category", &[bf_idx]),
-            );
-        }
-        if let Some(cf_idx) = cf_index {
-            fields.push(
-                ZedisFormField::new("cf_capacity", i18n_key_tree(cx, "cf_capacity"))
-                    .default_value("1024")
-                    .required()
-                    .validate(move |s| {
-                        if s.trim().parse::<u64>().is_ok_and(|c| c > 0) {
-                            None
-                        } else {
-                            Some(cf_cap_err.clone())
-                        }
-                    })
-                    .visible_on("category", &[cf_idx]),
-            );
-            fields.push(
-                ZedisFormField::new("cf_bucket_size", i18n_key_tree(cx, "cf_bucket_size"))
-                    .placeholder("2")
-                    .validate(move |s| {
-                        let t = s.trim();
-                        if t.is_empty() || t.parse::<u32>().is_ok_and(|b| b > 0) {
-                            None
-                        } else {
-                            Some(cf_bucket_err.clone())
-                        }
-                    })
-                    .visible_on("category", &[cf_idx]),
-            );
-        }
-
+        let category_list = build_add_key_categories(support);
+        let form_opts = build_add_key_form_options(prefix, support, &category_list, cx);
         let server_state = self.server_state.clone();
-        let field_placeholder = i18n_common(cx, "field_placeholder");
-        let value_placeholder = i18n_common(cx, "value_placeholder");
-        let member_placeholder = i18n_common(cx, "member_placeholder");
-        let score_placeholder = i18n_common(cx, "score_placeholder");
+        let score_invalid_msg = i18n_kv_table(cx, "score_invalid");
 
-        let mut form_opts = ZedisFormOptions::new(fields)
-            .title(i18n_key_tree(cx, "add_key_title"))
-            .confirm_label(i18n_common(cx, "confirm"))
-            .cancel_label(i18n_common(cx, "cancel"))
-            .support_add_fields_mode_on(
-                "category",
-                1,
-                ZedisFormAddFieldsMode::single(value_placeholder.clone(), 0),
-            )
-            .support_add_fields_mode_on(
-                "category",
-                2,
-                ZedisFormAddFieldsMode::single(member_placeholder.clone(), 0),
-            )
-            .support_add_fields_mode_on(
-                "category",
-                3,
-                ZedisFormAddFieldsMode::pair(score_placeholder, member_placeholder, 0),
-            )
-            .support_add_fields_mode_on(
-                "category",
-                4,
-                ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 0),
-            )
-            .support_add_fields_mode_on(
-                "category",
-                5,
-                ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 1),
-            );
-        if let Some(ts_idx) = ts_index {
-            form_opts = form_opts.support_add_fields_mode_on(
-                "category",
-                ts_idx,
-                ZedisFormAddFieldsMode::pair(field_placeholder.clone(), value_placeholder.clone(), 0),
-            );
-        }
         form_opts
-            .add_field_placeholder(field_placeholder)
-            .add_value_placeholder(value_placeholder)
             .on_dialog_submit(move |values, _window, cx| {
                 let category_index = values
                     .get("category")
@@ -312,6 +377,13 @@ impl ZedisKeyTree {
                 }
 
                 let key_type = KeyType::from(category.to_lowercase().as_str());
+                if key_type == KeyType::Zset && has_invalid_extra_zset_score(&values) {
+                    let msg = score_invalid_msg.clone();
+                    server_state.update(cx, |this, cx| {
+                        this.emit_error_notification(msg, cx);
+                    });
+                    return false;
+                }
                 let args = build_add_key_args(key_type, &values);
                 let field_ttl_secs = (key_type == KeyType::Hash)
                     .then(|| values.get("hash_field_ttl").and_then(|s| ttl_secs(s)))
@@ -463,12 +535,16 @@ pub(super) fn build_add_key_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_add_key_args, build_module_create_spec};
+    use super::{
+        AddKeyServerSupport, build_add_key_args, build_add_key_categories, build_add_key_form_options,
+        build_module_create_spec, has_invalid_extra_zset_score, is_valid_zset_score,
+    };
     use crate::connection::{BfReserve, CfReserve, TsCreate};
     use crate::states::{KeyType, ModuleKeyCreateSpec};
-    use gpui::SharedString;
+    use crate::test_support;
+    use gpui::{SharedString, TestAppContext};
     use indexmap::IndexMap;
-    use zedis_ui::{EXTRA_PAIR_DUP_PREFIX, EXTRA_SINGLE_ROW_PREFIX};
+    use zedis_ui::{EXTRA_PAIR_DUP_PREFIX, EXTRA_SINGLE_ROW_PREFIX, ZedisForm};
 
     #[test]
     fn build_add_key_args_collects_multiple_list_and_set_elements() {
@@ -542,6 +618,127 @@ mod tests {
                 SharedString::from("v3"),
             ]
         );
+    }
+
+    #[test]
+    fn zset_score_validators_accept_numbers_and_inf_and_reject_garbage() {
+        assert!(is_valid_zset_score(""));
+        assert!(is_valid_zset_score("0"));
+        assert!(is_valid_zset_score("-42.5"));
+        assert!(is_valid_zset_score("inf"));
+        assert!(is_valid_zset_score("-inf"));
+        assert!(!is_valid_zset_score("NaN"));
+        assert!(!is_valid_zset_score("1,5"));
+        assert!(!is_valid_zset_score("abc"));
+
+        let mut bad: IndexMap<SharedString, SharedString> = IndexMap::new();
+        bad.insert("score".into(), "1".into());
+        bad.insert("member".into(), "m1".into());
+        bad.insert("not-a-score".into(), "m2".into());
+        assert!(has_invalid_extra_zset_score(&bad));
+
+        let mut ignored_empty_member: IndexMap<SharedString, SharedString> = IndexMap::new();
+        ignored_empty_member.insert("not-a-score".into(), "".into());
+        assert!(!has_invalid_extra_zset_score(&ignored_empty_member));
+    }
+
+    #[gpui::test]
+    fn add_key_form_splits_multiline_paste_for_collections_and_keeps_string_intact(cx: &mut TestAppContext) {
+        test_support::init_ui(cx);
+        let support = AddKeyServerSupport {
+            field_ttl: true,
+            ..Default::default()
+        };
+        let categories = build_add_key_categories(support);
+
+        let window = cx.add_window(|window, cx| {
+            let opts = build_add_key_form_options(Some("demo:".into()), support, &categories, cx);
+            ZedisForm::new("test-add-key-form", opts, window, cx)
+        });
+
+        window
+            .update(cx, |form, window, cx| {
+                // Category 0 (String): multi-line paste stays a single String value.
+                assert!(!form.paste_static_single_lines("value", "line1\nline2\nline3", window, cx));
+                assert_eq!(form.add_field_count(), 0);
+
+                // Category 1 (List): plain multi-line paste splits into initial + dynamic rows.
+                form.set_field_value("category", "1", window, cx);
+                assert!(form.paste_static_single_lines("value", "alpha\nbeta\ngamma", window, cx));
+                assert_eq!(form.add_field_count(), 2);
+
+                // Pretty-printed JSON object stays intact as one List item rather than splitting.
+                assert!(!form.paste_static_single_lines(
+                    "value",
+                    "{\n  \"id\": 1,\n  \"name\": \"Alice\"\n}",
+                    window,
+                    cx,
+                ));
+
+                form.set_field_value("key", "demo:items", window, cx);
+                let list_vals = form.try_get_values(cx).expect("valid list form");
+                assert_eq!(
+                    build_add_key_args(KeyType::List, &list_vals),
+                    vec![
+                        SharedString::from("alpha"),
+                        SharedString::from("beta"),
+                        SharedString::from("gamma"),
+                    ]
+                );
+
+                // Category 2 (Set): NDJSON splits cleanly into individual Set members.
+                form.set_field_value("category", "2", window, cx);
+                assert!(form.paste_static_single_lines("value", "{\"id\":1}\n{\"id\":2}", window, cx));
+                assert_eq!(form.add_field_count(), 1);
+                let set_vals = form.try_get_values(cx).expect("valid set form");
+                assert_eq!(
+                    build_add_key_args(KeyType::Set, &set_vals),
+                    vec![SharedString::from("{\"id\":1}"), SharedString::from("{\"id\":2}")]
+                );
+
+                // Category 3 (Zset): score+member pairs split across rows and invalid scores fail validation.
+                form.set_field_value("category", "3", window, cx);
+                assert!(form.paste_static_pair_lines(
+                    "score",
+                    "member",
+                    false,
+                    "1.5\tm1\n2.5\tm2\n2.5\tm3",
+                    window,
+                    cx,
+                ));
+                assert_eq!(form.add_field_count(), 2);
+                let zset_vals = form.try_get_values(cx).expect("valid zset form");
+                assert_eq!(
+                    build_add_key_args(KeyType::Zset, &zset_vals),
+                    vec![
+                        SharedString::from("1.5"),
+                        SharedString::from("m1"),
+                        SharedString::from("2.5"),
+                        SharedString::from("m2"),
+                        SharedString::from("2.5"),
+                        SharedString::from("m3"),
+                    ]
+                );
+                form.set_field_value("score", "bad", window, cx);
+                assert!(form.try_get_values(cx).is_none());
+
+                // Category 4 (Hash): field=value pairs split cleanly alongside hash_field_ttl.
+                form.set_field_value("category", "4", window, cx);
+                form.set_field_value("hash_field_ttl", "1h", window, cx);
+                assert!(form.paste_static_pair_lines("hash_field", "hash_value", false, "f1=v1\nf2=v2", window, cx));
+                assert_eq!(form.add_field_count(), 1);
+                let hash_vals = form.try_get_values(cx).expect("valid hash form");
+                assert_eq!(
+                    build_add_key_args(KeyType::Hash, &hash_vals),
+                    vec![
+                        SharedString::from("f1"),
+                        SharedString::from("v1"),
+                        SharedString::from("f2"),
+                        SharedString::from("v2"),
+                    ]
+                );
+            })
+            .expect("window update");
     }
 
     #[test]

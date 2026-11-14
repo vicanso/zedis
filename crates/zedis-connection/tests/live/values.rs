@@ -1452,3 +1452,48 @@ fn standalone_string_range_queue_moves_mpop_and_group_tail() {
             .expect("cleanup");
     });
 }
+
+#[test]
+#[ignore]
+fn standalone_batch_set_zset_and_hash_adds() {
+    smol::block_on(async {
+        let id = register(server("it-batch-adds", standalone())).await;
+        let at = ServerDb::new(&id, 0);
+        let mut c = conn(&id, 0).await;
+
+        let skey = unique("batch-set");
+        let added = set_add_many(&at, &skey, &[b"a", b"b", b"a", b"c"])
+            .await
+            .expect("set_add_many");
+        assert_eq!(added, 3);
+        assert_eq!(set_card(&at, &skey).await.expect("scard"), 3);
+
+        let zkey = unique("batch-zset");
+        let zadded = zset_add_many(&at, &zkey, &[(1.5, b"m1"), (2.5, b"m2"), (3.5, b"m1")])
+            .await
+            .expect("zset_add_many");
+        assert_eq!(zadded, 2);
+        assert_eq!(zset_card(&at, &zkey).await.expect("zcard"), 2);
+
+        let hkey = unique("batch-hash");
+        let hcreated = write_hash_fields(
+            &at,
+            &hkey,
+            &[(b"f1", b"v1"), (b"f2", b"v2"), (b"f1", b"v1-new")],
+            FieldTtl::Persist,
+            false,
+        )
+        .await
+        .expect("write_hash_fields");
+        assert_eq!(hcreated, 2);
+        assert_eq!(hash_len(&at, &hkey).await.expect("hlen"), 2);
+
+        cmd("DEL")
+            .arg(&skey)
+            .arg(&zkey)
+            .arg(&hkey)
+            .exec_async(&mut c)
+            .await
+            .expect("cleanup");
+    });
+}

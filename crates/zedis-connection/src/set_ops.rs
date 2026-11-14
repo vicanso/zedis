@@ -50,12 +50,20 @@ pub async fn set_scan(
 
 /// `SADD key member`; `false` when it was already a member.
 pub async fn set_add(at: &ServerDb, key: &str, member: &[u8]) -> Result<bool> {
-    let added: usize = cmd("SADD")
-        .arg(key)
-        .arg(member)
-        .query_async(&mut at.connection().await?)
-        .await?;
-    Ok(added > 0)
+    Ok(set_add_many(at, key, &[member]).await? > 0)
+}
+
+/// `SADD key member…`; answers how many members were newly added.
+pub async fn set_add_many(at: &ServerDb, key: &str, members: &[&[u8]]) -> Result<usize> {
+    if members.is_empty() {
+        return Ok(0);
+    }
+    let mut c = cmd("SADD");
+    c.arg(key);
+    for member in members {
+        c.arg(*member);
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
 }
 
 /// `SREM key member…`; answers how many were members.

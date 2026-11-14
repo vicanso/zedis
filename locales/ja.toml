@@ -19,6 +19,7 @@ delete = "削除"
 update = "更新"
 remove = "削除"
 add = "追加"
+add_element = "要素を追加"
 file_dialog_failed = "ファイルダイアログを開けませんでした。xdg-desktop-portal はインストールされていますか？"
 
 # --- 一般ラベル/フィールド ---

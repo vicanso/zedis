@@ -19,6 +19,7 @@ delete = "Supprimer"
 update = "Mettre à jour"
 remove = "Retirer"
 add = "Ajouter"
+add_element = "Ajouter un élément"
 file_dialog_failed = "Impossible d'ouvrir le dialogue de fichiers. xdg-desktop-portal est-il installé ?"
 
 # --- Étiquettes/Champs généraux ---

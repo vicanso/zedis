@@ -367,21 +367,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         data: IndexMap<SharedString, SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(row_ix) = self.edit_row else {
-            return;
+            return false;
         };
 
         // Check if the operation is allowed based on mode
         if row_ix == usize::MAX {
             // Adding new row
             if !self.mode.contains(KvTableMode::ADD) {
-                return;
+                return false;
             }
         } else {
             // Updating existing row
             if !self.mode.contains(KvTableMode::UPDATE) {
-                return;
+                return false;
             }
         }
 
@@ -401,8 +401,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 &static_field_names,
                 &data,
             );
-            for batch in batches {
-                self.fetcher.handle_add_value(batch, window, cx);
+            if !self.fetcher.handle_add_values(batches, window, cx) {
+                return false;
             }
         } else {
             let mut values = Vec::with_capacity(data.len());
@@ -417,6 +417,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         }
         self.editor_form = None;
         self.edit_row = None;
+        true
     }
 
     /// The entry panel: the decoded preview, when the element has one, above
@@ -488,16 +489,19 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             if readonly_on_edit && value.map(|item| item.is_empty()).unwrap_or(true) {
                 continue;
             }
-            let mut field = ZedisFormField::new(column.name.clone(), column.name.clone())
-                .focus()
-                .font_family(get_mono_font_family());
+            let mut field =
+                ZedisFormField::new(column.name.clone(), column.name.clone()).font_family(get_mono_font_family());
             if self.fetcher.fields_required() && !column.optional {
                 field = field.required();
             }
             if first {
-                field = field.focus().when_some(pair_companion.clone(), |this, companion| {
-                    this.paste_pair_with(companion)
-                });
+                let single_paste = is_adding && matches!(self.fetcher.key_type(), KeyType::List | KeyType::Set);
+                field = field
+                    .focus()
+                    .when_some(pair_companion.clone(), |this, companion| {
+                        this.paste_pair_with(companion)
+                    })
+                    .when(single_paste, |this| this.paste_single_lines());
                 first = false;
             }
             if !is_adding && column.flex {
@@ -526,6 +530,16 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
             fields.push(field);
         }
+        // When adding to a Hash with per-field TTL enabled, place the optional
+        // TTL input at the top so the static Field/Value pair sits directly
+        // above any dynamic (`+`) Field/Value rows.
+        if is_adding
+            && self.fetcher.key_type() == KeyType::Hash
+            && self.columns.last().is_some_and(|col| col.optional)
+            && let Some(ttl_field) = fields.pop()
+        {
+            fields.insert(0, ttl_field);
+        }
         let submit_entity = cx.entity().clone();
         let cancel_entity = submit_entity.clone();
         let remove_entity = submit_entity.clone();
@@ -538,9 +552,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let on_submit =
             move |values: IndexMap<SharedString, SharedString>, window: &mut Window, cx: &mut Context<ZedisForm>| {
                 submit_entity.update(cx, |this, cx| {
-                    this.enhance_handle_add_or_update_value(values, window, cx);
-                });
-                true
+                    this.enhance_handle_add_or_update_value(values, window, cx)
+                })
             };
         let can_remove = self.mode.contains(KvTableMode::REMOVE);
         let can_update = self.mode.contains(KvTableMode::UPDATE);
@@ -587,12 +600,15 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             })
             .when(!readonly_on_edit && self.fetcher.support_add_fields(), |this| {
                 this.support_add_fields()
+                    .add_button_label(i18n_common(cx, "add_element"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::List, |this| {
                 this.support_add_single_fields(i18n_common(cx, "value_placeholder"), 0)
+                    .add_button_label(i18n_common(cx, "add_element"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Set, |this| {
                 this.support_add_single_fields(i18n_common(cx, "member_placeholder"), 0)
+                    .add_button_label(i18n_common(cx, "add_element"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Zset, |this| {
                 this.support_add_pair_fields(
@@ -600,6 +616,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     i18n_common(cx, "score_placeholder"),
                     0,
                 )
+                .add_button_label(i18n_common(cx, "add_element"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Hash, |this| {
                 this.support_add_pair_fields(
@@ -607,6 +624,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     i18n_common(cx, "value_placeholder"),
                     0,
                 )
+                .add_button_label(i18n_common(cx, "add_element"))
             });
 
         let form = cx.new(|cx| {

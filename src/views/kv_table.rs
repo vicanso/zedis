@@ -653,7 +653,7 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
                     else {
                         return;
                     };
-                    this.enhance_handle_add_or_update_value(values, window, cx);
+                    let _ = this.enhance_handle_add_or_update_value(values, window, cx);
                 }
                 _ => {
                     cx.propagate();

@@ -128,6 +128,19 @@ pub async fn zset_put(at: &ServerDb, key: &str, member: &[u8], score: f64, repla
     Ok(added > 0)
 }
 
+/// `ZADD key score member…`; answers how many members were newly added.
+pub async fn zset_add_many(at: &ServerDb, key: &str, items: &[(f64, &[u8])]) -> Result<usize> {
+    if items.is_empty() {
+        return Ok(0);
+    }
+    let mut c = cmd("ZADD");
+    c.arg(key);
+    for (score, member) in items {
+        c.arg(*score).arg(*member);
+    }
+    Ok(c.query_async(&mut at.connection().await?).await?)
+}
+
 /// `ZREM key member…`; answers how many were members.
 pub async fn zset_remove(at: &ServerDb, key: &str, members: &[&[u8]]) -> Result<usize> {
     if members.is_empty() {

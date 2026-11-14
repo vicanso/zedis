@@ -30,8 +30,8 @@ use super::{
 use crate::helpers::unix_ts;
 use crate::{
     connection::{
-        Capability, ScoredMember, ServerDb, zset_card, zset_count_by_score, zset_mpop, zset_put, zset_range,
-        zset_range_by_score, zset_remove, zset_scan,
+        Capability, ScoredMember, ServerDb, zset_add_many, zset_card, zset_count_by_score, zset_mpop, zset_put,
+        zset_range, zset_range_by_score, zset_remove, zset_scan,
     },
     error::Error,
     helpers::normalize_score_bound,
@@ -266,6 +266,58 @@ impl ZedisServerState {
     /// * `cx` - GPUI context for spawning async tasks and UI updates
     pub fn add_zset_value(&mut self, new_value: SharedString, score: f64, cx: &mut Context<Self>) {
         self.add_or_update_zset_value(KvElement::from_text(&new_value), score, None, cx);
+    }
+
+    /// Adds or updates multiple `(member, score)` pairs in a single `ZADD` command.
+    pub fn add_zset_values(&mut self, items: Vec<(SharedString, f64)>, cx: &mut Context<Self>) {
+        let items: Vec<(SharedString, f64)> = items.into_iter().filter(|(m, _)| !m.is_empty()).collect();
+        if items.is_empty() {
+            return;
+        }
+        if items.len() == 1 {
+            self.add_zset_value(items[0].0.clone(), items[0].1, cx);
+            return;
+        }
+        let optimistic_items: Vec<(KvElement, f64)> =
+            items.iter().map(|(m, s)| (KvElement::from_text(m), *s)).collect();
+        let log_key = self.open.key.clone();
+        let log_items: Vec<(String, String)> = items.iter().map(|(m, s)| (m.to_string(), s.to_string())).collect();
+
+        self.exec_zset_op(
+            ServerTask::AddZsetValue,
+            cx,
+            move |zset| {
+                for (elem, score) in optimistic_items {
+                    place_zset_member(zset, elem, score, None);
+                }
+            },
+            move |key, at| async move {
+                let slices: Vec<(f64, &[u8])> = items.iter().map(|(m, s)| (*s, m.as_bytes())).collect();
+                Ok(zset_add_many(&at, &key, &slices).await?)
+            },
+            move |this, count, cx| {
+                if let Some(log_key) = log_key {
+                    let at = unix_ts();
+                    let entries = log_items
+                        .into_iter()
+                        .map(|(member, score)| ChangeEntry::operation(at, format!("ZADD {score} {member}")))
+                        .collect();
+                    this.record_changes(log_key, entries);
+                }
+                if let Some(RedisValueData::Zset(zset_data)) = this.open.value.as_mut().and_then(|v| v.data.as_mut()) {
+                    let zset = Arc::make_mut(zset_data);
+                    zset.size += count;
+                    if zset.size > SUCCESS_NOTIFY_THRESHOLD {
+                        this.emit_success_notification(
+                            i18n_zset_editor(cx, "add_value_success_tips"),
+                            i18n_zset_editor(cx, "add_value_success"),
+                            cx,
+                        );
+                    }
+                }
+                cx.emit(ServerEvent::ValueAdded);
+            },
+        );
     }
     /// Updates a member in the Redis ZSET with the specified score.
     ///
