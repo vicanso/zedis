@@ -414,6 +414,11 @@ fn probe_cmd(command: ServerCommand) -> Cmd {
         ServerCommand::HotkeysGet => {
             c.arg("GET");
         }
+        // Read-only, and keys that cannot exist answer "" rather than
+        // touching anything.
+        ServerCommand::Lcs => {
+            c.arg(PROBE_KEY).arg(PROBE_KEY);
+        }
         // Zero entries of the slow log — proves the command, reads nothing.
         ServerCommand::CommandlogGet => {
             c.arg("GET").arg(0).arg("SLOW");

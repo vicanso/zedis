@@ -478,7 +478,11 @@ impl ZedisEditor {
         // or in a page a download and an upload (`saves_files` / `opens_files`).
         let export_item = saves_files() && has_bytes_value && !preview;
         let diff_with_server_item = has_bytes_value && !preview;
-        let lcs_item = has_bytes_value && !preview && key_type == KeyType::String && server_state.supports(floors::LCS);
+        let lcs_item = has_bytes_value
+            && !preview
+            && key_type == KeyType::String
+            && server_state.supports(floors::LCS)
+            && server_state.features().is_usable(ServerCommand::Lcs);
         let import_item = opens_files() && has_bytes_value && !preview && !self.readonly;
         let rename_item = !self.readonly;
         // Cross-server copy reads the source and writes a (possibly

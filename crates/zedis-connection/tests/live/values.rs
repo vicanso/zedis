@@ -876,15 +876,6 @@ pub(super) async fn collections_page_and_write_through_their_operations(id: Stri
         );
         assert_eq!(string_get(&at, &string).await.expect("get"), b"third");
     }
-    if supports(&id, floors::LCS).await {
-        let lcs_other = format!("{prefix}:lcs-other");
-        string_set(&at, &string, b"ohmytext", 0, None).await.expect("set lcs1");
-        string_set(&at, &lcs_other, b"mynewtext", 0, None)
-            .await
-            .expect("set lcs2");
-        assert_eq!(string_lcs(&at, &string, &lcs_other).await.expect("lcs"), "mytext");
-        let _: () = cmd("DEL").arg(&lcs_other).query_async(&mut c).await.expect("del lcs");
-    }
 
     let _: () = cmd("DEL")
         .arg(&[&list, &set, &hash, &zset, &string])
@@ -1388,6 +1379,16 @@ fn standalone_string_range_queue_moves_mpop_and_group_tail() {
         let (past_end, total2) = string_range(&at, &skey, 20, 6).await.expect("past end");
         assert!(past_end.is_empty());
         assert_eq!(total2, 16);
+
+        if supports(&id, floors::LCS).await {
+            let lcs_other = unique("lcs-other");
+            string_set(&at, &skey, b"ohmytext", 0, None).await.expect("set lcs1");
+            string_set(&at, &lcs_other, b"mynewtext", 0, None)
+                .await
+                .expect("set lcs2");
+            assert_eq!(string_lcs(&at, &skey, &lcs_other).await.expect("lcs"), "mytext");
+            cmd("DEL").arg(&lcs_other).exec_async(&mut c).await.expect("del lcs");
+        }
 
         // LMOVE + LMPOP + ZMPOP.
         let q1 = unique("queue-1");

@@ -126,6 +126,9 @@ pub enum ServerCommand {
     MemoryStats,
     /// `LATENCY DOCTOR` — the server's analysis of its latency events.
     LatencyDoctor,
+    /// `LCS` — longest common subsequence between two string keys (Redis 7.0+).
+    /// Dragonfly claims a 7.x `redis_version` without implementing `LCS`.
+    Lcs,
 }
 
 impl ServerCommand {
@@ -188,6 +191,7 @@ impl ServerCommand {
         ServerCommand::MemoryDoctor,
         ServerCommand::MemoryStats,
         ServerCommand::LatencyDoctor,
+        ServerCommand::Lcs,
     ];
 
     /// Top-level command word, as sent on the wire (`CONFIG`, `SCAN`, …).
@@ -241,6 +245,7 @@ impl ServerCommand {
             ServerCommand::JsonClear => "JSON.CLEAR",
             ServerCommand::MemoryDoctor | ServerCommand::MemoryStats => "MEMORY",
             ServerCommand::LatencyDoctor => "LATENCY",
+            ServerCommand::Lcs => "LCS",
         }
     }
 
@@ -408,13 +413,14 @@ pub fn classify_reply(code: Option<&str>, message: &str) -> ReplyClass {
     ReplyClass::Other
 }
 
-/// The command a Redis error reply names, if any. Redis quotes it:
+/// The command a Redis error reply names, if any. Redis quotes it with `'`:
 /// `ERR unknown command 'CONFIG', with args beginning with: 'GET'` (7.x),
 /// `NOPERM User u has no permissions to run the 'config|get' command` (7.x),
 /// `NOPERM this user has no permissions to run the 'config' command or its
-/// subcommand` (6.x). Returns every variant the quoted name covers.
+/// subcommand` (6.x); Dragonfly quotes with backticks (`unknown command \`LCS\``).
+/// Returns every variant the quoted name covers.
 pub fn commands_in_reply(message: &str) -> Vec<ServerCommand> {
-    let mut quoted = message.split('\'');
+    let mut quoted = message.split(['\'', '`']);
     // Text before the first quote, the quoted token, the rest.
     let _before = quoted.next();
     let Some(token) = quoted.next() else {
@@ -691,6 +697,8 @@ mod tests {
             commands_in_reply("unknown command 'scan', with args beginning with: '0' "),
             vec![ServerCommand::Scan]
         );
+        // Dragonfly wraps unknown commands in backticks rather than single quotes.
+        assert_eq!(commands_in_reply("unknown command `LCS`"), vec![ServerCommand::Lcs]);
         assert!(commands_in_reply("unknown command 'FOOBAR'").is_empty());
         assert!(commands_in_reply("no quotes here").is_empty());
     }

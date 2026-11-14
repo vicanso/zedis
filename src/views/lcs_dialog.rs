@@ -16,6 +16,7 @@
 //! DB via Redis `LCS` (Redis 7.0+ / Valkey 7.2+).
 
 use crate::connection::{ServerDb, string_lcs};
+use crate::error::Error;
 use crate::helpers::get_mono_font_family;
 use crate::states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor};
 use gpui::{App, AppContext, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, prelude::*, px};
@@ -34,6 +35,7 @@ use rust_i18n::t;
 use zedis_ui::ZedisDialog;
 
 struct LcsDialog {
+    server_state: Entity<ZedisServerState>,
     at: ServerDb,
     source_key: SharedString,
     other_key: Entity<InputState>,
@@ -44,7 +46,13 @@ struct LcsDialog {
 }
 
 impl LcsDialog {
-    fn new(at: ServerDb, source_key: SharedString, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        server_state: Entity<ZedisServerState>,
+        at: ServerDb,
+        source_key: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let other_key =
             cx.new(|cx| InputState::new(window, cx).placeholder(i18n_editor(cx, "lcs_other_key_placeholder")));
         let sub = cx.subscribe_in(&other_key, window, |this, _, event, window, cx| {
@@ -53,6 +61,7 @@ impl LcsDialog {
             }
         });
         Self {
+            server_state,
             at,
             source_key,
             other_key,
@@ -75,13 +84,19 @@ impl LcsDialog {
         self.outcome = None;
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
-            let res = string_lcs(&at, &key1, &other)
-                .await
-                .map(SharedString::from)
-                .map_err(|e| SharedString::from(e.to_string()));
+            let res = string_lcs(&at, &key1, &other).await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
-                this.outcome = Some(res);
+                this.outcome = Some(match res {
+                    Ok(text) => Ok(SharedString::from(text)),
+                    Err(err) => {
+                        let app_err = Error::from(err);
+                        let msg = SharedString::from(app_err.to_string());
+                        this.server_state
+                            .update(cx, |state, cx| state.note_command_error(&app_err, cx));
+                        Err(msg)
+                    }
+                });
                 cx.notify();
             });
         }));
@@ -189,7 +204,7 @@ pub(crate) fn open_lcs_dialog(server_state: Entity<ZedisServerState>, window: &m
         return;
     };
 
-    let view = cx.new(|cx| LcsDialog::new(at, source_key, window, cx));
+    let view = cx.new(|cx| LcsDialog::new(server_state, at, source_key, window, cx));
     let body = view.clone();
     let input = view.read(cx).other_key.clone();
     let ok_label = i18n_editor(cx, "lcs_run");
