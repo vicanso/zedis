@@ -282,6 +282,10 @@ pub struct RedisServer {
     /// Cluster only: let reads (not scans, which fan out to masters) be
     /// served by replicas, round-robin. Off keeps every command on masters.
     pub cluster_read_replicas: Option<bool>,
+    /// Negotiate RESP3 (`HELLO 3`) on connect. `None` / `Some(false)` keeps
+    /// RESP2 (the default, compatible with older Redis, proxies, and every
+    /// Redis-compatible server).
+    pub resp3: Option<bool>,
     pub tag: Option<String>,
     pub tag_color: Option<String>,
     pub require_confirm_writes: Option<bool>,
@@ -378,6 +382,11 @@ impl RedisServer {
     }
     pub fn is_ssh_tunnel(&self) -> bool {
         self.ssh_tunnel.unwrap_or(false) && self.ssh_addr.as_ref().map(|addr| !addr.is_empty()).unwrap_or(false)
+    }
+
+    /// Whether this connection negotiates RESP3 (`HELLO 3`) on connect.
+    pub fn uses_resp3(&self) -> bool {
+        self.resp3.unwrap_or(false)
     }
 
     /// Key-tree separator for this server; defaults to `":"`.

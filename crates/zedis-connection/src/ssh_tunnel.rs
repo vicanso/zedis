@@ -413,10 +413,20 @@ async fn open_single_ssh_tunnel_connection_inner(
     let response_timeout = resolve_response_timeout(config);
     let username = config.username.clone();
     let password = config.password.clone();
+    let use_resp3 = config.uses_resp3();
 
     run_in_tokio(async move {
         let stream = dial.open().await?;
         let mut info = RedisConnectionInfo::default();
+        if let Some(user) = username.filter(|u| !u.trim().is_empty()) {
+            info = info.set_username(user);
+        }
+        if let Some(pass) = password.filter(|p| !p.trim().is_empty()) {
+            info = info.set_password(pass);
+        }
+        if use_resp3 {
+            info = info.set_protocol(redis::ProtocolVersion::RESP3);
+        }
         let mut conn_config = redis::AsyncConnectionConfig::new()
             .set_connection_timeout(Some(connection_timeout))
             .set_response_timeout(Some(response_timeout));
@@ -426,34 +436,15 @@ async fn open_single_ssh_tunnel_connection_inner(
             info = info.set_protocol(redis::ProtocolVersion::RESP3);
             conn_config = conn_config.set_push_sender(move |push_info| push_tx.try_send(push_info));
         }
-        let (mut connection, driver) = MultiplexedConnection::new_with_config(&info, stream, conn_config).await?;
+        let (connection, driver) = MultiplexedConnection::new_with_config(&info, stream, conn_config).await?;
         tokio::spawn(async move {
             driver.await;
             info!("Redis driver task finished");
         });
-        authenticate_redis(&mut connection, username, password).await?;
 
         Ok(connection)
     })
     .await
-}
-
-/// `AUTH` on a hand-built connection (the URL-based client does this
-/// itself). No password means no `AUTH` at all.
-pub(crate) async fn authenticate_redis(
-    connection: &mut MultiplexedConnection,
-    username: Option<String>,
-    password: Option<String>,
-) -> Result<()> {
-    if let Some(password) = password {
-        let mut auth_cmd = cmd("AUTH");
-        if let Some(user) = username {
-            auth_cmd.arg(user);
-        }
-        auth_cmd.arg(password);
-        let _: () = auth_cmd.query_async(connection).await?;
-    }
-    Ok(())
 }
 
 /// Clears expired SSH sessions from the cache.

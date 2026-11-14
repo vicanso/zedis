@@ -377,6 +377,11 @@ fn connection_fields(redis_server: &RedisServer, cx: &App) -> Vec<ZedisFormField
             .default_value(redis_server.response_timeout.map(|n| n.to_string()).unwrap_or_default())
             .placeholder(i18n_servers(cx, "response_timeout_placeholder"))
             .tab_index(3),
+        ZedisFormField::new("resp3", i18n_servers(cx, "protocol"))
+            .default_value(redis_server.resp3_form_index().to_string())
+            .options(vec![SharedString::from("RESP2"), SharedString::from("RESP3")])
+            .tab_index(3)
+            .field_type(ZedisFormFieldType::RadioGroup),
         ZedisFormField::new("cluster_read_replicas", i18n_servers(cx, "cluster_read_replicas"))
             .default_value(redis_server.cluster_read_replicas.unwrap_or(false).to_string())
             .placeholder(i18n_servers(cx, "cluster_read_replicas_check_label"))
@@ -708,6 +713,7 @@ mod tests {
             connection_timeout: Some(7),
             response_timeout: Some(9),
             cluster_read_replicas: Some(true),
+            resp3: Some(true),
             tag: Some("UAT".into()),
             tag_color: Some("purple".into()),
             write_lock: Some(true),

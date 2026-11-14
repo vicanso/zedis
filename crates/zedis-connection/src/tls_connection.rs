@@ -21,7 +21,7 @@
 use crate::async_connection::{resolve_connection_timeout, resolve_response_timeout};
 use crate::config::RedisServer;
 use crate::error::Error;
-use crate::ssh_tunnel::{authenticate_redis, run_in_tokio};
+use crate::ssh_tunnel::run_in_tokio;
 use redis::RedisConnectionInfo;
 use redis::aio::MultiplexedConnection;
 use rustls::pki_types::ServerName;
@@ -163,6 +163,7 @@ pub async fn open_single_sni_tls_connection(config: &RedisServer, server_name: &
         .to_owned();
     let username = config.username.clone();
     let password = config.password.clone();
+    let use_resp3 = config.uses_resp3();
 
     run_in_tokio(async move {
         let tcp = tokio::time::timeout(
@@ -179,16 +180,24 @@ pub async fn open_single_sni_tls_connection(config: &RedisServer, server_name: &
             .map_err(|e| Error::Invalid {
                 message: format!("TLS handshake failed: {e}"),
             })?;
+        let mut info = RedisConnectionInfo::default();
+        if let Some(user) = username.filter(|u| !u.trim().is_empty()) {
+            info = info.set_username(user);
+        }
+        if let Some(pass) = password.filter(|p| !p.trim().is_empty()) {
+            info = info.set_password(pass);
+        }
+        if use_resp3 {
+            info = info.set_protocol(redis::ProtocolVersion::RESP3);
+        }
         let conn_config = redis::AsyncConnectionConfig::new()
             .set_connection_timeout(Some(connection_timeout))
             .set_response_timeout(Some(response_timeout));
-        let (mut connection, driver) =
-            MultiplexedConnection::new_with_config(&RedisConnectionInfo::default(), tls_stream, conn_config).await?;
+        let (connection, driver) = MultiplexedConnection::new_with_config(&info, tls_stream, conn_config).await?;
         tokio::spawn(async move {
             driver.await;
             info!("Redis driver task finished");
         });
-        authenticate_redis(&mut connection, username, password).await?;
         Ok(connection)
     })
     .await

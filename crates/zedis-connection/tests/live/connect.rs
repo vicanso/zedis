@@ -458,3 +458,22 @@ fn heartbeat_probe_is_the_info_itself_where_there_is_one_master() {
         );
     });
 }
+
+#[test]
+#[ignore]
+fn standalone_resp3_negotiates_hello_3() {
+    smol::block_on(async {
+        let mut srv = server("it-resp3", standalone());
+        srv.resp3 = Some(true);
+        let id = register(srv).await;
+        let client = get_connection_manager().get_client(&id, 0).await.expect("resp3 client");
+        let mut conn = client.connection();
+        let hello: redis::Value = cmd("HELLO").query_async(&mut conn).await.expect("hello");
+        let fields = zedis_connection::reply::pairs(&hello).expect("resp3 hello map");
+        let proto = fields
+            .iter()
+            .find(|(k, _)| k == "proto")
+            .and_then(|(_, v)| zedis_connection::reply::int(v));
+        assert_eq!(proto, Some(3), "expected RESP3 protocol negotiation: {fields:?}");
+    });
+}

@@ -944,6 +944,9 @@ impl ConnectionManager {
                 if first_node.server.cluster_read_replicas.unwrap_or(false) {
                     builder = builder.read_routing_strategy(redis::cluster_read_routing::RandomReplicaStrategy);
                 }
+                if first_node.server.uses_resp3() {
+                    builder = builder.use_protocol(redis::ProtocolVersion::RESP3);
+                }
                 if first_node.server.is_ssh_tunnel() {
                     builder = builder.username(server_id);
 

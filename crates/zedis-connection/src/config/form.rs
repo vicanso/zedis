@@ -170,6 +170,10 @@ impl RedisServer {
 
             server_type: get_parsed("server_type").map(|s| s as usize),
             cluster_read_replicas: get_bool("cluster_read_replicas"),
+            resp3: get_str("resp3").and_then(|s| match s.as_str() {
+                "1" | "true" | "resp3" => Some(true),
+                _ => None,
+            }),
 
             tls,
             insecure: get_bool("insecure"),
@@ -230,5 +234,10 @@ impl RedisServer {
             Some(true) => 1,
             Some(false) => 2,
         }
+    }
+
+    /// Form radio index for `resp3`: 0 RESP2 (default) / 1 RESP3.
+    pub fn resp3_form_index(&self) -> usize {
+        usize::from(self.uses_resp3())
     }
 }

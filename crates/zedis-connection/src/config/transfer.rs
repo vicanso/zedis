@@ -227,6 +227,10 @@ impl RedisServer {
         // the one place a pasted URI states which DB it means, so keep it
         // as the pin instead of dropping it. Empty path ⇒ unpinned.
         let default_db = parsed.path().trim_start_matches('/').parse::<u16>().ok();
+        let resp3 = parsed
+            .query_pairs()
+            .any(|(k, v)| k.eq_ignore_ascii_case("protocol") && v.eq_ignore_ascii_case("resp3"))
+            .then_some(true);
 
         Ok(Self {
             id: Uuid::now_v7().to_string(),
@@ -237,6 +241,7 @@ impl RedisServer {
             password,
             default_db,
             tls: tls.then_some(true),
+            resp3,
             ..Default::default()
         })
     }

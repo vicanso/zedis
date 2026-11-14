@@ -29,14 +29,26 @@
 
 use redis::{RedisError, Value};
 
+/// Transparently unwraps any RESP3 `Value::Attribute` wrapper to reach the
+/// underlying reply value.
+pub fn unwrap_attribute(mut value: &Value) -> &Value {
+    while let Value::Attribute { data, .. } = value {
+        value = data;
+    }
+    value
+}
+
 /// A scalar as text, strictly: a bulk string that is not UTF-8 is `None`.
 /// For field names, enum-like values and anything about to be parsed.
 pub fn text(value: &Value) -> Option<String> {
-    match value {
+    match unwrap_attribute(value) {
         Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
         Value::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
         Value::Int(n) => Some(n.to_string()),
         Value::Double(n) => Some(format!("{n}")),
+        Value::BigNumber(n) => Some(n.to_string()),
+        Value::Boolean(b) => Some(b.to_string()),
+        Value::Okay => Some("OK".to_string()),
         _ => None,
     }
 }
@@ -46,7 +58,7 @@ pub fn text(value: &Value) -> Option<String> {
 /// module's item — where dropping the row is worse than showing it
 /// imperfectly. Strings only: a number is not a name.
 pub fn text_lossy(value: &Value) -> Option<String> {
-    match value {
+    match unwrap_attribute(value) {
         Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
         Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone()),
         _ => None,
@@ -57,45 +69,47 @@ pub fn text_lossy(value: &Value) -> Option<String> {
 /// that may be MessagePack or a compressed payload as readily as text, where
 /// [`text_lossy`] would destroy what a decoder needs. Strings only.
 pub fn bytes(value: &Value) -> Option<Vec<u8>> {
-    match value {
+    match unwrap_attribute(value) {
         Value::BulkString(bytes) => Some(bytes.clone()),
         Value::SimpleString(s) | Value::VerbatimString { text: s, .. } => Some(s.clone().into_bytes()),
         _ => None,
     }
 }
 
-/// An integer, from an `Int`, a `Double` (truncated — RESP3 reports some
-/// counters that way) or a numeric string.
+/// An integer, from an `Int`, a `BigNumber`, a `Double` (truncated — RESP3
+/// reports some counters that way) or a numeric string.
 pub fn int(value: &Value) -> Option<i64> {
-    match value {
+    match unwrap_attribute(value) {
         Value::Int(n) => Some(*n),
         Value::Double(d) => Some(*d as i64),
-        _ => text(value)?.trim().parse().ok(),
+        Value::BigNumber(n) => i64::try_from(n).ok(),
+        other => text(other)?.trim().parse().ok(),
     }
 }
 
 /// A count: like [`int`], and `None` for a negative one rather than a wrapped
 /// cast.
 pub fn uint(value: &Value) -> Option<u64> {
-    match value {
+    match unwrap_attribute(value) {
         Value::Int(n) => u64::try_from(*n).ok(),
-        _ => text(value)?.trim().parse().ok(),
+        Value::BigNumber(n) => u64::try_from(n).ok(),
+        other => text(other)?.trim().parse().ok(),
     }
 }
 
-/// A float, from a `Double`, an `Int` or a numeric string.
+/// A float, from a `Double`, an `Int`, a `BigNumber` or a numeric string.
 pub fn float(value: &Value) -> Option<f64> {
-    match value {
+    match unwrap_attribute(value) {
         Value::Double(d) => Some(*d),
         Value::Int(n) => Some(*n as f64),
-        _ => text(value)?.trim().parse().ok(),
+        other => text(other)?.trim().parse().ok(),
     }
 }
 
 /// A list of strings, from an array or (RESP3) a set; entries that are not
 /// text are skipped. `None` when the value is neither.
 pub fn string_array(value: &Value) -> Option<Vec<String>> {
-    match value {
+    match unwrap_attribute(value) {
         Value::Array(items) | Value::Set(items) => Some(items.iter().filter_map(text).collect()),
         _ => None,
     }
@@ -106,16 +120,21 @@ pub fn string_array(value: &Value) -> Option<Vec<String>> {
 /// key that is not text — a reply this cannot read is better reported than
 /// half-read.
 pub fn pairs(value: &Value) -> Option<Vec<(String, Value)>> {
-    match value {
+    match unwrap_attribute(value) {
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len() / 2);
             for pair in items.chunks(2) {
                 let [key, val] = pair else { return None };
-                out.push((text(key)?, val.clone()));
+                out.push((text(key)?, unwrap_attribute(val).clone()));
             }
             Some(out)
         }
-        Value::Map(items) => Some(items.iter().filter_map(|(k, v)| Some((text(k)?, v.clone()))).collect()),
+        Value::Map(items) => Some(
+            items
+                .iter()
+                .filter_map(|(k, v)| Some((text(k)?, unwrap_attribute(v).clone())))
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -123,10 +142,12 @@ pub fn pairs(value: &Value) -> Option<Vec<(String, Value)>> {
 /// Any value as one line for a details pane: scalars as themselves, nil as a
 /// dash, anything nested in its debug form (it is shown, not parsed).
 pub fn display(value: &Value) -> String {
-    match value {
+    match unwrap_attribute(value) {
         Value::Int(i) => i.to_string(),
         Value::Double(d) => format!("{d}"),
+        Value::BigNumber(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
+        Value::Okay => "OK".to_string(),
         Value::Nil => "—".to_string(),
         other => text_lossy(other).unwrap_or_else(|| format!("{other:?}")),
     }
@@ -137,7 +158,7 @@ pub fn display(value: &Value) -> String {
 /// cannot be read is skipped, because a partial listing is still worth showing.
 pub fn display_pairs(value: &Value) -> Vec<(String, String)> {
     let named = |key: &Value, val: &Value| Some((text_lossy(key)?, display(val)));
-    match value {
+    match unwrap_attribute(value) {
         Value::Map(items) => items.iter().filter_map(|(k, v)| named(k, v)).collect(),
         Value::Array(items) => items
             .chunks(2)
@@ -340,6 +361,56 @@ mod tests {
             vec![("k".to_string(), "—".to_string())]
         );
         assert!(display_pairs(&Value::Int(1)).is_empty());
+    }
+
+    #[test]
+    fn resp3_attributes_big_numbers_and_booleans_are_unwrapped_and_read() {
+        let big_val = redis::parse_redis_value(b"(99999999999999999999\r\n").expect("big");
+        let small_big_val = redis::parse_redis_value(b"(42\r\n").expect("small big");
+        let neg_big_val = redis::parse_redis_value(b"(-7\r\n").expect("neg big");
+
+        let wrapped = Value::Attribute {
+            data: Box::new(Value::Attribute {
+                data: Box::new(bulk("hello")),
+                attributes: vec![(simple("ttl"), Value::Int(10))],
+            }),
+            attributes: vec![(simple("source"), simple("cache"))],
+        };
+        assert_eq!(text(&wrapped).as_deref(), Some("hello"));
+        assert_eq!(text_lossy(&wrapped).as_deref(), Some("hello"));
+        assert_eq!(bytes(&wrapped).as_deref(), Some(b"hello".as_slice()));
+
+        let wrapped_big = Value::Attribute {
+            data: Box::new(big_val),
+            attributes: vec![],
+        };
+        assert_eq!(text(&wrapped_big).as_deref(), Some("99999999999999999999"));
+        assert_eq!(display(&wrapped_big), "99999999999999999999");
+        assert_eq!(int(&wrapped_big), None);
+        assert_eq!(uint(&wrapped_big), None);
+        assert!(float(&wrapped_big).is_some());
+
+        assert_eq!(int(&small_big_val), Some(42));
+        assert_eq!(uint(&small_big_val), Some(42));
+        assert_eq!(int(&neg_big_val), Some(-7));
+        assert_eq!(uint(&neg_big_val), None);
+
+        assert_eq!(text(&Value::Boolean(true)).as_deref(), Some("true"));
+        assert_eq!(text(&Value::Okay).as_deref(), Some("OK"));
+        assert_eq!(display(&Value::Okay), "OK");
+
+        let attr_map = Value::Attribute {
+            data: Box::new(Value::Map(vec![(
+                simple("k"),
+                Value::Attribute {
+                    data: Box::new(Value::Int(9)),
+                    attributes: vec![(simple("meta"), Value::Boolean(true))],
+                },
+            )])),
+            attributes: vec![],
+        };
+        assert_eq!(pairs(&attr_map), Some(vec![("k".to_string(), Value::Int(9))]));
+        assert_eq!(display_pairs(&attr_map), vec![("k".to_string(), "9".to_string())]);
     }
 
     #[test]

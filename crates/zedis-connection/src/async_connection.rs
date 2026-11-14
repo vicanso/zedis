@@ -497,7 +497,11 @@ pub fn remove_node_connection_for_config(config: &RedisServer, host_port: &str, 
 ///
 /// A Redis client ready to establish connections
 pub fn open_single_client(config: &RedisServer) -> Result<Client> {
-    let info = with_keepalive(config.get_connection_url().into_connection_info()?);
+    let mut info = with_keepalive(config.get_connection_url().into_connection_info()?);
+    if config.uses_resp3() {
+        let settings = info.redis_settings().clone().set_protocol(redis::ProtocolVersion::RESP3);
+        info = info.set_redis_settings(settings);
+    }
     // Build client with TLS if certificates are provided
     let client = if let Some(certificates) = config.tls_certificates()? {
         Client::build_with_tls(info, certificates)?
