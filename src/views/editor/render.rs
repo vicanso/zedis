@@ -1115,6 +1115,9 @@ impl Render for ZedisEditor {
                 EditorAction::DiffWithServer => {
                     this.open_diff_with_server_dialog(window, cx);
                 }
+                EditorAction::StringLcs => {
+                    open_lcs_dialog(this.server_state.clone(), window, cx);
+                }
                 EditorAction::EditTtlDuration => {
                     this.enter_ttl_edit_mode(window, cx);
                 }

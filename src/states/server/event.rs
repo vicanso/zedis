@@ -438,6 +438,7 @@ impl ZedisServerState {
             // Reading what was changed is a read, like any other diff.
             EditorAction::DiffHistory(_)
             | EditorAction::DiffWithServer
+            | EditorAction::StringLcs
             | EditorAction::ChangeLog
             | EditorAction::WatchTimeline => Capability::DiffValues,
             EditorAction::LoadHistory(_) => Capability::LoadHistory,

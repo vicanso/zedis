@@ -1344,7 +1344,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             host: "127.0.0.1".into(),
-            port: 6379,
+            port: 0,
             ..Default::default()
         };
         set_servers_cache(vec![server("migtest-b"), server("migtest-a")]);
@@ -1650,6 +1650,23 @@ mod tests {
         init_ui(cx);
         let _list = hold_the_server_list();
         let _restore = own_servers();
+        set_servers_cache(vec![
+            RedisServer {
+                id: "migtest-b".into(),
+                name: "migtest-b".into(),
+                host: "127.0.0.1".into(),
+                port: 0,
+                readonly: Some(true),
+                ..Default::default()
+            },
+            RedisServer {
+                id: "migtest-a".into(),
+                name: "migtest-a".into(),
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..Default::default()
+            },
+        ]);
         let cp = MigrationCheckpoint {
             id: "mig-ui-resume-form".to_string(),
             created_at: 1_700_000_000,

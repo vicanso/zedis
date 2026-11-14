@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use crate::{
+    assets::CustomIconName,
     components::KvTableColumn,
     components::ZedisKvFetcher,
-    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table},
-    views::{ZedisKvTable, kv_table::define_kv_editor},
+    states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_kv_table, i18n_set_editor},
+    views::{ZedisKvTable, kv_table::define_kv_editor, open_set_ismember_dialog},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use tracing::info;
 use zedis_ui::ZedisFormFieldType;
 
@@ -169,8 +171,9 @@ define_kv_editor!(ZedisSetEditor, ZedisSetValues);
 
 impl ZedisSetEditor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let action_server_state = server_state.clone();
         let table_state = cx.new(|cx| {
-            ZedisKvTable::<ZedisSetValues>::new(
+            let mut table = ZedisKvTable::<ZedisSetValues>::new(
                 vec![
                     KvTableColumn::new_flex(i18n_kv_table(cx, "value").as_ref())
                         .field_type(ZedisFormFieldType::Editor)
@@ -179,7 +182,20 @@ impl ZedisSetEditor {
                 server_state,
                 window,
                 cx,
-            )
+            );
+            table.set_action_button_factory(Box::new(move |_window, cx| {
+                let state_for_click = action_server_state.clone();
+                vec![
+                    Button::new("set-ismember-btn")
+                        .ghost()
+                        .icon(CustomIconName::ListCheck)
+                        .tooltip(i18n_set_editor(cx, "check_members_tooltip"))
+                        .on_click(move |_, window, cx| {
+                            open_set_ismember_dialog(state_for_click.clone(), window, cx);
+                        }),
+                ]
+            }));
+            table
         });
 
         info!("Creating new SET editor view");

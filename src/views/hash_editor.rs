@@ -29,7 +29,7 @@ use crate::{
     components::ZedisKvFetcher,
     helpers::{format_duration, ttl_secs},
     states::{KeyType, KvElement, RedisValue, ZedisServerState, i18n_hash_editor, i18n_kv_table},
-    views::{ZedisKvTable, kv_table::define_kv_editor},
+    views::{ZedisKvTable, kv_table::define_kv_editor, open_hash_sample_dialog},
 };
 use gpui::{App, Entity, SharedString, Window, prelude::*};
 use gpui_kit::component::{
@@ -372,11 +372,21 @@ impl ZedisHashEditor {
         let filter_server_state = server_state.clone();
         let table_state = cx.new(|cx| {
             let mut table = ZedisKvTable::<ZedisHashValues>::new(columns, server_state, window, cx);
-            if supports_field_ttl {
-                table.set_action_button_factory(Box::new(move |_window, cx| {
+            table.set_action_button_factory(Box::new(move |_window, cx| {
+                let sample_state = filter_server_state.clone();
+                let mut buttons = vec![
+                    Button::new("hash-sample-btn")
+                        .ghost()
+                        .icon(CustomIconName::SwatchBook)
+                        .tooltip(i18n_hash_editor(cx, "sample_fields_tooltip"))
+                        .on_click(move |_, window, cx| {
+                            open_hash_sample_dialog(sample_state.clone(), window, cx);
+                        }),
+                ];
+                if supports_field_ttl {
                     let active = filter_server_state.read(cx).hash_expiring_only();
                     let state_for_click = filter_server_state.clone();
-                    vec![
+                    buttons.push(
                         Button::new("hash-expiring-filter-btn")
                             .ghost()
                             .selected(active)
@@ -387,9 +397,10 @@ impl ZedisHashEditor {
                                     state.toggle_hash_expiring_only(cx);
                                 });
                             }),
-                    ]
-                }));
-            }
+                    );
+                }
+                buttons
+            }));
             table
         });
 

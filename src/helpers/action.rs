@@ -234,6 +234,8 @@ pub enum EditorAction {
     CopyKeyLink,
     /// Open the cross-server "diff with…" dialog for the selected key.
     DiffWithServer,
+    /// Open the same-DB `LCS` dialog comparing two String keys.
+    StringLcs,
     /// Open the TTL editor expecting a duration (`EXPIRE`) — what the TTL
     /// button itself does, listed so the dropdown can name both modes.
     EditTtlDuration,

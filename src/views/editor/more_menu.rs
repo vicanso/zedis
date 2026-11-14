@@ -42,6 +42,7 @@ pub(super) struct MoreActions {
     pub(super) rename_item: bool,
     pub(super) copy_item: bool,
     pub(super) diff_with_server_item: bool,
+    pub(super) lcs_item: bool,
     pub(super) delete_item: bool,
 }
 
@@ -58,6 +59,7 @@ impl MoreActions {
             export_item,
             import_item,
             diff_item,
+            lcs_item,
             delete_item,
             ref key_ops,
             ..
@@ -71,6 +73,7 @@ impl MoreActions {
             || export_item
             || import_item
             || diff_item
+            || lcs_item
             || delete_item
             || !key_ops.is_empty()
     }
@@ -230,6 +233,7 @@ impl MoreActions {
             copy_item,
             delete_item,
             diff_with_server_item,
+            lcs_item,
             bitmap_item,
             export_item,
             import_item,
@@ -239,7 +243,7 @@ impl MoreActions {
         } = self;
         // Key-level ops (rename / copy / delete) sit below a
         // separator from the value-view actions above.
-        if (rename_item || copy_item || delete_item || diff_with_server_item)
+        if (rename_item || copy_item || delete_item || diff_with_server_item || lcs_item)
             && (bitmap_item || export_item || import_item || diff_item)
         {
             menu = menu.separator();
@@ -289,6 +293,13 @@ impl MoreActions {
                 CustomIconName::GitCompareArrows,
                 Box::new(EditorAction::DiffWithServer),
                 move |_, cx| Label::new(i18n_editor(cx, "diff_with_server")),
+            );
+        }
+        if lcs_item {
+            menu = menu.menu_element_with_icon(
+                CustomIconName::Equal,
+                Box::new(EditorAction::StringLcs),
+                move |_, cx| Label::new(i18n_editor(cx, "lcs_menu")),
             );
         }
         if delete_item {

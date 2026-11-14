@@ -18,6 +18,8 @@
 #[cfg(target_family = "wasm")]
 use crate::bridge::BridgeQuery as _;
 use crate::error::Error;
+use crate::floors;
+use crate::reply;
 use crate::server_db::ServerDb;
 use redis::{Value, cmd};
 
@@ -119,16 +121,69 @@ pub async fn json_merge(at: &ServerDb, key: &str, patch: &str) -> Result<()> {
         .await?)
 }
 
+const CROSS_SLOT_LCS_MAX_BYTES: u64 = 4_096;
+
 /// `LCS key1 key2` — longest common subsequence of two string keys (Redis 7.0+).
+///
+/// When a Redis Cluster rejects `LCS` with `CROSSSLOT` because `key1` and `key2`
+/// hash to different slots, falls back to reading both keys and computing the
+/// byte-level LCS client-side (for strings up to [`CROSS_SLOT_LCS_MAX_BYTES`]).
 pub async fn string_lcs(at: &ServerDb, key1: &str, key2: &str) -> Result<String> {
     let client = at.client().await?;
-    if !client.supports(crate::floors::LCS) {
+    if !client.supports(floors::LCS) {
         return Err(Error::Invalid {
             message: "LCS requires Redis 7.0 or Valkey 7.2+".to_string(),
         });
     }
     let mut conn = client.connection();
-    Ok(cmd("LCS").arg(key1).arg(key2).query_async(&mut conn).await?)
+    match cmd("LCS").arg(key1).arg(key2).query_async::<Value>(&mut conn).await {
+        Ok(val) => Ok(reply::text_lossy(&val).unwrap_or_default()),
+        Err(err) if err.code() == Some("CROSSSLOT") || err.to_string().contains("CROSSSLOT") => {
+            let len1: u64 = cmd("STRLEN").arg(key1).query_async(&mut conn).await?;
+            let len2: u64 = cmd("STRLEN").arg(key2).query_async(&mut conn).await?;
+            if len1 > CROSS_SLOT_LCS_MAX_BYTES || len2 > CROSS_SLOT_LCS_MAX_BYTES {
+                return Err(err.into());
+            }
+            let a: Vec<u8> = cmd("GET").arg(key1).query_async(&mut conn).await?;
+            let b: Vec<u8> = cmd("GET").arg(key2).query_async(&mut conn).await?;
+            Ok(String::from_utf8_lossy(&bytes_lcs(&a, &b)).into_owned())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn bytes_lcs(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let m = a.len();
+    let n = b.len();
+    if m == 0 || n == 0 {
+        return Vec::new();
+    }
+    let stride = n + 1;
+    let mut dp = vec![0u16; (m + 1) * stride];
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i * stride + j] = if a[i - 1] == b[j - 1] {
+                dp[(i - 1) * stride + (j - 1)] + 1
+            } else {
+                dp[(i - 1) * stride + j].max(dp[i * stride + (j - 1)])
+            };
+        }
+    }
+    let mut out = Vec::with_capacity(dp[m * stride + n] as usize);
+    let (mut i, mut j) = (m, n);
+    while i > 0 && j > 0 {
+        if a[i - 1] == b[j - 1] {
+            out.push(a[i - 1]);
+            i -= 1;
+            j -= 1;
+        } else if dp[(i - 1) * stride + j] >= dp[i * stride + (j - 1)] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    out.reverse();
+    out
 }
 
 /// `JSON.SET key $ document` — replace the whole document.
@@ -139,4 +194,17 @@ pub async fn json_set(at: &ServerDb, key: &str, document: &str) -> Result<()> {
         .arg(document)
         .query_async(&mut at.connection().await?)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bytes_lcs;
+
+    #[test]
+    fn bytes_lcs_matches_redis_lcs_semantics() {
+        assert_eq!(bytes_lcs(b"ohmytext", b"mynewtext"), b"mytext");
+        assert_eq!(bytes_lcs(b"", b"nonempty"), b"");
+        assert_eq!(bytes_lcs(b"abc", b"xyz"), b"");
+        assert_eq!(bytes_lcs(b"identical", b"identical"), b"identical");
+    }
 }
