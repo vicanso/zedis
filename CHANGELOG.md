@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.17.0](https://github.com/vicanso/zedis/compare/v0.16.0..v0.17.0) - 2026-11-15
+
+### ⛰️  Features
+
+- *(bridge)* Share online client presence across multi-bridge stores - ([7920c66](https://github.com/vicanso/zedis/commit/7920c667c8aa703c855a5ab1c6cede943dd661a6))
+- *(bridge)* Support storing bridge configuration and state in Redis with hybrid TTLs - ([2cc80f9](https://github.com/vicanso/zedis/commit/2cc80f941b6de3dfb01610c91557aa6a8a685db2))
+- *(connection,ui)* Add optional RESP3 negotiation and unwrap RESP3 reply attributes - ([fd21338](https://github.com/vicanso/zedis/commit/fd21338cc6e20118fe879349863436e853f08183))
+- *(hash,key-tree)* Add expiring-fields filter toggle and initial field TTL on hash creation - ([7b67078](https://github.com/vicanso/zedis/commit/7b670788afcf1c90b58f278d0e29f547dc670241))
+- *(sentinel)* Subscribe to sentinel pubsub failover events - ([59199aa](https://github.com/vicanso/zedis/commit/59199aac7c5742e86a00f7a5dcc6bae347db93c0))
+- *(stream)* Add pending entries filter, batch XACK, entry jump, and consumer quick-pick - ([b19e434](https://github.com/vicanso/zedis/commit/b19e434014fbce4eb9fbf073991d0ba16ad7b285))
+- *(ui)* Wire LCS, SMISMEMBER, and HRANDFIELD dialogs into key editors - ([89ac8a7](https://github.com/vicanso/zedis/commit/89ac8a78fe74fd0534c7907159b35763aba6cf4f))
+- *(ui)* Auto-split multi-line and delimited paste across collection add-item rows - ([36f8fc4](https://github.com/vicanso/zedis/commit/36f8fc439f379b93ddc5eb8ab85979b1d17cc18d))
+- *(ui,connection)* Support batch multi-element creation and paste splitting for collections ([#269](https://github.com/orhun/git-cliff/issues/269)) - ([5c132bb](https://github.com/vicanso/zedis/commit/5c132bbe1097838f4a70934bae4c18aacf73711a))
+- *(ui,connection)* Add XML/YAML codecs, pattern bulk ops, BITFIELD_RO, sentinel replicas, and LCS/SMISMEMBER/HRANDFIELD - ([645f2c6](https://github.com/vicanso/zedis/commit/645f2c661e213eee52f374477cf615ec274ef5cc))
+- *(ui,connection,db)* Add query workbench, chunked string paging, cli script export, memory remediation, and module/queue ops - ([c9fb665](https://github.com/vicanso/zedis/commit/c9fb665ceb06f2caa72a8a835d029733e4cc3c28))
+- *(web,bridge)* Support diagnosing unsaved and edited connections in server form - ([8bbd5a4](https://github.com/vicanso/zedis/commit/8bbd5a4633ff42dc249bf6667fb79f88c6ebadc5))
+- *(web,connection,bridge)* Enable cluster and replication topology panel in browser build - ([353ca3b](https://github.com/vicanso/zedis/commit/353ca3b6603fa7a6c8cbcd33ddcc42039ba5db64))
+
+### 🐛 Bug Fixes
+
+- *(bridge,web)* Return detailed error reason with 400 when server dial fails - ([a99bd96](https://github.com/vicanso/zedis/commit/a99bd96f12a752a222850039668cebfbb7324587))
+- *(connection)* Support cross-slot rename, BITOP, PFMERGE, and cluster StreamTail - ([f7da5b1](https://github.com/vicanso/zedis/commit/f7da5b17d4034a9101b03936b272b117d6d9ea9a))
+- *(connection,ui)* Probe LCS command availability and move live assertion out of dragonfly smoke test - ([8db8a97](https://github.com/vicanso/zedis/commit/8db8a976ef5c368f7432fb07b15eac0e81f7d578))
+- Keep list order, overlay scrolling, and exact stream jumps (#272 #273 #274 #275) - ([7f5e293](https://github.com/vicanso/zedis/commit/7f5e293d621d77d59e4ece95f5539578949c63ad))
+
+### 📚 Documentation
+
+- *(agents)* Add file and function size modularity rules to AGENTS.md - ([5475508](https://github.com/vicanso/zedis/commit/54755085872394638d3dd0ab9dcce6b43266485f))
+- *(web)* Document Redis/Valkey store support and add live demo link - ([32688f7](https://github.com/vicanso/zedis/commit/32688f7a879b43f92e67740ee922ec80262b6929))
+
+### 🧪 Testing
+
+- *(connection)* Write stream entries concurrently while StreamTail blocks on cluster - ([5eca6f3](https://github.com/vicanso/zedis/commit/5eca6f33b5cb6c5c7370bbab2c70efe6f6860b23))
+
+### Build
+
+- *(deps)* Bump the minor-and-patch group with 4 updates ([#271](https://github.com/orhun/git-cliff/issues/271)) - ([1c64436](https://github.com/vicanso/zedis/commit/1c64436332c0f6852a98a3bfcdabc1f8cb354bef))
+
 ## [0.16.0](https://github.com/vicanso/zedis/compare/v0.15.2..v0.16.0) - 2026-11-03
 
 ### ⛰️  Features

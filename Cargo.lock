@@ -12418,7 +12418,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-bridge"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "argon2",
  "axum",
@@ -12456,7 +12456,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-connection"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -12494,7 +12494,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ahash",
  "base64 0.23.1",
@@ -12515,7 +12515,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-db"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "dashmap",
  "prost-reflect",
@@ -12532,7 +12532,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-gui"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -12606,7 +12606,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-ui"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "gpui-kit",
  "gpui-pre",
@@ -12616,7 +12616,7 @@ dependencies = [
 
 [[package]]
 name = "zedis-web"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "base64 0.23.1",
  "console_error_panic_hook",
