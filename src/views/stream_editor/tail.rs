@@ -15,11 +15,17 @@
 //! Stream live tail (`XREAD BLOCK $` and consumer-group `XREADGROUP BLOCK >`).
 
 use super::*;
-use crate::connection::StreamGroupTailSpec;
+use crate::{
+    connection::StreamGroupTailSpec,
+    states::{dialog_button_props, i18n_common},
+};
 use gpui_kit::component::{
     checkbox::Checkbox,
+    input::Input,
+    label::Label,
     radio::{Radio, RadioGroup},
 };
+use zedis_ui::ZedisDialog;
 
 /// Block timeout per `XREAD` / `XREADGROUP` round (ms). Short enough that a
 /// stop / key-switch is reflected promptly when the loop next wakes.

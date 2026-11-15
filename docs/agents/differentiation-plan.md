@@ -18,7 +18,7 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 
 ## A. Strong Differentiators (rarely or never seen in other Redis GUIs)
 
-### A1. Lua Script Debugger (`SCRIPT DEBUG` / LDB) — **Done (core)**
+### A1. Lua Script Debugger (`SCRIPT DEBUG` / LDB) — **Done**
 - **Why**: Debugging Lua today means `redis-cli --ldb` in a terminal. No mainstream GUI offers breakpoints, stepping and variable inspection for Redis scripts. This would pair naturally with the existing Lua Script Library.
 - **Builds on**:
   - `src/views/lua_script_library.rs`, `src/views/script_editor.rs`, `crates/zedis-db/src/lua_scripts.rs`
@@ -29,12 +29,11 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - `KEYS` / `ARGV` input form, remembered per script in `lua_scripts.rs`.
 - **Constraints & open questions**:
   - **Implemented 2026-10-31**: `crates/zedis-connection/src/lua_debug.rs` (`LuaDebugSession`) on a new `raw_connection.rs` (`RawConnection`: TCP / TLS / Unix / SSH, replies read frame by frame). Two protocol facts found by probing Redis 8.6 shaped it: the last step is answered with two replies (log ending `<endsession>`, then the script result) and the server then closes the connection, which redis-rs's multiplexed connection cannot receive; and nothing may be pipelined while paused, because LDB reads the socket itself and never sees bytes already in the query buffer. `e` runs in its own call frame (globals only). UI: `src/views/lua_script_library/debugger.rs`, opened from a script card's **Debug** button.
+  - **Cluster support added**: `validate_cluster_debug_keys`, `cluster_master_addrs`, `LuaDebugSession::start_on_node`, `ServerDb::raw_connection_for_debug`, inline slot owner badge, cross-slot `{tag}` error hint, master selector when `KEYS` is empty, live `KEYS` change subscription, and Prod `TypeName` confirmation on `SYNC`.
   - Valkey keeps LDB; Dragonfly and Garnet do not.
   - Web build: currently desktop-only (`this_build::debugs_lua_scripts()`); web support requires a long-lived bridge session similar to the terminal.
-- **Remaining**:
-  - Cluster support: route the debug connection to the master owning `KEYS[1]`'s slot; reject multi-key cross-slot scripts up front with a hash-tag hint; provide a master node selector when `KEYS` is empty (`SYNC` still requires dangerous-command confirmation).
 
-### A2. Key Timeline / Watch — **Done (core)**
+### A2. Key Timeline / Watch — **Done**
 - **Why**: "Who changed this value, and when?" is a common production question. Recording every change to a key (or a prefix) as a diffable timeline turns Zedis into a debugging tool, not just a viewer.
 - **Builds on**:
   - `src/views/keyspace_notifications.rs`, `crates/zedis-connection/src/subscription.rs` (keyspace event triage already exists)
@@ -47,9 +46,9 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 - **Constraints**:
   - Notifications are fire-and-forget: rapid writes can coalesce between reads. Say so in the UI ("snapshots, not a full audit").
   - Cluster: subscribe on the node that owns the slot.
-- **Remaining**:
-  - Prefix-level watch entry from a key tree folder's context menu → opens the Keyspace Notifications panel narrowed to `__keyspace@<db>__:<prefix>*`, plus a per-row action to open the single-key timeline dialog.
-  - Persist single-key timeline snapshots in `zedis-db` (≤50 snapshots per key, each ≤ `MAX_INLINE_VALUE_SIZE`, 7-day retention, integrated with `move_local_records` on key rename).
+- **Implemented**:
+  - `crates/zedis-db/src/key_timeline.rs` (`KeyTimelineManager`): persists single-key snapshots locally in `redb` (≤50 snapshots per key, 7-day retention, integrated with `move_local_records` on key rename).
+  - `src/views/key_tree/row_menu.rs` & `src/views/keyspace_notifications.rs`: **Watch This Prefix** right-click entry opens Keyspace Notifications narrowed to escaped `__keyspace@<db>__:<prefix>*`, locks DB/source/prefix filters, and provides a per-row clock button to open `KeyTimelineDialog`.
 
 ### A3. Background Alerts & Desktop Notifications — **Done (core)**
 - **Why**: Today the client is useful only while someone is looking at it. Threshold alerts with OS notifications or a tray badge would make it a resident watchdog and greatly increase retention.
@@ -107,16 +106,14 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
   - `crates/zedis-connection/src/benchmark.rs`: `run_benchmark` / `run_benchmark_with_prefix` with configurable concurrency (`1..=64`), pipeline depth (`P=1..=64`), payload size, keyspace cardinality, duration (`1..=60s`), and target `db`. Uses random throwaway prefix `zedis:bench:<12-hex>:` (with 16-way cluster hash tags `{s0}`..`{s15}` when `pipeline > 1` to avoid `CROSSSLOT` errors while spreading across slots), tracks all touched key indices via atomic bitset, and cleans them up in chunks of 1,000 on completion or cancellation.
   - `src/views/benchmark.rs` (`ServerView::Benchmark`): accessible from **Tools → Benchmark** and the command palette (`⌘K`). Enforces `Capability::CreateKey` (respecting read-only mode and the ADR 14 Prod write window) plus `confirm_dangerous_command`, renders headline metric cards, latency distribution bar chart + throughput timeline line chart, session run history with cross-run / cross-server baseline pinning (`Δ%`), and CSV export.
 
-### B2. MONITOR Recording & Aggregate Analysis — **Done (core)**
+### B2. MONITOR Recording & Aggregate Analysis — **Done**
 - **Why**: Live `MONITOR` already exists, and Slow Log already has a Top Commands view. Recording a bounded MONITOR window and aggregating it by command, key prefix and client answers "who is hammering what", which neither of them shows.
 - **Builds on**: `src/views/monitor.rs`, `open_monitor_feeds` in `zedis-connection`, `key_segments` / `tally` in `zedis-core`.
 - **Scope**: Record for N seconds or N commands (hard caps, since MONITOR costs throughput), aggregate into command × prefix × client tables with counts and share, export as CSV/JSON. Optional replay of the read-only subset against a test server (write replay only to non-Prod targets, behind confirmation).
 - **Constraints**: Show the MONITOR performance warning up front. Not available on most managed clouds (probe through `ServerCommand`).
 - **Implemented**:
   - `crates/zedis-core/src/tally.rs`: extended `MonitorTally` with 2D cross-tabulations (`command_prefixes`: `Command × Key prefix`, and `client_commands`: `Client × Command`) alongside the 1D `clients`, `commands`, and `prefixes` tallies.
-  - `src/views/monitor.rs`: added command-count-bounded sampling (`1,000`, `5,000`, `10,000` commands with a 60s safety timeout and live progress badge) alongside time-bounded sampling (`5s`, `10s`, `30s`), rendered the 5-column aggregate summary (`Clients`, `Commands`, `Key prefixes`, `Command × Key prefix`, `Client × Command`) with one-click multi-token drill-down into captured lines, and added `Summary (CSV)` / `Summary (JSON)` exports (`build_summary_csv` / `build_summary_json`).
-- **Remaining**:
-  - Read-only command subset replay (`is_read_only_command` allowlist) against a non-Prod target server at `1x / 2x / max` speed, reusing `BenchmarkSummary` to report latency percentiles, error count, and skipped write command count.
+  - `src/views/monitor.rs` + `src/views/monitor/{replay,summary}.rs`: command-count-bounded (`1,000`/`5,000`/`10,000` with 60s safety cap) and time-bounded (`5s`/`10s`/`30s`) sampling, 5-column aggregate summary with multi-token click-through, CSV/JSON exports, and **Read-Only Replay** (`MonitorReplayDialog`, `run_monitor_replay_paced` preserving captured timestamps and `sdscatrepr` quoted arguments at `1x / 2x / Max` speed onto non-Prod targets with `BenchmarkSummary` latency percentiles).
 
 ### B3. `zedis://` Deep Links & Sharing — **Done (2026-10-31)**
 - **Why**: A teammate pastes `zedis://open?server=<name>&db=3&key=order:42` into chat or a ticket, and one click opens that key. The web build supports this naturally with URLs.
@@ -147,13 +144,13 @@ Drawn up 2026-10-31 after comparing `docs/FEATURES.md` with what other Redis GUI
 
 | Step | Area | Summary | Status | Remaining |
 |---|---|---|---|---|
-| A1 | Scripting | Lua script debugger (`SCRIPT DEBUG` / LDB) | **Done (core)** (desktop, standalone/Sentinel) | Cluster slot routing (`KEYS[1]`), cross-slot rejection, node selector when `KEYS` is empty |
-| A2 | Debugging | Key timeline / watch via keyspace notifications | **Done (core)** (live keyspace push + polling, unified diff, Markdown export) | Folder "Watch This Prefix" → Keyspace Notifications + row "Open Timeline"; `zedis-db` snapshot persistence (≤50/key, 7d) |
+| A1 | Scripting | Lua script debugger (`SCRIPT DEBUG` / LDB) | **Done** (desktop, standalone/Sentinel/Cluster) | — |
+| A2 | Debugging | Key timeline / watch via keyspace notifications | **Done** (`zedis-db` snapshots ≤50/key 7d, Watch This Prefix, KeyTimelineDialog diff & Markdown export) | — |
 | A3 | Monitoring | Background alert rules + desktop notifications | **Done (core)** (opt-in per server via Safety tab or Metrics Alerts dialog) | Desktop alert webhook + system tray / status-bar badge (deferred) |
 | A4 | Insight | Keyspace schema inference & data dictionary export | **Done** (online SCAN + offline RDB pattern collapsing, field type inference, Markdown/JSON export) | — |
 | A5 | Data Ops | Bulk migration: throttle, resume, verify, follow mode | **Done** (pattern + type `SCAN`, `zedis-db` job checkpoints & resume, rate limit, verify + Compare jump, best-effort `follow` live sync) | — |
 | B1 | Performance | Built-in benchmark with charts and run comparison | **Done** (6 presets, pipeline/concurrency knobs, histogram + timeline charts, baseline diff, auto-cleanup) | — |
-| B2 | Performance | MONITOR recording & aggregate analysis | **Done (core)** (time + command-count sampling, Command×Prefix & Client×Command cross-tabs, CSV/JSON export) | Read-only command subset replay (`is_read_only_command`) to non-Prod target at `1x / 2x / max` with latency summary |
+| B2 | Performance | MONITOR recording & aggregate analysis | **Done** (time/count sampling, 2D cross-tabs, CSV/JSON export, read-only `1x`/`2x`/`Max` replay) | — |
 | B3 | Workflow | `zedis://` deep links & "copy link to key" | **Done** (`zedis://open?server=&db=&key=&view=`, web query links, OS URL scheme registration, Copy link to key in tree & editor) | — |
 | B4 | Extensibility | Bidirectional Custom Decoder (`encode_command` write-back & JSON import/export) | **Done** (opt-in `encode_command` write-back before `SET`, error toast on non-zero exit, JSON rule import/export) | — |
 

@@ -81,7 +81,9 @@ use zedis_connection::{
 use zedis_connection::{
     CopyLoss, SearchableType, ValueSearchSpec, copy_preflight, multi_search_exact, multi_search_scan, scan_values_round,
 };
-use zedis_connection::{DebugCommand, DebugLine, DebugMode, LuaDebugSession};
+use zedis_connection::{
+    DebugCommand, DebugLine, DebugMode, LuaDebugSession, cluster_master_addrs, validate_cluster_debug_keys,
+};
 use zedis_connection::{
     MonitorFeed, MonitorReplaySpeed, SlotMigrationDialect, SlotMove, bgsave_cancel, client_name, command_stats,
     copy_key, copy_key_logically, function_delete, function_load, function_stats, is_foreign_payload,

@@ -30,6 +30,7 @@ use crate::read_only::{is_read_only_command, reveals_secrets};
 use crate::server_db::ServerDb;
 use futures::future::join_all;
 use redis::{Cmd, Pipeline, Value, cmd, pipe};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -504,9 +505,9 @@ pub async fn run_benchmark(
 /// Pacing mode for replaying captured MONITOR read-only commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MonitorReplaySpeed {
-    /// Paced replay (~1 ms between commands).
+    /// Paced replay preserving recorded inter-arrival deltas (capped at `MAX_REPLAY_IDLE_GAP_MS`).
     RealTime1x,
-    /// Double-speed paced replay (~0.5 ms between commands).
+    /// Double-speed paced replay (`0.5x` recorded inter-arrival deltas).
     Fast2x,
     /// Immediate back-to-back execution with no artificial delay.
     #[default]
@@ -527,12 +528,33 @@ impl MonitorReplaySpeed {
             MonitorReplaySpeed::MaxSpeed => "Max",
         }
     }
+}
 
-    const fn step_delay(self) -> Duration {
-        match self {
-            MonitorReplaySpeed::RealTime1x => Duration::from_millis(1),
-            MonitorReplaySpeed::Fast2x => Duration::from_micros(500),
-            MonitorReplaySpeed::MaxSpeed => Duration::ZERO,
+/// Upper bound on any single inter-command pause while replaying a captured
+/// MONITOR stream so long idle gaps do not stall the replay task.
+pub const MAX_REPLAY_IDLE_GAP_MS: u64 = 2_000;
+const REPLAY_FALLBACK_STEP_DELAY_1X_MS: u64 = 1;
+const REPLAY_FALLBACK_STEP_DELAY_2X_US: u64 = 500;
+const REPLAY_CANCEL_SLICE_MS: u64 = 50;
+
+/// Computes the pacing delay before replaying the next MONITOR entry.
+pub fn replay_step_delay(speed: MonitorReplaySpeed, prev_ts_ms: Option<u64>, curr_ts_ms: Option<u64>) -> Duration {
+    match speed {
+        MonitorReplaySpeed::MaxSpeed => Duration::ZERO,
+        MonitorReplaySpeed::RealTime1x => {
+            if let (Some(prev), Some(curr)) = (prev_ts_ms, curr_ts_ms) {
+                Duration::from_millis(curr.saturating_sub(prev).min(MAX_REPLAY_IDLE_GAP_MS))
+            } else {
+                Duration::from_millis(REPLAY_FALLBACK_STEP_DELAY_1X_MS)
+            }
+        }
+        MonitorReplaySpeed::Fast2x => {
+            if let (Some(prev), Some(curr)) = (prev_ts_ms, curr_ts_ms) {
+                let delta_ms = curr.saturating_sub(prev).min(MAX_REPLAY_IDLE_GAP_MS);
+                Duration::from_micros(delta_ms * 500)
+            } else {
+                Duration::from_micros(REPLAY_FALLBACK_STEP_DELAY_2X_US)
+            }
         }
     }
 }
@@ -590,6 +612,68 @@ const NON_REPLAYABLE_COMMANDS: &[&str] = &[
     "READWRITE",
 ];
 
+/// Parses Redis `MONITOR` `sdscatrepr` double-quoted tokens (preserving spaces,
+/// empty `""` arguments, escaped quotes/backslashes, and `\xHH` bytes).
+fn parse_monitor_quoted_tokens(cmd_part: &str) -> Option<Vec<String>> {
+    let bytes = cmd_part.as_bytes();
+    let mut i = 0usize;
+    let mut tokens = Vec::new();
+
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] != b'"' {
+            return None;
+        }
+        i += 1;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut closed = false;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    closed = true;
+                    i += 1;
+                    break;
+                }
+                b'\\' => {
+                    i += 1;
+                    if i >= bytes.len() {
+                        return None;
+                    }
+                    match bytes[i] {
+                        b'\\' => buf.push(b'\\'),
+                        b'"' => buf.push(b'"'),
+                        b'n' => buf.push(b'\n'),
+                        b'r' => buf.push(b'\r'),
+                        b't' => buf.push(b'\t'),
+                        b'a' => buf.push(0x07),
+                        b'b' => buf.push(0x08),
+                        b'x' if i + 2 < bytes.len() => {
+                            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+                            let byte = u8::from_str_radix(hex, 16).ok()?;
+                            buf.push(byte);
+                            i += 2;
+                        }
+                        other => buf.push(other),
+                    }
+                }
+                other => buf.push(other),
+            }
+            i += 1;
+        }
+        if !closed {
+            return None;
+        }
+        tokens.push(String::from_utf8_lossy(&buf).into_owned());
+    }
+
+    if tokens.is_empty() { None } else { Some(tokens) }
+}
+
 /// Parses a raw MONITOR line (either full `+1339518083.107412 [0 127.0.0.1:60866] "GET" "foo"`
 /// or a command-and-arguments string `"GET" "foo"` / `GET foo`) into a [`MonitorReplayEntry`].
 pub fn parse_monitor_replay_entry(raw: &str) -> Option<MonitorReplayEntry> {
@@ -606,13 +690,19 @@ pub fn parse_monitor_replay_entry(raw: &str) -> Option<MonitorReplayEntry> {
             .parse::<f64>()
             .ok()
             .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|secs| (secs * 1000.0) as u64);
+            .map(|secs| (secs * 1000.0).round() as u64);
         (ts_ms, rest[end + 1..].trim())
     } else {
         (None, line)
     };
 
-    let tokens = shlex::split(cmd_part).unwrap_or_else(|| cmd_part.split_whitespace().map(str::to_string).collect());
+    let tokens = if cmd_part.trim_start().starts_with('"') {
+        parse_monitor_quoted_tokens(cmd_part)
+    } else {
+        None
+    }
+    .or_else(|| shlex::split(cmd_part))
+    .unwrap_or_else(|| cmd_part.split_whitespace().map(str::to_string).collect());
     let (first, rest) = tokens.split_first()?;
     let command = first.trim().to_ascii_uppercase();
     if command.is_empty() {
@@ -636,9 +726,10 @@ fn is_safe_replay_command(cmd_upper: &str, args: &[String]) -> bool {
     is_read_only_command(cmd_upper, &arg_refs) && !reveals_secrets(cmd_upper, &arg_refs)
 }
 
-/// Partitions raw MONITOR command entries into verified read-only `(command, args)` pairs
-/// and the count of skipped write, blocking, subscribing, or unsafe commands.
-pub fn partition_replay_commands(entries: &[String]) -> (Vec<(String, Vec<String>)>, usize) {
+/// Partitions raw MONITOR command entries into verified read-only
+/// [`MonitorReplayEntry`] items (with timestamps) and the count of skipped
+/// write, blocking, subscribing, or unsafe commands.
+pub fn partition_replay_entries(entries: &[String]) -> (Vec<MonitorReplayEntry>, usize) {
     let mut read_only = Vec::new();
     let mut skipped_write_count = 0usize;
 
@@ -651,13 +742,21 @@ pub fn partition_replay_commands(entries: &[String]) -> (Vec<(String, Vec<String
             continue;
         };
         if is_safe_replay_command(&entry.command, &entry.args) {
-            read_only.push((entry.command, entry.args));
+            read_only.push(entry);
         } else {
             skipped_write_count += 1;
         }
     }
 
     (read_only, skipped_write_count)
+}
+
+/// Partitions raw MONITOR command entries into verified read-only `(command, args)` pairs
+/// and the count of skipped write, blocking, subscribing, or unsafe commands.
+pub fn partition_replay_commands(entries: &[String]) -> (Vec<(String, Vec<String>)>, usize) {
+    let (entries, skipped_write_count) = partition_replay_entries(entries);
+    let commands = entries.into_iter().map(|entry| (entry.command, entry.args)).collect();
+    (commands, skipped_write_count)
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -671,15 +770,21 @@ async fn replay_delay(delay: Duration) {
 async fn replay_delay(_delay: Duration) {}
 
 /// Sequentially replays only the verified read-only commands from `entries`
-/// against `at`, recording each command's latency into a [`BenchmarkSummary`].
-pub async fn run_monitor_replay(
+/// against `at`, using a caller-supplied async sleeper for portable `1x`/`2x` pacing
+/// across both desktop and wasm, and recording latencies into a [`BenchmarkSummary`].
+pub async fn run_monitor_replay_paced<F, Fut>(
     at: &ServerDb,
     entries: &[String],
     speed: MonitorReplaySpeed,
     cancel: Arc<AtomicBool>,
-) -> Result<MonitorReplayReport> {
-    let (read_only_commands, skipped_write_count) = partition_replay_commands(entries);
-    if read_only_commands.is_empty() {
+    mut sleep: F,
+) -> Result<MonitorReplayReport>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (read_only_entries, skipped_write_count) = partition_replay_entries(entries);
+    if read_only_entries.is_empty() {
         let summary = summarize_benchmark(BenchmarkRawOutcome {
             latencies_us: Vec::new(),
             total_ops: 0,
@@ -697,27 +802,46 @@ pub async fn run_monitor_replay(
         });
     }
 
-    let mut conn = at.connection().await?;
-    let delay = speed.step_delay();
-    let mut latencies_us = Vec::with_capacity(read_only_commands.len());
+    let mut conn = match at.connection().await {
+        Ok(conn) => conn,
+        Err(_) if at.db() != 0 => ServerDb::new(at.server_id(), 0).connection().await?,
+        Err(err) => return Err(err),
+    };
+    let mut latencies_us = Vec::with_capacity(read_only_entries.len());
     let mut replayed_count = 0usize;
     let mut error_count = 0usize;
+    let mut prev_ts_ms: Option<u64> = None;
     let start = Instant::now();
 
-    for (idx, (cmd_upper, args)) in read_only_commands.iter().enumerate() {
+    for (idx, entry) in read_only_entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        if idx > 0 && !delay.is_zero() {
-            replay_delay(delay).await;
+        let step_delay = if idx > 0 {
+            replay_step_delay(speed, prev_ts_ms, entry.timestamp_ms)
+        } else {
+            Duration::ZERO
+        };
+        prev_ts_ms = entry.timestamp_ms.or(prev_ts_ms);
+        if !step_delay.is_zero() {
+            let mut remaining = step_delay;
+            let slice = Duration::from_millis(REPLAY_CANCEL_SLICE_MS);
+            while !remaining.is_zero() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let wait = remaining.min(slice);
+                sleep(wait).await;
+                remaining = remaining.saturating_sub(wait);
+            }
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
         }
 
-        let cmd_name = cmd_upper.as_str();
+        let cmd_name = entry.command.as_str();
         let mut command = cmd(cmd_name);
-        for arg in args {
+        for arg in &entry.args {
             command.arg(arg.as_str());
         }
 
@@ -765,6 +889,17 @@ pub async fn run_monitor_replay(
         skipped_write_count,
         error_count,
     })
+}
+
+/// Sequentially replays only the verified read-only commands from `entries`
+/// against `at`, recording each command's latency into a [`BenchmarkSummary`].
+pub async fn run_monitor_replay(
+    at: &ServerDb,
+    entries: &[String],
+    speed: MonitorReplaySpeed,
+    cancel: Arc<AtomicBool>,
+) -> Result<MonitorReplayReport> {
+    run_monitor_replay_paced(at, entries, speed, cancel, replay_delay).await
 }
 
 #[cfg(test)]
@@ -819,6 +954,57 @@ mod tests {
                     ]
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn parse_monitor_replay_entry_preserves_spaces_empty_and_escaped_args() {
+        let entry = parse_monitor_replay_entry(
+            r#"+1700000000.500000 [3 [::1]:60866] "HMGET" "hash key" "" "a\"b\\c" "\x41\x42""#,
+        )
+        .expect("parse monitor line");
+        assert_eq!(entry.timestamp_ms, Some(1_700_000_000_500));
+        assert_eq!(entry.command, "HMGET");
+        assert_eq!(
+            entry.args,
+            vec![
+                "hash key".to_string(),
+                String::new(),
+                "a\"b\\c".to_string(),
+                "AB".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn replay_step_delay_respects_speed_timestamps_cap_and_fallback() {
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::MaxSpeed, Some(1_000), Some(1_500)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::RealTime1x, Some(1_000), Some(1_400)),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::Fast2x, Some(1_000), Some(1_400)),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::RealTime1x, Some(1_000), Some(10_000)),
+            Duration::from_millis(MAX_REPLAY_IDLE_GAP_MS)
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::Fast2x, Some(1_000), Some(10_000)),
+            Duration::from_millis(MAX_REPLAY_IDLE_GAP_MS / 2)
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::RealTime1x, None, Some(1_500)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            replay_step_delay(MonitorReplaySpeed::Fast2x, Some(1_500), None),
+            Duration::from_micros(500)
         );
     }
 }

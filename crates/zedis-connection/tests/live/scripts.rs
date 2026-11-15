@@ -426,3 +426,77 @@ fn standalone_lua_debugger_sync_keeps_writes_and_reports_failures() {
         cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
     });
 }
+
+#[test]
+#[ignore]
+fn cluster_lua_debugger_routes_by_key_slot_and_node_override() {
+    smol::block_on(async {
+        let addr = skip_unless!("ZEDIS_IT_CLUSTER");
+        let id = register(protected_server("it-cluster-lua-debug", addr)).await;
+        let at = ServerDb::new(&id, 0);
+
+        let masters = cluster_master_addrs(&at).await.expect("cluster masters");
+        assert!(!masters.is_empty(), "cluster should expose at least one master");
+
+        // Cross-slot KEYS are rejected up front before dialing any node.
+        let cross_slot_keys = vec!["{slot-a}:k1".to_string(), "{slot-b}:k2".to_string()];
+        let Err(err) = LuaDebugSession::start_on_node(
+            &at,
+            DEBUGGED,
+            &cross_slot_keys,
+            &["v".to_string()],
+            &[],
+            DebugMode::Forked,
+            None,
+        )
+        .await
+        else {
+            panic!("cross-slot keys must be rejected");
+        };
+        assert!(
+            err.to_string().contains("CROSSSLOT"),
+            "unexpected cross-slot error: {err}"
+        );
+
+        // Same-slot multi-key debugging routes to the slot-owning master.
+        let tag = unique("clu-dbg");
+        let same_slot_keys = vec![format!("{{{tag}}}:k1"), format!("{{{tag}}}:k2")];
+        assert!(
+            validate_cluster_debug_keys(&same_slot_keys)
+                .expect("valid same-slot")
+                .is_some()
+        );
+        let (session, _) = LuaDebugSession::start_on_node(
+            &at,
+            DEBUGGED,
+            &same_slot_keys,
+            &["clustered".to_string()],
+            &[],
+            DebugMode::Forked,
+            None,
+        )
+        .await
+        .expect("start same-slot cluster debug");
+        let end = session.send(&DebugCommand::Continue).await.expect("continue");
+        let finished = end.end.expect("cluster session finished");
+        assert!(!finished.error, "{}", finished.result);
+        assert!(finished.result.contains("clustered"), "{}", finished.result);
+
+        // Keyless scripts can explicitly target a selected master node.
+        let (node_session, _) = LuaDebugSession::start_on_node(
+            &at,
+            "return redis.call('PING')",
+            &[],
+            &[],
+            &[],
+            DebugMode::Forked,
+            Some(masters[0].as_str()),
+        )
+        .await
+        .expect("start keyless cluster debug on node 0");
+        let node_end = node_session.send(&DebugCommand::Continue).await.expect("continue node");
+        let node_finished = node_end.end.expect("node session finished");
+        assert!(!node_finished.error, "{}", node_finished.result);
+        assert!(node_finished.result.contains("PONG"), "{}", node_finished.result);
+    });
+}

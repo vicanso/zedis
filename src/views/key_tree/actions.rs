@@ -572,6 +572,12 @@ mod tests {
         send(cx, handle, &tree, A::CopyFolderPrefix("user".into()));
         let prefix = server_state.read_with(cx, |s, _| s.folder_prefix("user"));
         assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()), Some(prefix));
+
+        send(cx, handle, &tree, A::WatchFolderPrefix("orders".into()));
+        assert_eq!(
+            server_state.update(cx, |s, _| s.take_pending_keyspace_prefix()),
+            Some("orders:".into())
+        );
     }
 
     /// The actions that ask before they act open their question — the

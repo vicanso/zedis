@@ -264,16 +264,38 @@ fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: 
         .fitted_to(content_width)
 }
 
+fn escape_keyspace_glob(prefix: &str) -> String {
+    let mut escaped = String::with_capacity(prefix.len());
+    for ch in prefix.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[' | ']') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+fn subscription_patterns(db: usize, prefix_filter: Option<&str>) -> Vec<String> {
+    if let Some(prefix) = prefix_filter.filter(|p| !p.is_empty()) {
+        vec![format!("__keyspace@{db}__:{}*", escape_keyspace_glob(prefix))]
+    } else {
+        vec![KEYSPACE_PATTERN.to_string(), KEYEVENT_PATTERN.to_string()]
+    }
+}
+
 /// The structured filter as a row predicate over the cells — `None` when
 /// nothing is narrowed, so the table shows every row.
 fn row_predicate(
     selected_events: &Option<AHashSet<String>>,
     key_filter: &str,
+    prefix_filter: Option<&str>,
     selected_dbs: &Option<AHashSet<u32>>,
     source_filter: SourceFilter,
 ) -> Option<RowPredicate> {
+    let prefix_filter = prefix_filter.filter(|p| !p.is_empty());
     if selected_events.is_none()
         && key_filter.is_empty()
+        && prefix_filter.is_none()
         && selected_dbs.is_none()
         && source_filter == SourceFilter::Both
     {
@@ -281,6 +303,7 @@ fn row_predicate(
     }
     let events = selected_events.clone();
     let key_filter = key_filter.to_string();
+    let prefix_filter = prefix_filter.map(str::to_string);
     let dbs = selected_dbs.clone();
     Some(Rc::new(move |cells: &[SharedString]| {
         let cell = |ix: usize| cells.get(ix).map(|c| c.as_ref()).unwrap_or("");
@@ -289,7 +312,11 @@ fn row_predicate(
         {
             return false;
         }
-        if !key_filter.is_empty() && !cell(KEY_COLUMN).contains(key_filter.as_str()) {
+        if let Some(prefix) = &prefix_filter {
+            if !cell(KEY_COLUMN).starts_with(prefix.as_str()) {
+                return false;
+            }
+        } else if !key_filter.is_empty() && !cell(KEY_COLUMN).contains(key_filter.as_str()) {
             return false;
         }
         if let Some(set) = &dbs
@@ -423,6 +450,12 @@ impl ZedisKeyspaceNotifications {
         else {
             return;
         };
+        if prefix.is_empty() {
+            return;
+        }
+        let db = self.server_state.read(cx).db() as u32;
+        self.selected_dbs = Some(AHashSet::from_iter([db]));
+        self.source_filter = SourceFilter::KeyspaceOnly;
         self.prefix_filter = Some(prefix.clone());
         self.key_filter = prefix.to_string();
         self.key_filter_input.update(cx, |input, cx| {
@@ -464,18 +497,15 @@ impl ZedisKeyspaceNotifications {
 
         let entity = cx.entity().downgrade();
         let at = ServerDb::new(server_id, self.server_state.read(cx).db());
-        let keyspace_pattern = match &self.prefix_filter {
-            Some(prefix) if !prefix.is_empty() => format!("__keyspace@{}__:{}*", at.db(), prefix),
-            _ => KEYSPACE_PATTERN.to_string(),
-        };
+        let patterns = subscription_patterns(at.db(), self.prefix_filter.as_deref());
 
         self.refresh_notify_flags(cx);
 
         self.subscribe_task = Some(cx.spawn(async move |_handle, cx| {
             let connect: Result<ChannelSubscription, Error> = cx
                 .background_spawn(async move {
-                    let patterns = [keyspace_pattern.as_str(), KEYEVENT_PATTERN];
-                    Ok(ChannelSubscription::open(&at, SubscribeKind::KeyspaceEvents, &patterns).await?)
+                    let pattern_refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
+                    Ok(ChannelSubscription::open(&at, SubscribeKind::KeyspaceEvents, &pattern_refs).await?)
                 })
                 .await;
 
@@ -609,12 +639,17 @@ impl ZedisKeyspaceNotifications {
     fn apply_filter_now(&mut self, cx: &mut Context<Self>) {
         let selected = self.selected_events.clone();
         let key_filter = self.key_filter.clone();
+        let prefix_filter = self.prefix_filter.clone();
         let selected_dbs = self.selected_dbs.clone();
         let source_filter = self.source_filter;
         self.table_state.update(cx, |state, _| {
-            state
-                .delegate_mut()
-                .set_row_filter(row_predicate(&selected, &key_filter, &selected_dbs, source_filter));
+            state.delegate_mut().set_row_filter(row_predicate(
+                &selected,
+                &key_filter,
+                prefix_filter.as_deref(),
+                &selected_dbs,
+                source_filter,
+            ));
         });
         self.refresh_counts(cx);
         cx.notify();
@@ -1390,7 +1425,15 @@ fn parse_notification(channel: &str, payload: &[u8]) -> Option<NotificationRow> 
 
 #[cfg(test)]
 mod tests {
-    use super::{NotificationSource, parse_notification};
+    use super::{
+        EVENT_COLUMN, KEY_COLUMN, KEYEVENT_PATTERN, KEYSPACE_PATTERN, NotificationSource, SourceFilter,
+        ZedisKeyspaceNotifications, parse_notification, row_predicate, subscription_patterns,
+    };
+    use crate::states::ZedisServerState;
+    use crate::test_support::init_ui;
+    use ahash::AHashSet;
+    use gpui::{AppContext, SharedString, TestAppContext, px, size};
+    use gpui_kit::component::Root;
 
     #[test]
     fn parses_keyspace_channel() {
@@ -1408,5 +1451,85 @@ mod tests {
         assert_eq!(row.key.as_ref(), "session:abc");
         assert_eq!(row.event.as_ref(), "expire");
         assert_eq!(row.source, NotificationSource::Keyevent);
+    }
+
+    #[test]
+    fn subscription_patterns_narrows_to_escaped_keyspace_prefix_only() {
+        assert_eq!(
+            subscription_patterns(0, None),
+            vec![KEYSPACE_PATTERN.to_string(), KEYEVENT_PATTERN.to_string()]
+        );
+        assert_eq!(
+            subscription_patterns(0, Some("")),
+            vec![KEYSPACE_PATTERN.to_string(), KEYEVENT_PATTERN.to_string()]
+        );
+        assert_eq!(
+            subscription_patterns(3, Some("orders:[2026]*?\\")),
+            vec![r"__keyspace@3__:orders:\[2026\]\*\?\\*".to_string()]
+        );
+    }
+
+    #[test]
+    fn row_predicate_anchors_prefix_when_prefix_filter_is_set() {
+        let predicate = row_predicate(&None, "orders:", Some("orders:"), &None, SourceFilter::KeyspaceOnly)
+            .expect("prefix filter builds predicate");
+
+        let match_row: Vec<SharedString> = vec![
+            "12:00:00".into(),
+            "0".into(),
+            "orders:1".into(),
+            "set".into(),
+            "keyspace".into(),
+        ];
+        let false_substring: Vec<SharedString> = vec![
+            "12:00:00".into(),
+            "0".into(),
+            "my_orders:1".into(),
+            "set".into(),
+            "keyspace".into(),
+        ];
+        let wrong_source: Vec<SharedString> = vec![
+            "12:00:00".into(),
+            "0".into(),
+            "orders:1".into(),
+            "set".into(),
+            "keyevent".into(),
+        ];
+
+        assert!(predicate(&match_row));
+        assert!(!predicate(&false_substring));
+        assert!(!predicate(&wrong_source));
+
+        let substring_only = row_predicate(&None, "orders:", None, &None, SourceFilter::Both)
+            .expect("substring filter builds predicate");
+        assert!(substring_only(&false_substring));
+        assert_eq!(EVENT_COLUMN, 3);
+        assert_eq!(KEY_COLUMN, 2);
+    }
+
+    #[gpui::test]
+    fn pending_prefix_from_key_tree_narrows_filters_on_open(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        server_state.update(cx, |state, _| {
+            state.set_pending_keyspace_prefix("orders:".into());
+        });
+
+        let mut view = None;
+        cx.open_window(size(px(900.), px(720.)), |window, cx| {
+            let panel = cx.new(|cx| ZedisKeyspaceNotifications::new(server_state.clone(), window, cx));
+            view = Some(panel.clone());
+            Root::new(panel, window, cx)
+        });
+        cx.run_until_parked();
+
+        let panel = view.expect("the window built keyspace notifications");
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.prefix_filter.as_ref().map(AsRef::as_ref), Some("orders:"));
+            assert_eq!(panel.source_filter, SourceFilter::KeyspaceOnly);
+            assert_eq!(panel.selected_dbs, Some(AHashSet::from_iter([0])));
+            assert_eq!(panel.key_filter_input.read(cx).value(), "orders:");
+            assert_eq!(panel.key_filter, "orders:");
+        });
     }
 }

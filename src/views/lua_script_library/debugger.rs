@@ -27,13 +27,14 @@
 use super::ZedisLuaScriptLibrary;
 use crate::{
     connection::{
-        Capability, DebugCommand, DebugEnd, DebugLine, DebugMode, DebugStep, LuaDebugSession, LuaLocal, ServerDb,
-        cluster_master_addrs, max_keys_index, validate_cluster_debug_keys,
+        Capability, DangerKind, DebugCommand, DebugEnd, DebugLine, DebugMode, DebugStep, LuaDebugSession, LuaLocal,
+        ServerDb, cluster_master_addrs, get_server, max_keys_index, validate_cluster_debug_keys,
     },
     db::LuaScript,
     error::Error,
     helpers::{get_mono_font_family, parse_lines},
     states::{ZedisServerState, escalate_dangerous_body, i18n_common, i18n_lua_scripts},
+    views::confirm_dangerous_command,
 };
 use gpui::{Entity, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px};
 use gpui_kit::component::{
@@ -146,11 +147,19 @@ impl LuaDebugger {
                 .default_value(args_default)
         });
         let expr = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_lua_scripts(cx, "debug_eval_placeholder")));
-        let subscriptions = vec![cx.subscribe_in(&expr, window, |this, _state, event, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.evaluate(window, cx);
-            }
-        })];
+        let subscriptions = vec![
+            cx.subscribe_in(&keys, window, |this, _state, event, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.error = None;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&expr, window, |this, _state, event, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.evaluate(window, cx);
+                }
+            }),
+        ];
 
         let (is_cluster, server_id, db, mut cluster_masters) = {
             let state = server_state.read(cx);
@@ -238,7 +247,28 @@ impl LuaDebugger {
             return;
         }
         let entity = cx.entity().downgrade();
-        let server_id = self.server_state.read(cx).server_id().to_string();
+        let (server_id, db) = {
+            let state = self.server_state.read(cx);
+            (state.server_id().to_string(), state.db())
+        };
+        if let Ok(server) = get_server(&server_id)
+            && server.is_high_risk_tag()
+        {
+            confirm_dangerous_command(
+                &server,
+                db,
+                &DangerKind::Debug,
+                Some("SCRIPT DEBUG SYNC"),
+                window,
+                cx,
+                move |_window, cx| {
+                    if let Some(this) = entity.upgrade() {
+                        this.update(cx, |this, cx| this.begin(cx));
+                    }
+                },
+            );
+            return;
+        }
         let message = escalate_dangerous_body(cx, &server_id, i18n_lua_scripts(cx, "debug_sync_message"));
         ZedisDialog::new_alert(i18n_lua_scripts(cx, "debug_sync_title"), message)
             .danger()
@@ -1071,5 +1101,60 @@ mod tests {
         library.read_with(cx, |library, _| assert!(library.debugger.is_none()));
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .expect("the list draws again");
+    }
+
+    #[gpui::test]
+    fn cluster_keys_edits_refresh_target_and_reject_crossslot(cx: &mut TestAppContext) {
+        use crate::connection::RedisClientDescription;
+        init_ui(cx);
+        let server_state = cx.new(|_| {
+            let mut state = ZedisServerState::new_for_test("cluster-dbg");
+            state.set_nodes_description_for_test(RedisClientDescription {
+                server_type: "Cluster".to_string(),
+                master_nodes: "127.0.0.1:7001,127.0.0.1:7002".to_string(),
+                ..Default::default()
+            });
+            state
+        });
+        let cluster_script = LuaScript {
+            name: "cluster_multi".to_string(),
+            code: "return redis.call('MGET', KEYS[1], KEYS[2])".to_string(),
+            default_keys: vec![],
+            ..LuaScript::default()
+        };
+        let mut built = None;
+        let handle = cx.open_window(size(px(1000.), px(700.)), |window, cx| {
+            let library = cx.new(|cx| ZedisLuaScriptLibrary::new(server_state.clone(), window, cx));
+            let debugger =
+                cx.new(|cx| LuaDebugger::new(library.downgrade(), server_state.clone(), &cluster_script, window, cx));
+            library.update(cx, |library, _| library.debugger = Some(debugger.clone().into()));
+            built = Some(debugger);
+            gpui_kit::component::Root::new(library, window, cx)
+        });
+        let debugger = built.expect("cluster debugger view");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let keys_entity = debugger.read(cx).keys.clone();
+            keys_entity.update(cx, |keys, cx| {
+                keys.set_value("{a}:1\n{b}:2".to_string(), window, cx);
+            });
+            window.render_frame(cx);
+            debugger.update(cx, |debugger, cx| {
+                assert_eq!(debugger.cluster_masters.len(), 2);
+                debugger.error = Some("stale".into());
+                debugger.start(window, cx);
+            });
+        })
+        .expect("window updates cluster keys");
+
+        debugger.read_with(cx, |debugger, _| {
+            assert!(debugger.session.is_none() && !debugger.busy);
+            assert!(
+                debugger.error.as_ref().is_some_and(|e| e.contains("CROSSSLOT")),
+                "expected CROSSSLOT error, got {:?}",
+                debugger.error
+            );
+        });
     }
 }

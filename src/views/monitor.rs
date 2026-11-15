@@ -12,21 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::assets::CustomIconName;
-use crate::connection::{
-    Capability, MonitorFeeds, MonitorReplayReport, MonitorReplaySpeed, ServerDb, get_server, get_servers,
-    open_monitor_feeds, partition_replay_commands, run_monitor_replay, zedis_client_addrs,
-};
-use crate::error::Error;
-use crate::helpers::channel;
-use crate::helpers::{
-    MonitorAction, build_csv, format_clock, get_mono_font_family, group_thousands, pacing, saves_files,
-};
-use crate::states::{
-    ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
-    back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_hotkeys, i18n_monitor,
-    i18n_slowlog_editor, i18n_status_bar, update_app_state_and_save,
-};
 /// Redis MONITOR live viewer.
 ///
 /// Opens dedicated (non-cached) connections to each master node, sends
@@ -34,11 +19,24 @@ use crate::states::{
 /// scrollable table.  Supports keyword and command-type filtering, and
 /// leaves out what Zedis's own connections send unless asked (#241).
 /// The buffer is capped at `MAX_RECORDS` entries.
-use crate::views::{BridgeMonitor, bridge_monitor, confirm_dangerous_command, export_to_file, open_key_in_editor};
-use gpui::{AnyElement, App, Div, Entity, Hsla, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
+mod replay;
+mod summary;
+
+use crate::assets::CustomIconName;
+use crate::connection::{Capability, MonitorFeeds, ServerDb, get_server, open_monitor_feeds, zedis_client_addrs};
+use crate::error::Error;
+use crate::helpers::channel;
+use crate::helpers::{MonitorAction, format_clock, get_mono_font_family, group_thousands, pacing, saves_files};
+use crate::states::{
+    ConnectionErrorKind, GlobalEvent, NotificationAction, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
+    back_to_editor_tooltip, content_area_width, escalate_dangerous_body, i18n_common, i18n_hotkeys, i18n_monitor,
+    i18n_slowlog_editor, i18n_status_bar, update_app_state_and_save,
+};
+use crate::views::{BridgeMonitor, bridge_monitor, confirm_dangerous_command, open_key_in_editor};
+use gpui::{App, Entity, Render, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup},
     checkbox::Checkbox,
     dialog::DialogButtonProps,
@@ -47,18 +45,18 @@ use gpui_kit::component::{
     label::Label,
     menu::DropdownMenu,
     table::{DataTable, TableState},
-    tooltip::Tooltip,
     v_flex,
 };
+use replay::MonitorReplayViewResult;
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use summary::{SampleCap, SampleResult, Sampling};
 use tracing::error;
 use web_time::Instant;
-use zedis_core::benchmark::format_latency_us;
-use zedis_core::tally::{MonitorTally, Tally};
+use zedis_core::tally::MonitorTally;
 use zedis_ui::{CellAction, CellActionProvider, TextColumn, ZedisDialog, ZedisTextTable, fitted_table};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -79,14 +77,6 @@ const SAMPLE_SECONDS: [u64; 3] = [5, 10, 30];
 const SAMPLE_COUNTS: [u64; 3] = [1_000, 5_000, 10_000];
 /// Safety wall-clock cap for a count-bounded sample on an idle server.
 const MAX_SAMPLE_COUNT_WAIT_SECS: u64 = 60;
-/// Rows each list of a sample's summary shows.
-const SUMMARY_ROWS: usize = 15;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SampleCap {
-    Seconds(u64),
-    Commands(u64),
-}
 
 // ── Parsed MONITOR line ──────────────────────────────────────────────
 
@@ -105,12 +95,16 @@ struct MonitorEntry {
     /// The first argument as the server printed it: the key, for most
     /// commands — what a sample groups by prefix.
     key: Option<SharedString>,
+    /// Unmodified wire line (kept in hidden cell [`RAW_LINE_CELL`] so replay
+    /// preserves timestamps and `sdscatrepr` quoted arguments).
+    raw_line: SharedString,
 }
 
 /// Parse a raw MONITOR output line into a `MonitorEntry`.
 ///
 /// Format: `+<unix_ts> [<db> <client_addr>] "<cmd>" "<arg1>" ...`
 fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
+    let raw_line: SharedString = line.trim().to_string().into();
     // The RESP '+' prefix is already stripped by the redis library.
     // Skip preamble lines like "OK".
     let line = line.strip_prefix('+').unwrap_or(line);
@@ -185,6 +179,7 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
         command: command.into(),
         args: args.into(),
         key,
+        raw_line,
     })
 }
 
@@ -196,7 +191,9 @@ const COL_DB: &str = "db";
 const COL_CLIENT: &str = "client";
 const COL_COMMAND: &str = "command";
 const COL_ARGS: &str = "args";
-const COLUMN_KEYS: [&str; 6] = [COL_TIMESTAMP, COL_NODE, COL_DB, COL_CLIENT, COL_COMMAND, COL_ARGS];
+pub(super) const COLUMN_KEYS: [&str; 6] = [COL_TIMESTAMP, COL_NODE, COL_DB, COL_CLIENT, COL_COMMAND, COL_ARGS];
+/// Hidden payload cell index storing the raw captured MONITOR line for replay.
+pub(super) const RAW_LINE_CELL: usize = COLUMN_KEYS.len();
 /// Index of the args column in [`COLUMN_KEYS`] — the cell with the
 /// open-first-arg-as-key jump.
 const ARGS_COLUMN: usize = 5;
@@ -210,6 +207,7 @@ impl MonitorEntry {
             self.client.clone(),
             self.command.clone(),
             self.args.clone(),
+            self.raw_line.clone(),
         ]
     }
 }
@@ -319,262 +317,6 @@ pub struct ZedisMonitor {
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone, Debug)]
-struct MonitorReplayViewResult {
-    target_label: SharedString,
-    speed: MonitorReplaySpeed,
-    report: MonitorReplayReport,
-}
-
-struct MonitorReplayDialog {
-    servers: Vec<(SharedString, SharedString)>,
-    selected_server_idx: usize,
-    speed: MonitorReplaySpeed,
-    read_only_count: usize,
-    skipped_write_count: usize,
-}
-
-impl MonitorReplayDialog {
-    fn new(current_server_id: &str, read_only_count: usize, skipped_write_count: usize) -> Self {
-        let servers: Vec<(SharedString, SharedString)> = get_servers()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|s| !s.id.is_empty() && !s.is_high_risk_tag())
-            .map(|s| {
-                let label = if s.name.is_empty() {
-                    format!("{}:{}", s.host, s.port)
-                } else {
-                    format!("{} ({}:{})", s.name, s.host, s.port)
-                };
-                (s.id.into(), label.into())
-            })
-            .collect();
-        let selected_server_idx = servers
-            .iter()
-            .position(|(id, _)| id.as_ref() == current_server_id)
-            .unwrap_or(0);
-        Self {
-            servers,
-            selected_server_idx,
-            speed: MonitorReplaySpeed::RealTime1x,
-            read_only_count,
-            skipped_write_count,
-        }
-    }
-
-    fn selected_target(&self) -> Option<(SharedString, SharedString)> {
-        self.servers.get(self.selected_server_idx).cloned()
-    }
-}
-
-impl Render for MonitorReplayDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let preview_text = rust_i18n::t!(
-            "monitor.replay_preview_summary",
-            reads = group_thousands(self.read_only_count as u64),
-            skipped = group_thousands(self.skipped_write_count as u64),
-            locale = locale
-        )
-        .to_string();
-
-        let server_buttons: Vec<AnyElement> = self
-            .servers
-            .iter()
-            .enumerate()
-            .map(|(idx, (_, label))| {
-                let selected = idx == self.selected_server_idx;
-                Button::new(("monitor-replay-target", idx))
-                    .outline()
-                    .small()
-                    .selected(selected)
-                    .label(label.clone())
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.selected_server_idx = idx;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-
-        let speed = self.speed;
-        v_flex()
-            .w_full()
-            .gap_3()
-            .text_sm()
-            .child(Label::new(preview_text).font_semibold())
-            .child(
-                Label::new(i18n_monitor(cx, "replay_safety_note"))
-                    .text_xs()
-                    .text_color(muted),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_1()
-                    .child(
-                        Label::new(i18n_monitor(cx, "replay_target_server"))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    .map(|this| {
-                        if server_buttons.is_empty() {
-                            this.child(
-                                Label::new(i18n_monitor(cx, "replay_no_non_prod_servers"))
-                                    .text_xs()
-                                    .text_color(cx.theme().warning),
-                            )
-                        } else {
-                            this.child(h_flex().w_full().gap_2().flex_wrap().children(server_buttons))
-                        }
-                    }),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_1()
-                    .child(Label::new(i18n_monitor(cx, "replay_speed")).text_xs().text_color(muted))
-                    .child(
-                        ButtonGroup::new("monitor-replay-speed")
-                            .compact()
-                            .small()
-                            .outline()
-                            .child(
-                                Button::new("monitor-replay-speed-1x")
-                                    .label(MonitorReplaySpeed::RealTime1x.label())
-                                    .selected(speed == MonitorReplaySpeed::RealTime1x),
-                            )
-                            .child(
-                                Button::new("monitor-replay-speed-2x")
-                                    .label(MonitorReplaySpeed::Fast2x.label())
-                                    .selected(speed == MonitorReplaySpeed::Fast2x),
-                            )
-                            .child(
-                                Button::new("monitor-replay-speed-max")
-                                    .label(MonitorReplaySpeed::MaxSpeed.label())
-                                    .selected(speed == MonitorReplaySpeed::MaxSpeed),
-                            )
-                            .on_click(cx.listener(|this, clicks: &Vec<usize>, _window, cx| {
-                                if let Some(ix) = clicks.first() {
-                                    this.speed = match *ix {
-                                        0 => MonitorReplaySpeed::RealTime1x,
-                                        1 => MonitorReplaySpeed::Fast2x,
-                                        _ => MonitorReplaySpeed::MaxSpeed,
-                                    };
-                                    cx.notify();
-                                }
-                            })),
-                    ),
-            )
-    }
-}
-
-/// A sample being taken: its counts, its duration or command-count cap, and
-/// the timer that ends it (dropped, and so cancelled, when it ends early).
-struct Sampling {
-    tally: MonitorTally,
-    cap: SampleCap,
-    started: Instant,
-    _timer: Task<()>,
-}
-
-/// What a finished sample counted, and over how long.
-struct SampleResult {
-    tally: MonitorTally,
-    elapsed: Duration,
-    /// Ended before its time or command budget — Stop, the rate guard, a dropped link.
-    cut_short: bool,
-}
-
-const SUMMARY_EXPORT_MAX_ROWS: usize = 200;
-
-fn build_summary_csv(sample: &SampleResult) -> String {
-    let total = sample.tally.total();
-    let headers = ["dimension", "name", "count", "share_pct"];
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut append_dim = |dim: &str, tally: &Tally| {
-        for (name, count) in tally.top(SUMMARY_EXPORT_MAX_ROWS) {
-            rows.push(vec![dim.to_string(), name, count.to_string(), share_of(count, total)]);
-        }
-        if tally.other() > 0 {
-            rows.push(vec![
-                dim.to_string(),
-                "(other)".to_string(),
-                tally.other().to_string(),
-                share_of(tally.other(), total),
-            ]);
-        }
-    };
-    append_dim("command_prefix", &sample.tally.command_prefixes);
-    append_dim("client_command", &sample.tally.client_commands);
-    append_dim("client", &sample.tally.clients);
-    append_dim("command", &sample.tally.commands);
-    append_dim("prefix", &sample.tally.prefixes);
-    build_csv(&headers, &rows)
-}
-
-fn build_summary_json(sample: &SampleResult) -> String {
-    let total = sample.tally.total();
-    let elapsed_secs = sample.elapsed.as_secs_f64();
-    let rate_per_sec = if elapsed_secs > 0.0 {
-        total as f64 / elapsed_secs
-    } else {
-        0.0
-    };
-    let dim_to_json = |tally: &Tally| -> serde_json::Value {
-        let mut items: Vec<serde_json::Value> = tally
-            .top(SUMMARY_EXPORT_MAX_ROWS)
-            .into_iter()
-            .map(|(name, count)| {
-                serde_json::json!({
-                    "name": name,
-                    "count": count,
-                    "share_pct": if total == 0 { 0.0 } else { (count as f64 * 1000.0 / total as f64).round() / 10.0 },
-                })
-            })
-            .collect();
-        if tally.other() > 0 {
-            let count = tally.other();
-            items.push(serde_json::json!({
-                "name": "(other)",
-                "count": count,
-                "share_pct": if total == 0 { 0.0 } else { (count as f64 * 1000.0 / total as f64).round() / 10.0 },
-            }));
-        }
-        serde_json::Value::Array(items)
-    };
-    let doc = serde_json::json!({
-        "total_commands": total,
-        "elapsed_secs": (elapsed_secs * 100.0).round() / 100.0,
-        "rate_per_sec": (rate_per_sec * 10.0).round() / 10.0,
-        "cut_short": sample.cut_short,
-        "command_prefixes": dim_to_json(&sample.tally.command_prefixes),
-        "client_commands": dim_to_json(&sample.tally.client_commands),
-        "clients": dim_to_json(&sample.tally.clients),
-        "commands": dim_to_json(&sample.tally.commands),
-        "prefixes": dim_to_json(&sample.tally.prefixes),
-    });
-    serde_json::to_string_pretty(&doc).unwrap_or_default()
-}
-
-/// A share of the sample, in percent.
-fn share_of(count: u64, total: u64) -> String {
-    if total == 0 {
-        return "0%".to_string();
-    }
-    format!("{:.1}%", count as f64 * 100.0 / total as f64)
-}
-
-/// One row of a summary list: the count and its share, the name after them.
-fn summary_row(count: String, share: String, muted: Hsla) -> Div {
-    h_flex()
-        .w_full()
-        .gap_3()
-        .child(div().w(px(72.)).flex_none().text_right().child(count))
-        .child(div().w(px(56.)).flex_none().text_right().text_color(muted).child(share))
-}
-
 impl ZedisMonitor {
     pub fn new(server_state: Entity<ZedisServerState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
@@ -678,7 +420,7 @@ impl ZedisMonitor {
         self.events_per_sec() > AUTO_STOP_EVENTS_PER_SEC
     }
 
-    fn handle_filter(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn handle_filter(&mut self, cx: &mut Context<Self>) {
         let keyword = self.keyword_state.read(cx).value().to_string();
         let terms: Vec<String> = keyword.split_whitespace().map(|s| s.to_ascii_lowercase()).collect();
         self.table_state.update(cx, |state, _| {
@@ -692,6 +434,7 @@ impl ZedisMonitor {
                     terms.iter().all(|term| {
                         row.iter()
                             .skip(1)
+                            .take(COLUMN_KEYS.len() - 1)
                             .any(|cell| cell.to_ascii_lowercase().contains(term.as_str()))
                     })
                 })));
@@ -1031,25 +774,6 @@ impl ZedisMonitor {
         cx.notify();
     }
 
-    /// Close a sample in progress into its result, and show the summary.
-    fn end_sampling(&mut self) {
-        let Some(sampling) = self.sampling.take() else {
-            return;
-        };
-        let elapsed = sampling.started.elapsed();
-        let cut_short = match sampling.cap {
-            // A little short of the time is the timer's own scheduling.
-            SampleCap::Seconds(seconds) => elapsed + Duration::from_millis(500) < Duration::from_secs(seconds),
-            SampleCap::Commands(max_cmds) => sampling.tally.total() < max_cmds,
-        };
-        self.sample = Some(SampleResult {
-            tally: sampling.tally,
-            elapsed,
-            cut_short,
-        });
-        self.show_summary = true;
-    }
-
     /// Keep the MONITOR connections attached but drop inbound batches.
     /// Note the server still pays the MONITOR cost while paused — the
     /// toggle only freezes the table; Stop is the one that relieves the
@@ -1102,480 +826,14 @@ impl ZedisMonitor {
 
     /// Snapshot of the rows the table is currently showing (filtered rows
     /// when a keyword filter is active, the whole ring buffer otherwise).
-    fn visible_rows_snapshot(&self, cx: &Context<Self>) -> Vec<Vec<SharedString>> {
+    pub(super) fn visible_rows_snapshot(&self, cx: &Context<Self>) -> Vec<Vec<SharedString>> {
         self.table_state.read(cx).delegate().visible_rows()
-    }
-
-    fn export_csv(&mut self, cx: &mut Context<Self>) {
-        let rows = self.visible_rows_snapshot(cx);
-        if rows.is_empty() {
-            return;
-        }
-        let data: Vec<Vec<String>> = rows
-            .iter()
-            .map(|cells| cells.iter().map(|c| c.to_string()).collect())
-            .collect();
-        let csv = build_csv(&COLUMN_KEYS, &data);
-        self.save_export(csv.into_bytes(), "monitor.csv", true, cx);
-    }
-
-    fn export_json(&mut self, cx: &mut Context<Self>) {
-        let rows = self.visible_rows_snapshot(cx);
-        if rows.is_empty() {
-            return;
-        }
-        let values: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|cells| {
-                let object: serde_json::Map<String, serde_json::Value> = COLUMN_KEYS
-                    .iter()
-                    .zip(cells)
-                    .map(|(key, cell)| (key.to_string(), serde_json::Value::String(cell.to_string())))
-                    .collect();
-                serde_json::Value::Object(object)
-            })
-            .collect();
-        let json = serde_json::to_string_pretty(&serde_json::Value::Array(values)).unwrap_or_default();
-        self.save_export(json.into_bytes(), "monitor.json", false, cx);
-    }
-
-    fn export_summary_csv(&mut self, cx: &mut Context<Self>) {
-        let Some(sample) = &self.sample else {
-            return;
-        };
-        let csv = build_summary_csv(sample);
-        self.save_export(csv.into_bytes(), "monitor-summary.csv", true, cx);
-    }
-
-    fn export_summary_json(&mut self, cx: &mut Context<Self>) {
-        let Some(sample) = &self.sample else {
-            return;
-        };
-        let json = build_summary_json(sample);
-        self.save_export(json.into_bytes(), "monitor-summary.json", false, cx);
-    }
-
-    /// Shared save flow for the exports — mirrors the slow-log panel.
-    fn save_export(&mut self, bytes: Vec<u8>, suggested: &'static str, is_csv: bool, cx: &mut Context<Self>) {
-        let server_state = self.server_state.clone();
-        let (success_key, error_key) = if is_csv {
-            ("csv_exported", "csv_export_failed")
-        } else {
-            ("json_exported", "json_export_failed")
-        };
-        let success = i18n_common(cx, success_key);
-        let error = i18n_common(cx, error_key);
-        export_to_file(cx, server_state, bytes, suggested, success, error);
-    }
-
-    /// Show the lines a summary row stands for: its name in the keyword
-    /// box — a prefix without its `*`, which the filter would take literally.
-    fn show_lines_for(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let term = name.strip_suffix('*').unwrap_or(&name).to_string();
-        self.keyword_state
-            .update(cx, |state, cx| state.set_value(term, window, cx));
-        self.handle_filter(cx);
-        self.show_summary = false;
-        cx.notify();
-    }
-
-    /// The finished sample: how many commands over how long, then who sent
-    /// them, what they were and which keys they touched, the most first.
-    fn render_summary(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(sample) = &self.sample else {
-            return div().into_any_element();
-        };
-        let muted = cx.theme().muted_foreground;
-        let total = sample.tally.total();
-        let seconds = sample.elapsed.as_secs_f64().max(0.001);
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let header = rust_i18n::t!(
-            "monitor.summary_header",
-            total = group_thousands(total),
-            secs = format!("{seconds:.1}"),
-            rate = group_thousands((total as f64 / seconds).round() as u64),
-            locale = locale
-        )
-        .to_string();
-        let filter_tooltip = i18n_monitor(cx, "summary_show_lines");
-        let others = i18n_monitor(cx, "summary_others");
-        let column = |id: &'static str, title: SharedString, tally: &Tally| -> AnyElement {
-            let mut rows: Vec<AnyElement> = tally
-                .top(SUMMARY_ROWS)
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (name, count))| {
-                    let name = SharedString::from(name);
-                    let target = name.clone();
-                    summary_row(group_thousands(count), share_of(count, total), muted)
-                        .child(
-                            div()
-                                .id((id, ix))
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .cursor_pointer()
-                                .hover(|style| style.underline())
-                                .tooltip({
-                                    let tip = filter_tooltip.clone();
-                                    move |window, cx| Tooltip::new(tip.clone()).build(window, cx)
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.show_lines_for(target.clone(), window, cx)
-                                }))
-                                .child(name),
-                        )
-                        .into_any_element()
-                })
-                .collect();
-            if tally.other() > 0 {
-                rows.push(
-                    summary_row(group_thousands(tally.other()), share_of(tally.other(), total), muted)
-                        .child(Label::new(others.clone()).text_color(muted))
-                        .into_any_element(),
-                );
-            }
-            v_flex()
-                .flex_1()
-                .min_w(px(260.))
-                .gap_1()
-                .child(Label::new(title).font_semibold().pb_1())
-                .children(rows)
-                .into_any_element()
-        };
-        let lists = h_flex()
-            .w_full()
-            .items_start()
-            .flex_wrap()
-            .gap_6()
-            .child(column(
-                "summary-client",
-                i18n_monitor(cx, "summary_clients"),
-                &sample.tally.clients,
-            ))
-            .child(column(
-                "summary-command",
-                i18n_monitor(cx, "summary_commands"),
-                &sample.tally.commands,
-            ))
-            .child(column(
-                "summary-prefix",
-                i18n_monitor(cx, "summary_prefixes"),
-                &sample.tally.prefixes,
-            ))
-            .child(column(
-                "summary-command-prefix",
-                i18n_monitor(cx, "summary_command_prefixes"),
-                &sample.tally.command_prefixes,
-            ))
-            .child(column(
-                "summary-client-command",
-                i18n_monitor(cx, "summary_client_commands"),
-                &sample.tally.client_commands,
-            ));
-        div()
-            .id("monitor-summary")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                v_flex()
-                    .p_4()
-                    .gap_3()
-                    .text_sm()
-                    .child(Label::new(header).font_semibold())
-                    .when(sample.cut_short, |this| {
-                        this.child(
-                            Label::new(i18n_monitor(cx, "summary_cut_short"))
-                                .text_xs()
-                                .text_color(cx.theme().warning),
-                        )
-                    })
-                    .child(
-                        Label::new(i18n_monitor(cx, "summary_no_duration"))
-                            .text_xs()
-                            .text_color(muted),
-                    )
-                    .map(|this| {
-                        if total == 0 {
-                            this.child(Label::new(i18n_monitor(cx, "summary_empty")).text_color(muted))
-                        } else {
-                            this.child(lists)
-                        }
-                    }),
-            )
-            .into_any_element()
     }
 
     fn handle_clear(&mut self, cx: &mut Context<Self>) {
         self.table_state.update(cx, |state, _| state.delegate_mut().clear());
         self.row_count = 0;
         cx.notify();
-    }
-
-    fn captured_replay_lines(&self, cx: &Context<Self>) -> Vec<String> {
-        self.visible_rows_snapshot(cx)
-            .into_iter()
-            .rev()
-            .filter_map(|cells| {
-                let cmd = cells.get(4)?.trim();
-                if cmd.is_empty() {
-                    return None;
-                }
-                let args = cells.get(5).map(|s| s.trim()).unwrap_or_default();
-                if args.is_empty() {
-                    Some(cmd.to_string())
-                } else {
-                    Some(format!("{cmd} {args}"))
-                }
-            })
-            .collect()
-    }
-
-    fn open_replay_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.monitoring || self.replay_running {
-            return;
-        }
-        let lines = self.captured_replay_lines(cx);
-        if lines.is_empty() {
-            return;
-        }
-        let (read_only, skipped_write_count) = partition_replay_commands(&lines);
-        let read_only_count = read_only.len();
-        let current_server_id = self.server_state.read(cx).server_id().to_string();
-        let db = self.server_state.read(cx).db();
-        let dialog_entity =
-            cx.new(|_| MonitorReplayDialog::new(&current_server_id, read_only_count, skipped_write_count));
-        let dialog_child = dialog_entity.clone();
-        let dialog_ok = dialog_entity.clone();
-        let monitor_entity = cx.entity().downgrade();
-
-        let button_props = DialogButtonProps::default()
-            .cancel_text(i18n_common(cx, "cancel"))
-            .ok_text(i18n_monitor(cx, "replay_start"));
-        ZedisDialog::new(i18n_monitor(cx, "replay_title"))
-            .w(px(520.))
-            .button_props(button_props)
-            .child(move || dialog_child.clone())
-            .on_ok(move |_, window, cx| {
-                let (target_id, target_label, speed, count) = {
-                    let view = dialog_ok.read(cx);
-                    let Some((id, label)) = view.selected_target() else {
-                        return false;
-                    };
-                    (id, label, view.speed, view.read_only_count)
-                };
-                if count == 0 {
-                    return false;
-                }
-                let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-                let confirm_body = rust_i18n::t!(
-                    "monitor.replay_confirm_body",
-                    count = group_thousands(count as u64),
-                    server = target_label.as_ref(),
-                    speed = speed.label(),
-                    locale = locale
-                )
-                .to_string();
-                let confirm_props = DialogButtonProps::default()
-                    .cancel_text(i18n_common(cx, "cancel"))
-                    .ok_text(i18n_monitor(cx, "replay_start"));
-                let monitor_entity = monitor_entity.clone();
-                let lines = lines.clone();
-                window.close_dialog(cx);
-                ZedisDialog::new_alert(i18n_monitor(cx, "replay_confirm_title"), confirm_body)
-                    .button_props(confirm_props)
-                    .on_ok(move |_, window, cx| {
-                        if let Some(monitor) = monitor_entity.upgrade() {
-                            monitor.update(cx, |this, cx| {
-                                this.start_replay(
-                                    target_id.clone(),
-                                    target_label.clone(),
-                                    db,
-                                    speed,
-                                    lines.clone(),
-                                    cx,
-                                );
-                            });
-                        }
-                        window.close_dialog(cx);
-                        true
-                    })
-                    .open(window, cx);
-                false
-            })
-            .open(window, cx);
-    }
-
-    fn start_replay(
-        &mut self,
-        target_id: SharedString,
-        target_label: SharedString,
-        db: usize,
-        speed: MonitorReplaySpeed,
-        lines: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.replay_running {
-            return;
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.replay_running = true;
-        self.replay_cancel = Some(cancel.clone());
-        self.replay_result = None;
-        self.replay_error = None;
-        cx.notify();
-
-        let at = ServerDb::new(target_id.to_string(), db);
-        cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_spawn(async move { run_monitor_replay(&at, &lines, speed, cancel).await })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.replay_running = false;
-                this.replay_cancel = None;
-                match outcome {
-                    Ok(report) => {
-                        this.replay_result = Some(MonitorReplayViewResult {
-                            target_label,
-                            speed,
-                            report,
-                        });
-                    }
-                    Err(e) => {
-                        this.replay_error = Some(e.to_string().into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn stop_replay(&mut self, cx: &mut Context<Self>) {
-        if let Some(cancel) = self.replay_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        self.replay_running = false;
-        cx.notify();
-    }
-
-    fn render_replay_banner(&self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        if self.replay_running {
-            return h_flex()
-                .id("monitor-replay-banner")
-                .w_full()
-                .flex_none()
-                .items_center()
-                .justify_between()
-                .px_4()
-                .py_1p5()
-                .gap_3()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().secondary)
-                .child(
-                    Label::new(i18n_monitor(cx, "replay_running"))
-                        .text_xs()
-                        .text_color(cx.theme().foreground),
-                )
-                .child(
-                    Button::new("monitor-replay-stop-banner")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::new(CustomIconName::X))
-                        .label(i18n_monitor(cx, "stop"))
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.stop_replay(cx);
-                        })),
-                )
-                .into_any_element();
-        }
-
-        if let Some(err) = &self.replay_error {
-            return h_flex()
-                .id("monitor-replay-banner")
-                .w_full()
-                .flex_none()
-                .items_center()
-                .justify_between()
-                .px_4()
-                .py_1p5()
-                .gap_3()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().secondary)
-                .child(Label::new(err.clone()).text_xs().text_color(cx.theme().red))
-                .child(
-                    Button::new("monitor-replay-dismiss-err")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.replay_error = None;
-                            cx.notify();
-                        })),
-                )
-                .into_any_element();
-        }
-
-        let Some(res) = &self.replay_result else {
-            return div().into_any_element();
-        };
-        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
-        let report_line = rust_i18n::t!(
-            "monitor.replay_report_summary",
-            server = res.target_label.as_ref(),
-            speed = res.speed.label(),
-            replayed = group_thousands(res.report.replayed_count as u64),
-            skipped = group_thousands(res.report.skipped_write_count as u64),
-            errors = group_thousands(res.report.error_count as u64),
-            rps = format!("{:.1}", res.report.summary.ops_per_sec),
-            p50 = format_latency_us(res.report.summary.p50_us),
-            p95 = format_latency_us(res.report.summary.p95_us),
-            p99 = format_latency_us(res.report.summary.p99_us),
-            locale = locale
-        )
-        .to_string();
-
-        h_flex()
-            .id("monitor-replay-banner")
-            .w_full()
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .py_1p5()
-            .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .flex_wrap()
-                    .child(
-                        Label::new(i18n_monitor(cx, "replay_report_title"))
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().foreground),
-                    )
-                    .child(Label::new(report_line).text_xs().text_color(muted)),
-            )
-            .child(
-                Button::new("monitor-replay-dismiss")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Close)
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.replay_result = None;
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
     }
 }
 
@@ -1965,8 +1223,23 @@ impl Render for ZedisMonitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{MonitorTally, SampleResult, build_summary_csv, build_summary_json, parse_monitor_line};
+    use super::replay::MonitorReplayDialog;
+    use super::summary::{SampleResult, build_summary_csv, build_summary_json, format_csv_export};
+    use super::{MonitorTally, RAW_LINE_CELL, ZedisMonitor, parse_monitor_line};
+    use crate::connection::{RedisServer, get_servers, partition_replay_entries, set_servers_cache};
+    use crate::states::ZedisServerState;
+    use crate::test_support::init_ui;
+    use gpui::{AppContext, TestAppContext, px, size};
+    use gpui_kit::component::Root;
     use std::time::Duration;
+
+    struct ServerCacheGuard(Vec<RedisServer>);
+
+    impl Drop for ServerCacheGuard {
+        fn drop(&mut self) {
+            set_servers_cache(std::mem::take(&mut self.0));
+        }
+    }
 
     #[test]
     fn a_line_splits_into_its_columns() {
@@ -2016,5 +1289,98 @@ mod tests {
         assert_eq!(json["total_commands"], 3);
         assert_eq!(json["command_prefixes"][0]["name"], "GET user:*");
         assert_eq!(json["client_commands"][0]["name"], "10.0.0.1:5000 GET");
+    }
+
+    #[test]
+    fn raw_line_cell_preserves_replay_quoting_without_leaking_to_csv() {
+        let raw = r#"1700000001.250 [0 127.0.0.1:5000] "get" "user key" """#;
+        let entry = parse_monitor_line(raw, "primary").expect("valid monitor line");
+        let cells = entry.cells();
+        assert_eq!(cells.len(), RAW_LINE_CELL + 1);
+        assert_eq!(cells[RAW_LINE_CELL].as_ref(), raw);
+
+        let (entries, skipped) = partition_replay_entries(&[cells[RAW_LINE_CELL].to_string()]);
+        assert_eq!(skipped, 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].timestamp_ms, Some(1_700_000_001_250));
+        assert_eq!(entries[0].command, "GET");
+        assert_eq!(entries[0].args, vec!["user key".to_string(), String::new()]);
+
+        let csv = format_csv_export(&[cells]);
+        assert!(csv.starts_with("timestamp,node,db,client,command,args\r\n"));
+        assert!(!csv.contains("1700000001.250"));
+    }
+
+    #[gpui::test]
+    fn captured_replay_lines_and_dialog_filter_prod_targets(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let _guard = ServerCacheGuard(get_servers().unwrap_or_default());
+        set_servers_cache(vec![
+            RedisServer {
+                id: "prod-red".into(),
+                name: "Prod Red".into(),
+                host: "127.0.0.1".into(),
+                port: 6379,
+                tag_color: Some("red".into()),
+                ..Default::default()
+            },
+            RedisServer {
+                id: "prod-mag".into(),
+                name: "Prod Mag".into(),
+                host: "127.0.0.1".into(),
+                port: 6380,
+                tag_color: Some("magenta".into()),
+                ..Default::default()
+            },
+            RedisServer {
+                id: "staging-teal".into(),
+                name: "Staging".into(),
+                host: "127.0.0.1".into(),
+                port: 6381,
+                tag_color: Some("teal".into()),
+                ..Default::default()
+            },
+            RedisServer {
+                id: "dev-local".into(),
+                name: "Local".into(),
+                host: "127.0.0.1".into(),
+                port: 6382,
+                tag_color: None,
+                ..Default::default()
+            },
+        ]);
+
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let mut view = None;
+        cx.open_window(size(px(900.), px(720.)), |window, cx| {
+            let panel = cx.new(|cx| ZedisMonitor::new(server_state.clone(), window, cx));
+            view = Some(panel.clone());
+            Root::new(panel, window, cx)
+        });
+        cx.run_until_parked();
+
+        let panel = view.expect("monitor view opened");
+        let older = r#"1700000001.000 [0 10.0.0.1:5000] "get" "user key""#;
+        let newer = r#"1700000002.500 [0 10.0.0.1:5000] "set" "write:k" "v""#;
+        let older_entry = parse_monitor_line(older, "n1").expect("older");
+        let newer_entry = parse_monitor_line(newer, "n1").expect("newer");
+
+        panel.update(cx, |this, cx| {
+            this.table_state.update(cx, |state, _| {
+                state
+                    .delegate_mut()
+                    .push_front_batch(vec![older_entry.cells(), newer_entry.cells()]);
+            });
+            let lines = this.captured_replay_lines(cx);
+            assert_eq!(lines, vec![older.to_string(), newer.to_string()]);
+        });
+
+        let dialog = MonitorReplayDialog::new("dev-local", 1, 1);
+        let ids: Vec<&str> = dialog.servers.iter().map(|(id, _)| id.as_ref()).collect();
+        assert_eq!(ids, vec!["dev-local", "staging-teal"]);
+        assert_eq!(
+            dialog.selected_target().map(|(id, _)| id.to_string()),
+            Some("dev-local".into())
+        );
     }
 }
