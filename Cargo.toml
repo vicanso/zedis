@@ -84,7 +84,7 @@ bitflags = "2.13.2"
 bytes = "1.12.1"
 chrono = { workspace = true }
 dashmap = {workspace = true}
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 futures = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
@@ -293,7 +293,7 @@ serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 serde_json_path = "0.7"
 aes-gcm = "0.11.1"
-arc-swap = "1.9.3"
+arc-swap = "1.9.5"
 argon2 = "0.6.0"
 base64 = "0.23.1"
 chrono = "0.4.45"
@@ -313,7 +313,7 @@ pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.10.0"
 rand = "0.10.3"
-redb = "4.4.0"
+redb = "4.6.0"
 # Both runtime adapters are on. redis picks per connection: it takes tokio
 # when `Handle::try_current()` finds an ambient runtime and smol otherwise
 # (`aio/runtime.rs`), so the GUI — whose Redis calls run on gpui's own thread
@@ -326,7 +326,7 @@ redb = "4.4.0"
 # plain `tokio-comp` on its own does not build: a rustls feature is globally
 # on, so the tokio runtime has to implement `connect_tcp_tls` too.
 # See ADR 9.
-redis = { version = "1.7.1", features = [
+redis = { version = "1.8.2", features = [
     "cluster",
     "cluster-async",
     "smol-comp",
@@ -336,7 +336,7 @@ redis = { version = "1.7.1", features = [
     "aio",
 ] }
 regex = "1.13.1"
-russh = { version = "0.65.0", default-features = false, features = [
+russh = { version = "0.65.1", default-features = false, features = [
     "ring",
     "flate2",
     "rsa",
@@ -345,7 +345,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "std",
 ] }
-rustls-pki-types = { version = "1.15.1", features = ["std"] }
+rustls-pki-types = { version = "1.16.0", features = ["std"] }
 semver = "1.0.28"
 shlex = "2.0.1"
 smol = "2.0.2"
@@ -356,14 +356,14 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = [
     "ring",
     "tls12",
 ] }
-toml = "1.1.8"
+toml = "1.2.1"
 tracing = "0.1.44"
 url = "2.5.8"
 # `v7` must be declared here: both the app and zedis-connection call
 # `Uuid::now_v7`, and it only ever compiled because accesskit (via gpui)
 # happens to turn the feature on — so `cargo test -p zedis-connection`,
 # which drags in no GUI stack, failed to build on its own.
-uuid = { version = "1.29.0", features = ["v7"] }
+uuid = { version = "1.29.2", features = ["v7"] }
 # `std::time` for the browser too. `Instant::now()` and `SystemTime::now()`
 # panic on `wasm32-unknown-unknown` ("time not implemented on this platform"),
 # and on every other target this crate *is* std's own types, so a file that
@@ -371,27 +371,27 @@ uuid = { version = "1.29.0", features = ["v7"] }
 # `std::time` (ADR 9). `Duration` stays std: it is arithmetic, the same type
 # everywhere. Native-only files (the updater, the file logger) keep std.
 web-time = "1.1.0"
-webpki-roots = "1.0.11"
+webpki-roots = "1.0.12"
 # GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
 # too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
-# names (0.3.11 = zed@f816e1f) and depends on it itself. The `package =`
+# names (0.3.12) and depends on it itself. The `package =`
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.11" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.11", features = [
+gpui = { package = "gpui-pre", version = "0.3.12" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.11" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.12" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.11" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.12" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
@@ -404,7 +404,7 @@ gpui_web = { package = "gpui-pre-web", version = "0.3.11" }
 # (`gpui-fast-*`: not enabled here, never compiled). The lockfile covers
 # those too. `unicode-properties` 0.1.3 is what gpui-pre-web and rustybuzz
 # ask for; gpui-pre-macos no longer pins `cocoa` (`zed-scap` brings 0.25).
-gpui-kit = { version = "0.9.0" }
+gpui-kit = { version = "0.9.1" }
 
 [build-dependencies]
 winres = "0.1.12"

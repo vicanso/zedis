@@ -59,7 +59,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # timestamp, and a bearer token should not carry a predictable prefix.
 uuid = { workspace = true, features = ["v4"] }
 sha2 = "0.11.0"
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 toml.workspace = true
 # The audit webhook's POSTs (`--audit-webhook`): the blocking client the
 # desktop already uses, run off the async workers, on the same rustls + ring.
