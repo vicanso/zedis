@@ -18,7 +18,7 @@
 //! Split out of `servers.rs`; the methods are `ZedisServers`'s as before.
 
 use super::*;
-use crate::connection::{SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL};
+use crate::connection::{SERVER_TYPE_AUTO, SERVER_TYPE_SENTINEL, form_fields_from_pasted_host};
 use zedis_db::get_alert_rules_manager;
 
 /// The server types a Sentinel's settings apply to: named outright, or Auto,
@@ -147,6 +147,17 @@ fn address_fields(redis_server: &RedisServer, cx: &App) -> Vec<ZedisFormField> {
             // quarter of it.
             .span(9)
             .validate(validate_host)
+            // A connection string pasted here fills the fields it names —
+            // the Name only while it is empty, so an edit keeps its own.
+            .on_paste(|text, form, cx| {
+                let name_filled = !form.get_field_value("name", cx).trim().is_empty();
+                let fields = form_fields_from_pasted_host(text)?
+                    .into_iter()
+                    .filter(|(field, _)| !(name_filled && *field == "name"))
+                    .map(|(field, value)| (field.into(), value.into()))
+                    .collect();
+                Some(fields)
+            })
             .required(),
         ZedisFormField::new("port", i18n_common(cx, "port"))
             .default_value(redis_server.port.to_string())
@@ -673,7 +684,7 @@ mod tests {
     use super::*;
     use crate::connection::get_server;
     use crate::test_support::{hold_the_server_list, init_ui};
-    use gpui::{ElementId, TestAppContext, size};
+    use gpui::{ClipboardItem, ElementId, TestAppContext, size};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use std::sync::Arc;
@@ -726,6 +737,57 @@ mod tests {
             show_key_tree_ttl: Some(false),
             ..Default::default()
         }
+    }
+
+    /// A connection string pasted into Host fills the form: the host is
+    /// left alone in its field, and the port, credentials and the empty
+    /// Name are taken from the string. Pasted through the shortcut, as a
+    /// person would, so the field's own paste is what is tested.
+    #[gpui::test]
+    fn a_connection_string_pasted_into_host_fills_the_form(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let mut servers = None;
+        let handle = cx.open_window(size(px(1000.), px(900.)), |window, cx| {
+            let view = cx.new(|cx| ZedisServers::new(window, cx));
+            servers = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let servers = servers.expect("the window built the list");
+        let new_server = RedisServer {
+            port: DEFAULT_REDIS_PORT,
+            ..Default::default()
+        };
+        cx.update_window(handle.into(), |_, window, cx| {
+            servers.update(cx, |servers, cx| {
+                servers.add_or_update_server_dialog(&new_server, window, cx)
+            });
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        let field = |name: &str| ElementId::NamedChild(Arc::new("dialog-form".into()), format!("field-{name}").into());
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "rediss://alice:p%40ss@cache.example.com:6380/2".to_string(),
+        ));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(field("host"), cx);
+            window.press("secondary-v", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find(field("host")).value(), Some("cache.example.com"));
+            assert_eq!(window.find(field("port")).value(), Some("6380"));
+            assert_eq!(window.find(field("username")).value(), Some("alice"));
+            // The password is filled too, but a masked field keeps its text
+            // from the test's reader; the decoding is pinned with the
+            // mapping, in `a_pasted_host_fills_what_it_names`.
+            assert_eq!(window.find(field("name")).value(), Some("cache.example.com"));
+        })
+        .expect("the window is open");
     }
 
     /// What the form shows of an entry is what it hands back: every field

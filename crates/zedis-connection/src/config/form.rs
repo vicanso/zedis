@@ -138,7 +138,10 @@ impl RedisServer {
 
             name: get_str("name").unwrap_or_default(),
             host: redis_url.host,
-            port: get_parsed("port").unwrap_or_else(|| redis_url.port.unwrap_or(6379)),
+            // A port written in the host (`redis://h:6380`, `h:6380`) is
+            // the one meant: the Port field holds 6379 before anyone types
+            // there, and while it won, a pasted URI's port was dropped.
+            port: redis_url.port.or_else(|| get_parsed("port")).unwrap_or(6379),
 
             username,
             password,
@@ -240,4 +243,53 @@ impl RedisServer {
     pub fn resp3_form_index(&self) -> usize {
         usize::from(self.uses_resp3())
     }
+}
+
+/// What pasting `text` into the server form's Host field fills in, as
+/// `(field, value)` pairs under the names [`RedisServer::from_form_data`]
+/// reads — or `None` when the paste is only a host and goes in as it is.
+///
+/// A connection string (`redis://`, `rediss://`, `valkey://`, `valkeys://`)
+/// fills what it names: the host, the port, TLS (the scheme says it either
+/// way), and the username, password, database and RESP3 only where it
+/// carries them, so a URI without a password leaves a typed one alone. A
+/// bare `host:port` (`10.0.0.5:6380`, `[::1]:6380`) splits into the two.
+/// `name` is offered too, as the host; the form takes it only while its
+/// Name is empty.
+pub fn form_fields_from_pasted_host(text: &str) -> Option<Vec<(&'static str, String)>> {
+    let text = text.trim();
+    if is_connection_uri(text) {
+        let server = RedisServer::from_import_uri(text).ok()?;
+        let mut fields = vec![
+            ("name", server.host.clone()),
+            ("host", server.host),
+            ("port", server.port.to_string()),
+            ("tls", server.tls.unwrap_or(false).to_string()),
+        ];
+        fields.extend(server.username.map(|u| ("username", u)));
+        fields.extend(server.password.map(|p| ("password", p)));
+        fields.extend(server.default_db.map(|db| ("default_db", db.to_string())));
+        if server.resp3 == Some(true) {
+            fields.push(("resp3", "1".to_string()));
+        }
+        return Some(fields);
+    }
+    // `host:port`, the port given: one colon, or a bracketed IPv6 literal
+    // (a bare one is all colons and all host). Anything with a path, a user
+    // or a space is not an address, and is left for the field to hold.
+    if text.contains(['/', '@']) || text.contains(char::is_whitespace) {
+        return None;
+    }
+    if !text.starts_with('[') && text.matches(':').count() != 1 {
+        return None;
+    }
+    let (host, port) = split_host_port(text)?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(vec![
+        ("name", host.to_string()),
+        ("host", host.to_string()),
+        ("port", port.to_string()),
+    ])
 }

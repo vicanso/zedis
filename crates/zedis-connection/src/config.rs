@@ -45,7 +45,7 @@ use zedis_core::env::is_development;
 use zedis_core::fs::{
     ConfigRecovery, get_or_create_config_dir, load_config_with_recovery, resolve_path, write_file_atomic_with_backup,
 };
-use zedis_core::string::{bracket_ipv6, split_host_port_or, strip_ipv6_brackets};
+use zedis_core::string::{bracket_ipv6, split_host_port, split_host_port_or, strip_ipv6_brackets};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -59,7 +59,7 @@ mod form;
 mod store;
 mod transfer;
 
-pub use form::{TAG_ENV_LABELS, tag_color_index, writes_index};
+pub use form::{TAG_ENV_LABELS, form_fields_from_pasted_host, tag_color_index, writes_index};
 pub use store::{get_server, get_server_groups, get_servers, save_servers, set_servers_cache};
 #[cfg(not(target_family = "wasm"))]
 pub use store::{open_server_secrets, read_servers_file, seal_server_secrets, servers_toml_redacted};
@@ -1365,5 +1365,81 @@ mod tests {
         assert_eq!(form("65536"), None);
         assert_eq!(form("-1"), None);
         assert_eq!(form("abc"), None);
+    }
+
+    /// The port written in the host is the one meant, over the Port field's
+    /// 6379; a host without one leaves the field to say it.
+    #[test]
+    fn form_data_takes_the_port_written_in_the_host() {
+        let form = |host: &str, port: &str| {
+            let mut data = IndexMap::new();
+            data.insert("host".to_string(), host.to_string());
+            data.insert("port".to_string(), port.to_string());
+            let server = RedisServer::from_form_data("id", &data);
+            (server.host, server.port)
+        };
+        assert_eq!(form("redis://h:6380", "6379"), ("h".to_string(), 6380));
+        assert_eq!(form("h:6381", "6379"), ("h".to_string(), 6381));
+        assert_eq!(form("h", "6382"), ("h".to_string(), 6382));
+        assert_eq!(form("redis://h", "6383"), ("h".to_string(), 6383));
+    }
+
+    /// A connection string pasted into Host fills what it names and nothing
+    /// else; a bare `host:port` splits; a plain host is left as it is.
+    #[test]
+    fn a_pasted_host_fills_what_it_names() {
+        let fields =
+            |text: &str| form_fields_from_pasted_host(text).map(|fields| fields.into_iter().collect::<HashMap<_, _>>());
+
+        let full = fields("  rediss://alice:p%40ss@cache.example.com:6380/2?protocol=resp3  ").expect("a URI");
+        assert_eq!(full.get("host").map(String::as_str), Some("cache.example.com"));
+        assert_eq!(full.get("name").map(String::as_str), Some("cache.example.com"));
+        assert_eq!(full.get("port").map(String::as_str), Some("6380"));
+        assert_eq!(full.get("username").map(String::as_str), Some("alice"));
+        assert_eq!(full.get("password").map(String::as_str), Some("p@ss"));
+        assert_eq!(full.get("tls").map(String::as_str), Some("true"));
+        assert_eq!(full.get("default_db").map(String::as_str), Some("2"));
+        assert_eq!(full.get("resp3").map(String::as_str), Some("1"));
+
+        // What the URI does not carry is not touched; the scheme always
+        // says TLS, and the port defaults as a client would.
+        let bare = fields("valkey://h").expect("a URI");
+        assert_eq!(bare.get("port").map(String::as_str), Some("6379"));
+        assert_eq!(bare.get("tls").map(String::as_str), Some("false"));
+        for absent in ["username", "password", "default_db", "resp3"] {
+            assert!(!bare.contains_key(absent), "{absent} is not in the URI");
+        }
+        // A password alone (`:secret@`) carries no username.
+        let password_only = fields("redis://:secret@h:6379").expect("a URI");
+        assert_eq!(password_only.get("password").map(String::as_str), Some("secret"));
+        assert!(!password_only.contains_key("username"));
+
+        let ipv6 = fields("redis://[::1]:7000").expect("a URI");
+        assert_eq!(ipv6.get("host").map(String::as_str), Some("::1"));
+        assert_eq!(ipv6.get("port").map(String::as_str), Some("7000"));
+
+        let split = fields("10.0.0.5:6380").expect("host:port");
+        assert_eq!(split.get("host").map(String::as_str), Some("10.0.0.5"));
+        assert_eq!(split.get("port").map(String::as_str), Some("6380"));
+        assert_eq!(split.len(), 3, "host, port and name only: {split:?}");
+        let split_v6 = fields("[::1]:6380").expect("bracketed host:port");
+        assert_eq!(split_v6.get("host").map(String::as_str), Some("::1"));
+
+        for plain in [
+            "cache.example.com",
+            "10.0.0.5",
+            "::1",
+            "fe80::1:6379",
+            "/var/run/redis.sock",
+            "h:notaport",
+            "h:99999",
+            ":6379",
+            "user@h:6379",
+            "redis://",
+            "postgres://h:5432",
+            "",
+        ] {
+            assert!(fields(plain).is_none(), "{plain:?} goes in as it is");
+        }
     }
 }

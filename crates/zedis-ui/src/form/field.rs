@@ -33,6 +33,12 @@ pub(super) type ZedisFormCancelHandler = Rc<dyn Fn(&mut Window, &mut Context<Zed
 /// Callback invoked to build the action buttons for the footer.
 pub type ZedisFormActionsBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> Vec<AnyElement>>;
 
+/// Callback a field's paste is offered to first: given the pasted text and
+/// the form as it stands, the `(field, value)` pairs to set instead of
+/// inserting the text, or `None` to paste as usual.
+pub(super) type ZedisFormPasteHandler =
+    Rc<dyn Fn(&str, &ZedisForm, &App) -> Option<Vec<(SharedString, SharedString)>> + 'static>;
+
 /// Callback invoked to build the suffix element for an input field.
 pub(super) type ZedisFormFieldSuffixBuilder = Rc<dyn Fn(&mut Window, &mut Context<ZedisForm>) -> AnyElement>;
 
@@ -102,6 +108,9 @@ pub struct ZedisFormField {
     /// or Set), pasting a multi-line list into this field fills it with the
     /// first line and distributes remaining lines across dynamic (`+`) rows.
     pub(super) paste_single_lines: bool,
+    /// Offered every paste into this (single-line) field before the text
+    /// goes in — see [`ZedisFormField::on_paste`].
+    pub(super) paste_handler: Option<ZedisFormPasteHandler>,
 }
 
 impl ZedisFormField {
@@ -130,6 +139,7 @@ impl ZedisFormField {
             span: None,
             paste_pair_with: None,
             paste_single_lines: false,
+            paste_handler: None,
         }
     }
 
@@ -267,6 +277,20 @@ impl ZedisFormField {
     /// keeping pretty-printed single JSON/XML documents intact.
     pub fn paste_single_lines(mut self) -> Self {
         self.paste_single_lines = true;
+        self
+    }
+
+    /// Read a paste into this field before it goes in: `handler` gets the
+    /// pasted text and the form, and answers the `(field, value)` pairs to
+    /// set instead — this field's own among them, or it keeps what it held
+    /// — or `None` to paste the text as usual. For a paste that says more
+    /// than the field holds: a connection string pasted into a host.
+    /// Single-line `Input` fields only.
+    pub fn on_paste(
+        mut self,
+        handler: impl Fn(&str, &ZedisForm, &App) -> Option<Vec<(SharedString, SharedString)>> + 'static,
+    ) -> Self {
+        self.paste_handler = Some(Rc::new(handler));
         self
     }
 }
