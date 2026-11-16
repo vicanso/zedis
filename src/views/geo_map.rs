@@ -28,7 +28,7 @@
 //! non-geo members are listed separately. Capped at [`GEO_CAP`] points.
 
 use crate::assets::CustomIconName;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{canvas_surface_background, geo_node_colors, get_mono_font_family};
 use crate::{
     connection::{
         Capability, GeoMember, GeoSample, GeoShape, ServerCommand, ServerDb, geo_add, geo_dist, geo_sample, geo_search,
@@ -38,7 +38,7 @@ use crate::{
 use gpui::{
     BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollDelta, ScrollEvent, ScrollHandle, SharedString, Subscription, Task, Window,
-    bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size, transparent_black, uniform_list,
+    bounds, canvas, div, fill, point, prelude::*, px, quad, size, transparent_black, uniform_list,
 };
 use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, StyledExt,
@@ -415,14 +415,9 @@ impl ZedisGeoMap {
     fn render_canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let grid = theme.border.opacity(0.5);
-        let node: Hsla = rgb(0x4fd1c5).into();
-        let node_hi: Hsla = rgb(0x9af5ea).into();
+        let (node, node_hi) = geo_node_colors(theme.is_dark());
         let glow = Hsla { a: 0.25, ..node_hi };
-        let bg: Hsla = if theme.is_dark() {
-            rgb(0x1a1d21).into()
-        } else {
-            theme.muted
-        };
+        let bg = canvas_surface_background(cx);
         let crosshair = theme.muted_foreground.opacity(0.4);
 
         let data = self.data.clone();
@@ -1039,7 +1034,6 @@ impl ZedisGeoMap {
                             .rounded_md()
                             .when(active, |s| s.bg(list_active))
                             .hover(move |s| s.bg(list_active))
-                            .cursor_pointer()
                             .on_mouse_move(move |_, _window, cx| {
                                 entity.update(cx, |this, cx| {
                                     if this.hovered != Some(ix) {

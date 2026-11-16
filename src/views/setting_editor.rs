@@ -37,11 +37,11 @@ use crate::{
 use gpui::PathPromptOptions;
 #[cfg(target_family = "wasm")]
 use gpui::div;
-use gpui::{AnyElement, App, Entity, FocusHandle, FontWeight, Subscription, Window, prelude::*, px};
+use gpui::{AnyElement, App, Entity, FocusHandle, Subscription, Window, prelude::*, px};
 #[cfg(not(target_family = "wasm"))]
 use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, size};
 use gpui_kit::component::{
-    ActiveTheme, WindowExt, h_flex,
+    ActiveTheme, StyledExt, WindowExt, h_flex,
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     list::ListItem,
@@ -526,11 +526,7 @@ impl ZedisSettingEditor {
             .gap_1()
             .pt_5()
             .pb_4()
-            .child(
-                Label::new(i18n_settings(cx, title_key))
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD),
-            )
+            .child(Label::new(i18n_settings(cx, title_key)).text_sm().font_semibold())
             .child(
                 Label::new(i18n_settings(cx, &format!("{title_key}_desc")))
                     .text_xs()

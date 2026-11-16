@@ -14,6 +14,7 @@
 
 use crate::assets::Assets;
 use crate::helpers::{BuildVariant, platform_info};
+use crate::states::i18n_common;
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
 use chrono::{Datelike, Local};
 use gpui::{
@@ -95,7 +96,7 @@ fn collect_system_info(window: &Window) -> String {
     lines.join("\n")
 }
 
-fn build_config() -> AboutConfig {
+fn build_config(cx: &App) -> AboutConfig {
     let year = Local::now().year().to_string();
     let years = if year == "2026" {
         "2026".to_string()
@@ -122,6 +123,8 @@ fn build_config() -> AboutConfig {
             AboutLink::new("docs", "Documentation", "https://github.com/vicanso/zedis#readme"),
             AboutLink::new("issues", "Report Issue", "https://github.com/vicanso/zedis/issues"),
         ],
+        copy_system_info_label: i18n_common(cx, "copy_system_info"),
+        copied_label: i18n_common(cx, "copied"),
         system_info_collector: Some(Box::new(|window, _cx| collect_system_info(window))),
     }
 }
@@ -143,6 +146,6 @@ pub fn open_about_window(cx: &mut App) {
         // English, like the page under it.
         |_| "About Zedis".into(),
         cx,
-        |_window, cx| cx.new(|_cx| ZedisAboutPage::new(build_config())),
+        |_window, cx| cx.new(|cx| ZedisAboutPage::new(build_config(cx))),
     );
 }

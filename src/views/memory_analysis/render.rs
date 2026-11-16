@@ -265,6 +265,7 @@ impl ZedisMemoryAnalysis {
                                 .ghost()
                                 .small()
                                 .icon(IconName::Copy)
+                                .tooltip(i18n_common(cx, "copy"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     let Some(reply) = this.ai_output.clone() else {
                                         return;
@@ -282,6 +283,7 @@ impl ZedisMemoryAnalysis {
                             .ghost()
                             .small()
                             .icon(IconName::Close)
+                            .tooltip(i18n_common(cx, "close"))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.clear_ai_result(cx);
                             })),
@@ -432,57 +434,61 @@ impl ZedisMemoryAnalysis {
         // scan has data worth sending to the model.
         let has_data = self.prefix_count > 0 || self.single_count > 0;
         let ai_running = self.ai_status == AiStatus::Running;
-        let header =
-            h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(Icon::new(CustomIconName::ListCheck))
-                        .child(Label::new(i18n_memory_analysis(cx, "reco_panel_title")).font_semibold())
-                        .when(count > 0, |this| {
-                            this.child(Label::new(format!("{count}")).text_xs().text_color(muted_fg))
-                        }),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        // AI advice: send the report (key names / sizes / TTLs
-                        // only) to the configured OpenAI-compatible endpoint.
-                        .when(has_ai_assistant() && has_data, |this| {
-                            this.child(
-                                Button::new("reco-ai-analysis")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Bot)
-                                    .disabled(ai_running)
-                                    .label(if ai_running {
-                                        i18n_memory_analysis(cx, "ai_analyzing")
-                                    } else {
-                                        i18n_memory_analysis(cx, "ai_analyze")
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_ai_analysis(window, cx);
-                                    })),
-                            )
-                        })
-                        .when(count > 0, |this| {
-                            this.child(Button::new("reco-copy").ghost().small().icon(IconName::Copy).on_click(
-                                cx.listener(|this, _, window, cx| {
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(CustomIconName::ListCheck))
+                    .child(Label::new(i18n_memory_analysis(cx, "reco_panel_title")).font_semibold())
+                    .when(count > 0, |this| {
+                        this.child(Label::new(format!("{count}")).text_xs().text_color(muted_fg))
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    // AI advice: send the report (key names / sizes / TTLs
+                    // only) to the configured OpenAI-compatible endpoint.
+                    .when(has_ai_assistant() && has_data, |this| {
+                        this.child(
+                            Button::new("reco-ai-analysis")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Bot)
+                                .disabled(ai_running)
+                                .label(if ai_running {
+                                    i18n_memory_analysis(cx, "ai_analyzing")
+                                } else {
+                                    i18n_memory_analysis(cx, "ai_analyze")
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_ai_analysis(window, cx);
+                                })),
+                        )
+                    })
+                    .when(count > 0, |this| {
+                        this.child(
+                            Button::new("reco-copy")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Copy)
+                                .tooltip(i18n_common(cx, "copy"))
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     let text = this.recommendations_plaintext(cx);
                                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                                     window.push_notification(
                                         Notification::info(i18n_common(cx, "copied_to_clipboard")),
                                         cx,
                                     );
-                                }),
-                            ))
-                        }),
-                );
+                                })),
+                        )
+                    }),
+            );
 
         let body = if count == 0 {
             h_flex()
@@ -722,9 +728,9 @@ impl ZedisMemoryAnalysis {
             let active = ix == self.keysizes_selected;
             picker = picker.child(
                 Button::new(SharedString::from(format!("keysizes-type-{ix}")))
+                    .outline()
                     .xsmall()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .selected(active)
                     .label(format!("{} ({})", d.type_name, group_thousands(d.total())))
                     .on_click(cx.listener(move |this, _, _w, cx| {
                         this.keysizes_selected = ix;
@@ -839,9 +845,9 @@ impl ZedisMemoryAnalysis {
         let mode_button =
             |id: &'static str, key: &'static str, active: bool, wanted: bool, cx: &mut gpui::Context<Self>| {
                 Button::new(id)
+                    .outline()
                     .xsmall()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .selected(active)
                     .label(i18n_memory_analysis(cx, key))
                     .on_click(cx.listener(move |this, _, _w, cx| this.set_type_by_encoding(wanted, cx)))
             };
@@ -1186,7 +1192,11 @@ impl gpui::Render for ZedisMemoryAnalysis {
             )
             .child(Icon::new(CustomIconName::MemoryStick))
             .child(Label::new(i18n_memory_analysis(cx, "title")).text_color(cx.theme().foreground))
-            .child(help_popover("memory-analysis-help", i18n_memory_analysis(cx, "help")));
+            .child(help_popover(
+                "memory-analysis-help",
+                i18n_common(cx, "help_tooltip"),
+                i18n_memory_analysis(cx, "help"),
+            ));
         let stats = self.render_toolbar_stats(cx);
         let controls = self.render_toolbar_controls(cx);
 
@@ -1206,36 +1216,25 @@ impl gpui::Render for ZedisMemoryAnalysis {
             // squeezed. The `flex_1` spacer takes what is left of the first
             // line, which puts the controls at the right edge when all fits.
             .child(
-                h_flex()
+                panel_header()
                     .id("memory-analysis-toolbar")
-                    .w_full()
-                    .flex_none()
-                    .min_h(px(40.))
-                    .px_4()
-                    .py(px(6.))
-                    .gap_x_4()
-                    .gap_y_2()
-                    .items_center()
-                    .flex_wrap()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .overflow_x_scroll()
+                    .scroll_x(true)
                     .child(nav.flex_none())
                     .child(stats.flex_none())
                     .child(div().flex_1())
                     .child(controls.flex_none()),
             )
             .children(self.show_first_visit_hint.then(|| {
-                div().w_full().flex_none().px_4().child(
-                    hint_banner("memory-analysis-first-visit", i18n_hints(cx, "memory_banner")).on_close(cx.listener(
-                        |this, _, _window, cx| {
+                div().w_full().flex_none().px_3().child(
+                    hint_banner("memory-analysis-first-visit", i18n_hints(cx, "memory_banner"))
+                        .close_tooltip(i18n_common(cx, "close"))
+                        .on_close(cx.listener(|this, _, _window, cx| {
                             this.show_first_visit_hint = false;
                             update_app_state_and_save_quiet(cx, "dismiss_hint_memory_analysis", |state, _| {
                                 state.dismiss_hint(HINT_MEMORY_ANALYSIS)
                             });
                             cx.notify();
-                        },
-                    )),
+                        })),
                 )
             }))
             // Progress bar for a running scan / RDB parse — the toolbar's

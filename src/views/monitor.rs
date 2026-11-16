@@ -57,7 +57,7 @@ use summary::{SampleCap, SampleResult, Sampling};
 use tracing::error;
 use web_time::Instant;
 use zedis_core::tally::MonitorTally;
-use zedis_ui::{CellAction, CellActionProvider, TextColumn, ZedisDialog, ZedisTextTable, fitted_table};
+use zedis_ui::{CellAction, CellActionProvider, TextColumn, ZedisDialog, ZedisTextTable, fitted_table, panel_header};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -881,19 +881,8 @@ impl Render for ZedisMonitor {
             // Toolbar. One row where it fits; where it does not, the
             // controls drop to a second row instead of running off the edge.
             .child(
-                h_flex()
-                    .w_full()
-                    .flex_none()
-                    .items_center()
+                panel_header()
                     .justify_between()
-                    .px_4()
-                    .py(px(6.))
-                    .min_h(px(40.))
-                    .gap_x_4()
-                    .gap_y_2()
-                    .flex_wrap()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         h_flex()
                             .flex_none()

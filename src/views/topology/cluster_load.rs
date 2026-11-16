@@ -97,8 +97,8 @@ impl ZedisTopology {
         cx: &mut Context<Self>,
     ) -> Button {
         Button::new(id)
-            .when(self.load_metric == metric, |b| b.primary())
-            .when(self.load_metric != metric, |b| b.ghost())
+            .outline()
+            .selected(self.load_metric == metric)
             .small()
             .label(label)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -200,7 +200,6 @@ impl ZedisTopology {
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
-                    .cursor_pointer()
                     .bg({
                         let mut c = heat;
                         c.a = 0.25;

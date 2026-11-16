@@ -14,7 +14,7 @@
 
 use crate::helpers::get_mono_font_family;
 use crate::states::KeyType;
-use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div, px};
+use gpui::{App, FontWeight, IntoElement, RenderOnce, Styled, Window, div};
 use gpui_kit::component::{ActiveTheme, label::Label};
 
 // Constants for key type badge styling
@@ -54,7 +54,7 @@ impl RenderOnce for KeyTypeBadge {
             // / VEC) — the design renders types as a quiet colored label, not a
             // pill.
             return Label::new(self.key_type.badge_code())
-                .text_size(px(10.))
+                .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .flex_none()
                 .whitespace_nowrap()
@@ -70,7 +70,7 @@ impl RenderOnce for KeyTypeBadge {
         let border = bg;
 
         Label::new(self.key_type.badge_code())
-            .text_size(px(10.))
+            .text_xs()
             // Render in a concrete font (the app monospace) so the weight below
             // actually renders bold: the default `.AppleSystemUIFont` resolves
             // heavy weights poorly, while a real family (Menlo/Cascadia) has a
@@ -89,7 +89,7 @@ impl RenderOnce for KeyTypeBadge {
             .text_color(color)
             .border_1()
             .px_1p5()
-            .rounded_sm()
+            .rounded(cx.theme().radius)
             .border_color(border)
             .into_any_element()
     }

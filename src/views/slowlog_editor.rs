@@ -45,7 +45,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,
     label::Label,
@@ -61,6 +61,7 @@ use std::time::Duration;
 use zedis_core::tally::totals_by_command;
 use zedis_ui::{
     CellAction, CellActionProvider, CellRenderer, TextColumn, ZedisDialog, ZedisDivider, ZedisTextTable, fitted_table,
+    panel_header,
 };
 
 // One file per tab / subsystem that has a life of its own.
@@ -474,17 +475,7 @@ impl gpui::Render for ZedisSlowlogEditor {
             // actions drop to a second row instead of running off the edge
             // (at 900px Export and Reset could not be reached).
             .child(
-                h_flex()
-                    .w_full()
-                    .flex_none()
-                    .px_4()
-                    .py(px(6.))
-                    .min_h(px(40.))
-                    .gap_x_4()
-                    .gap_y_2()
-                    .flex_wrap()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
+                panel_header()
                     .justify_between()
                     .child(
                         h_flex()
@@ -505,48 +496,48 @@ impl gpui::Render for ZedisSlowlogEditor {
                             )
                             .child(Icon::new(CustomIconName::Snail))
                             .child(Label::new(i18n_slowlog_editor(cx, "panel_title")).text_color(cx.theme().foreground))
-                            // Tab switcher: SlowLog ↔ Latency. Two small
-                            // buttons act as a segmented control —
-                            // primary variant marks the active tab so
-                            // there's no doubt which dataset is shown.
+                            // Tab switcher: SlowLog ↔ Top Commands ↔ Latency.
                             .child(
                                 h_flex()
                                     .gap_1()
                                     .child({
                                         let active = self.current_tab == PerformanceTab::SlowLog;
-                                        let mut btn = Button::new("perf-tab-slowlog")
+                                        Button::new("perf-tab-slowlog")
+                                            .outline()
                                             .xsmall()
-                                            .label(i18n_slowlog_editor(cx, "tab_slowlog"));
-                                        btn = if active { btn.primary() } else { btn.outline() };
-                                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.set_tab(PerformanceTab::SlowLog, cx);
-                                            cx.notify();
-                                        }))
+                                            .selected(active)
+                                            .label(i18n_slowlog_editor(cx, "tab_slowlog"))
+                                            .on_click(cx.listener(|this, _, _w, cx| {
+                                                this.set_tab(PerformanceTab::SlowLog, cx);
+                                                cx.notify();
+                                            }))
                                     })
                                     .child({
                                         let active = self.current_tab == PerformanceTab::TopCommands;
-                                        let mut btn = Button::new("perf-tab-top-commands")
+                                        Button::new("perf-tab-top-commands")
+                                            .outline()
                                             .xsmall()
-                                            .label(i18n_slowlog_editor(cx, "tab_top_commands"));
-                                        btn = if active { btn.primary() } else { btn.outline() };
-                                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            this.set_tab(PerformanceTab::TopCommands, cx);
-                                            cx.notify();
-                                        }))
+                                            .selected(active)
+                                            .label(i18n_slowlog_editor(cx, "tab_top_commands"))
+                                            .on_click(cx.listener(|this, _, _w, cx| {
+                                                this.set_tab(PerformanceTab::TopCommands, cx);
+                                                cx.notify();
+                                            }))
                                     })
                                     .child({
                                         let active = self.current_tab == PerformanceTab::Latency;
-                                        let mut btn = Button::new("perf-tab-latency")
+                                        Button::new("perf-tab-latency")
+                                            .outline()
                                             .xsmall()
-                                            .label(i18n_slowlog_editor(cx, "tab_latency"));
-                                        btn = if active { btn.primary() } else { btn.outline() };
-                                        btn.on_click(cx.listener(|this, _, _w, cx| {
-                                            // `set_tab` handles the initial
-                                            // fetch + polling task — no need
-                                            // to fire `fetch_latency` here.
-                                            this.set_tab(PerformanceTab::Latency, cx);
-                                            cx.notify();
-                                        }))
+                                            .selected(active)
+                                            .label(i18n_slowlog_editor(cx, "tab_latency"))
+                                            .on_click(cx.listener(|this, _, _w, cx| {
+                                                // `set_tab` handles the initial
+                                                // fetch + polling task — no need
+                                                // to fire `fetch_latency` here.
+                                                this.set_tab(PerformanceTab::Latency, cx);
+                                                cx.notify();
+                                            }))
                                     }),
                             )
                             .child(

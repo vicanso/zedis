@@ -16,7 +16,7 @@
 
 use super::{ZedisForm, row};
 use gpui::{App, Context, SharedString, Window, prelude::*};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::form::Field;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable, IconName, Sizable, h_flex};
@@ -302,8 +302,11 @@ impl ZedisForm {
                 )
                 .child(
                     Button::new(("remove-add-field", index))
+                        .ghost()
+                        .small()
                         .icon(IconName::CircleX)
                         .disabled(form_disabled)
+                        .when_some(self.remove_button_tooltip.clone(), |btn, tooltip| btn.tooltip(tooltip))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.remove_add_field(index, cx);
                         })),
@@ -312,10 +315,15 @@ impl ZedisForm {
         }
 
         let mut add_btn = Button::new("add-add-field")
+            .outline()
+            .small()
             .icon(IconName::Plus)
             .disabled(form_disabled);
         if let Some(label) = &self.add_button_label {
-            add_btn = add_btn.outline().small().label(label.clone());
+            add_btn = add_btn.label(label.clone());
+        }
+        if let Some(tooltip) = &self.add_button_tooltip {
+            add_btn = add_btn.tooltip(tooltip.clone());
         }
         out.push(
             row().child(

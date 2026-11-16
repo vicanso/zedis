@@ -657,7 +657,6 @@ impl LuaDebugger {
                             .pr_2()
                             .items_center()
                             .justify_end()
-                            .cursor_pointer()
                             .hover(|style| style.bg(cx.theme().muted.opacity(0.5)))
                             .on_click(cx.listener(move |this, _, _w, cx| this.toggle_breakpoint(line, cx)))
                             .child(div().size(px(8.)).rounded_full().when(has_break, |dot| dot.bg(red)))

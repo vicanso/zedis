@@ -41,9 +41,9 @@ use crate::helpers::{format_unix_secs, get_mono_font_family};
 use crate::states::{ZedisGlobalStore, i18n_account, i18n_common};
 use admin::AdminForm;
 use audit::AuditForm;
-use gpui::{AnyElement, App, Entity, FocusHandle, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, Entity, FocusHandle, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Sizable, WindowExt,
+    ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
     h_flex,
@@ -456,9 +456,7 @@ fn field(cx: &App, label: SharedString, control: impl IntoElement) -> impl IntoE
 
 /// A section's heading.
 fn heading(cx: &App, key: &str) -> impl IntoElement {
-    Label::new(i18n_account(cx, key))
-        .text_sm()
-        .font_weight(FontWeight::BOLD)
+    Label::new(i18n_account(cx, key)).text_sm().font_semibold()
 }
 
 /// A note in the muted colour, wrapped.
@@ -488,7 +486,12 @@ fn status_line(cx: &App, status: &Option<Status>) -> Option<AnyElement> {
 
 /// A form's submit button, which says it is busy and takes no second press.
 fn submit(id: &'static str, label: SharedString, busy: bool) -> Button {
-    Button::new(id).primary().label(label).loading(busy).disabled(busy)
+    Button::new(id)
+        .primary()
+        .icon(IconName::Check)
+        .label(label)
+        .loading(busy)
+        .disabled(busy)
 }
 
 impl Render for ZedisAccount {

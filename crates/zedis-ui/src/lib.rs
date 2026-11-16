@@ -26,7 +26,9 @@ mod form;
 mod help;
 mod hint;
 mod loading;
+mod panel_header;
 mod select;
+mod stat_chip;
 mod text_table;
 
 pub use about::*;
@@ -37,5 +39,7 @@ pub use form::*;
 pub use help::*;
 pub use hint::*;
 pub use loading::*;
+pub use panel_header::*;
 pub use select::*;
+pub use stat_chip::*;
 pub use text_table::*;

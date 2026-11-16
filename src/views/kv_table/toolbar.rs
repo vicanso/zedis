@@ -66,6 +66,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     .when(can_add, |this| {
                         this.child(
                             Button::new("add-value-btn")
+                                .outline()
                                 .icon(CustomIconName::FilePlusCorner)
                                 .tooltip(i18n_kv_table(cx, "add_value_tooltip"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -125,8 +126,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         let active = score_range.is_some();
                         this.child(
                             Button::new("kv-table-score-filter")
-                                .ghost()
-                                .when(active, |button| button.primary())
+                                .outline()
+                                .selected(active)
                                 .icon(CustomIconName::Equal)
                                 .tooltip(i18n_zset_editor(cx, "score_filter"))
                                 .on_click(cx.listener(|this, _, window, cx| {

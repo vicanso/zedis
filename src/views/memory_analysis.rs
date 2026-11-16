@@ -48,7 +48,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, WindowExt,
     button::Button,
     h_flex,
     label::Label,
@@ -67,7 +67,7 @@ use zedis_core::keysizes::{KeysizesDist, KeysizesUnit};
 use zedis_core::rdb::RdbParser;
 use zedis_core::schema::{DataDictionary, SchemaAccumulator};
 use zedis_ui::ZedisTextTable;
-use zedis_ui::{ZedisDivider, fitted_table, help_popover, hint_banner};
+use zedis_ui::{ZedisDivider, fitted_table, help_popover, hint_banner, panel_header};
 
 mod export;
 mod remediation;

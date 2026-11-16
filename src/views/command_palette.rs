@@ -19,7 +19,7 @@
 
 use crate::connection::get_servers;
 use crate::db::get_favorites_manager;
-use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, prepare_fuzzy_query, saves_files};
+use crate::helpers::{ShortcutsAction, fuzzy_score_prepared, overlay_backdrop_color, prepare_fuzzy_query, saves_files};
 use crate::states::{
     Route, ServerToolsAction, ServerView, SettingsAction, ZedisGlobalStore, ZedisServerState, command_status_label,
     i18n_command_palette, i18n_features, i18n_shortcuts,
@@ -793,6 +793,7 @@ impl Render for ZedisCommandPalette {
         let panel_bg = theme.background;
         let border = theme.border;
         let active = theme.list_active;
+        let hover = theme.list_hover;
         let muted = theme.muted_foreground;
         let radius = theme.radius;
         let radius_lg = theme.radius_lg;
@@ -832,8 +833,7 @@ impl Render for ZedisCommandPalette {
                     .px_2()
                     .py_1p5()
                     .rounded(radius)
-                    .cursor_pointer()
-                    .hover(|this| this.bg(active))
+                    .when(!is_sel, |this| this.hover(move |this| this.bg(hover)))
                     .child(Label::new(it.label.clone()).text_sm())
                     .when(!it.hint.is_empty(), |this| {
                         this.child(Label::new(it.hint.clone()).text_xs().text_color(muted))
@@ -871,7 +871,7 @@ impl Render for ZedisCommandPalette {
             // its `max_h` and leave Home looking half-empty. Align to
             // the top so the panel stays content-sized (adaptive).
             .items_start()
-            .bg(gpui::hsla(0., 0., 0., 0.4))
+            .bg(overlay_backdrop_color())
             // Wheel events stay on the palette instead of scrolling the page.
             .occlude()
             .track_focus(&self.focus_handle)

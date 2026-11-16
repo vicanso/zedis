@@ -32,6 +32,7 @@ mod keybindings;
 mod local_data;
 #[cfg(not(target_family = "wasm"))]
 mod logger;
+mod motion;
 pub mod pacing;
 mod platform;
 #[cfg(not(target_family = "wasm"))]
@@ -54,9 +55,13 @@ pub use action::*;
 pub use ai::{AiEndpoint, analyze_report, suggest_command};
 pub use app_identity::with_app_identity;
 pub use build_variant::BuildVariant;
-pub use color::card_background;
 #[cfg(test)]
 pub use color::contrast_ratio;
+pub use color::{
+    canvas_surface_background, card_background, geo_node_colors, healthy_color, hex_address_color,
+    overlay_backdrop_color, prod_banner_colors, sidebar_accent_color, topology_heat_color, topology_master_color,
+    ttl_warning_color,
+};
 pub use common::*;
 pub use crash::{CrashContext, CrashReport, install_panic_hook, take_pending_crash};
 pub use datetime::*;
@@ -68,6 +73,7 @@ pub use keybindings::{ensure_keybindings_file, keybinding_overrides, load_keybin
 pub use local_data::{export_local_data_json, import_local_data_file, write_local_data_file};
 #[cfg(not(target_family = "wasm"))]
 pub use logger::{init_logger, logs_dir};
+pub use motion::*;
 pub use platform::{PlatformInfo, platform_info};
 #[cfg(not(target_family = "wasm"))]
 pub use proxy::{is_valid_proxy_setting, set_configured_proxy};

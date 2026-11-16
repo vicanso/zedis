@@ -199,6 +199,7 @@ fn sentinel_fields(
             .suffix({
                 let candidates = candidates_for_suffix.clone();
                 let locale = fetch_locale.clone();
+                let search_tooltip = i18n_common(cx, "search");
                 move |_window, cx: &mut gpui::Context<zedis_ui::ZedisForm>| {
                     let candidates = candidates.clone();
                     let locale = locale.clone();
@@ -206,6 +207,7 @@ fn sentinel_fields(
                         .ghost()
                         .icon(Icon::new(IconName::Search))
                         .xsmall()
+                        .tooltip(search_tooltip.clone())
                         .on_click(cx.listener(move |form, _, _, cx| {
                             fetch_master_names(form, candidates.clone(), locale.clone(), cx);
                         }))

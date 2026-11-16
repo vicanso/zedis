@@ -40,7 +40,6 @@ use zedis_ui::ZedisSkeletonLoading;
 
 // Constants for UI dimensions
 const LOADING_SKELETON_WIDTH: f32 = 600.0;
-const SERVERS_MARGIN: f32 = 8.0;
 
 /// Main content area component for the Zedis application
 ///
@@ -440,7 +439,7 @@ impl ZedisContent {
                 // a bottom margin would clip the last row. Padding on this
                 // in-flow child is part of its box height and always scrolls
                 // into reach.
-                .child(div().p(px(SERVERS_MARGIN)).child(servers)),
+                .child(div().p_4().child(servers)),
         )
     }
 

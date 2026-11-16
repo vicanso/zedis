@@ -26,8 +26,8 @@ use crate::helpers::saves_files;
 use crate::states::{ZedisGlobalStore, i18n_servers};
 use gpui::{App, ClipboardItem, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Selectable, Sizable, WindowExt,
+    button::Button,
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
@@ -168,18 +168,15 @@ impl Render for ZedisExportServersDialog {
             );
         }
 
-        let mut secrets_btn = Button::new("export-servers-secrets")
+        let secrets_btn = Button::new("export-servers-secrets")
             .small()
-            .label(i18n_servers(cx, "export_include_secrets"));
-        secrets_btn = if include_on {
-            secrets_btn.primary()
-        } else {
-            secrets_btn.outline()
-        };
-        let secrets_btn = secrets_btn.on_click(cx.listener(|this, _, _window, cx| {
-            this.include_secrets = !this.include_secrets;
-            cx.notify();
-        }));
+            .outline()
+            .selected(include_on)
+            .label(i18n_servers(cx, "export_include_secrets"))
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.include_secrets = !this.include_secrets;
+                cx.notify();
+            }));
 
         // Secondary action: copy the selection to the clipboard. Save to file
         // is the dialog's primary OK action.

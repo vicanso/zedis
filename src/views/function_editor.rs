@@ -39,7 +39,7 @@ use ahash::{AHashMap, AHashSet};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Editor, EditorState, Input, InputState, TabSize},
@@ -1188,8 +1188,8 @@ impl ZedisFunctionEditor {
                                     .child(
                                         Button::new(("fn-ro", id_hash))
                                             .small()
-                                            .when(readonly, |b| b.primary())
-                                            .when(!readonly, |b| b.outline())
+                                            .outline()
+                                            .selected(readonly)
                                             .label(if readonly { "FCALL_RO" } else { "FCALL" })
                                             .tooltip(i18n_functions(cx, "fcall_ro_tooltip"))
                                             .on_click(cx.listener(move |this, _, _w, cx| {
@@ -1403,8 +1403,8 @@ impl ZedisFunctionEditor {
                     .child(
                         Button::new("functions-replace")
                             .small()
-                            .when(replace, |b| b.primary())
-                            .when(!replace, |b| b.outline())
+                            .outline()
+                            .selected(replace)
                             .label("REPLACE")
                             .on_click(cx.listener(|this, _, _w, cx| this.toggle_replace(cx))),
                     )

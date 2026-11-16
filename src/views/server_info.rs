@@ -36,7 +36,7 @@ use crate::views::export_to_file;
 use gpui::{Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -46,7 +46,7 @@ use gpui_kit::component::{
 };
 use std::rc::Rc;
 use tracing::{error, info};
-use zedis_ui::{CellStyle, CellStyleProvider, TextColumn, ZedisTextTable, fitted_table, help_popover};
+use zedis_ui::{CellStyle, CellStyleProvider, TextColumn, ZedisTextTable, fitted_table, help_popover, panel_header};
 
 use crate::assets::CustomIconName;
 
@@ -460,7 +460,11 @@ impl ZedisServerInfo {
             )
             .child(Icon::new(IconName::Info))
             .child(Label::new(i18n_server_info(cx, "title")).text_color(cx.theme().foreground))
-            .child(help_popover("server-info-help", i18n_server_info(cx, "help")));
+            .child(help_popover(
+                "server-info-help",
+                i18n_common(cx, "help_tooltip"),
+                i18n_server_info(cx, "help"),
+            ));
 
         let stat_item = |cx: &mut Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
@@ -531,19 +535,8 @@ impl ZedisServerInfo {
         // bar used to be a fixed 40px that scrolled sideways, and nothing
         // said so: at 980px the filter box was cut in two and Snapshot,
         // Export and Refresh were past the window's edge.
-        h_flex()
-            .w_full()
-            .flex_none()
-            .min_h(px(40.))
-            .px_4()
-            .py(px(6.))
-            .gap_x_4()
-            .gap_y_2()
-            .items_center()
-            .flex_wrap()
+        panel_header()
             .justify_between()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(h_flex().flex_none().gap_4().items_center().child(nav).child(stats))
             .child(controls.flex_none())
     }
@@ -598,14 +591,15 @@ impl ZedisServerInfo {
                     this.child(Label::new(s).text_xs().text_color(theme.foreground))
                 })
                 .child(div().flex_1())
-                .child({
-                    let mut btn = Button::new("server-info-compare")
+                .child(
+                    Button::new("server-info-compare")
+                        .outline()
                         .xsmall()
+                        .selected(self.diff_mode)
                         .label(i18n_server_info(cx, "compare"))
-                        .tooltip(i18n_server_info(cx, "compare_tooltip"));
-                    btn = if self.diff_mode { btn.primary() } else { btn.outline() };
-                    btn.on_click(cx.listener(|this, _, _w, cx| this.toggle_compare(cx)))
-                })
+                        .tooltip(i18n_server_info(cx, "compare_tooltip"))
+                        .on_click(cx.listener(|this, _, _w, cx| this.toggle_compare(cx))),
+                )
                 .child(
                     Button::new("server-info-clear-snapshot")
                         .ghost()

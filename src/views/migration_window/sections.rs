@@ -39,11 +39,7 @@ impl ZedisMigrationWindow {
         div()
             .px_6()
             .pt_6()
-            .child(
-                Label::new(self.title_label(cx))
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::BOLD),
-            )
+            .child(Label::new(self.title_label(cx)).text_lg().font_semibold())
             .child(
                 div()
                     .pt_1()
@@ -122,12 +118,8 @@ impl ZedisMigrationWindow {
                         .p_2()
                         .border_1()
                         .border_color(theme.border)
-                        .rounded(px(4.))
-                        .child(
-                            Label::new(SharedString::from(title))
-                                .text_xs()
-                                .font_weight(gpui::FontWeight::BOLD),
-                        )
+                        .rounded(theme.radius)
+                        .child(Label::new(SharedString::from(title)).text_xs().font_semibold())
                         .child(
                             Label::new(i18n_migration(cx, "scan_resume_note"))
                                 .text_xs()
@@ -241,24 +233,22 @@ impl ZedisMigrationWindow {
         let mut type_chips = h_flex().gap_1().flex_wrap().items_center();
         let all_selected = self.selected_types.is_empty();
         let all_btn = Button::new("migration-type-all")
+            .outline()
             .xsmall()
+            .selected(all_selected)
             .label(i18n_migration(cx, "type_all"))
             .disabled(is_running);
-        let all_btn = if all_selected {
-            all_btn.primary()
-        } else {
-            all_btn.outline()
-        };
         type_chips = type_chips.child(all_btn.on_click(cx.listener(|this, _, _window, cx| {
             this.clear_pattern_types(cx);
         })));
         for (redis_ty, label) in PATTERN_KEY_TYPES {
             let selected = self.selected_types.iter().any(|t| t.as_ref() == redis_ty);
             let btn = Button::new(SharedString::from(format!("migration-type-{label}")))
+                .outline()
                 .xsmall()
+                .selected(selected)
                 .label(label)
                 .disabled(is_running);
-            let btn = if selected { btn.primary() } else { btn.outline() };
             type_chips = type_chips.child(btn.on_click(cx.listener(move |this, _, _window, cx| {
                 this.toggle_pattern_type(redis_ty, cx);
             })));
@@ -292,7 +282,7 @@ impl ZedisMigrationWindow {
                     )
                     .child(
                         RadioGroup::horizontal("migration-export-format")
-                            .mt(px(4.))
+                            .mt_1()
                             .children(format_labels)
                             .selected_index(Some(self.export_format.index()))
                             .disabled(is_running)
@@ -376,14 +366,11 @@ impl ZedisMigrationWindow {
             let is_selected = selected.as_ref() == Some(id);
             let id_click = id.clone();
             let button = Button::new(SharedString::from(format!("migration-target-{id}")))
+                .outline()
                 .small()
+                .selected(is_selected)
                 .label(name.clone())
                 .disabled(is_running);
-            let button = if is_selected {
-                button.primary()
-            } else {
-                button.outline()
-            };
             server_row = server_row.child(
                 button.on_click(cx.listener(move |this, _, _window, cx| this.select_target(id_click.clone(), cx))),
             );
@@ -576,7 +563,7 @@ impl ZedisMigrationWindow {
             )
             .child(
                 RadioGroup::horizontal("migration-conflict-mode")
-                    .mt(px(4.))
+                    .mt_1()
                     .children(labels)
                     .selected_index(Some(selected))
                     .on_click(cx.listener(|this, index, _window, cx| {

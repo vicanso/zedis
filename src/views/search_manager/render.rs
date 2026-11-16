@@ -424,7 +424,6 @@ impl ZedisSearchManager {
             .items_center()
             .px_2()
             .rounded_sm()
-            .cursor_pointer()
             .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.insert_field_query(&field_for_click, window, cx);
@@ -508,6 +507,7 @@ impl ZedisSearchManager {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
+                            .tooltip(i18n_common(cx, "close"))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.tag_values = None;
                                 cx.notify();
@@ -575,16 +575,14 @@ impl ZedisSearchManager {
             .border_color(cx.theme().border)
             .items_center()
             .child(
-                // Mode toggle: two buttons acting as a radio. The active
-                // one switches from outline → primary so the selection is
-                // visually obvious without a dedicated SegmentedControl.
+                // Mode toggle: two buttons acting as a radio.
                 h_flex()
                     .gap_1()
                     .child(
                         Button::new("search-mode-search")
                             .small()
-                            .when(mode_search_selected, |b| b.primary())
-                            .when(!mode_search_selected, |b| b.outline())
+                            .outline()
+                            .selected(mode_search_selected)
                             .label(i18n_search(cx, "mode_search"))
                             .on_click(cx.listener(|this, _, _w, cx| {
                                 this.mode = SearchMode::Search;
@@ -594,8 +592,8 @@ impl ZedisSearchManager {
                     .child(
                         Button::new("search-mode-aggregate")
                             .small()
-                            .when(mode_aggregate_selected, |b| b.primary())
-                            .when(!mode_aggregate_selected, |b| b.outline())
+                            .outline()
+                            .selected(mode_aggregate_selected)
                             .label(i18n_search(cx, "mode_aggregate"))
                             .on_click(cx.listener(|this, _, _w, cx| {
                                 this.mode = SearchMode::Aggregate;
@@ -646,8 +644,8 @@ impl ZedisSearchManager {
                 kinds = kinds.child(
                     Button::new(SharedString::from(format!("search-param-{name}-{}", kind.label())))
                         .xsmall()
-                        .when(active, |b| b.primary())
-                        .when(!active, |b| b.ghost())
+                        .outline()
+                        .selected(active)
                         .label(kind.label())
                         .tooltip(i18n_search(cx, "params_kind_tooltip"))
                         .on_click(cx.listener(move |this, _, _w, cx| this.set_param_kind(&row_name, kind, cx))),
@@ -872,16 +870,16 @@ impl ZedisSearchManager {
                             .child(
                                 Button::new("create-on-hash")
                                     .small()
-                                    .when(!on_json, |b| b.primary())
-                                    .when(on_json, |b| b.outline())
+                                    .outline()
+                                    .selected(!on_json)
                                     .label("ON HASH")
                                     .on_click(cx.listener(|this, _, _w, cx| this.set_create_key_type(false, cx))),
                             )
                             .child(
                                 Button::new("create-on-json")
                                     .small()
-                                    .when(on_json, |b| b.primary())
-                                    .when(!on_json, |b| b.outline())
+                                    .outline()
+                                    .selected(on_json)
                                     .label("ON JSON")
                                     .on_click(cx.listener(|this, _, _w, cx| this.set_create_key_type(true, cx))),
                             ),
@@ -977,8 +975,8 @@ impl ZedisSearchManager {
             };
             Button::new(prefix)
                 .small()
-                .when(selected, |b| b.primary())
-                .when(!selected, |b| b.outline())
+                .outline()
+                .selected(selected)
                 .label(t)
                 .on_click(cx.listener(move |this, _, _w, cx| this.set_add_field_type(t, cx)))
                 .into_any_element()
@@ -1012,8 +1010,8 @@ impl ZedisSearchManager {
                     .child(
                         Button::new("alter-sortable")
                             .small()
-                            .when(sortable, |b| b.primary())
-                            .when(!sortable, |b| b.outline())
+                            .outline()
+                            .selected(sortable)
                             .label("SORTABLE")
                             .on_click(
                                 cx.listener(|this, _, _w, cx| {
@@ -1025,8 +1023,8 @@ impl ZedisSearchManager {
                         this.child(
                             Button::new("alter-nostem")
                                 .small()
-                                .when(no_stem, |b| b.primary())
-                                .when(!no_stem, |b| b.outline())
+                                .outline()
+                                .selected(no_stem)
                                 .label("NOSTEM")
                                 .on_click(cx.listener(|this, _, _w, cx| {
                                     this.toggle_add_field_flag(CreateFieldFlag::NoStem, cx)
@@ -1036,8 +1034,8 @@ impl ZedisSearchManager {
                     .child(
                         Button::new("alter-noindex")
                             .small()
-                            .when(no_index, |b| b.primary())
-                            .when(!no_index, |b| b.outline())
+                            .outline()
+                            .selected(no_index)
                             .label("NOINDEX")
                             .on_click(
                                 cx.listener(|this, _, _w, cx| this.toggle_add_field_flag(CreateFieldFlag::NoIndex, cx)),
@@ -1103,8 +1101,8 @@ impl ZedisSearchManager {
             };
             Button::new((prefix, id as u32))
                 .small()
-                .when(selected, |b| b.primary())
-                .when(!selected, |b| b.outline())
+                .outline()
+                .selected(selected)
                 .label(t)
                 .on_click(cx.listener(move |this, _, _w, cx| this.set_create_field_type(id, t, cx)))
                 .into_any_element()
@@ -1127,8 +1125,8 @@ impl ZedisSearchManager {
                     .child(
                         Button::new(("create-sortable", id as u32))
                             .small()
-                            .when(sortable, |b| b.primary())
-                            .when(!sortable, |b| b.outline())
+                            .outline()
+                            .selected(sortable)
                             .label("SORTABLE")
                             .on_click(cx.listener(move |this, _, _w, cx| {
                                 this.toggle_create_field_flag(id, CreateFieldFlag::Sortable, cx)
@@ -1138,8 +1136,8 @@ impl ZedisSearchManager {
                         this.child(
                             Button::new(("create-nostem", id as u32))
                                 .small()
-                                .when(no_stem, |b| b.primary())
-                                .when(!no_stem, |b| b.outline())
+                                .outline()
+                                .selected(no_stem)
                                 .label("NOSTEM")
                                 .on_click(cx.listener(move |this, _, _w, cx| {
                                     this.toggle_create_field_flag(id, CreateFieldFlag::NoStem, cx)
@@ -1149,8 +1147,8 @@ impl ZedisSearchManager {
                     .child(
                         Button::new(("create-noindex", id as u32))
                             .small()
-                            .when(no_index, |b| b.primary())
-                            .when(!no_index, |b| b.outline())
+                            .outline()
+                            .selected(no_index)
                             .label("NOINDEX")
                             .on_click(cx.listener(move |this, _, _w, cx| {
                                 this.toggle_create_field_flag(id, CreateFieldFlag::NoIndex, cx)
@@ -1209,6 +1207,7 @@ impl ZedisSearchManager {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)
+                                .tooltip(i18n_common(cx, "close"))
                                 .on_click(cx.listener(|this, _, _w, cx| this.close_plan(cx))),
                         ),
                 )

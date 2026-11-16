@@ -736,6 +736,7 @@ impl ZedisEditor {
         let warning = theme.warning;
         let fg = theme.foreground;
         let copied_message = i18n_common(cx, "copied_to_clipboard");
+        let copy_tooltip = i18n_common(cx, "copy");
 
         let actions = h_flex()
             .gap_2()
@@ -773,7 +774,7 @@ impl ZedisEditor {
             .size_full()
             .items_center()
             .justify_center()
-            .pb(px(32.))
+            .pb_8()
             .px_6()
             .gap_2()
             .child(
@@ -800,6 +801,7 @@ impl ZedisEditor {
                             Button::new("link-down-copy")
                                 .ghost()
                                 .xsmall()
+                                .tooltip(copy_tooltip)
                                 .icon(IconName::Copy)
                                 .on_click(move |_, window, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
@@ -1008,7 +1010,7 @@ impl ZedisEditor {
             .justify_center()
             // Optical centering: with the taller card the geometric
             // center reads a little low — bias the whole block upward.
-            .pb(px(32.))
+            .pb_8()
             .px_6()
             .gap_2()
             .child(

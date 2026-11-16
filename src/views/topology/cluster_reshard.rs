@@ -89,8 +89,8 @@ impl ZedisTopology {
                     .child(Label::new(SharedString::from(slots_label)).text_xs().text_color(muted))
                     .child(
                         Button::new(SharedString::from(format!("reshard-src-{}", m.node_id)))
-                            .when(is_src, |b| b.primary())
-                            .when(!is_src, |b| b.ghost())
+                            .outline()
+                            .selected(is_src)
                             .small()
                             .label(i18n_topology(cx, "reshard_as_source"))
                             .disabled(!can_write || self.reshard_running)
@@ -100,8 +100,8 @@ impl ZedisTopology {
                     )
                     .child(
                         Button::new(SharedString::from(format!("reshard-tgt-{}", m.node_id)))
-                            .when(is_tgt, |b| b.primary())
-                            .when(!is_tgt, |b| b.ghost())
+                            .outline()
+                            .selected(is_tgt)
                             .small()
                             .label(i18n_topology(cx, "reshard_as_target"))
                             .disabled(!can_write || self.reshard_running)

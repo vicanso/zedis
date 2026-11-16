@@ -35,7 +35,7 @@ use crate::views::panel_poll::{PanelPoll, summary_chip};
 use crate::views::unavailable_chip;
 use gpui::{App, ClipboardItem, Entity, ScrollHandle, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -264,8 +264,8 @@ impl ZedisHotkeys {
             .child(
                 Button::new("hk-metric-cpu")
                     .xsmall()
-                    .when(self.track_cpu, |b| b.primary())
-                    .when(!self.track_cpu, |b| b.outline())
+                    .outline()
+                    .selected(self.track_cpu)
                     .label("CPU")
                     .tooltip(i18n_hotkeys(cx, "track_cpu_tooltip"))
                     .disabled(tracking)
@@ -277,8 +277,8 @@ impl ZedisHotkeys {
             .child(
                 Button::new("hk-metric-net")
                     .xsmall()
-                    .when(self.track_net, |b| b.primary())
-                    .when(!self.track_net, |b| b.outline())
+                    .outline()
+                    .selected(self.track_net)
                     .label("NET")
                     .tooltip(i18n_hotkeys(cx, "track_net_tooltip"))
                     .disabled(tracking)
@@ -291,8 +291,8 @@ impl ZedisHotkeys {
             bar = bar.child(
                 Button::new(SharedString::from(format!("hk-top-{k}")))
                     .xsmall()
-                    .when(self.top_k == k, |b| b.primary())
-                    .when(self.top_k != k, |b| b.outline())
+                    .outline()
+                    .selected(self.top_k == k)
                     .label(format!("Top {k}"))
                     .disabled(tracking)
                     .on_click(cx.listener(move |this, _, _w, cx| {
@@ -407,7 +407,6 @@ impl ZedisHotkeys {
                     .gap_2()
                     .items_center()
                     .when(ix % 2 != 0, |this| this.bg(stripe_bg))
-                    .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _w, cx| this.copy_key(copy_key.clone(), cx)))
                     .child(
                         div()

@@ -233,7 +233,6 @@ impl ZedisWorkbench {
                         .border_b_1()
                         .border_color(border)
                         .hover(move |s| s.bg(hover_bg))
-                        .cursor_pointer()
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_snippet(id_open.clone(), window, cx);
                         }))

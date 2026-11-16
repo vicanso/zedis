@@ -111,6 +111,7 @@ impl ZedisWorkbench {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Copy)
+                            .tooltip(i18n_common(cx, "copy"))
                             .disabled(!has_results)
                             .on_click(cx.listener(|this, _, window, cx| this.copy_all_results(window, cx))),
                     )
@@ -119,6 +120,7 @@ impl ZedisWorkbench {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Delete)
+                            .tooltip(i18n_common(cx, "clear"))
                             .disabled(!has_results)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 if let Some(tab) = this.tabs.get_mut(this.active_tab) {
@@ -206,6 +208,7 @@ impl ZedisWorkbench {
                                                 .ghost()
                                                 .xsmall()
                                                 .icon(IconName::Copy)
+                                                .tooltip(i18n_common(cx, "copy"))
                                                 .on_click(move |_, window, cx| {
                                                     cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
                                                     window.push_notification(

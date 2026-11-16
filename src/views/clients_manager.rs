@@ -1242,6 +1242,7 @@ impl gpui::Render for ZedisClientsManager {
                                     .outline()
                                     .small()
                                     .icon(IconName::Search)
+                                    .tooltip(i18n_common(cx, "search"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.handle_filter(cx);
                                     })),

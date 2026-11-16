@@ -71,6 +71,7 @@ use gpui_kit::component::{
 use preview::{Preview, new_preview_editor, opens_as_tree};
 use std::{cell::Cell, mem::take, rc::Rc, sync::Arc, time::Duration};
 use web_time::Instant;
+use zedis_ui::stat_chip;
 
 // The scan cap, time budget and match cap are user-tunable (Settings →
 // Key Behavior; `ZedisAppState::value_search_*`, clamped there). The
@@ -694,28 +695,8 @@ impl ZedisValueSearch {
         .into()
     }
 
-    fn render_stat_chip(
-        label: SharedString,
-        value: SharedString,
-        muted: gpui::Hsla,
-        border: gpui::Hsla,
-    ) -> gpui::AnyElement {
-        h_flex()
-            .gap_1()
-            .items_center()
-            .px_2()
-            .py_0p5()
-            .rounded_md()
-            .border_1()
-            .border_color(border)
-            .child(Label::new(label).text_xs().text_color(muted))
-            .child(Label::new(value).text_xs().font_semibold())
-            .into_any_element()
-    }
-
     fn render_status_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
-        let border = cx.theme().border;
         let danger = cx.theme().danger;
         let warning = cx.theme().warning;
 
@@ -723,7 +704,7 @@ impl ZedisValueSearch {
             return div()
                 .px_2()
                 .py_1()
-                .rounded_md()
+                .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(danger)
                 .bg(danger.opacity(0.1))
@@ -740,32 +721,21 @@ impl ZedisValueSearch {
 
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         let mut row = h_flex().gap_2().items_center().flex_wrap();
-        row = row.child(Self::render_stat_chip(
+        row = row.child(stat_chip(
             i18n_value_search(cx, "stat_scanned"),
             SharedString::from(self.scanned.to_string()),
-            muted,
-            border,
         ));
-        row = row.child(Self::render_stat_chip(
+        row = row.child(stat_chip(
             i18n_value_search(cx, "stat_matched"),
             SharedString::from(self.matches.len().to_string()),
-            muted,
-            border,
         ));
-        row = row.child(Self::render_stat_chip(
+        row = row.child(stat_chip(
             i18n_value_search(cx, "stat_skipped"),
             SharedString::from(self.skipped.to_string()),
-            muted,
-            border,
         ));
         let reason = self.reason_label(cx);
         if !reason.is_empty() {
-            row = row.child(Self::render_stat_chip(
-                i18n_value_search(cx, "stat_status"),
-                reason,
-                muted,
-                border,
-            ));
+            row = row.child(stat_chip(i18n_value_search(cx, "stat_status"), reason));
         }
         if self.truncated {
             row = row.child(
@@ -953,7 +923,6 @@ impl ZedisValueSearch {
                         .items_center()
                         .gap_2()
                         .px_2()
-                        .cursor_pointer()
                         .when(is_stripe && !is_selected, |this| this.bg(stripe))
                         .when(is_selected, |this| this.bg(active))
                         .when(!is_selected, |this| this.hover(move |s| s.bg(hover)))

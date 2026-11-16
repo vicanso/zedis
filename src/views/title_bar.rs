@@ -18,7 +18,9 @@ use crate::assets::Assets;
 // updates, logs, diagnostics).
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{DiagnosticsAction, UpdateAction, is_app_store_build};
-use crate::helpers::{MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, get_mono_font_family};
+use crate::helpers::{
+    MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, get_mono_font_family, prod_banner_colors,
+};
 use crate::states::i18n_shortcuts;
 use crate::views::update_prompt;
 use crate::{
@@ -30,11 +32,10 @@ use crate::{
     },
 };
 use gpui::{
-    Anchor, App, Context, Decorations, Div, Hsla, MouseButton, SharedString, Subscription, Window, div, prelude::*, px,
-    rgb,
+    Anchor, App, Context, Decorations, Div, MouseButton, Role, SharedString, Subscription, Window, div, prelude::*,
 };
 #[cfg(target_family = "wasm")]
-use gpui::{Image, ImageFormat, img};
+use gpui::{Image, ImageFormat, img, px};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode, ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
@@ -388,12 +389,12 @@ fn left_slot(cx: &mut App) -> Div {
     h_flex().flex_1().items_center().child(
         h_flex()
             .id("title-bar-home")
+            .role(Role::Button)
             .items_center()
             .gap_2()
             .px_1()
             .py_0p5()
-            .rounded_md()
-            .cursor_pointer()
+            .rounded(cx.theme().radius)
             .hover(|this| this.bg(hover_bg))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(img(mark).flex_none().size(px(18.)))
@@ -438,11 +439,7 @@ impl Render for ZedisTitleBar {
         let muted = cx.theme().muted_foreground;
         let mono: SharedString = get_mono_font_family().into();
         // Soft tint only (no border). Status bar keeps the solid magenta fill.
-        let (prod_bg, prod_fg): (Hsla, Hsla) = if cx.theme().is_dark() {
-            (rgb(0x3f1a2e).into(), rgb(0xf9a8d4).into())
-        } else {
-            (rgb(0xfdf2f8).into(), rgb(0xbe185d).into())
-        };
+        let (prod_bg, prod_fg) = prod_banner_colors(cx.theme().is_dark());
         // A production connection tints the whole bar, not just its chip: the
         // window itself says where a stray command would land.
         let is_prod = Self::selected_server_info(cx).is_some_and(|info| info.prod_label.is_some());
@@ -546,11 +543,11 @@ impl Render for ZedisTitleBar {
                         this.child(
                             div()
                                 .id("zedis-titlebar-update-dismiss")
+                                .role(Role::Button)
                                 .flex_none()
                                 .ml_0p5()
                                 .p_0p5()
-                                .rounded_sm()
-                                .cursor_pointer()
+                                .rounded(cx.theme().radius)
                                 .hover(move |s| s.bg(dismiss_hover_bg))
                                 .tooltip(move |window, cx| Tooltip::new(dismiss_tooltip.clone()).build(window, cx))
                                 .child(Icon::new(IconName::Close).xsmall().text_color(dismiss_fg))
@@ -591,7 +588,7 @@ impl Render for ZedisTitleBar {
                 .h(TITLE_BAR_HEIGHT)
                 // Non-macOS `TITLE_BAR_LEFT_PADDING` (private to the
                 // component) — keeps the row aligned with the TitleBar branch.
-                .pl(px(12.))
+                .pl_3()
                 .items_center()
                 .justify_between()
                 .border_b_1()

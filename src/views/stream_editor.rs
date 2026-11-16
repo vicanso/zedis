@@ -30,8 +30,8 @@ use crate::{
 };
 use gpui::{App, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable,
-    button::{Button, ButtonVariants},
+    ActiveTheme, IconName, Selectable, Sizable,
+    button::Button,
     h_flex,
     input::{InputEvent, InputState},
     table::TableState,
@@ -473,8 +473,8 @@ impl ZedisStreamEditor {
                     let weak_mode = weak.clone();
                     actions.push(
                         Button::new("stream-tail-mode-btn")
-                            .when(has_group_mode, |b| b.primary())
-                            .when(!has_group_mode, |b| b.ghost())
+                            .outline()
+                            .selected(has_group_mode)
                             .icon(IconName::Settings2)
                             .tooltip(i18n_stream_editor(cx, "tail_mode_group"))
                             .on_click(move |_, window, cx| {

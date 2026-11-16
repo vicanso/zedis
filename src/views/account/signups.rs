@@ -178,7 +178,7 @@ impl ZedisAccount {
                 let taken = request.name_taken;
                 v_flex()
                     .gap_3()
-                    .child(Label::new(title).text_sm().font_weight(FontWeight::BOLD))
+                    .child(Label::new(title).text_sm().font_semibold())
                     .child(
                         div()
                             .w(px(200.))

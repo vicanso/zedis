@@ -366,7 +366,7 @@ impl ZedisAccount {
             .child(
                 v_flex()
                     .gap_0p5()
-                    .child(Label::new(account.name.clone()).text_sm().font_weight(FontWeight::BOLD))
+                    .child(Label::new(account.name.clone()).text_sm().font_semibold())
                     .child(note(cx, created)),
             )
             .child(

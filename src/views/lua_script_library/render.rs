@@ -27,7 +27,7 @@ use gpui::{AnyElement, ClipboardItem, Context, Render, SharedString, Window, div
 #[cfg(target_family = "wasm")]
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Editor, EditorState, Input, Textarea},
@@ -441,8 +441,8 @@ impl ZedisLuaScriptLibrary {
                                         this.child(
                                             Button::new(("lua-ro", card_hash))
                                                 .small()
-                                                .when(readonly, |b| b.primary())
-                                                .when(!readonly, |b| b.outline())
+                                                .outline()
+                                                .selected(readonly)
                                                 .label(if readonly { "EVALSHA_RO" } else { "EVALSHA" })
                                                 .tooltip(i18n_lua_scripts(cx, "evalsha_ro_tooltip"))
                                                 .on_click(cx.listener(move |this, _, _w, cx| {

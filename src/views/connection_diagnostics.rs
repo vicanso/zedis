@@ -234,11 +234,11 @@ impl Render for ZedisConnectionDiagnostics {
                     }),
             );
             if let Some(error) = parts.error {
-                row = row.child(Label::new(error).text_xs().text_color(red).ml(px(26.)));
+                row = row.child(Label::new(error).text_xs().text_color(red).ml_6());
             }
             if let Some((hint, warn)) = parts.hint {
                 let color = if warn { yellow } else { muted };
-                row = row.child(Label::new(hint).text_xs().text_color(color).ml(px(26.)));
+                row = row.child(Label::new(hint).text_xs().text_color(color).ml_6());
             }
             list = list.child(row);
         }

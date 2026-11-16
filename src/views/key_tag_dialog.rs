@@ -38,7 +38,7 @@ use crate::helpers::theme_color_for_tag;
 use crate::states::{ZedisGlobalStore, dialog_button_props, i18n_common, i18n_key_tag};
 use gpui::{Entity, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Textarea, TextareaState},
@@ -142,12 +142,9 @@ impl ZedisKeyTagDialog {
         let none_active = self.selected_tag.is_none();
         let none_btn = Button::new("ktd-swatch-none")
             .xsmall()
+            .outline()
+            .selected(none_active)
             .label(i18n_key_tag(cx, "none_pill"));
-        let none_btn = if none_active {
-            none_btn.primary()
-        } else {
-            none_btn.outline()
-        };
         row = row.child(none_btn.on_click(cx.listener(|this, _, _w, cx| this.set_tag(None, cx))));
 
         for (i, color) in TagColor::ALL.iter().copied().enumerate() {
@@ -171,7 +168,6 @@ impl ZedisKeyTagDialog {
                     .border_2()
                     .border_color(border)
                     .bg(fill)
-                    .cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
                     .on_click(cx.listener(move |this, _, _w, cx| this.set_tag(Some(color), cx))),
             );
@@ -365,12 +361,9 @@ impl ZedisBatchKeyTagDialog {
         let none_active = self.selected_tag.is_none();
         let none_btn = Button::new("bktd-swatch-none")
             .xsmall()
+            .outline()
+            .selected(none_active)
             .label(i18n_key_tag(cx, "none_pill"));
-        let none_btn = if none_active {
-            none_btn.primary()
-        } else {
-            none_btn.outline()
-        };
         row = row.child(none_btn.on_click(cx.listener(|this, _, _w, cx| this.set_tag(None, cx))));
 
         for (i, color) in TagColor::ALL.iter().copied().enumerate() {
@@ -388,7 +381,6 @@ impl ZedisBatchKeyTagDialog {
                     .border_2()
                     .border_color(border)
                     .bg(fill)
-                    .cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
                     .on_click(cx.listener(move |this, _, _w, cx| this.set_tag(Some(color), cx))),
             );

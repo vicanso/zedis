@@ -35,7 +35,7 @@ use gpui::{
     App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -491,8 +491,8 @@ impl ZedisServerLoad {
             .child(
                 Button::new("sl-show-idle")
                     .xsmall()
-                    .when(self.show_idle, |b| b.primary())
-                    .when(!self.show_idle, |b| b.outline())
+                    .outline()
+                    .selected(self.show_idle)
                     .label(i18n_server_load(cx, "show_idle"))
                     .tooltip(i18n_server_load(cx, "show_idle_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| {
@@ -503,8 +503,8 @@ impl ZedisServerLoad {
             .child(
                 Button::new("sl-hide-self")
                     .xsmall()
-                    .when(self.hide_self, |b| b.primary())
-                    .when(!self.hide_self, |b| b.outline())
+                    .outline()
+                    .selected(self.hide_self)
                     .label(i18n_server_load(cx, "hide_self"))
                     .tooltip(i18n_server_load(cx, "hide_self_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| {
@@ -515,8 +515,8 @@ impl ZedisServerLoad {
             .child(
                 Button::new("sl-top-25")
                     .xsmall()
-                    .when(self.top_n == 25, |b| b.primary())
-                    .when(self.top_n != 25, |b| b.outline())
+                    .outline()
+                    .selected(self.top_n == 25)
                     .label("Top 25")
                     .on_click(cx.listener(|this, _, _w, cx| {
                         this.top_n = 25;
@@ -526,8 +526,8 @@ impl ZedisServerLoad {
             .child(
                 Button::new("sl-top-50")
                     .xsmall()
-                    .when(self.top_n == 50, |b| b.primary())
-                    .when(self.top_n != 50, |b| b.outline())
+                    .outline()
+                    .selected(self.top_n == 50)
                     .label("Top 50")
                     .on_click(cx.listener(|this, _, _w, cx| {
                         this.top_n = 50;
@@ -537,8 +537,8 @@ impl ZedisServerLoad {
             .child(
                 Button::new("sl-top-all")
                     .xsmall()
-                    .when(self.top_n == 0, |b| b.primary())
-                    .when(self.top_n != 0, |b| b.outline())
+                    .outline()
+                    .selected(self.top_n == 0)
                     .label(i18n_server_load(cx, "top_all"))
                     .on_click(cx.listener(|this, _, _w, cx| {
                         this.top_n = 0;
@@ -639,7 +639,6 @@ impl ZedisServerLoad {
                     .id("sl-hdr-command")
                     .flex_1()
                     .min_w_0()
-                    .cursor_pointer()
                     .on_click(cx.listener(|this, _, _w, cx| this.set_sort(SortBy::Command, cx)))
                     .child(
                         Label::new(format!(
@@ -656,7 +655,6 @@ impl ZedisServerLoad {
                     .id("sl-hdr-rate")
                     .w(px(NUM_COL))
                     .justify_end()
-                    .cursor_pointer()
                     .on_click(cx.listener(|this, _, _w, cx| this.set_sort(SortBy::Rate, cx)))
                     .child(
                         Label::new(format!("{}{}", i18n_server_load(cx, "col_rate"), arrow(SortBy::Rate)))
@@ -669,7 +667,6 @@ impl ZedisServerLoad {
                     .id("sl-hdr-avg")
                     .w(px(NUM_COL))
                     .justify_end()
-                    .cursor_pointer()
                     .on_click(cx.listener(|this, _, _w, cx| this.set_sort(SortBy::AvgUs, cx)))
                     .child(
                         Label::new(format!("{}{}", i18n_server_load(cx, "col_avg"), arrow(SortBy::AvgUs)))
@@ -682,7 +679,6 @@ impl ZedisServerLoad {
                     .id("sl-hdr-share")
                     .w(px(PCT_COL))
                     .justify_end()
-                    .cursor_pointer()
                     .on_click(cx.listener(|this, _, _w, cx| this.set_sort(SortBy::UsecShare, cx)))
                     .child(
                         Label::new(format!(
@@ -699,7 +695,6 @@ impl ZedisServerLoad {
                     .id("sl-hdr-calls")
                     .w(px(NUM_COL))
                     .justify_end()
-                    .cursor_pointer()
                     .on_click(cx.listener(|this, _, _w, cx| this.set_sort(SortBy::Calls, cx)))
                     .child(
                         Label::new(format!("{}{}", i18n_server_load(cx, "col_calls"), arrow(SortBy::Calls)))

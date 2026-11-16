@@ -601,14 +601,20 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             .when(!readonly_on_edit && self.fetcher.support_add_fields(), |this| {
                 this.support_add_fields()
                     .add_button_label(i18n_common(cx, "add_element"))
+                    .add_button_tooltip(i18n_common(cx, "add_element"))
+                    .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::List, |this| {
                 this.support_add_single_fields(i18n_common(cx, "value_placeholder"), 0)
                     .add_button_label(i18n_common(cx, "add_element"))
+                    .add_button_tooltip(i18n_common(cx, "add_element"))
+                    .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Set, |this| {
                 this.support_add_single_fields(i18n_common(cx, "member_placeholder"), 0)
                     .add_button_label(i18n_common(cx, "add_element"))
+                    .add_button_tooltip(i18n_common(cx, "add_element"))
+                    .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Zset, |this| {
                 this.support_add_pair_fields(
@@ -617,6 +623,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     0,
                 )
                 .add_button_label(i18n_common(cx, "add_element"))
+                .add_button_tooltip(i18n_common(cx, "add_element"))
+                .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
             })
             .when(is_adding && !readonly_on_edit && key_type == KeyType::Hash, |this| {
                 this.support_add_pair_fields(
@@ -625,6 +633,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     0,
                 )
                 .add_button_label(i18n_common(cx, "add_element"))
+                .add_button_tooltip(i18n_common(cx, "add_element"))
+                .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
             });
 
         let form = cx.new(|cx| {

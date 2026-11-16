@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, ClickEvent, ElementId, Fill, Hsla, Role, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt, button::Button, h_flex, label::Label, list::ListItem, tooltip::Tooltip,
     v_flex,
@@ -233,8 +233,8 @@ impl RenderOnce for ZedisCard {
                 .border_color(cx.theme().muted_foreground)
                 .rounded(cx.theme().radius)
                 .when_some(self.bg, |this, bg| this.bg(bg))
-                .hover(|s| s.bg(cx.theme().list_active))
-                .cursor_pointer()
+                .hover(|s| s.bg(cx.theme().list_hover))
+                .when(self.on_click.is_some(), |this| this.role(Role::Button))
                 .when_some(self.on_click, |this, handler| {
                     this.on_click(move |event, window, cx| handler(event, window, cx))
                 })
@@ -342,8 +342,8 @@ impl RenderOnce for ZedisCard {
             });
 
         let subtitle_font = self.subtitle_font;
-        // A detail row starts under the name, past the icon block.
-        let detail_row = || h_flex().w_full().items_center().gap_1p5().pl(px(ICON_BLOCK + 8.));
+        // A detail row starts under the name, past the icon block (2rem = 32px at 16px rem).
+        let detail_row = || h_flex().w_full().items_center().gap_1p5().pl_8();
         let address_row = self.subtitle.map(|subtitle| {
             let mut label = Label::new(subtitle)
                 .text_xs()
@@ -388,10 +388,9 @@ impl RenderOnce for ZedisCard {
 
         let card = ListItem::new(self.id)
             .m_1()
-            .cursor_pointer()
             .border(px(1.))
             .border_color(cx.theme().border)
-            .p(px(10.))
+            .p_2p5()
             .rounded(cx.theme().radius)
             .when_some(self.bg, |this, bg| this.bg(bg))
             .when_some(self.on_click, |this, handler| {

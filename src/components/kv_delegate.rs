@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use super::{KvTableColumn, KvTableColumnType, select_offset};
-use crate::helpers::get_mono_font_family;
 use crate::states::{
     DataFormat, KeyType, KvElement, RedisValue, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_kv_table,
 };
-use gpui::{App, ClipboardItem, Edges, Entity, FontWeight, Pixels, SharedString, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Edges, Entity, Pixels, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, IconName, StyledExt, WindowExt,
+    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -474,8 +473,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                 Label::new(column.name.clone())
                     .text_align(column.align)
                     .text_sm()
-                    .font_family(get_mono_font_family())
-                    .font_weight(FontWeight::BOLD)
+                    .font_semibold()
                     .flex_1(),
             )
             .into_any_element()
@@ -617,7 +615,9 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                     .child(
                         Button::new(("copy-cell", row_ix * 100 + col_ix))
                             .ghost()
+                            .xsmall()
                             .icon(IconName::Copy)
+                            .tooltip(copied_message.clone())
                             .on_click(move |_, window, cx: &mut App| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
                                 window.push_notification(Notification::info(copied_message.clone()), cx);

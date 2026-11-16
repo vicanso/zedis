@@ -264,8 +264,8 @@ impl ZedisTopology {
             picker = picker.child(
                 Button::new(SharedString::from(format!("slot-stats-m-{}", metric.word())))
                     .xsmall()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .outline()
+                    .selected(active)
                     .label(i18n_topology(cx, key))
                     .disabled(!enabled)
                     .when(!enabled, |b| b.tooltip(i18n_topology(cx, "slot_stats_extended_hint")))
@@ -519,7 +519,6 @@ impl ZedisTopology {
                     .rounded_md()
                     .border_1()
                     .border_color(border)
-                    .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         // Click legend → fill reshard target and jump to Reshard.

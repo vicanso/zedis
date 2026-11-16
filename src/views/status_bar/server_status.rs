@@ -187,7 +187,7 @@ impl ZedisStatusBar {
             readonly,
             features,
         };
-        let status_text = status_text_color(cx.theme().is_dark());
+        let status_text = cx.theme().muted_foreground;
         ZedisDivider::new()
             .child(
                 h_flex()

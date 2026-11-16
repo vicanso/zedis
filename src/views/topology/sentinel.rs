@@ -240,8 +240,9 @@ impl ZedisTopology {
                 let name_for_click = name.clone();
                 let button = Button::new(SharedString::from(format!("topo-snt-switch-{name}")))
                     .small()
+                    .outline()
+                    .selected(is_current)
                     .label(name.clone());
-                let button = if is_current { button.primary() } else { button.outline() };
                 row = row.child(button.on_click(cx.listener(move |this, _, _window, cx| {
                     let name: SharedString = name_for_click.clone().into();
                     this.server_state

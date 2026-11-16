@@ -18,7 +18,7 @@
 //! ↑↓/Enter navigation — but only lists recent keys.
 
 use crate::db::{get_recent_keys_manager, recent_keys_scope};
-use crate::helpers::fuzzy_score;
+use crate::helpers::{fuzzy_score, get_mono_font_family, overlay_backdrop_color};
 use crate::states::{Route, ServerView, ZedisGlobalStore, ZedisServerState, i18n_recent_keys_palette};
 use crate::views::placeholders::Placeholders;
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
@@ -215,6 +215,7 @@ impl Render for ZedisRecentKeysPalette {
         let panel_bg = theme.background;
         let border = theme.border;
         let active = theme.list_active;
+        let hover = theme.list_hover;
         let muted = theme.muted_foreground;
         let radius = theme.radius;
         let radius_lg = theme.radius_lg;
@@ -251,13 +252,8 @@ impl Render for ZedisRecentKeysPalette {
                     .px_2()
                     .py_1p5()
                     .rounded(radius)
-                    .cursor_pointer()
-                    .hover(|this| this.bg(active))
-                    .child(
-                        Label::new(key)
-                            .text_sm()
-                            .font_family(crate::helpers::get_mono_font_family()),
-                    )
+                    .when(!is_sel, |this| this.hover(move |this| this.bg(hover)))
+                    .child(Label::new(key).text_sm().font_family(get_mono_font_family()))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, _window, cx| {
@@ -282,7 +278,7 @@ impl Render for ZedisRecentKeysPalette {
             .flex()
             .justify_center()
             .items_start()
-            .bg(gpui::hsla(0., 0., 0., 0.4))
+            .bg(overlay_backdrop_color())
             // Wheel events stay on the palette instead of scrolling the page.
             .occlude()
             .track_focus(&self.focus_handle)

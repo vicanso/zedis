@@ -249,7 +249,7 @@ impl ZedisKeyTree {
                         .top_0()
                         .left(px(4.))
                         .right(px(4.))
-                        .pt(px(12.))
+                        .pt_3()
                         .pb_2()
                         .px_2()
                         // Root indent + 3px for the rows' selection border so
@@ -257,7 +257,6 @@ impl ZedisKeyTree {
                         .pl(px(TREE_INDENT_OFFSET + 3.))
                         .gap_2()
                         .items_center()
-                        .cursor_pointer()
                         .font_family(get_mono_font_family())
                         .bg(sticky_bg)
                         .border_b_1()
@@ -340,7 +339,13 @@ impl ZedisKeyTree {
             sort,
         };
         let query_mode_dropdown = DropdownButton::new("dropdown")
-            .button(Button::new("key-tree-query-mode-btn").ghost().px_2().icon(icon))
+            .button(
+                Button::new("key-tree-query-mode-btn")
+                    .ghost()
+                    .px_2()
+                    .tooltip(i18n_common(cx, "search"))
+                    .icon(icon),
+            )
             .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, window, cx| {
                 filter_menu.build(menu, window, cx)
             });
@@ -348,6 +353,7 @@ impl ZedisKeyTree {
             .ghost()
             .loading(scanning)
             .disabled(scanning)
+            .tooltip(i18n_common(cx, "search"))
             .icon(IconName::Search)
             .on_click(cx.listener(|this, _, _, cx| {
                 // Explicit search from the box → always a fresh query.

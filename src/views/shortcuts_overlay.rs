@@ -18,7 +18,7 @@
 //! to close). Data comes from [`shortcut_reference`]; keystrokes render
 //! through [`humanize_keystroke`] for per-platform symbols.
 
-use crate::helpers::{humanize_keystroke, shortcut_reference};
+use crate::helpers::{humanize_keystroke, overlay_backdrop_color, shortcut_reference};
 use crate::states::i18n_shortcuts;
 use gpui::{Context, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, div, prelude::*, px};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
@@ -183,7 +183,7 @@ impl Render for ZedisShortcutsOverlay {
             // Top-align so the panel stays content-sized rather than
             // stretching to its max height (mirrors the palette).
             .items_start()
-            .bg(gpui::hsla(0., 0., 0., 0.4))
+            .bg(overlay_backdrop_color())
             // The page under the dim layer must not see the wheel. `occlude`
             // keeps the hit on this overlay, so the shortcut list scrolls.
             .occlude()

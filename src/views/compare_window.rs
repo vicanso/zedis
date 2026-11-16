@@ -41,7 +41,7 @@ use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, size};
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::component::Root;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable, WindowExt,
+    ActiveTheme, Disableable, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -623,11 +623,7 @@ impl Render for ZedisCompareWindow {
             .pt_6()
             // A dialog in the browser carries the title itself.
             .when(OWN_TITLE, |this| {
-                this.child(
-                    Label::new(i18n_compare(cx, "title"))
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::BOLD),
-                )
+                this.child(Label::new(i18n_compare(cx, "title")).text_lg().font_semibold())
             })
             .child(div().pt_1().child(Label::new(source_line).text_sm().text_color(muted)));
 
@@ -637,14 +633,11 @@ impl Render for ZedisCompareWindow {
             let is_selected = selected.as_ref() == Some(id);
             let id_click = id.clone();
             let button = Button::new(SharedString::from(format!("compare-target-{id}")))
+                .outline()
                 .small()
+                .selected(is_selected)
                 .label(name.clone())
                 .disabled(is_running);
-            let button = if is_selected {
-                button.primary()
-            } else {
-                button.outline()
-            };
             server_row = server_row.child(button.on_click(cx.listener(move |this, _, _window, cx| {
                 if this.target_server_id.as_ref() != Some(&id_click) {
                     this.forget_report(cx);

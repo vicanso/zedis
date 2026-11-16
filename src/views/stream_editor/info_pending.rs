@@ -24,7 +24,7 @@ use crate::{
 };
 use gpui::{App, Context, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::Input,
@@ -573,8 +573,8 @@ impl ZedisStreamEditor {
             left = left.child(
                 Button::new("stream-pending-group-all")
                     .xsmall()
-                    .when(all_active, |b| b.primary())
-                    .when(!all_active, |b| b.outline())
+                    .outline()
+                    .selected(all_active)
                     .label(i18n_stream_editor(cx, "pending_all_groups"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.pending_group_filter = None;
@@ -587,8 +587,8 @@ impl ZedisStreamEditor {
                 left = left.child(
                     Button::new(("stream-pending-group", idx))
                         .xsmall()
-                        .when(is_active, |b| b.primary())
-                        .when(!is_active, |b| b.outline())
+                        .outline()
+                        .selected(is_active)
                         .label(format!("{} ({})", g.name, g.pending_count))
                         .on_click(cx.listener(move |this, _, _window, cx| {
                             this.pending_group_filter = Some(group_name.clone());

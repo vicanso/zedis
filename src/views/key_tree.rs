@@ -40,7 +40,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use gpui::{
     Action, Anchor, App, AppContext, ClipboardItem, Entity, FocusHandle, Focusable, FontWeight, Hsla, ScrollStrategy,
-    SharedString, Subscription, Task, Window, div, prelude::*, px, rgb,
+    SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt,

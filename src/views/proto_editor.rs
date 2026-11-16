@@ -133,6 +133,8 @@ impl TableDelegate for ProtoTableDelegate {
                         Button::new("edit-proto-btn")
                             .icon(CustomIconName::FilePenLine)
                             .ghost()
+                            .small()
+                            .tooltip(i18n_common(cx, "edit"))
                             .on_click(cx.listener(move |_this, _, window, cx| {
                                 (on_edit)(row_ix, window, cx);
                             })),
@@ -141,6 +143,8 @@ impl TableDelegate for ProtoTableDelegate {
                         Button::new("delete-proto-btn")
                             .icon(CustomIconName::X)
                             .ghost()
+                            .small()
+                            .tooltip(i18n_common(cx, "delete"))
                             .on_click(cx.listener(move |_this, _, window, cx| {
                                 (on_delete)(row_ix, window, cx);
                             })),
@@ -675,7 +679,7 @@ impl ZedisProtoEditor {
                     .child(
                         field().label(i18n_proto_editor(cx, "mode")).required(true).child(
                             RadioGroup::horizontal("match-mode-group")
-                                .mt(px(8.))
+                                .mt_2()
                                 .children(vec!["Prefix", "Suffix", "Regex", "Exact"])
                                 .selected_index(Some(*match_mode_select_state))
                                 .on_click(move |index, _, cx| {

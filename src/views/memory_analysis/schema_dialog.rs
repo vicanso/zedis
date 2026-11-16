@@ -105,7 +105,7 @@ impl ZedisDataDictionaryDialog {
                                 div()
                                     .px_1p5()
                                     .py_0p5()
-                                    .rounded(px(4.))
+                                    .rounded(theme.radius)
                                     .bg(theme.primary.opacity(0.12))
                                     .child(
                                         Label::new(SharedString::from(type_badge))

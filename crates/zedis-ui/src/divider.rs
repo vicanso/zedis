@@ -44,7 +44,7 @@ impl Styled for ZedisDivider {
 
 impl RenderOnce for ZedisDivider {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let color = cx.theme().muted_foreground;
+        let color = cx.theme().border;
         let last = self.children.len().saturating_sub(1);
         let mut container = h_flex().items_center().refine_style(&self.style);
         for (i, child) in self.children.into_iter().enumerate() {

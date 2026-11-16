@@ -35,7 +35,7 @@ impl ZedisStatusBar {
         // Custom variant (transparent bg, muted foreground) so the label + check
         // read in the same recessive status-bar color as everything else — a
         // plain `.ghost()` paints them at the brighter `secondary_foreground`.
-        let status_text = status_text_color(cx.theme().is_dark());
+        let status_text = cx.theme().muted_foreground;
         Button::new("soft-wrap")
             .ghost()
             .text_color(status_text)
@@ -126,7 +126,7 @@ impl ZedisStatusBar {
             .ghost()
             .xsmall()
             .compact()
-            .text_color(status_text_color(cx.theme().is_dark()))
+            .text_color(cx.theme().muted_foreground)
             .icon(Icon::new(CustomIconName::Binary))
             .label(mode.as_str())
             // A menu, not a switch: the caret says so.

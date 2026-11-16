@@ -19,6 +19,7 @@
 use super::render::tag_color_label_key;
 use super::row_menu::RowMenu;
 use super::*;
+use crate::helpers::ttl_warning_color;
 use gpui::{AnyElement, DismissEvent, Div};
 
 /// The selection checkbox of a key row, with the row's index.
@@ -450,7 +451,7 @@ fn row_icon(entry: &KeyTreeItem, cx: &App) -> AnyElement {
         // touching the per-level indent or the type→name spacing.
         div()
             .flex_none()
-            .ml(px(8.))
+            .ml_2()
             .w(px(TYPE_BADGE_COL_WIDTH))
             .child(KeyTypeBadge::new(entry.key_type).plain(true))
             .into_any_element()
@@ -491,13 +492,12 @@ fn ttl_chip(entry: &KeyTreeItem, show_ttl: bool, cx: &App) -> Option<(SharedStri
             }
             let label = format_ttl_chip(secs)?;
             // Three-tier TTL colour (design): seconds left (< 1m) ⇒ red
-            // (about to vanish), minutes left (< 1h) ⇒ warm amber (#cba26a),
+            // (about to vanish), minutes left (< 1h) ⇒ warm amber,
             // anything calmer (≥ 1h) ⇒ muted.
-            let amber: Hsla = rgb(0xcba26a).into();
             let color = if (0..60).contains(&secs) {
                 cx.theme().red
             } else if (60..3600).contains(&secs) {
-                amber
+                ttl_warning_color(cx.theme().is_dark())
             } else {
                 cx.theme().muted_foreground
             };

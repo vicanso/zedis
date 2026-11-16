@@ -35,7 +35,7 @@ use gpui::{
 use gpui_kit::base::plot::label::{TEXT_SIZE, measure_text_width};
 use gpui_kit::component::h_flex;
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable, StyledExt,
+    ActiveTheme, IconName, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     label::Label,
     scroll::ScrollableElement,
@@ -1018,13 +1018,14 @@ impl Render for ZedisMetrics {
                                     })
                                     .child(h_flex().gap_1().children(MetricsRange::ALL.into_iter().map(|range| {
                                         let selected = self.range == range;
-                                        let button = Button::new(range.button_id())
+                                        Button::new(range.button_id())
                                             .xsmall()
-                                            .label(i18n_metrics(cx, range.label_key()));
-                                        let button = if selected { button.primary() } else { button.ghost() };
-                                        button.on_click(
-                                            cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
-                                        )
+                                            .ghost()
+                                            .selected(selected)
+                                            .label(i18n_metrics(cx, range.label_key()))
+                                            .on_click(
+                                                cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
+                                            )
                                     }))),
                             ),
                     )

@@ -42,7 +42,7 @@ use gpui::{
     Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Root, Sizable,
+    ActiveTheme, Disableable, Root, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},

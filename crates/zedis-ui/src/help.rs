@@ -46,11 +46,17 @@ fn help_text_style() -> TextViewStyle {
 }
 
 /// A "?" help button for a panel header. `id` must be unique within the
-/// view; `body` is Markdown (the caller resolves i18n). Opens on click,
-/// dismisses on click-outside. The content is capped and scrolls so a long
-/// explanation can't grow the popover past the viewport.
-pub fn help_popover(id: impl Into<SharedString>, body: impl Into<SharedString>) -> Popover {
+/// view; `tooltip` labels the trigger button; `body` is Markdown (the caller
+/// resolves i18n). Opens on click, dismisses on click-outside. The content is
+/// capped and scrolls so a long explanation can't grow the popover past the
+/// viewport.
+pub fn help_popover(
+    id: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+) -> Popover {
     let id: SharedString = id.into();
+    let tooltip: SharedString = tooltip.into();
     let body = body.into();
     // Derive the child ids up front so the (owned) `id` can move into
     // `Popover::new` while the content closure keeps only what it needs.
@@ -66,7 +72,8 @@ pub fn help_popover(id: impl Into<SharedString>, body: impl Into<SharedString>) 
             Button::new(trigger_id)
                 .ghost()
                 .xsmall()
-                .icon(Icon::empty().path(QUESTION_ICON)),
+                .icon(Icon::empty().path(QUESTION_ICON))
+                .tooltip(tooltip),
         )
         .max_w(px(400.))
         .content(move |_state, window, cx| {

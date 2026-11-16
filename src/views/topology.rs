@@ -51,7 +51,9 @@ use crate::connection::{
     get_server, group_slot_ranges, slots_in_ranges, unassigned_slot_ranges,
 };
 use crate::error::Error;
-use crate::helpers::{format_lag_bytes, get_mono_font_family, group_thousands, pacing};
+use crate::helpers::{
+    format_lag_bytes, get_mono_font_family, group_thousands, pacing, topology_heat_color, topology_master_color,
+};
 use crate::states::{
     ClusterMasterRanges, ClusterNodeLoad, HINT_TOPOLOGY, RebalanceLeg, ReplicaInfo, ServerEvent, ServerView,
     ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, dialog_button_props, escalate_dangerous_body,
@@ -61,10 +63,10 @@ use crate::states::{
 use crate::views::unavailable_chip;
 #[cfg(not(target_family = "wasm"))]
 use crate::views::{ZedisSentinelMonitorDialog, ZedisSentinelSetDialog};
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px, rgb};
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -110,40 +112,13 @@ fn lag_for_addr<'a>(replicas: &'a [ReplicaInfo], addr: &str) -> Option<&'a Repli
     replicas.iter().find(|r| addr_key(r.addr.as_ref()) == key)
 }
 
-/// Fixed master palette for slot bar + load cards (cycled by color_index).
-const MASTER_PALETTE: [u32; 8] = [
-    0x4c_8b_f5, // blue
-    0x69_b0_83, // green
-    0xe5_a5_4b, // amber
-    0xe0_6c_75, // red
-    0xc6_78_dd, // purple
-    0x56_b6_c2, // cyan
-    0xd1_9a_66, // orange
-    0xab_b2_bf, // grey
-];
-
 fn master_color(index: usize) -> Hsla {
-    rgb(MASTER_PALETTE[index % MASTER_PALETTE.len()]).into()
+    topology_master_color(index)
 }
 
 /// Heat colour: low → green, mid → amber, high → red (ratio in 0..=1).
 fn heat_color(ratio: f32) -> Hsla {
-    let r = ratio.clamp(0.0, 1.0);
-    if r < 0.5 {
-        // green → amber
-        let t = r * 2.0;
-        let g = 0xb0u8;
-        let red = (0x69u8 as f32 + t * (0xe5 - 0x69) as f32) as u8;
-        let blue = (0x83u8 as f32 * (1.0 - t)) as u8;
-        rgb(u32::from_be_bytes([0, red, g, blue])).into()
-    } else {
-        // amber → red
-        let t = (r - 0.5) * 2.0;
-        let red = 0xe5u8;
-        let green = (0xa5u8 as f32 * (1.0 - t) + 0x6c as f32 * t) as u8;
-        let blue = (0x4bu8 as f32 * (1.0 - t) + 0x75 as f32 * t) as u8;
-        rgb(u32::from_be_bytes([0, red, green, blue])).into()
-    }
+    topology_heat_color(ratio)
 }
 
 /// Three deployment shapes Redis exposes — mutually exclusive per
@@ -402,8 +377,8 @@ impl ZedisTopology {
             let label = i18n_topology(cx, key);
             row = row.child(
                 Button::new(SharedString::from(format!("topo-tab-{key}")))
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.ghost())
+                    .ghost()
+                    .selected(active)
                     .small()
                     .label(label)
                     .on_click(cx.listener(move |this, _, _window, cx| {
@@ -526,7 +501,7 @@ impl Render for ZedisTopology {
                                 });
                             }),
                     )
-                    .child(Label::new(title).text_lg().font_bold()),
+                    .child(Label::new(title).text_lg().font_semibold()),
             )
             .when(
                 matches!(self.mode, TopologyMode::Standalone | TopologyMode::Unknown),
@@ -553,15 +528,15 @@ impl Render for ZedisTopology {
             TopologyMode::Unknown => None,
         };
         let first_visit_hint = banner_key.filter(|_| self.show_first_visit_hint).map(|banner_key| {
-            hint_banner("topology-first-visit", i18n_hints(cx, banner_key)).on_close(cx.listener(
-                |this, _, _window, cx| {
+            hint_banner("topology-first-visit", i18n_hints(cx, banner_key))
+                .close_tooltip(i18n_common(cx, "close"))
+                .on_close(cx.listener(|this, _, _window, cx| {
                     this.show_first_visit_hint = false;
                     update_app_state_and_save_quiet(cx, "dismiss_hint_topology", |state, _| {
                         state.dismiss_hint(HINT_TOPOLOGY)
                     });
                     cx.notify();
-                },
-            ))
+                }))
         });
 
         v_flex()

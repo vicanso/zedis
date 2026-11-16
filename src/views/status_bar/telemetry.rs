@@ -26,15 +26,6 @@ use super::*;
 /// the button width constant instead.
 const LATENCY_LABEL_CHARS: usize = 5;
 
-/// The green of a healthy link — the latency figure and the "Connected"
-/// label. One value could not serve both themes: `#69b083` is 7.7:1 on the
-/// dark bar and 2.6:1 on the light one, so light takes a darker green
-/// (`#1a7f37`, 5.1:1 on white).
-#[inline]
-fn healthy_color(dark: bool) -> Hsla {
-    rgb(if dark { 0x69b083 } else { 0x1a7f37 }).into()
-}
-
 /// Formats the latency string and determines the color based on the delay.
 #[inline]
 pub(super) fn format_latency(latency: Option<Duration>, cx: &Context<ZedisStatusBar>) -> (SharedString, Hsla) {
@@ -171,7 +162,7 @@ impl ZedisStatusBar {
         // beat) while the number sits at the left edge of its slot.
         let latency_text: SharedString =
             format!("{:<width$}", latency_text.as_ref(), width = LATENCY_LABEL_CHARS).into();
-        let status_text = status_text_color(cx.theme().is_dark());
+        let status_text = cx.theme().muted_foreground;
         let link_label = self.bar_fit(window, cx) < BarFit::LinkIconOnly;
         ZedisDivider::new()
             .child(

@@ -270,7 +270,6 @@ impl ZedisMonitor {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .cursor_pointer()
                                 .hover(|style| style.underline())
                                 .tooltip({
                                     let tip = filter_tooltip.clone();

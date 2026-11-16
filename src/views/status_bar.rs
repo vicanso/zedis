@@ -21,8 +21,8 @@ use crate::{
     },
     constants::STATUS_BAR_HEIGHT,
     helpers::{
-        client_counts, format_lag_bytes, get_mono_font_family, group_thousands, kills_runaway_scripts, pacing,
-        resolve_tag_chip, saves_files, with_hot_key,
+        client_counts, format_lag_bytes, get_mono_font_family, group_thousands, healthy_color, kills_runaway_scripts,
+        pacing, resolve_tag_chip, saves_files, with_hot_key,
     },
     states::{
         ConnectionErrorKind, ConnectionHealth, ErrorMessage, RedisKeySpaceStats, ReplicaInfo, SOFT_WRAP_MAX_BYTES,
@@ -36,7 +36,7 @@ use crate::{
 };
 use gpui::{
     Anchor, App, Entity, Hsla, MouseButton, Pixels, SharedString, Subscription, Task, TextAlign, Window, div,
-    prelude::*, px, rgb,
+    prelude::*, px,
 };
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{
@@ -73,18 +73,6 @@ fn format_size(dbsize: Option<u64>, listed: usize) -> SharedString {
         "--".to_string()
     }
     .into()
-}
-
-/// The design's recessive status-bar text color (t2): `#878d97` dark /
-/// `#686d76` light. gpui-component's `Label` always paints `theme.foreground`
-/// (it does not inherit the parent's `text_color`), so each value label sets
-/// this explicitly to read as muted instead of bright.
-fn status_text_color(is_dark: bool) -> Hsla {
-    if is_dark {
-        rgb(0x878d97).into()
-    } else {
-        rgb(0x686d76).into()
-    }
 }
 
 // --- Local State ---
@@ -671,7 +659,7 @@ impl Render for ZedisStatusBar {
                 commit_selected_db(state, db, window, cx);
             });
         }
-        let status_text = status_text_color(cx.theme().is_dark());
+        let status_text = cx.theme().muted_foreground;
         let editor_controls = self.show_editor_controls(cx);
         let folded = self.bar_fit(window, cx) >= BarFit::FoldedEditorControls;
         h_flex()
@@ -834,38 +822,38 @@ mod tests {
             top,
             [
                 "Observability",
-                "Query & Scripting",
-                "Keys & Data",
+                "Query & scripting",
+                "Keys & data",
                 "Administration",
                 "Server capabilities…",
-                "Troubleshooting Report…"
+                "Troubleshooting report…"
             ]
         );
         assert_eq!(
             groups,
             [
                 vec![
-                    "Live Monitor",
-                    "Command Stats",
-                    "Hot Keys",
-                    "Keyspace Notifications",
-                    "Time Series Explorer",
-                    "Pubsub Mode",
-                    "Server Info (INFO)",
+                    "Live monitor",
+                    "Command stats",
+                    "Hot keys",
+                    "Keyspace notifications",
+                    "Time series explorer",
+                    "Pub/Sub mode",
+                    "Server info (INFO)",
                     "Benchmark"
                 ],
-                vec!["Value Search", "Lua Scripts", "Query Workbench"],
+                vec!["Value search", "Lua scripts", "Query workbench"],
                 vec![
-                    "Recycle Bin…",
-                    "Import Keys…",
-                    "Export Loaded Keys…",
-                    "Compare with Another Server…"
+                    "Recycle bin…",
+                    "Import keys…",
+                    "Export loaded keys…",
+                    "Compare with another server…"
                 ],
                 vec![
-                    "Config Management",
+                    "Config",
                     "Persistence",
-                    "Flush Current Database…",
-                    "Flush All Databases…"
+                    "Flush current database…",
+                    "Flush all databases…"
                 ],
             ]
         );
@@ -876,19 +864,19 @@ mod tests {
         assert_eq!(
             groups[2],
             [
-                "Recycle Bin…",
-                "Import Keys…  ·  Disabled in read-only mode",
-                "Export Loaded Keys…",
-                "Compare with Another Server…"
+                "Recycle bin…",
+                "Import keys…  ·  Disabled in read-only mode",
+                "Export loaded keys…",
+                "Compare with another server…"
             ]
         );
         assert_eq!(
             groups[3],
             [
-                "Config Management",
+                "Config",
                 "Persistence",
-                "Flush Current Database…  ·  Disabled in read-only mode",
-                "Flush All Databases…  ·  Disabled in read-only mode"
+                "Flush current database…  ·  Disabled in read-only mode",
+                "Flush all databases…  ·  Disabled in read-only mode"
             ]
         );
     }

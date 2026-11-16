@@ -320,6 +320,8 @@ impl Zedis {
         let border = cx.theme().border;
         let foreground = cx.theme().foreground;
         let active_bg = foreground.alpha(0.1);
+        let hover_bg = cx.theme().list_hover;
+        let radius = cx.theme().radius;
         let muted = cx.theme().muted_foreground;
         let pills = h_flex()
             .id("workspace-tabs")
@@ -385,12 +387,11 @@ impl Zedis {
                             .pl_2()
                             .pr_1()
                             .py_0p5()
-                            .rounded_md()
-                            .cursor_pointer()
+                            .rounded(radius)
                             .when(is_active, |this| this.bg(active_bg))
+                            .when(!is_active, |this| this.text_color(muted).hover(move |s| s.bg(hover_bg)))
                             // Container-level color still covers the close
                             // button's icon; the Labels set their own below.
-                            .when(!is_active, |this| this.text_color(muted))
                             .child(Label::new(title).text_sm().text_color(title_color).whitespace_nowrap())
                             .child(
                                 Label::new(shortcut)
@@ -403,6 +404,7 @@ impl Zedis {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Close)
+                                    .tooltip(i18n_common(cx, "tab_close"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         // Closing is not activating — keep the
                                         // click off the pill underneath.

@@ -33,6 +33,7 @@ type OnClose = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 pub struct ZedisHintBanner {
     id: SharedString,
     text: SharedString,
+    close_tooltip: Option<SharedString>,
     on_close: Option<OnClose>,
 }
 
@@ -42,11 +43,18 @@ pub fn hint_banner(id: impl Into<SharedString>, text: impl Into<SharedString>) -
     ZedisHintBanner {
         id: id.into(),
         text: text.into(),
+        close_tooltip: None,
         on_close: None,
     }
 }
 
 impl ZedisHintBanner {
+    /// Attach a tooltip to the close button.
+    pub fn close_tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.close_tooltip = Some(tooltip.into());
+        self
+    }
+
     /// Called when the close button is clicked. The caller persists the
     /// dismissal (and re-renders itself) here.
     pub fn on_close(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
@@ -63,11 +71,11 @@ impl RenderOnce for ZedisHintBanner {
             .gap_2()
             .px_3()
             .py_2()
-            .rounded_md()
+            .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted.opacity(0.4))
-            .child(Icon::new(IconName::Info).small().text_color(cx.theme().primary))
+            .child(Icon::new(IconName::Info).small().text_color(cx.theme().info))
             .child(
                 Label::new(self.text)
                     .text_sm()
@@ -80,6 +88,7 @@ impl RenderOnce for ZedisHintBanner {
                         .icon(Icon::new(IconName::Close))
                         .ghost()
                         .xsmall()
+                        .when_some(self.close_tooltip, |btn, tooltip| btn.tooltip(tooltip))
                         .on_click(move |event, window, cx| on_close(event, window, cx)),
                 )
             })

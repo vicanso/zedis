@@ -127,6 +127,8 @@ impl TableDelegate for ScriptTableDelegate {
                         Button::new("edit-sv-btn")
                             .icon(CustomIconName::FilePenLine)
                             .ghost()
+                            .small()
+                            .tooltip(i18n_common(cx, "edit"))
                             .on_click(cx.listener(move |_, _, window, cx| {
                                 (on_edit)(row_ix, window, cx);
                             })),
@@ -135,6 +137,8 @@ impl TableDelegate for ScriptTableDelegate {
                         Button::new("delete-sv-btn")
                             .icon(CustomIconName::X)
                             .ghost()
+                            .small()
+                            .tooltip(i18n_common(cx, "delete"))
                             .on_click(cx.listener(move |_, _, window, cx| {
                                 (on_delete)(row_ix, window, cx);
                             })),
@@ -601,7 +605,7 @@ impl ZedisScriptEditor {
                     .child(
                         field().label(i18n_script_editor(cx, "mode")).required(true).child(
                             RadioGroup::horizontal("script-viewer-mode-group")
-                                .mt(px(8.))
+                                .mt_2()
                                 .children(vec!["Prefix", "Suffix", "Regex", "Exact"])
                                 .selected_index(Some(match_mode))
                                 .on_click(move |index, _, cx| {

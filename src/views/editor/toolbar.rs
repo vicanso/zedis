@@ -322,6 +322,9 @@ impl ZedisEditor {
                 .child(
                     Input::new(&self.ttl_input_state).id(TTL_INPUT_ID).suffix(
                         Button::new("zedis-editor-ttl-update-btn")
+                            .ghost()
+                            .xsmall()
+                            .tooltip(i18n_common(cx, "save"))
                             .icon(Icon::new(IconName::Check))
                             .on_click(cx.listener(move |this, _event, window, cx| {
                                 this.handle_update_ttl(window, cx);

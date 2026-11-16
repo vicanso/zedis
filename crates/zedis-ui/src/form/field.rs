@@ -293,6 +293,8 @@ pub struct ZedisFormOptions {
     pub(super) add_field_placeholder: SharedString,
     pub(super) add_value_placeholder: SharedString,
     pub(super) add_button_label: Option<SharedString>,
+    pub(super) add_button_tooltip: Option<SharedString>,
+    pub(super) remove_button_tooltip: Option<SharedString>,
     pub(super) on_submit: Option<ZedisFormSubmitHandler>,
     pub(super) on_cancel: Option<ZedisFormCancelHandler>,
     pub(super) foot_actions: Option<ZedisFormActionsBuilder>,
@@ -327,6 +329,8 @@ impl Default for ZedisFormOptions {
             add_field_placeholder: "Enter field".into(),
             add_value_placeholder: "Enter value".into(),
             add_button_label: None,
+            add_button_tooltip: None,
+            remove_button_tooltip: None,
             on_submit: None,
             on_cancel: None,
             foot_actions: None,
@@ -508,6 +512,18 @@ impl ZedisFormOptions {
     /// Set a visible label on the `+` add-row button so multi-row entry is discoverable.
     pub fn add_button_label(mut self, label: impl Into<SharedString>) -> Self {
         self.add_button_label = Some(label.into());
+        self
+    }
+
+    /// Set a tooltip on the `+` add-row button.
+    pub fn add_button_tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.add_button_tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Set a tooltip on each `-` remove-row button.
+    pub fn remove_button_tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.remove_button_tooltip = Some(tooltip.into());
         self
     }
 

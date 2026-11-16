@@ -387,6 +387,7 @@ impl ZedisMonitor {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip(i18n_common(cx, "close"))
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.replay_error = None;
                             cx.notify();
@@ -444,6 +445,7 @@ impl ZedisMonitor {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
+                    .tooltip(i18n_common(cx, "close"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.replay_result = None;
                         cx.notify();

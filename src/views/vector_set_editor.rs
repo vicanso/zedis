@@ -606,7 +606,6 @@ impl ZedisVectorSetEditor {
                     .w_full()
                     .gap_3()
                     .items_baseline()
-                    .cursor_pointer()
                     .hover(|s| s.bg(cx.theme().list_active))
                     .rounded_md()
                     .px_1()
@@ -687,7 +686,6 @@ impl ZedisVectorSetEditor {
                     .py_0p5()
                     .rounded_md()
                     .bg(cx.theme().muted)
-                    .cursor_pointer()
                     .hover(|s| s.bg(cx.theme().list_active))
                     .child(Label::new(element.clone()).text_xs().text_color(muted))
                     .on_click(cx.listener(move |this, _, window, cx| this.search_element(el.clone(), window, cx))),

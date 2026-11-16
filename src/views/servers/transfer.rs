@@ -18,6 +18,7 @@
 //! Split out of `servers.rs`; the methods are `ZedisServers`'s as before.
 
 use super::*;
+use gpui_kit::component::Selectable;
 
 /// The export dialogs' main button. It saves a file where the build can put
 /// one in the user's hands — through the save panel, or in a page as a
@@ -107,17 +108,14 @@ impl Render for SingleServerExportBody {
         let danger_color = cx.theme().danger;
         let muted = cx.theme().muted_foreground;
 
-        let mut toggle_btn = Button::new("export-toggle-secrets")
+        let toggle_btn = Button::new("export-toggle-secrets")
             .small()
-            .label(i18n_servers(cx, "export_include_secrets"));
-        toggle_btn = if include_on {
-            toggle_btn.primary()
-        } else {
-            toggle_btn.outline()
-        };
-        let toggle_btn = toggle_btn.on_click(cx.listener(|this, _, window, cx| {
-            this.toggle_secrets(window, cx);
-        }));
+            .outline()
+            .selected(include_on)
+            .label(i18n_servers(cx, "export_include_secrets"))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_secrets(window, cx);
+            }));
 
         let copy_btn = Button::new("export-copy-clipboard")
             .small()

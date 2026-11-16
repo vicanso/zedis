@@ -41,7 +41,7 @@ use crate::{
 };
 use gpui::{Context, Entity, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
@@ -184,8 +184,11 @@ impl ZedisTimeSeriesEditor {
         let mut bar = h_flex().gap_1().items_center();
         for r in TsRange::ALL {
             let label = i18n_timeseries(cx, r.i18n_key());
-            let mut button = Button::new(("ts-range", r as usize)).label(label).small();
-            button = if r == current { button.primary() } else { button.ghost() };
+            let button = Button::new(("ts-range", r as usize))
+                .label(label)
+                .small()
+                .ghost()
+                .selected(r == current);
             bar = bar.child(button.on_click(cx.listener(move |this, _, _, cx| this.set_range(r, cx))));
         }
         bar

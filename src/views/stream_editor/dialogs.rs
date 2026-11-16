@@ -22,8 +22,8 @@ use crate::states::{
 };
 use gpui::{Context, Entity, Render, SharedString, Window, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Selectable, Sizable, WindowExt,
+    button::Button,
     h_flex,
     input::{Input, InputState},
     label::Label,
@@ -525,8 +525,8 @@ impl Render for StreamTrimForm {
                     row = row.child(
                         Button::new(SharedString::from(format!("stream-trim-{}", policy.word())))
                             .xsmall()
-                            .when(active, |b| b.primary())
-                            .when(!active, |b| b.outline())
+                            .outline()
+                            .selected(active)
                             .label(policy.word())
                             .tooltip(i18n_stream_editor(cx, tooltip_key))
                             .on_click(cx.listener(move |this, _, _w, cx| {
@@ -694,8 +694,8 @@ impl Render for StreamDeleteConsumerPicker {
             row = row.child(
                 Button::new(SharedString::from(format!("stream-del-consumer-{name}")))
                     .small()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .outline()
+                    .selected(active)
                     .label(format!("{name} ({pending})"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.selected = Some(choose.clone());

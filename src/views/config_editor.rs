@@ -1080,7 +1080,11 @@ impl ZedisConfigEditor {
                         // redis.conf description; shown only when one
                         // exists for this key.
                         .when_some(doc, |this, doc| {
-                            this.child(help_popover(SharedString::from(format!("config-help-{key}")), doc))
+                            this.child(help_popover(
+                                SharedString::from(format!("config-help-{key}")),
+                                i18n_common(cx, "help_tooltip"),
+                                doc,
+                            ))
                         })
                         .when(can_write, |this| {
                             this.child(

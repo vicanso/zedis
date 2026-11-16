@@ -38,13 +38,8 @@ use crate::states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18
 use crate::views::export_to_file;
 use gpui::{App, ClipboardItem, Entity, Hsla, SharedString, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
-    h_flex,
-    label::Label,
-    notification::Notification,
-    scroll::ScrollableElement,
-    v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt, button::Button, h_flex, label::Label,
+    notification::Notification, scroll::ScrollableElement, v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
@@ -659,7 +654,6 @@ impl ZedisKeyTimelineDialog {
                     .px_2p5()
                     .py_2()
                     .rounded(px(6.))
-                    .cursor_pointer()
                     .bg(row_bg)
                     .border_1()
                     .border_color(if is_selected { theme.primary } else { border })
@@ -919,8 +913,8 @@ impl Render for ZedisKeyTimelineDialog {
                             .child(
                                 Button::new("key-timeline-mode-diff")
                                     .xsmall()
-                                    .when(!show_raw, |b| b.primary())
-                                    .when(show_raw, |b| b.ghost())
+                                    .outline()
+                                    .selected(!show_raw)
                                     .label(i18n_editor(cx, "key_timeline_view_diff"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_raw = false;
@@ -930,8 +924,8 @@ impl Render for ZedisKeyTimelineDialog {
                             .child(
                                 Button::new("key-timeline-mode-raw")
                                     .xsmall()
-                                    .when(show_raw, |b| b.primary())
-                                    .when(!show_raw, |b| b.ghost())
+                                    .outline()
+                                    .selected(show_raw)
                                     .label(i18n_editor(cx, "key_timeline_view_snapshot"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_raw = true;

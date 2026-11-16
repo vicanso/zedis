@@ -42,7 +42,7 @@ use crate::views::{
 use ahash::AHashSet;
 use gpui::{App, Edges, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -225,7 +225,6 @@ fn build_table(server_state: Entity<ZedisServerState>, window: &mut Window, cx: 
                         .id(("ks-open-key", row_ix))
                         .flex_1()
                         .min_w_0()
-                        .cursor_pointer()
                         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                         .on_click(move |_, _, cx: &mut App| {
                             open_key_in_editor(&server_state, key.clone(), cx);
@@ -948,6 +947,7 @@ impl ZedisKeyspaceNotifications {
                     .child(Label::new(i18n_keyspace_notifications(cx, "title")).font_semibold())
                     .child(help_popover(
                         "keyspace-notifications-help",
+                        i18n_common(cx, "help_tooltip"),
                         i18n_keyspace_notifications(cx, "help"),
                     ))
                     .child(Label::new(self.title.clone()).text_color(theme.muted_foreground))
@@ -1175,12 +1175,15 @@ impl ZedisKeyspaceNotifications {
                     None => false,
                     Some(set) => set.contains(event.as_str()),
                 };
-                let mut btn = Button::new(("ksn-chip", i as u32)).xsmall().label(event.as_str());
-                btn = if active { btn.primary() } else { btn.outline() };
-                btn.on_click(cx.listener(move |this, _, _w, cx| {
-                    this.toggle_event_chip(&event_owned, cx);
-                }))
-                .into_any_element()
+                Button::new(("ksn-chip", i as u32))
+                    .xsmall()
+                    .outline()
+                    .selected(active)
+                    .label(event.as_str())
+                    .on_click(cx.listener(move |this, _, _w, cx| {
+                        this.toggle_event_chip(&event_owned, cx);
+                    }))
+                    .into_any_element()
             })
             .collect();
 
@@ -1193,9 +1196,12 @@ impl ZedisKeyspaceNotifications {
                     None => false,
                     Some(set) => set.contains(&db),
                 };
-                let mut btn = Button::new(("ksn-db", i as u32)).xsmall().label(db.to_string());
-                btn = if active { btn.primary() } else { btn.outline() };
-                btn.on_click(cx.listener(move |this, _, _w, cx| this.toggle_db_chip(db, cx)))
+                Button::new(("ksn-db", i as u32))
+                    .xsmall()
+                    .outline()
+                    .selected(active)
+                    .label(db.to_string())
+                    .on_click(cx.listener(move |this, _, _w, cx| this.toggle_db_chip(db, cx)))
                     .into_any_element()
             })
             .collect();
@@ -1221,11 +1227,12 @@ impl ZedisKeyspaceNotifications {
                     )
                     .child({
                         let active = self.selected_events.is_none();
-                        let mut btn = Button::new("ksn-chip-all")
+                        Button::new("ksn-chip-all")
                             .xsmall()
-                            .label(i18n_keyspace_notifications(cx, "filter_event_all"));
-                        btn = if active { btn.primary() } else { btn.outline() };
-                        btn.on_click(cx.listener(|this, _, _w, cx| this.reset_event_filter(cx)))
+                            .outline()
+                            .selected(active)
+                            .label(i18n_keyspace_notifications(cx, "filter_event_all"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.reset_event_filter(cx)))
                     })
                     .children(chips),
             )
@@ -1242,11 +1249,12 @@ impl ZedisKeyspaceNotifications {
                         )
                         .child({
                             let active = self.selected_dbs.is_none();
-                            let mut btn = Button::new("ksn-db-all")
+                            Button::new("ksn-db-all")
                                 .xsmall()
-                                .label(i18n_keyspace_notifications(cx, "filter_event_all"));
-                            btn = if active { btn.primary() } else { btn.outline() };
-                            btn.on_click(cx.listener(|this, _, _w, cx| this.reset_db_filter(cx)))
+                                .outline()
+                                .selected(active)
+                                .label(i18n_keyspace_notifications(cx, "filter_event_all"))
+                                .on_click(cx.listener(|this, _, _w, cx| this.reset_db_filter(cx)))
                         })
                         .children(db_btns),
                 )
@@ -1261,43 +1269,34 @@ impl ZedisKeyspaceNotifications {
                             .text_xs()
                             .text_color(theme.muted_foreground),
                     )
-                    .child({
-                        let mut btn = Button::new("ksn-src-both")
+                    .child(
+                        Button::new("ksn-src-both")
                             .xsmall()
-                            .label(i18n_keyspace_notifications(cx, "source_both"));
-                        btn = if matches!(source_filter, SourceFilter::Both) {
-                            btn.primary()
-                        } else {
-                            btn.outline()
-                        };
-                        btn.on_click(cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::Both, cx)))
-                    })
-                    .child({
-                        let mut btn = Button::new("ksn-src-ke")
+                            .outline()
+                            .selected(matches!(source_filter, SourceFilter::Both))
+                            .label(i18n_keyspace_notifications(cx, "source_both"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::Both, cx))),
+                    )
+                    .child(
+                        Button::new("ksn-src-ke")
                             .xsmall()
-                            .label(i18n_keyspace_notifications(cx, "source_keyevent"));
-                        btn = if matches!(source_filter, SourceFilter::KeyeventOnly) {
-                            btn.primary()
-                        } else {
-                            btn.outline()
-                        };
-                        btn.on_click(
-                            cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyeventOnly, cx)),
-                        )
-                    })
-                    .child({
-                        let mut btn = Button::new("ksn-src-ks")
+                            .outline()
+                            .selected(matches!(source_filter, SourceFilter::KeyeventOnly))
+                            .label(i18n_keyspace_notifications(cx, "source_keyevent"))
+                            .on_click(
+                                cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyeventOnly, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("ksn-src-ks")
                             .xsmall()
-                            .label(i18n_keyspace_notifications(cx, "source_keyspace"));
-                        btn = if matches!(source_filter, SourceFilter::KeyspaceOnly) {
-                            btn.primary()
-                        } else {
-                            btn.outline()
-                        };
-                        btn.on_click(
-                            cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyspaceOnly, cx)),
-                        )
-                    })
+                            .outline()
+                            .selected(matches!(source_filter, SourceFilter::KeyspaceOnly))
+                            .label(i18n_keyspace_notifications(cx, "source_keyspace"))
+                            .on_click(
+                                cx.listener(|this, _, _w, cx| this.set_source_filter(SourceFilter::KeyspaceOnly, cx)),
+                            ),
+                    )
                     .child(div().w(px(12.)))
                     .child(
                         Label::new(i18n_keyspace_notifications(cx, "filter_key_pattern"))

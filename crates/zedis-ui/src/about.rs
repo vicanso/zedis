@@ -14,8 +14,8 @@
 
 use gpui::{ClipboardItem, Image, Render, SharedString, Window, img, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable, StyledExt, button::Button, h_flex, label::Label, scroll::ScrollableElement,
-    v_flex,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt, button::Button, h_flex, label::Label, link::Link,
+    scroll::ScrollableElement, v_flex,
 };
 use std::sync::Arc;
 
@@ -70,6 +70,8 @@ pub struct AboutConfig {
     pub logo: Arc<Image>,
     pub lines: Vec<AboutLine>,
     pub links: Vec<AboutLink>,
+    pub copy_system_info_label: SharedString,
+    pub copied_label: SharedString,
     pub system_info_collector: Option<SystemInfoCollector>,
 }
 
@@ -129,30 +131,34 @@ impl Render for ZedisAboutPage {
             page = page.child(label);
         }
 
-        // Links
+        // External links use Link; in-app system info copy stays an outline Button.
         let mut links_row = h_flex().gap_3().items_center().mt_4();
         for link in &self.config.links {
-            let url = link.url.clone();
-            links_row = links_row.child(Button::new(link.id.clone()).label(link.label.clone()).small().on_click(
-                move |_, _window, cx| {
-                    cx.open_url(&url);
-                },
-            ));
+            links_row = links_row.child(
+                Link::new(link.id.clone())
+                    .href(link.url.clone())
+                    .text_sm()
+                    .child(link.label.clone()),
+            );
         }
         if self.config.system_info_collector.is_some() {
             // One press copies. It used to open the panel below, whose own
             // Copy button was the second press — and what people did instead
             // was post a screenshot of this window (#190).
-            links_row = links_row.child(Button::new("sysinfo").label("Copy System Info").small().on_click(
-                cx.listener(|this, _, window, cx| {
-                    if let Some(collector) = &this.config.system_info_collector {
-                        let info = collector(window, cx);
-                        cx.write_to_clipboard(ClipboardItem::new_string(info.clone()));
-                        this.system_info = Some(info);
-                        cx.notify();
-                    }
-                }),
-            ));
+            links_row = links_row.child(
+                Button::new("sysinfo")
+                    .outline()
+                    .label(self.config.copy_system_info_label.clone())
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(collector) = &this.config.system_info_collector {
+                            let info = collector(window, cx);
+                            cx.write_to_clipboard(ClipboardItem::new_string(info.clone()));
+                            this.system_info = Some(info);
+                            cx.notify();
+                        }
+                    })),
+            );
         }
         page = page.child(links_row);
 
@@ -164,7 +170,7 @@ impl Render for ZedisAboutPage {
                     .px_4()
                     .py_2()
                     .w(px(400.))
-                    .rounded_md()
+                    .rounded(cx.theme().radius)
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().secondary)
@@ -180,7 +186,11 @@ impl Render for ZedisAboutPage {
                             .gap_1()
                             .items_center()
                             .child(Icon::new(IconName::Check).small().text_color(cx.theme().success))
-                            .child(Label::new("Copied").text_xs().text_color(cx.theme().success)),
+                            .child(
+                                Label::new(self.config.copied_label.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().success),
+                            ),
                     )
                     .children(info.lines().map(|line| {
                         Label::new(line.to_string())

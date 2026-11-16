@@ -28,14 +28,14 @@
 //! is capped at [`CAP_BITS`]; `BITCOUNT` / `BITPOS` stay whole-key.
 
 use crate::assets::CustomIconName;
-use crate::helpers::get_mono_font_family;
+use crate::helpers::{canvas_surface_background, get_mono_font_family};
 use crate::{
     connection::{BitOpKind, BitmapInfo, Capability, ServerDb, bit_field, bit_op, bitmap_info, set_bit},
     states::{ZedisServerState, dialog_button_props, i18n_bitmap, i18n_common},
 };
 use gpui::{
     App, BorderStyle, Bounds, Context, Entity, EventEmitter, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
-    Point, SharedString, Subscription, Task, Window, bounds, canvas, div, fill, point, prelude::*, px, quad, rgb, size,
+    Point, SharedString, Subscription, Task, Window, bounds, canvas, div, fill, point, prelude::*, px, quad, size,
     transparent_black,
 };
 use gpui_kit::component::{
@@ -372,12 +372,8 @@ impl ZedisBitmapEditor {
 
     fn render_canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let bg: Hsla = if theme.is_dark() {
-            rgb(0x1a1d21).into()
-        } else {
-            theme.muted
-        };
-        let accent: Hsla = rgb(0x60a5fa).into();
+        let bg = canvas_surface_background(cx);
+        let accent = theme.primary;
         let sep = theme.border.opacity(0.4);
         let hover_color = theme.foreground;
 
@@ -663,7 +659,7 @@ impl Render for ZedisBitmapEditor {
                 .when_some(self.render_tooltip(cx), |this, tip| this.child(tip))
                 .on_mouse_move(cx.listener(|this, event, _window, cx| this.on_move(event, cx)));
             if editing {
-                grid = grid.cursor_pointer().on_mouse_down(
+                grid = grid.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event, _window, cx| this.on_down(event, cx)),
                 );

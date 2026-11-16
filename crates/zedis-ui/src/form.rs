@@ -125,6 +125,8 @@ pub struct ZedisForm {
     add_field_placeholder: SharedString,
     add_value_placeholder: SharedString,
     add_button_label: Option<SharedString>,
+    add_button_tooltip: Option<SharedString>,
+    remove_button_tooltip: Option<SharedString>,
     tab_selected_index: Entity<usize>,
     support_add_fields: bool,
     support_add_fields_on: Option<(SharedString, Vec<usize>)>,
@@ -296,6 +298,8 @@ impl ZedisForm {
             add_field_placeholder: options.add_field_placeholder,
             add_value_placeholder: options.add_value_placeholder,
             add_button_label: options.add_button_label,
+            add_button_tooltip: options.add_button_tooltip,
+            remove_button_tooltip: options.remove_button_tooltip,
             support_add_fields: options.support_add_fields,
             support_add_fields_on: options.support_add_fields_on,
             add_fields_mode: options.add_fields_mode,
@@ -517,8 +521,8 @@ impl ZedisForm {
         }
 
         let buttons = platform_buttons(buttons);
-        let mut right_buttons = h_flex().justify_end().gap_4();
-        let mut left_buttons = h_flex().justify_start().gap_4();
+        let mut right_buttons = h_flex().justify_end().gap_2();
+        let mut left_buttons = h_flex().justify_start().gap_2();
 
         let mut exists_buttons = false;
         if !buttons.is_empty() {
@@ -635,7 +639,7 @@ impl Render for ZedisForm {
         let mut items: Vec<FormItem> = Vec::new();
         if let Some(title) = self.title.clone() {
             items.push(FormItem::field(
-                row().child(Label::new(title).text_lg().font_weight(FontWeight::BOLD)),
+                row().child(Label::new(title).text_lg().font_semibold()),
             ));
         }
         if let Some(description) = self.description.clone() {

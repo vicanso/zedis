@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::helpers::{
-    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_mono_font_family, is_json_container, parse_hex_text,
-    run_jsonpath, value_write_limit,
+    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_mono_font_family, hex_address_color, is_json_container,
+    parse_hex_text, run_jsonpath, value_write_limit,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::states::MAX_INLINE_VALUE_SIZE;
@@ -25,7 +25,7 @@ use crate::states::{
 use crate::views::placeholders::Placeholders;
 use bytes::Bytes;
 use gpui::{AnyElement, App, Entity, Image, ObjectFit, SharedString, Subscription, Window, img, px, relative};
-use gpui::{div, hsla, prelude::*};
+use gpui::{div, prelude::*};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorMode, EditorState, Enter, InputEvent, InputModeKind, RopeExt, TabSize,
@@ -330,11 +330,7 @@ impl ListDelegate for HexViewerListDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let address_color = if cx.theme().is_dark() {
-            hsla(0.108, 0.66, 0.69, 1.0)
-        } else {
-            hsla(0.0892, 0.9462, 0.4373, 1.0)
-        };
+        let address_color = hex_address_color(cx.theme().is_dark());
         self.items.get(ix.row).map(|(address, hex_data, ascii_data)| {
             ListItem::new(ix).py_0().px_2().child(
                 h_flex()

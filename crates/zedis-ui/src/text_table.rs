@@ -33,7 +33,7 @@ use gpui::{
     div, prelude::*, px, rems,
 };
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, StyledExt, WindowExt,
+    ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -708,6 +708,7 @@ impl TableDelegate for ZedisTextTable {
         let cell_id = row_ix * 100 + col_ix;
         let mut copy_button = Button::new(("text-td-copy", cell_id))
             .ghost()
+            .xsmall()
             .icon(IconName::Copy)
             .on_click(move |_, window, cx: &mut App| {
                 cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));

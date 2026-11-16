@@ -55,7 +55,7 @@ impl RenderOnce for ZedisSkeletonLoading {
 
         for i in 0..self.count {
             let width = width_percentages[i % width_percentages.len()];
-            container = container.child(Skeleton::new().w(relative(width)).h_4().rounded_md());
+            container = container.child(Skeleton::new().w(relative(width)).h_4().rounded(cx.theme().radius));
         }
 
         if let Some(text) = self.text {

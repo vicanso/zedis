@@ -406,7 +406,6 @@ impl ZedisWorkbench {
                     .border_r_1()
                     .border_color(border)
                     .when(is_active, |s| s.bg(active_bg))
-                    .cursor_pointer()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.active_tab = ix;
                         if let Some(t) = this.tabs.get(ix) {

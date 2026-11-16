@@ -23,7 +23,7 @@ use crate::states::{ServerView, ZedisGlobalStore, back_to_editor_tooltip, i18n_b
 use crate::views::{ChartParams, ValueLabel, make_bar_chart, make_line_chart};
 use gpui::{AnyElement, Context, Entity, Hsla, Render, SharedString, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -124,8 +124,8 @@ impl ZedisBenchmark {
             preset_row = preset_row.child(
                 Button::new(SharedString::from(format!("bench-preset-{}", preset.label())))
                     .xsmall()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .outline()
+                    .selected(active)
                     .disabled(self.running)
                     .label(preset.label())
                     .on_click(cx.listener(move |this, _, _window, cx| {
@@ -147,8 +147,8 @@ impl ZedisBenchmark {
             pipe_row = pipe_row.child(
                 Button::new(SharedString::from(format!("bench-pipe-{p}")))
                     .xsmall()
-                    .when(active, |b| b.primary())
-                    .when(!active, |b| b.outline())
+                    .outline()
+                    .selected(active)
                     .disabled(self.running)
                     .label(format!("P={p}"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
@@ -694,7 +694,6 @@ impl ZedisBenchmark {
                     .gap_2()
                     .items_center()
                     .rounded(px(4.))
-                    .cursor_pointer()
                     .when(is_selected, |this| this.bg(secondary_bg))
                     .hover(move |s| s.bg(hover_bg))
                     .on_click(cx.listener(move |this, _, _window, cx| {
@@ -763,8 +762,8 @@ impl ZedisBenchmark {
                         div().w(px(96.)).flex_none().child(
                             Button::new(SharedString::from(format!("bench-base-btn-{run_id}")))
                                 .xsmall()
-                                .when(is_baseline, |b| b.primary())
-                                .when(!is_baseline, |b| b.outline())
+                                .outline()
+                                .selected(is_baseline)
                                 .label(btn_label)
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.toggle_baseline(run_id, cx);

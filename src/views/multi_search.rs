@@ -35,7 +35,7 @@ use crate::components::KeyTypeBadge;
 use crate::connection::{
     MultiSearchServerResult, get_server, get_server_groups, get_servers, multi_search_exact, multi_search_scan,
 };
-use crate::helpers::{build_csv, saves_files};
+use crate::helpers::{build_csv, overlay_backdrop_color, saves_files};
 use crate::states::{
     KeyType, MultiSearchScope, ZedisGlobalStore, i18n_common, i18n_multi_search, update_app_state_and_save_quiet,
 };
@@ -650,6 +650,7 @@ impl ZedisMultiSearch {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         let hover = cx.theme().list_active;
+        let radius = cx.theme().radius;
         // Same recipe as the key tree's leaf zebra (`key_tree/delegate.rs`):
         // faint white-on-dark / black-on-light on odd indices so dense
         // result lists stay scannable. Dark needs a higher alpha.
@@ -688,8 +689,7 @@ impl ZedisMultiSearch {
                         .items_center()
                         .gap_2()
                         .px_1()
-                        .rounded_md()
-                        .cursor_pointer()
+                        .rounded(radius)
                         .group(copy_group.clone())
                         .when(is_stripe, |this| this.bg(stripe_bg))
                         .hover(move |s| s.bg(hover))
@@ -963,7 +963,7 @@ impl Render for ZedisMultiSearch {
             // Top-align so the panel stays content-sized (default stretch
             // would pull it to half the window — same gotcha as the ⌘K palette).
             .items_start()
-            .bg(gpui::hsla(0., 0., 0., 0.4))
+            .bg(overlay_backdrop_color())
             .track_focus(&self.focus_handle)
             .on_mouse_down(
                 gpui::MouseButton::Left,

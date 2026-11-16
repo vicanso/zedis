@@ -29,8 +29,8 @@ use crate::helpers::{
 };
 use crate::states::{
     CLONE_SERVER_QUERY, EDIT_SERVER_QUERY, GlobalEvent, NotificationAction, Route, ZedisGlobalStore,
-    account_is_read_only, dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_servers,
-    update_app_state_and_save,
+    account_is_read_only, dialog_button_props, escalate_dangerous_body, get_session_option, i18n_common, i18n_key_tree,
+    i18n_servers, update_app_state_and_save,
 };
 use crate::views::open_connection_diagnostics;
 use crate::views::placeholders::Placeholders;
@@ -1121,7 +1121,6 @@ fn group_section(
                 .gap_2()
                 .h(px(24.))
                 .px_1()
-                .cursor_pointer()
                 .child(Icon::new(chevron).text_color(cx.theme().muted_foreground))
                 .child(Label::new(group_name).text_sm().text_color(cx.theme().muted_foreground))
                 // Count as a theme-colored pill badge —
@@ -1315,6 +1314,7 @@ fn server_card(
                     Button::new(("servers-card-more", index))
                         .ghost()
                         .xsmall()
+                        .tooltip(i18n_key_tree(cx, "more_tooltip"))
                         .icon(IconName::Ellipsis)
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                             let clone_id = more_id.clone();

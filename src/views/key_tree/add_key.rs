@@ -195,6 +195,8 @@ fn build_add_key_form_options(
         .confirm_label(i18n_common(cx, "confirm"))
         .cancel_label(i18n_common(cx, "cancel"))
         .add_button_label(i18n_common(cx, "add_element"))
+        .add_button_tooltip(i18n_common(cx, "add_element"))
+        .remove_button_tooltip(i18n_common(cx, "remove_tooltip"))
         .support_add_fields_mode_on(
             "category",
             1,

@@ -48,7 +48,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::table::{DataTable, TableState};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -606,8 +606,8 @@ impl gpui::Render for ZedisAclManager {
             let active = self.tab == tab;
             Button::new(id)
                 .xsmall()
-                .when(active, |b| b.primary())
-                .when(!active, |b| b.outline())
+                .outline()
+                .selected(active)
                 .label(i18n_acl(cx, key))
                 .on_click(cx.listener(move |this, _, _w, cx| this.set_tab(tab, cx)))
         };

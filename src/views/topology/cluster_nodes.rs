@@ -263,7 +263,6 @@ impl ZedisTopology {
                 .py_1()
                 .rounded_md()
                 .hover(move |s| s.bg(hover))
-                .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if !id_for_fill.is_empty() {
                         this.fill_replicate_master(id_for_fill.clone().into(), window, cx);
@@ -379,7 +378,6 @@ impl ZedisTopology {
                     .py_1()
                     .rounded_md()
                     .hover(move |s| s.bg(hover))
-                    .cursor_pointer()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.fill_replicate_target(addr_for_fill.clone().into(), window, cx);
                     }))

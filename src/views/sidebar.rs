@@ -17,7 +17,8 @@ use crate::{
     connection::get_servers,
     constants::{EDITOR_KEY_BAR_HEIGHT, STATUS_BAR_HEIGHT},
     helpers::{
-        SidebarServerAction, humanize_keystroke, is_quiet_tag, resolve_tag_chip, resolve_tag_color, unique_monograms,
+        SidebarServerAction, get_mono_font_family, healthy_color, humanize_keystroke, is_quiet_tag, resolve_tag_chip,
+        resolve_tag_color, sidebar_accent_color, unique_monograms,
     },
     states::{
         ConnectionHealth, GlobalEvent, Route, ZedisGlobalStore, i18n_common, i18n_servers, i18n_sidebar,
@@ -25,8 +26,8 @@ use crate::{
     },
 };
 use gpui::{
-    AnyElement, App, Context, DismissEvent, Hsla, Image, ImageFormat, SharedString, Subscription, WeakEntity, Window,
-    div, img, prelude::*, px, rgb,
+    AnyElement, App, Context, DismissEvent, FontWeight, Hsla, Image, ImageFormat, Pixels, Role, SharedString,
+    Subscription, WeakEntity, Window, div, img, prelude::*, px,
 };
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tooltip::Tooltip;
@@ -414,12 +415,22 @@ impl ZedisSidebar {
             }
         }
 
+        let group_hover_color = cx.theme().list_hover;
+        let group_radius = cx.theme().radius;
+
         // --- Group sections ---
         for (section_idx, section) in self.state.sections.iter().enumerate() {
             let is_collapsed = collapsed_keys.contains(&section.key);
             // Group header — hidden in the collapsed icon rail.
             if !sidebar_collapsed {
-                rows.push(group_header(section, is_collapsed, &ungrouped_label, muted_icon_color));
+                rows.push(group_header(
+                    section,
+                    is_collapsed,
+                    &ungrouped_label,
+                    muted_icon_color,
+                    group_hover_color,
+                    group_radius,
+                ));
             } else if section_idx > 0 {
                 // Collapsed rail: a short divider keeps groups visually separated.
                 rows.push(div().mx_2().h_px().my_1().bg(divider_color).into_any_element());
@@ -699,7 +710,13 @@ impl ZedisSidebar {
                                 // Only the selected server gets a filled box
                                 // (design); the rest are plain letters.
                                 .when(is_current, |this| this.bg(list_active_color))
-                                .child(Label::new(monogram).text_xs().font_bold().text_color(icon_color))
+                                .child(
+                                    Label::new(monogram)
+                                        .text_xs()
+                                        .font_family(get_mono_font_family())
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(icon_color),
+                                )
                                 .when_some(health_color.or(tag_dot), |this, color| {
                                     this.child(
                                         div()
@@ -743,7 +760,7 @@ impl ZedisSidebar {
                                 div()
                                     .flex_none()
                                     .h(px(15.))
-                                    .px(px(4.))
+                                    .px_1()
                                     .rounded_sm()
                                     .bg(bg)
                                     .text_size(px(10.))
@@ -898,16 +915,12 @@ fn list_look(cx: &App) -> ListLook {
     // group section to set Home apart visually as a top-level
     // entry, distinct from the group/server tree below it.
     let divider_color = cx.theme().border;
-    // Icon accent (#6b95c4, same in both themes) for the selected server's
-    // database icon / monogram.
-    let accent_color: Hsla = rgb(0x6b95c4).into();
-    // Green status dot on the selected server's row (#69b083 — same green as
-    // the status-bar "Connected" indicator).
-    let connected_color: Hsla = rgb(0x69b083).into();
+    let dark = cx.theme().is_dark();
+    let accent_color = sidebar_accent_color(dark);
+    let connected_color = healthy_color(dark);
     // The other two link states, in the theme's own words.
     let reconnecting_color = cx.theme().warning;
     let offline_color = cx.theme().danger;
-    let dark = cx.theme().is_dark();
     // Ring colour around the tag dot so it reads as a crisp badge over the
     // icon instead of bleeding into the glyph — matches the sidebar panel
     // background (see main.rs).
@@ -937,6 +950,8 @@ fn group_header(
     is_collapsed: bool,
     ungrouped_label: &SharedString,
     muted_icon_color: Hsla,
+    hover_bg: Hsla,
+    radius: Pixels,
 ) -> AnyElement {
     let header_label = match &section.group {
         Some(g) => SharedString::from(g.clone()),
@@ -952,6 +967,7 @@ fn group_header(
     let header_id = SharedString::from(format!("sidebar-grp-h-{}", section.key));
     h_flex()
         .id(header_id)
+        .role(Role::Button)
         .mx_2()
         // Ends where the rows' content ends (`pr_2` on the
         // item), so the count and a row's dot share a spine.
@@ -959,7 +975,8 @@ fn group_header(
         .h_6()
         .gap_1()
         .items_center()
-        .cursor_pointer()
+        .rounded(radius)
+        .hover(move |this| this.bg(hover_bg))
         .child(Icon::new(chevron).text_color(muted_icon_color))
         .child(
             Label::new(header_label)
