@@ -39,6 +39,8 @@
 //! list / set / zset — all of them or one — with case-insensitive substring
 //! matching.
 
+mod preview;
+
 use crate::components::KeyTypeBadge;
 use crate::connection::{
     MatchLocation, SearchableType, ServerDb, ValueMatch, ValueSearchRound, ValueSearchSpec, scan_values_round,
@@ -50,22 +52,23 @@ use crate::states::{
     KeyType, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, i18n_common,
     i18n_value_search,
 };
+use crate::views::ZedisJsonTree;
 use crate::views::export_to_file;
 use crate::views::placeholders::Placeholders;
 use gpui::{
-    App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Subscription, Task, Window, div, prelude::*, px,
-    uniform_list,
+    App, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{EditorState, Input, InputEvent, InputState},
     label::Label,
     menu::DropdownMenu,
     notification::Notification,
     v_flex,
 };
+use preview::{Preview, new_preview_editor, opens_as_tree};
 use std::{cell::Cell, mem::take, rc::Rc, sync::Arc, time::Duration};
 use web_time::Instant;
 
@@ -82,8 +85,6 @@ const MAX_CONTAINER_ELEMS: u64 = 10_000;
 /// `SCAN COUNT` per master per round — kept modest so cancellation / the time
 /// check stay responsive between rounds.
 const PAGE_COUNT: u64 = 128;
-/// Bytes of a value rendered in the preview pane before truncating.
-const PREVIEW_MAX_BYTES: usize = 64 * 1024;
 
 /// The status row's Continue button, which a test looks for.
 const CONTINUE_BUTTON_ID: &str = "vs-continue";
@@ -157,13 +158,6 @@ impl Resume {
     }
 }
 
-/// State of the inline value preview for the selected match.
-enum Preview {
-    Loading,
-    Value(SharedString),
-    Error(SharedString),
-}
-
 /// Snapshot of one filtered result row for the virtualized list —
 /// `uniform_list`'s range closure is `'static` and only receives
 /// `&mut App`, so it renders from this owned copy instead of borrowing
@@ -219,7 +213,11 @@ pub struct ZedisValueSearch {
     selected_location: Option<MatchLocation>,
     preview: Option<Preview>,
     preview_task: Option<Task<()>>,
-    preview_scroll: ScrollHandle,
+    preview_editor: Entity<EditorState>,
+    preview_json_tree: Entity<ZedisJsonTree>,
+    preview_json_tree_mode: bool,
+    preview_soft_wrap: bool,
+    preview_pending_sync: bool,
     /// Re-words the three fields' placeholders after a language change.
     placeholders: Placeholders,
     /// `only`, as the query placeholder's wording reads it — set with it.
@@ -251,6 +249,9 @@ impl ZedisValueSearch {
         let prefix_input = cx.new(|cx| InputState::new(window, cx));
         let query_input = cx.new(|cx| InputState::new(window, cx));
         let filter_input = cx.new(|cx| InputState::new(window, cx));
+        let preview_soft_wrap = server_state.read(cx).soft_wrap();
+        let preview_editor = cx.new(|cx| new_preview_editor(preview_soft_wrap, window, cx));
+        let preview_json_tree = cx.new(|cx| ZedisJsonTree::new(server_state.clone(), cx).without_query());
         // The panel is kept across routes, so a language picked while it was
         // away has to reach its fields too (#210).
         let mut placeholders = Placeholders::new(cx);
@@ -295,26 +296,46 @@ impl ZedisValueSearch {
                 cx.notify();
             }
         }));
+        // Enforce read-only on the preview code editor without `.disabled(true)`
+        // (which dims text to half opacity): snap any edit back to the preview text.
+        subscriptions.push(
+            cx.subscribe_in(&preview_editor, window, |this, editor, event, window, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Some(Preview::Value(payload)) = &this.preview
+                    && *editor.read(cx).text() != *payload.text.as_ref()
+                {
+                    let text = payload.text.clone();
+                    editor.update(cx, |state, cx| state.set_value(text, window, cx));
+                }
+            }),
+        );
         // A database switch is a `ServerSelected` too: the hits name keys of
         // the database they were found in, and a preview or an Open would
         // read the same name in the new one — and a running scan would keep
         // reading the old one. A reconnect is one as well, and after it the
         // hits are still this database's: only another target clears them.
-        subscriptions.push(cx.subscribe(&server_state, |this, state, event: &ServerEvent, cx| {
-            if !matches!(event, ServerEvent::ServerSelected(_)) {
-                return;
-            }
-            let now = {
-                let state = state.read(cx);
-                (state.server_id().to_string(), state.db())
-            };
-            if this.searched.as_ref().is_some_and(|searched| *searched != now) {
-                this.task = None;
-                this.clear_results();
-                this.searched = None;
-                cx.notify();
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&server_state, |this, state, event: &ServerEvent, cx| match event {
+                ServerEvent::ServerSelected(_) => {
+                    let now = {
+                        let state = state.read(cx);
+                        (state.server_id().to_string(), state.db())
+                    };
+                    if this.searched.as_ref().is_some_and(|searched| *searched != now) {
+                        this.task = None;
+                        this.clear_results();
+                        this.searched = None;
+                        cx.notify();
+                    }
+                }
+                ServerEvent::SoftWrapToggled(soft_wrap) => {
+                    this.preview_soft_wrap = *soft_wrap;
+                    this.preview_pending_sync = true;
+                    cx.notify();
+                }
+                _ => {}
+            }),
+        );
 
         Self {
             server_state,
@@ -341,7 +362,11 @@ impl ZedisValueSearch {
             selected_location: None,
             preview: None,
             preview_task: None,
-            preview_scroll: ScrollHandle::new(),
+            preview_editor,
+            preview_json_tree,
+            preview_json_tree_mode: opens_as_tree(cx),
+            preview_soft_wrap,
+            preview_pending_sync: false,
             placeholders,
             query_type,
             _subscriptions: subscriptions,
@@ -541,6 +566,7 @@ impl ZedisValueSearch {
         self.selected_location = None;
         self.preview = None;
         self.preview_task = None;
+        self.preview_pending_sync = false;
     }
 
     fn finish(&mut self, reason: StopReason, cx: &mut Context<Self>) {
@@ -571,43 +597,6 @@ impl ZedisValueSearch {
         cx.notify();
     }
 
-    /// Preview a matched key's value inline (right pane), without leaving.
-    fn select_result(
-        &mut self,
-        key: SharedString,
-        key_type: SharedString,
-        location: MatchLocation,
-        cx: &mut Context<Self>,
-    ) {
-        self.selected = Some(key.clone());
-        self.selected_type = Some(key_type);
-        self.selected_location = Some(location);
-        self.preview = Some(Preview::Loading);
-        cx.notify();
-        self.load_preview(key, cx);
-    }
-
-    /// Read `key`'s value into the preview pane, leaving what the pane
-    /// shows in place until the answer is in.
-    fn load_preview(&mut self, key: SharedString, cx: &mut Context<Self>) {
-        let server_id = self.server_state.read(cx).server_id().to_string();
-        let db = self.server_state.read(cx).db();
-        self.preview_task = Some(cx.spawn(async move |this, cx| {
-            let fetched = async { value_preview(&ServerDb::new(&*server_id, db), &key).await }.await;
-            let _ = this.update(cx, |this, cx| {
-                // Ignore stale previews if the user already clicked another row.
-                if this.selected.as_deref() != Some(key.as_ref()) {
-                    return;
-                }
-                this.preview = Some(match fetched {
-                    Ok(text) => Preview::Value(truncate_preview(text)),
-                    Err(e) => Preview::Error(e.to_string().into()),
-                });
-                cx.notify();
-            });
-        }));
-    }
-
     /// The route is back on this panel after having been elsewhere.
     ///
     /// With nothing found it is a form again, and the caret goes where a
@@ -629,22 +618,6 @@ impl ZedisValueSearch {
         cx.global::<ZedisGlobalStore>()
             .clone()
             .update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
-    }
-
-    fn copy_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Preview::Value(text)) = &self.preview else {
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
-        window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
-    }
-
-    fn copy_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(key) = &self.selected else {
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(key.to_string()));
-        window.push_notification(Notification::info(i18n_common(cx, "copied_to_clipboard")), cx);
     }
 
     /// Export the current hits to a CSV (`key`, `type`, where it matched).
@@ -1033,107 +1006,6 @@ impl ZedisValueSearch {
         }
         col.into_any_element()
     }
-
-    fn render_preview(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let muted = cx.theme().muted_foreground;
-        match &self.preview {
-            None => div()
-                .size_full()
-                .p_4()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    Label::new(i18n_value_search(cx, "preview_hint"))
-                        .text_sm()
-                        .text_color(muted)
-                        .text_center(),
-                )
-                .into_any_element(),
-            Some(Preview::Loading) => div()
-                .p_4()
-                .child(Label::new(i18n_value_search(cx, "loading")).text_sm().text_color(muted))
-                .into_any_element(),
-            Some(Preview::Error(e)) => div()
-                .p_4()
-                .child(Label::new(e.clone()).text_sm().text_color(cx.theme().danger))
-                .into_any_element(),
-            Some(Preview::Value(text)) => {
-                let key = self.selected.clone().unwrap_or_default();
-                let key_open = key.clone();
-                let key_type = self
-                    .selected_type
-                    .as_deref()
-                    .map(KeyType::from)
-                    .unwrap_or(KeyType::Unknown);
-                let loc_label: Option<SharedString> = match &self.selected_location {
-                    Some(MatchLocation::Field(f)) => {
-                        Some(format!("{}: {f}", i18n_value_search(cx, "loc_field")).into())
-                    }
-                    Some(MatchLocation::Index(i)) => Some(format!("[{i}]").into()),
-                    Some(MatchLocation::Member(m)) => {
-                        Some(format!("{}: {m}", i18n_value_search(cx, "loc_member")).into())
-                    }
-                    _ => None,
-                };
-                // Content of a scroll viewport: at least pane-height, free to
-                // grow with the value so `vs-preview`'s `overflow_scroll` has
-                // a range (`size_full` would pin it to exactly one screen).
-                v_flex()
-                    .w_full()
-                    .min_h_full()
-                    .gap_2()
-                    .p_3()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .items_center()
-                            .child(KeyTypeBadge::new(key_type).plain(true))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(Label::new(key).text_xs().font_semibold().truncate()),
-                            )
-                            .when_some(loc_label, |row, loc| {
-                                row.child(Label::new(loc).text_xs().text_color(muted))
-                            })
-                            .child(
-                                Button::new("vs-copy-key")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Copy)
-                                    .tooltip(i18n_value_search(cx, "copy_key_tooltip"))
-                                    .on_click(cx.listener(|this, _, w, cx| this.copy_key(w, cx))),
-                            )
-                            .child(
-                                Button::new("vs-copy-value")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Copy)
-                                    .tooltip(i18n_value_search(cx, "copy_value_tooltip"))
-                                    .on_click(cx.listener(|this, _, w, cx| this.copy_preview(w, cx))),
-                            )
-                            .child(
-                                Button::new("vs-open")
-                                    .small()
-                                    .outline()
-                                    .label(i18n_value_search(cx, "open"))
-                                    .on_click(cx.listener(move |this, _, _w, cx| this.open_key(key_open.clone(), cx))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .text_xs()
-                            .font_family(get_mono_font_family())
-                            .child(text.clone()),
-                    )
-                    .into_any_element()
-            }
-        }
-    }
 }
 
 /// Move `found` onto `matches` until it holds `limit`, and answer the rest.
@@ -1202,18 +1074,6 @@ fn location_csv(loc: &MatchLocation) -> String {
         MatchLocation::Index(i) => format!("[{i}]"),
         MatchLocation::Member(m) => format!("member:{m}"),
     }
-}
-
-fn truncate_preview(mut text: String) -> SharedString {
-    if text.len() > PREVIEW_MAX_BYTES {
-        let mut idx = PREVIEW_MAX_BYTES;
-        while idx > 0 && !text.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        text.truncate(idx);
-        text.push_str("\n… (truncated)");
-    }
-    text.into()
 }
 
 impl Render for ZedisValueSearch {
@@ -1286,7 +1146,7 @@ impl Render for ZedisValueSearch {
             let filter = self.filter_text(cx);
             self.ensure_filtered(&filter);
             let results = self.render_results(cx);
-            let preview = self.render_preview(cx);
+            let preview = self.render_preview(window, cx);
             let filter_bar = h_flex()
                 .w_full()
                 .gap_2()
@@ -1333,13 +1193,12 @@ impl Render for ZedisValueSearch {
                         ),
                 )
                 .child(
-                    div()
+                    v_flex()
                         .id("vs-preview")
                         .flex_1()
                         .h_full()
+                        .min_h_0()
                         .min_w_0()
-                        .overflow_scroll()
-                        .track_scroll(&self.preview_scroll)
                         .child(preview),
                 )
                 .into_any_element()
@@ -1577,5 +1436,93 @@ mod tests {
         assert!(shows_continue(cx), "hits held past the cap are still to come");
         panel.update(cx, |this, _| this.stop_reason = Some(StopReason::Done));
         assert!(!shows_continue(cx), "a finished search");
+    }
+
+    #[test]
+    fn json_values_are_pretty_formatted_for_the_preview_editor() {
+        let compact = r#"{"cookie":{"httpOnly":true,"path":"/"},"ticket":"abc"}"#.to_string();
+        let payload = preview::prepare_preview_payload(compact);
+        assert!(payload.is_json);
+        assert!(payload.json_doc.is_some());
+        assert!(payload.text.contains("\n  \"cookie\": {"));
+        assert!(payload.text.contains("\"ticket\": \"abc\""));
+
+        let plain = preview::prepare_preview_payload("field_a: hello\nfield_b: world".to_string());
+        assert!(!plain.is_json);
+        assert!(plain.json_doc.is_none());
+        assert_eq!(plain.text.as_ref(), "field_a: hello\nfield_b: world");
+
+        let huge_str = "x".repeat(preview::PREVIEW_MAX_BYTES + 128);
+        let huge_json = format!(r#"{{"payload":"{huge_str}"}}"#);
+        let clipped = preview::prepare_preview_payload(huge_json);
+        assert!(clipped.is_json);
+        assert!(
+            clipped.json_doc.is_none(),
+            "truncated JSON must not populate the tree document"
+        );
+        assert!(clipped.text.ends_with("\n… (truncated)"));
+    }
+
+    #[gpui::test]
+    fn preview_renders_json_in_code_editor_and_offers_tree_switch(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let mut panel = None;
+        let handle = cx.open_window(size(px(1000.), px(600.)), |window, cx| {
+            let view = cx.new(|cx| ZedisValueSearch::new(server_state.clone(), window, cx));
+            panel = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let panel = panel.expect("the window built the panel");
+
+        panel.update(cx, |this, cx| {
+            this.matches = vec![hit("sess:1")];
+            this.matches_rev += 1;
+            this.stop_reason = Some(StopReason::Done);
+            this.selected = Some("sess:1".into());
+            this.selected_type = Some("string".into());
+            this.selected_location = Some(MatchLocation::Value);
+            this.preview_json_tree_mode = false;
+            let payload = preview::prepare_preview_payload(r#"{"cookie":{"path":"/"},"ticket":"t-1"}"#.to_string());
+            this.apply_preview_payload(payload, cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("vs-json-view-text").is_some(),
+                "JSON preview shows the Text/Tree switcher"
+            );
+            assert!(window.try_find("vs-json-view-tree").is_some());
+        })
+        .expect("the window is open");
+
+        let editor_value = panel.read_with(cx, |this, cx| this.preview_editor.read(cx).value().to_string());
+        assert!(
+            editor_value.contains("\n  \"cookie\": {"),
+            "editor holds formatted JSON: {editor_value}"
+        );
+
+        // Plain non-JSON previews hide the Text/Tree switcher while still populating the editor.
+        panel.update(cx, |this, cx| {
+            let payload = preview::prepare_preview_payload("plain text value".to_string());
+            this.apply_preview_payload(payload, cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("vs-json-view-text").is_none(),
+                "plain text preview hides the JSON view switcher"
+            );
+        })
+        .expect("the window is open");
+
+        let plain_value = panel.read_with(cx, |this, cx| this.preview_editor.read(cx).value().to_string());
+        assert_eq!(plain_value, "plain text value");
     }
 }
