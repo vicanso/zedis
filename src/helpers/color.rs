@@ -48,6 +48,26 @@ pub fn card_background(cx: &App) -> Hsla {
     }
 }
 
+/// Recessed trough background for the workspace tab bar, ensuring inactive
+/// tabs sit visibly distinct from the active tab's `background` fill even
+/// on named themes where `tab_bar` falls back to `background`.
+pub fn workspace_tab_bar_background(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    let bg = theme.background;
+    let tab_bar = theme.tab_bar;
+    if (tab_bar.l - bg.l).abs() >= 0.03 {
+        tab_bar
+    } else if theme.is_dark() {
+        if bg.l > 0.08 {
+            bg.darken(0.22)
+        } else {
+            card_background(cx)
+        }
+    } else {
+        bg.darken(0.04)
+    }
+}
+
 /// Healthy link / latency indicator green, tuned for 4.5:1+ contrast in both themes.
 pub fn healthy_color(dark: bool) -> Hsla {
     rgb(if dark { 0x69b083 } else { 0x1a7f37 }).into()

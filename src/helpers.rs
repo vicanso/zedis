@@ -60,7 +60,7 @@ pub use color::contrast_ratio;
 pub use color::{
     canvas_surface_background, card_background, geo_node_colors, healthy_color, hex_address_color,
     overlay_backdrop_color, prod_banner_colors, sidebar_accent_color, topology_heat_color, topology_master_color,
-    ttl_warning_color,
+    ttl_warning_color, workspace_tab_bar_background,
 };
 pub use common::*;
 pub use crash::{CrashContext, CrashReport, install_panic_hook, take_pending_crash};

@@ -187,12 +187,15 @@ Run on every screen the change added or touched, in **light and dark**, at the *
 - **Motion:** inventory written; tokens only; `reduce_motion` honored.
 - **Tests:** `#[gpui::test]` covers the controls by shared ID constants.
 
-## 11. Known debt (audit 2026-11-16)
+## 11. Known debt (audit 2026-11-16, updated after cleanup)
 
-Fix what you touch; never add more.
+Resolved in the 2026-11-16 UI cleanup pass:
+- Centralized `src/helpers/motion.rs` (`MOTION_INSTANT`, `MOTION_FAST`, `MOTION_BASE`, `MOTION_SLOW`, `should_animate`, `motion_duration`).
+- Eliminated raw `rgb(...)` / `hsla(...)` color literals from `src/views/` into `src/helpers/color.rs` (with WCAG 4.5:1 contrast tests).
+- Removed non-link `.cursor_pointer()` across `src/views/`, `crates/zedis-ui/`, and `src/root/tabs.rs`, and added `Role::Button` to interactive chrome strips.
+- Converted toggle/filter `.primary()` buttons to `.selected(active)` (keeping `.primary()` for true decision commits).
+- Extracted shared `panel_header` and `stat_chip` widgets into `crates/zedis-ui`, aligned `KeyTypeBadge` to `text_xs` + theme radius, fixed `account.rs` spinner `.icon(...)`, replaced bare `SystemUIFont` bold headings with `.font_semibold()`, fixed `ZedisDivider` hairline color, and standardized 8-locale copy.
 
-- ~114 `.primary()` calls in `src/views/`, many on toolbar commands.
-- 23 raw color literals across 13 view files (`topology`, `key_tree/delegate`, `command_palette`, `status_bar`, `title_bar`, `shortcuts_overlay`, `multi_search`, `geo_map`, `recent_keys_palette`, `status_bar/telemetry`, `bitmap_editor`, `sidebar`, `bytes_editor`).
-- ~562 `px(...)` literals in `src/views/`.
-- 33 `cursor_pointer()` on non-link controls.
-- Local helpers that should be shared (`value_search`'s stat chip, per-view panel headers).
+Remaining audited baseline:
+- Intentional `px(...)` exceptions remain for 1px hairlines, fixed `uniform_list` / table row heights, persisted/minimum pane and dialog widths, canvas/bitmap/geo geometry, and window chrome insets.
+- Adaptive scroll containers in popovers, command/recent-key palettes, `export_servers_dialog.rs`, and `geo_map.rs` intentionally pair `.max_h(...)` with GPUI native `.overflow_y_scroll().track_scroll(...)` + sibling `Scrollbar` (distinct from gpui-kit's `ScrollableElement::overflow_y_scrollbar`).

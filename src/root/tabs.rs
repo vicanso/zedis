@@ -23,6 +23,20 @@ use super::*;
 /// tab strip from piling up background Redis traffic.
 pub(crate) const MAX_TABS: usize = 8;
 
+/// Element ID for the pinned trailing "+ New tab" button on the workspace strip.
+pub(crate) const WORKSPACE_NEW_TAB_ID: &str = "workspace-tab-new";
+
+/// Audited px cap so a single verbose server name truncates cleanly with an
+/// ellipsis instead of pushing sibling tabs off the strip.
+const TAB_TITLE_MAX_WIDTH: Pixels = px(160.0);
+
+/// Audited px diameter for the UAT/Prod risk dot on workspace tab pills,
+/// matching the sidebar environment marker scale.
+const TAB_ENV_DOT_SIZE: Pixels = px(6.0);
+
+/// Audited px thickness for the active tab's top brand-accent indicator bar.
+const TAB_ACTIVE_ACCENT_HEIGHT: Pixels = px(2.0);
+
 /// One workspace tab: a content column bound to a connection. `server_id`
 /// stays empty until a server is selected in this tab.
 pub(crate) struct ContentTab {
@@ -73,13 +87,19 @@ pub(crate) struct TabDragPreview {
 impl Render for TabDragPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .px_2()
+            .px_2p5()
             .py_1()
-            .rounded_md()
-            .bg(cx.theme().background)
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
             .border_1()
             .border_color(cx.theme().border)
-            .child(Label::new(self.title.clone()).text_sm())
+            .shadow_md()
+            .child(
+                Label::new(self.title.clone())
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().popover_foreground),
+            )
     }
 }
 
@@ -304,11 +324,12 @@ impl Zedis {
         self.sync_sidebar_health(cx);
     }
 
-    /// The workspace tab strip — hand-rolled pills instead of
+    /// The workspace tab strip — full-height connected IDE tabs instead of
     /// gpui-component's `TabBar`, whose `child(impl Into<Tab>)` API can't
     /// carry a context menu / drag-drop / middle-click. Hidden with a single
     /// tab; with more: click activates, × or middle-click closes, drag
-    /// reorders, right-click offers close / close-others / close-right.
+    /// reorders, right-click offers close / close-others / close-right, and a
+    /// pinned trailing `+` opens a fresh Home tab.
     /// Wider than the window, it scrolls sideways — a trackpad as it would,
     /// a plain mouse wheel through `ScrollableMask::vertical_wheel`, which a
     /// wheel with only a vertical axis needs to move a horizontal strip.
@@ -317,57 +338,91 @@ impl Zedis {
             return None;
         }
         let home_label = i18n_sidebar(cx, "home");
-        let border = cx.theme().border;
-        let foreground = cx.theme().foreground;
-        let active_bg = foreground.alpha(0.1);
-        let hover_bg = cx.theme().list_hover;
-        let radius = cx.theme().radius;
-        let muted = cx.theme().muted_foreground;
+        let tab_bar_bg = workspace_tab_bar_background(cx);
+        let theme = cx.theme();
+        let border = theme.border;
+        let active_bg = theme.background;
+        let foreground = theme.foreground;
+        let primary = theme.primary;
+        let hover_bg = theme.list_hover;
+        let drag_border = theme.drag_border;
+        let muted = theme.muted_foreground;
+        let mono: SharedString = get_mono_font_family().into();
+        let at_limit = self.tabs.len() >= MAX_TABS;
+        let new_tab_tooltip = if at_limit {
+            i18n_common(cx, "tab_limit_title")
+        } else {
+            i18n_common(cx, "tab_new")
+        };
+
         let pills = h_flex()
             .id("workspace-tabs")
             .flex_1()
             .min_w_0()
-            .gap_1()
-            .px_2()
-            .py_1()
+            .h_full()
+            .items_center()
             .overflow_x_scroll()
             .lock_scroll_axis()
             .track_scroll(&self.tab_scroll)
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                let title: SharedString = if tab.server_id.is_empty() {
+                let server = (!tab.server_id.is_empty())
+                    .then(|| get_server(&tab.server_id).ok())
+                    .flatten();
+                let is_home = tab.server_id.is_empty();
+                let title: SharedString = if is_home {
                     home_label.clone()
                 } else {
-                    let name = get_server(&tab.server_id)
-                        .map(|server| server.name)
-                        .unwrap_or_else(|_| tab.server_id.clone());
-                    if tab.db > 0 {
-                        format!("{name} [{}]", tab.db).into()
-                    } else {
-                        name.into()
-                    }
+                    server
+                        .as_ref()
+                        .map(|s| s.name.clone().into())
+                        .unwrap_or_else(|| tab.server_id.clone().into())
                 };
+                let db_badge: Option<SharedString> = (tab.db > 0).then(|| format!("db {}", tab.db).into());
+                let env_dot = server
+                    .as_ref()
+                    .and_then(|s| (!is_quiet_tag(s.tag_color.as_deref())).then_some(s.tag_color.as_deref()))
+                    .flatten()
+                    .and_then(|color| resolve_tag_color(Some(color)));
+                let env_label: Option<SharedString> = server
+                    .as_ref()
+                    .and_then(|s| s.tag_label())
+                    .filter(|t| !t.is_empty())
+                    .map(|t| SharedString::from(t.to_string()));
+
                 let is_active = ix == self.active_tab;
                 // Per-tab jump shortcut (⌘1–8 / Ctrl+1–8): tabs are capped at
                 // 8, so every pill gets a hint. Rendered per-platform via
                 // `humanize_keystroke`, matching the ⌘/ overlay's symbols.
-                // The hint always sits one shade below its title: `muted`
-                // under the active tab's full-foreground title, faded muted
-                // under an inactive tab's already-muted title.
-                let shortcut: SharedString = humanize_keystroke(&format!("cmd-{}", ix + 1)).into();
-                let shortcut_color = if is_active { muted } else { muted.alpha(0.6) };
-                // `Label` doesn't inherit a parent's `text_color` (its render
-                // unconditionally sets the theme foreground before refining
-                // with its own style), so the title's active/inactive color
-                // must be set on the Label itself.
-                let title_color = if is_active { foreground } else { muted };
+                let shortcut: SharedString = humanize_keystroke(&format!("secondary-{}", ix + 1)).into();
+                let icon_color = if is_active { primary } else { muted.alpha(0.7) };
+                let title_color = if is_active { foreground } else { muted.alpha(0.85) };
+                let db_color = if is_active { muted } else { muted.alpha(0.65) };
+                let shortcut_color = if is_active { muted.alpha(0.8) } else { muted.alpha(0.5) };
+                let mut tip_parts = vec![title.to_string()];
+                if let Some(db) = &db_badge {
+                    tip_parts.push(db.to_string());
+                }
+                if let Some(env) = &env_label {
+                    tip_parts.push(env.to_string());
+                }
+                let tooltip_text: SharedString = format!("{} ({shortcut})", tip_parts.join(" · ")).into();
                 let preview_title = title.clone();
+                let tab_icon = if is_home {
+                    Icon::new(IconName::LayoutDashboard).xsmall().text_color(icon_color)
+                } else {
+                    Icon::new(CustomIconName::Database).xsmall().text_color(icon_color)
+                };
+
                 div()
                     .id(("content-tab", ix))
+                    .role(Role::Button)
                     .flex_none()
+                    .h_full()
                     .on_drag(DraggedTab { from: ix }, move |_, _, _, cx| {
                         let title = preview_title.clone();
                         cx.new(|_| TabDragPreview { title })
                     })
+                    .drag_over::<DraggedTab>(move |this, _, _, _| this.border_l_2().border_color(drag_border))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _window, cx| {
                         this.move_tab(dragged.from, ix, cx);
                     }))
@@ -381,36 +436,80 @@ impl Zedis {
                         this.activate_tab(ix, Some(window), cx);
                         this.project_active_tab(cx);
                     }))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
                     .child(
                         h_flex()
-                            .gap_1()
-                            .pl_2()
-                            .pr_1()
-                            .py_0p5()
-                            .rounded(radius)
-                            .when(is_active, |this| this.bg(active_bg))
-                            .when(!is_active, |this| this.text_color(muted).hover(move |s| s.bg(hover_bg)))
-                            // Container-level color still covers the close
-                            // button's icon; the Labels set their own below.
-                            .child(Label::new(title).text_sm().text_color(title_color).whitespace_nowrap())
+                            .relative()
+                            .h_full()
+                            .items_center()
+                            .gap_1p5()
+                            .pl_3()
+                            .pr_1p5()
+                            .border_r_1()
+                            .border_color(border)
+                            // Active tab fills with workspace `background` and drops its
+                            // bottom hairline so it flows seamlessly into the pane below;
+                            // inactive tabs keep the 1px bottom boundary on the trough.
+                            .when(is_active, |this| {
+                                this.bg(active_bg).child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .h(TAB_ACTIVE_ACCENT_HEIGHT)
+                                        .bg(primary),
+                                )
+                            })
+                            .when(!is_active, |this| {
+                                this.border_b_1().border_color(border).hover(move |s| s.bg(hover_bg))
+                            })
+                            .child(tab_icon)
+                            .when_some(env_dot, |this, dot_color| {
+                                this.child(div().flex_none().size(TAB_ENV_DOT_SIZE).rounded_full().bg(dot_color))
+                            })
+                            .child(
+                                Label::new(title)
+                                    .max_w(TAB_TITLE_MAX_WIDTH)
+                                    .text_sm()
+                                    .when(is_active, |this| this.font_semibold())
+                                    .text_color(title_color)
+                                    .whitespace_nowrap()
+                                    .text_ellipsis(),
+                            )
+                            .when_some(db_badge, |this, db| {
+                                this.child(
+                                    Label::new(db)
+                                        .text_xs()
+                                        .font_family(mono.clone())
+                                        .text_color(db_color)
+                                        .whitespace_nowrap(),
+                                )
+                            })
                             .child(
                                 Label::new(shortcut)
                                     .text_xs()
+                                    .font_family(mono.clone())
                                     .text_color(shortcut_color)
                                     .whitespace_nowrap(),
                             )
                             .child(
-                                Button::new(("content-tab-close", ix))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .tooltip(i18n_common(cx, "tab_close"))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        // Closing is not activating — keep the
-                                        // click off the pill underneath.
-                                        cx.stop_propagation();
-                                        this.close_tab(ix, cx);
-                                    })),
+                                div()
+                                    .flex_none()
+                                    .when(!is_active, |this| this.opacity(0.45).hover(|s| s.opacity(1.0)))
+                                    .child(
+                                        Button::new(("content-tab-close", ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Close)
+                                            .tooltip(i18n_common(cx, "tab_close"))
+                                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                                // Closing is not activating — keep the
+                                                // click off the pill underneath.
+                                                cx.stop_propagation();
+                                                this.close_tab(ix, cx);
+                                            })),
+                                    ),
                             ),
                     )
                     .context_menu(move |menu, _window, cx| {
@@ -421,16 +520,52 @@ impl Zedis {
                             )
                             .menu(i18n_common(cx, "tab_close_right"), Box::new(TabAction::CloseRight(ix)))
                     })
-            }));
+            }))
+            // Continues the bottom 1px boundary across unused trough width.
+            .child(div().flex_1().h_full().border_b_1().border_color(border));
+
         let strip = h_flex()
             .w_full()
             .flex_none()
-            .relative()
-            .border_b_1()
-            .border_color(border)
-            .child(pills)
-            // Outside the pills, so their indices are the tabs' own.
-            .child(ScrollableMask::vertical_wheel(&self.tab_scroll));
+            .h(EDITOR_KEY_BAR_HEIGHT)
+            .items_center()
+            .bg(tab_bar_bg)
+            .child(
+                h_flex()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .items_center()
+                    .child(pills)
+                    // Outside the pills, so their indices are the tabs' own, and
+                    // scoped inside the scrollable track so the pinned `+` button
+                    // stays unmasked.
+                    .child(ScrollableMask::vertical_wheel(&self.tab_scroll)),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h_full()
+                    .items_center()
+                    .px_1p5()
+                    .border_l_1()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(
+                        Button::new(WORKSPACE_NEW_TAB_ID)
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .disabled(at_limit)
+                            .tooltip(new_tab_tooltip)
+                            .on_click(|_, _window, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.open_server_in_new_tab(String::new(), 0, cx));
+                                });
+                            }),
+                    ),
+            );
         Some(strip)
     }
 }

@@ -15,10 +15,11 @@
 //! The `Zedis` root view: sidebar, workspace tabs (one connection each),
 //! title bar, and the global action handlers. `main.rs` only launches it.
 
+use crate::assets::CustomIconName;
 #[cfg(not(target_family = "wasm"))]
 use crate::connection::servers_toml_redacted;
 use crate::connection::{DangerKind, clear_expired_cache, get_server, get_servers};
-use crate::constants::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
+use crate::constants::{EDITOR_KEY_BAR_HEIGHT, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
 use crate::db::{TRASH_RETENTION_MS, purge_all_trash};
 use crate::dialogs::*;
 #[cfg(not(target_family = "wasm"))]
@@ -29,7 +30,8 @@ use crate::helpers::{BuildVariant, CrashReport, UpdateInfo, get_or_create_config
 use crate::helpers::{
     ConfigRecovery, DEFAULT_UI_FONT_SIZE, DiagnosticsAction, EditorAction, MemuAction, NavAction, SidebarServerAction,
     UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, WindowAction, WorkspaceTabAction, ZoomAction, apply_default_ui_font_size,
-    humanize_keystroke, unix_ts_millis,
+    get_mono_font_family, humanize_keystroke, is_quiet_tag, resolve_tag_color, unix_ts_millis,
+    workspace_tab_bar_background,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{
@@ -57,20 +59,21 @@ use crate::views::{
 };
 use crate::window_setup::*;
 use gpui::{
-    Action, App, Bounds, Entity, MouseButton, Pixels, Point, ScrollHandle, SharedString, Subscription, Task, Window,
-    div, prelude::*,
+    Action, App, Bounds, Entity, MouseButton, Pixels, Point, Role, ScrollHandle, SharedString, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 use std::collections::HashMap;
 // Only the custom-drawn title bar path uses this (Linux/FreeBSD keep
 // server-side decorations — see the cfg at the open_window call).
 use gpui_kit::component::{
-    ActiveTheme, IconName, InteractiveElementExt, Sizable, Theme, ThemeMode, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, StyledExt, Theme, ThemeMode, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     menu::ContextMenuExt,
     notification::Notification,
     scroll::ScrollableMask,
+    tooltip::Tooltip,
     v_flex,
 };
 #[cfg(not(target_family = "wasm"))]
@@ -87,6 +90,8 @@ mod tabs;
 
 #[cfg(not(target_family = "wasm"))]
 use desktop::DesktopOnly;
+#[cfg(test)]
+pub(crate) use tabs::WORKSPACE_NEW_TAB_ID;
 pub(crate) use tabs::{ContentTab, MAX_TABS, TabAction};
 
 pub struct Zedis {
@@ -541,7 +546,7 @@ impl Render for Zedis {
             .child(self.render_titlebar(window, cx))
             .child(
                 h_flex()
-                    .id(PKG_NAME)
+                    .id("zedis-body")
                     // Body row takes the remaining height (between title bar and
                     // the full-width status bar below); `min_h_0` lets its
                     // scrollable children shrink instead of forcing overflow.
@@ -675,6 +680,7 @@ mod ui_tests {
     use gpui_kit::test::TestWindowExt;
 
     fn open_root(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Zedis>) {
+        cx.update(place_notifications);
         let mut root = None;
         let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
             let view = cx.new(|cx| Zedis::new(window, cx));
@@ -938,5 +944,71 @@ mod ui_tests {
                 .expect("the window is open");
             cx.run_until_parked();
         }
+    }
+
+    /// The workspace tab strip is hidden with a single tab; with two or more,
+    /// its trailing New Tab button aligns horizontally with the sidebar's
+    /// Home band, clicking it opens another Home tab, and reaching `MAX_TABS`
+    /// disables it instead of growing past the limit.
+    #[gpui::test]
+    fn the_workspace_tab_strip_aligns_with_sidebar_and_creates_tabs_until_limit(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let (handle, root) = open_root(cx);
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find(WORKSPACE_NEW_TAB_ID).is_none(),
+                "tab strip stays hidden when only one tab is open"
+            );
+        })
+        .expect("the window is open");
+
+        open_in_new_tabs(cx, handle, &[""], true);
+        assert_eq!(strip(cx, &root), (owned(&[("", 0), ("", 0)]), 1));
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let new_btn = window.find(WORKSPACE_NEW_TAB_ID);
+            let collapse_btn = window.find("sidebar-collapse-toggle");
+            assert!(new_btn.visible());
+            assert_ne!(new_btn.disabled(), Some(true));
+            let new_center_y = new_btn.bounds().center().y;
+            let collapse_center_y = collapse_btn.bounds().center().y;
+            assert!(
+                (new_center_y - collapse_center_y).abs() <= px(1.0),
+                "tab strip new-tab button ({new_center_y:?}) should align with sidebar collapse ({collapse_center_y:?})"
+            );
+            window.click(WORKSPACE_NEW_TAB_ID, cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .expect("the window is open");
+        cx.run_until_parked();
+
+        assert_eq!(strip(cx, &root), (owned(&[("", 0), ("", 0), ("", 0)]), 2));
+
+        let remaining = vec![""; MAX_TABS - 3];
+        open_in_new_tabs(cx, handle, &remaining, true);
+        assert_eq!(strip(cx, &root).0.len(), MAX_TABS);
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let new_btn = window.find(WORKSPACE_NEW_TAB_ID);
+            assert_eq!(new_btn.disabled(), Some(true));
+            window.click(WORKSPACE_NEW_TAB_ID, cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .expect("the window is open");
+        cx.run_until_parked();
+
+        assert_eq!(
+            strip(cx, &root).0.len(),
+            MAX_TABS,
+            "disabled new-tab button must not exceed MAX_TABS"
+        );
     }
 }

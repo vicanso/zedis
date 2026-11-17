@@ -20,6 +20,7 @@ use crate::assets::Assets;
 use crate::helpers::{DiagnosticsAction, UpdateAction, is_app_store_build};
 use crate::helpers::{
     MemuAction, MultiSearchAction, PaletteAction, ShortcutsAction, get_mono_font_family, prod_banner_colors,
+    resolve_tag_chip,
 };
 use crate::states::i18n_shortcuts;
 use crate::views::update_prompt;
@@ -32,12 +33,15 @@ use crate::{
     },
 };
 use gpui::{
-    Anchor, App, Context, Decorations, Div, MouseButton, Role, SharedString, Subscription, Window, div, prelude::*,
+    Anchor, App, Context, Decorations, Div, MouseButton, Rems, Role, SharedString, Subscription, Window, div,
+    prelude::*, rems,
 };
 #[cfg(target_family = "wasm")]
 use gpui::{Image, ImageFormat, img, px};
+use gpui_kit::TestSupportExt;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode, ThemeRegistry, TitleBar,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, TITLE_BAR_HEIGHT, ThemeMode,
+    ThemeRegistry, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -46,6 +50,15 @@ use gpui_kit::component::{
 };
 #[cfg(target_family = "wasm")]
 use std::sync::Arc;
+
+/// Centered title-bar server identity trigger (tooltip + UI test target).
+pub(crate) const TITLE_SERVER_IDENTITY_ID: &str = "zedis-titlebar-identity";
+
+/// Rem cap so long connection names truncate with ellipsis before squeezing window controls.
+const TITLE_SERVER_NAME_MAX_WIDTH: Rems = rems(16.0);
+
+/// Rem cap so long endpoint + DB labels truncate with ellipsis on narrow windows.
+const TITLE_SERVER_HOST_MAX_WIDTH: Rems = rems(13.5);
 
 /// Centered title-bar identity for the active connection (hidden on Home).
 struct TitleBarServerInfo {
@@ -377,7 +390,7 @@ fn logo(dark: bool) -> Arc<Image> {
 #[cfg(target_family = "wasm")]
 fn left_slot(cx: &mut App) -> Div {
     let is_home = cx.global::<ZedisGlobalStore>().read(cx).route() == Route::Home;
-    let hover_bg = cx.theme().list_active;
+    let hover_bg = cx.theme().list_hover;
     let label_color = cx.theme().foreground;
     let mark = logo(cx.theme().is_dark());
     let tooltip = i18n_sidebar(cx, "home");
@@ -395,7 +408,7 @@ fn left_slot(cx: &mut App) -> Div {
             .px_1()
             .py_0p5()
             .rounded(cx.theme().radius)
-            .hover(|this| this.bg(hover_bg))
+            .when(!is_home, |this| this.hover(move |s| s.bg(hover_bg)))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(img(mark).flex_none().size(px(18.)))
             .child(
@@ -424,7 +437,7 @@ fn left_slot(cx: &mut App) -> Div {
 impl Render for ZedisTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // right actions container
-        let right_actions = h_flex().flex_1().items_center().justify_end().px_2().gap_2().mr_2();
+        let right_actions = h_flex().flex_1().items_center().justify_end().px_2().gap_1().mr_1();
 
         // App-global: a newer release awaiting action shows a download chip here
         // (the title bar is always visible, so the update check can run on
@@ -434,62 +447,74 @@ impl Render for ZedisTitleBar {
         // True while re-checking on click — the chip shows a loading spinner.
         let update_checking = cx.global::<ZedisGlobalStore>().read(cx).update_checking();
 
-        // Centered title: name · host:port · db N · [Prod] (last, soft tint).
+        // Centered title: name · host:port · db N · [Prod] (last, solid badge).
         // Empty on Home / when no server is selected.
+        let dark = cx.theme().is_dark();
         let muted = cx.theme().muted_foreground;
+        let radius = cx.theme().radius;
         let mono: SharedString = get_mono_font_family().into();
-        // Soft tint only (no border). Status bar keeps the solid magenta fill.
-        let (prod_bg, prod_fg) = prod_banner_colors(cx.theme().is_dark());
-        // A production connection tints the whole bar, not just its chip: the
-        // window itself says where a stray command would land.
-        let is_prod = Self::selected_server_info(cx).is_some_and(|info| info.prod_label.is_some());
-        let center =
-            h_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .child(
-                    h_flex()
-                        .gap_1p5()
-                        .items_center()
-                        .when_some(Self::selected_server_info(cx), |this, info| {
-                            let db_label: SharedString = format!("db {}", info.db).into();
-                            // Name + host + db first; PROD trails so it doesn't
-                            // steal focus from the connection identity.
-                            // `items_center` (not baseline): name is semibold
-                            // default size while host/db are `text_xs` — baseline
-                            // alignment made the smaller lines sit low and look
-                            // off-center next to the name.
-                            let mut row = this.child(Icon::new(CustomIconName::Database).small()).child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .child(Label::new(info.name).font_semibold())
-                                    .child(
-                                        Label::new(info.host)
-                                            .text_xs()
-                                            .text_color(muted)
-                                            .font_family(mono.clone()),
-                                    )
-                                    .child(
-                                        Label::new(db_label)
-                                            .text_xs()
-                                            .text_color(muted)
-                                            .font_family(mono.clone()),
-                                    ),
-                            );
-                            if let Some(label) = info.prod_label {
-                                row = row.child(
-                                    div()
-                                        .px_1p5()
-                                        .rounded_sm()
-                                        .bg(prod_bg)
-                                        .child(Label::new(label).text_xs().text_color(prod_fg)),
-                                );
-                            }
-                            row
-                        }),
-                );
+        // Bar stays a soft tint (`prod_bg`); inner `[PROD]` chip uses the solid
+        // magenta badge pair so it remains crisply defined against `prod_bg`.
+        let (prod_bg, prod_fg) = prod_banner_colors(dark);
+        let prod_chip = resolve_tag_chip(Some("magenta"), dark).unwrap_or((prod_fg, prod_bg));
+        let server_info = Self::selected_server_info(cx);
+        let is_prod = server_info.as_ref().is_some_and(|info| info.prod_label.is_some());
+        let icon_color = if is_prod { prod_fg } else { muted };
+        let meta_color = if is_prod { prod_fg.opacity(0.85) } else { muted };
+        let center = h_flex()
+            .min_w_0()
+            .px_2()
+            .items_center()
+            .justify_center()
+            .when_some(server_info, |this, info| {
+                let host_db: SharedString = format!("{} · db {}", info.host, info.db).into();
+                let full_tip: SharedString = match &info.prod_label {
+                    Some(label) => format!("{} · {} · {}", info.name, host_db, label).into(),
+                    None => format!("{} · {}", info.name, host_db).into(),
+                };
+                // Name + host · db first; PROD trails as a solid risk pill matching
+                // sidebar and status bar. Truncated fields stay legible at 960px
+                // with full details preserved in the hover tooltip.
+                let mut row = h_flex()
+                    .id(TITLE_SERVER_IDENTITY_ID)
+                    .test_support()
+                    .max_w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_1p5()
+                    .tooltip(move |window, cx| Tooltip::new(full_tip.clone()).build(window, cx))
+                    .child(Icon::new(CustomIconName::Database).small().text_color(icon_color))
+                    .child(
+                        Label::new(info.name)
+                            .max_w(TITLE_SERVER_NAME_MAX_WIDTH)
+                            .min_w_0()
+                            .font_semibold()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                    )
+                    .child(
+                        Label::new(host_db)
+                            .max_w(TITLE_SERVER_HOST_MAX_WIDTH)
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(meta_color)
+                            .font_family(mono.clone())
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
+                    );
+                if let Some(label) = info.prod_label {
+                    row = row.child(
+                        div()
+                            .flex_none()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(radius * 0.5)
+                            .bg(prod_chip.0)
+                            .child(Label::new(label).text_xs().font_semibold().text_color(prod_chip.1)),
+                    );
+                }
+                this.child(row)
+            });
 
         // On Linux/FreeBSD the window keeps server-side decorations (the
         // `titlebar:` option in main.rs is cfg'd off there — see issue #106),
@@ -510,16 +535,17 @@ impl Render for ZedisTitleBar {
                     Some(pct) => format!("{pct}%"),
                     None => format!("v{v}"),
                 };
-                let dismiss_hover_bg = cx.theme().foreground.alpha(0.12);
+                let dismiss_hover_bg = cx.theme().list_hover;
                 let dismiss_fg = cx.theme().muted_foreground;
                 let dismiss_tooltip = i18n_status_bar(cx, "update_dismiss");
                 let prompt_open = cx.global::<ZedisGlobalStore>().read(cx).update_prompt_open();
                 // Outlined, unlike the title bar's other buttons: it is the
                 // one that says something is waiting, and a ghost button
-                // read as part of the chrome.
+                // read as part of the chrome. Stays selected while open.
                 let chip = Button::new(update_prompt::UPDATE_CHIP_ID)
                     .outline()
                     .small()
+                    .selected(prompt_open)
                     .icon(CustomIconName::Download)
                     .label(label)
                     // Spinner while the click re-checks; the answer opens
