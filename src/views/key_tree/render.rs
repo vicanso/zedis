@@ -403,7 +403,9 @@ impl ZedisKeyTree {
         let bar = h_flex()
             .flex_shrink_0()
             .px_2()
-            .h(EDITOR_KEY_BAR_HEIGHT)
+            // Subtract the outer container's 1px bottom border so the total
+            // bar height matches `ZedisEditor`'s border-box `EDITOR_KEY_BAR_HEIGHT`.
+            .h(EDITOR_KEY_BAR_HEIGHT - px(1.))
             .items_center()
             .w_full()
             .gap_x_2()
