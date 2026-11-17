@@ -34,15 +34,16 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Editor, Input},
+    input::{Editor, EditorState, Input},
     label::Label,
     notification::Notification,
     v_flex,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tab::{WorkbenchStatementResult, WorkbenchTab};
 use web_time::Instant;
+use zedis_ui::panel_header;
 
 pub struct ZedisWorkbench {
     server_state: Entity<ZedisServerState>,
@@ -51,6 +52,7 @@ pub struct ZedisWorkbench {
     next_tab_id: u64,
     snippets: Vec<(String, Arc<WorkbenchSnippet>)>,
     show_snippets: bool,
+    result_editors: HashMap<(u64, usize), (String, Entity<EditorState>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -73,6 +75,7 @@ impl ZedisWorkbench {
             next_tab_id: 1,
             snippets: Vec::new(),
             show_snippets: true,
+            result_editors: HashMap::new(),
             _subscriptions: subscriptions,
         };
         this.add_new_tab(window, cx);
@@ -308,15 +311,8 @@ impl ZedisWorkbench {
     }
 
     fn render_header(&self, running: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        h_flex()
-            .w_full()
-            .h(px(40.))
-            .px_4()
+        panel_header()
             .justify_between()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 h_flex()
                     .gap_2()
@@ -510,7 +506,7 @@ impl Render for ZedisWorkbench {
         let running = tab.running;
         let editor = tab.editor.clone();
         let params_bar = self.render_params_bar(tab, cx);
-        let results_pane = self.render_results_pane(tab, cx);
+        let results_pane = self.render_results_pane(self.active_tab, window, cx);
 
         v_flex()
             .size_full()

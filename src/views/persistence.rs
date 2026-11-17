@@ -43,7 +43,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use std::time::Duration;
-use zedis_ui::{ZedisDialog, ZedisSkeletonLoading};
+use zedis_ui::{ZedisDialog, ZedisSkeletonLoading, panel_header};
 
 /// Soft staleness threshold for the "snapshot is old" info banner.
 const STALE_SAVE_SECS: i64 = 6 * 3600;
@@ -274,14 +274,8 @@ impl ZedisPersistence {
     // ── Header ─────────────────────────────────────────────────────────
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        h_flex()
-            .w_full()
-            .h(px(40.))
-            .px_4()
+        panel_header()
             .justify_between()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 h_flex()
                     .gap_2()

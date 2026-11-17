@@ -24,10 +24,9 @@ use gpui_kit::component::{
     ActiveTheme, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     label::Label,
     notification::Notification,
-    scroll::ScrollableElement,
     spinner::Spinner,
     v_flex,
 };
@@ -39,6 +38,7 @@ struct LcsDialog {
     at: ServerDb,
     source_key: SharedString,
     other_key: Entity<InputState>,
+    result_editor: Entity<EditorState>,
     loading: bool,
     outcome: Option<Result<SharedString, SharedString>>,
     _task: Option<Task<()>>,
@@ -60,11 +60,19 @@ impl LcsDialog {
                 this.run_compare(window, cx);
             }
         });
+        let result_editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .line_number(false)
+                .folding(false)
+                .soft_wrap(true)
+                .show_whitespaces(false)
+        });
         Self {
             server_state,
             at,
             source_key,
             other_key,
+            result_editor,
             loading: false,
             outcome: None,
             _task: None,
@@ -83,12 +91,18 @@ impl LcsDialog {
         self.loading = true;
         self.outcome = None;
         cx.notify();
-        self._task = Some(cx.spawn(async move |this, cx| {
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let res = string_lcs(&at, &key1, &other).await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 this.outcome = Some(match res {
-                    Ok(text) => Ok(SharedString::from(text)),
+                    Ok(text) => {
+                        let shared = SharedString::from(text);
+                        this.result_editor.update(cx, |state, cx| {
+                            state.set_value(shared.clone(), window, cx);
+                        });
+                        Ok(shared)
+                    }
                     Err(err) => {
                         let app_err = Error::from(err);
                         let msg = SharedString::from(app_err.to_string());
@@ -109,6 +123,7 @@ impl Render for LcsDialog {
         let muted = theme.muted_foreground;
         let danger = theme.danger;
         let border = theme.border;
+        let radius = theme.radius;
         let bg = theme.secondary;
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
@@ -182,13 +197,21 @@ impl Render for LcsDialog {
                                 .id("lcs-result-scroll")
                                 .w_full()
                                 .h(px(160.))
-                                .p_2()
-                                .rounded_md()
+                                .rounded(radius)
                                 .border_1()
                                 .border_color(border)
                                 .bg(bg)
-                                .overflow_y_scrollbar()
-                                .child(Label::new(lcs).text_xs().font_family(get_mono_font_family())),
+                                .overflow_hidden()
+                                .child(
+                                    Editor::new(&self.result_editor)
+                                        .h_full()
+                                        .w_full()
+                                        .readonly(true)
+                                        .bordered(false)
+                                        .appearance(false)
+                                        .p_0()
+                                        .font_family(get_mono_font_family()),
+                                ),
                         )
                     })
                 }

@@ -1,4 +1,7 @@
 [common]
+server_required = "请选择服务器"
+name_required = "请输入名称"
+match_pattern_required = "请输入匹配规则"
 clients_connected_blocked = "已连接 / 阻塞客户端"
 deep_link_invalid = "无法打开该 Redis 链接：%{error}"
 deep_link_unknown_server = "Zedis 中未配置服务器“%{server}”。"
@@ -1109,6 +1112,7 @@ status_no_messages = "尚未收到消息"
 clear = "清空"
 
 [script_editor]
+shell_command_required = "请输入解码命令"
 title = "自定义解码器"
 server_name = "服务器名称"
 name = "名称"

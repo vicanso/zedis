@@ -36,19 +36,14 @@ use std::sync::Arc;
 use zedis_core::benchmark::{
     BenchmarkComparison, BenchmarkPreset, PIPELINE_CHOICES, compare_summaries, format_latency_f64_us, format_latency_us,
 };
+use zedis_ui::panel_header;
 
 impl ZedisBenchmark {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let has_runs = !self.runs.is_empty();
-        h_flex()
-            .w_full()
-            .px_4()
-            .py_2p5()
+        panel_header()
             .justify_between()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 h_flex()
                     .gap_2()

@@ -52,6 +52,7 @@ use std::time::Duration;
 use tracing::error;
 use zedis_ui::{
     CellRenderer, CellStyle, CellStyleProvider, RowPredicate, TextColumn, ZedisDialog, ZedisTextTable, fitted_table,
+    panel_header,
 };
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -1176,13 +1177,8 @@ impl gpui::Render for ZedisClientsManager {
             .overflow_hidden()
             // Toolbar
             .child(
-                h_flex()
-                    .items_center()
+                panel_header()
                     .justify_between()
-                    .px_4()
-                    .h(px(40.))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         h_flex()
                             .gap_2()

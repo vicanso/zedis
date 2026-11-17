@@ -45,6 +45,7 @@ use gpui_kit::component::{
 use std::time::Duration;
 use zedis_core::report::{Block, Section};
 use zedis_core::string::format_duration;
+use zedis_ui::panel_header;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -530,13 +531,8 @@ impl Render for ZedisHotkeys {
         v_flex()
             .size_full()
             .child(
-                h_flex()
-                    .items_center()
+                panel_header()
                     .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         Button::new("hotkeys-back")
                             .ghost()

@@ -1,4 +1,7 @@
 [common]
+server_required = "Le serveur est requis"
+name_required = "Le nom est requis"
+match_pattern_required = "Le motif de correspondance est requis"
 clients_connected_blocked = "Clients connectés / bloqués"
 deep_link_invalid = "Impossible d'ouvrir ce lien Redis : %{error}"
 deep_link_unknown_server = "Le serveur « %{server} » n'est pas configuré dans Zedis."
@@ -1111,6 +1114,7 @@ status_no_messages = "aucun message pour l'instant"
 clear = "Effacer"
 
 [script_editor]
+shell_command_required = "La commande shell est requise"
 title = "Décodeurs personnalisés"
 server_name = "Nom du serveur"
 name = "Nom"

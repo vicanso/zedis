@@ -1,4 +1,7 @@
 [common]
+server_required = "サーバーを選択してください"
+name_required = "名前を入力してください"
+match_pattern_required = "一致パターンを入力してください"
 clients_connected_blocked = "接続中 / ブロック中のクライアント"
 deep_link_invalid = "この Redis リンクを開けません: %{error}"
 deep_link_unknown_server = "サーバー「%{server}」は Zedis に設定されていません。"
@@ -1110,6 +1113,7 @@ status_no_messages = "まだメッセージはありません"
 clear = "クリア"
 
 [script_editor]
+shell_command_required = "シェルコマンドを入力してください"
 title = "カスタムデコーダー"
 server_name = "サーバー名"
 name = "名前"

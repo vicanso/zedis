@@ -19,7 +19,7 @@ use crate::error::Error;
 use crate::helpers::{PickFailure, get_mono_font_family, has_file_dialogs, opens_files};
 use crate::states::i18n_proto_editor;
 use crate::states::{GlobalEvent, ZedisGlobalStore};
-use crate::states::{ZedisServerState, i18n_common};
+use crate::states::{ZedisServerState, content_area_width, i18n_common};
 use crate::views::open_file;
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -130,7 +130,7 @@ impl TableDelegate for ProtoTableDelegate {
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("edit-proto-btn")
+                        Button::new(("edit-proto-btn", row_ix))
                             .icon(CustomIconName::FilePenLine)
                             .ghost()
                             .small()
@@ -140,7 +140,7 @@ impl TableDelegate for ProtoTableDelegate {
                             })),
                     )
                     .child(
-                        Button::new("delete-proto-btn")
+                        Button::new(("delete-proto-btn", row_ix))
                             .icon(CustomIconName::X)
                             .ghost()
                             .small()
@@ -225,13 +225,17 @@ impl ZedisProtoEditor {
                 this.handle_delete(row_ix, window, cx);
             });
         };
+        let total = (content_area_width(window, cx) - px(32.)).max(px(640.));
+        let mode_w = px(88.);
+        let actions_w = px(88.);
+        let flex_w = (total - mode_w - actions_w).max(px(400.));
         let columns = vec![
-            Column::new("server_name", i18n_proto_editor(cx, "server_name")).width(px(150.)),
-            Column::new("name", i18n_proto_editor(cx, "name")).width(px(150.)),
-            Column::new("match_pattern", i18n_proto_editor(cx, "match_pattern")).width(px(200.)),
-            Column::new("mode", i18n_proto_editor(cx, "mode")).width(px(100.)),
-            Column::new("target_message", i18n_proto_editor(cx, "target_message")).width(px(200.)),
-            Column::new("actions", i18n_proto_editor(cx, "actions")).width(px(150.)),
+            Column::new("server_name", i18n_proto_editor(cx, "server_name")).width(flex_w * 0.18),
+            Column::new("name", i18n_proto_editor(cx, "name")).width(flex_w * 0.20),
+            Column::new("match_pattern", i18n_proto_editor(cx, "match_pattern")).width(flex_w * 0.30),
+            Column::new("mode", i18n_proto_editor(cx, "mode")).width(mode_w),
+            Column::new("target_message", i18n_proto_editor(cx, "target_message")).width(flex_w * 0.32),
+            Column::new("actions", i18n_proto_editor(cx, "actions")).width(actions_w),
         ];
 
         let delegate = ProtoTableDelegate::new(protos, servers, columns, on_edit, on_delete);
@@ -382,24 +386,21 @@ impl ZedisProtoEditor {
         });
 
         if server_id.is_empty() {
+            let msg = i18n_common(cx, "server_required");
             field_errors.update(cx, |state, _cx| {
-                state.insert(
-                    self.server_select_state.entity_id().to_string(),
-                    "server is required".into(),
-                );
+                state.insert(self.server_select_state.entity_id().to_string(), msg);
             });
         }
         if name.is_empty() {
+            let msg = i18n_common(cx, "name_required");
             field_errors.update(cx, |state, _cx| {
-                state.insert(self.name_state.entity_id().to_string(), "name is required".into());
+                state.insert(self.name_state.entity_id().to_string(), msg);
             });
         }
         if match_pattern.is_empty() {
+            let msg = i18n_common(cx, "match_pattern_required");
             field_errors.update(cx, |state, _cx| {
-                state.insert(
-                    self.match_pattern_state.entity_id().to_string(),
-                    "match pattern is required".into(),
-                );
+                state.insert(self.match_pattern_state.entity_id().to_string(), msg);
             });
         }
         if !field_errors.read(cx).is_empty() {

@@ -19,7 +19,7 @@ use crate::error::Error;
 use crate::helpers::{get_mono_font_family, opens_files, saves_files};
 use crate::states::ZedisGlobalStore;
 use crate::states::i18n_script_editor;
-use crate::states::{GlobalEvent, NotificationAction, ZedisServerState, i18n_common};
+use crate::states::{GlobalEvent, NotificationAction, ZedisServerState, content_area_width, i18n_common};
 use crate::views::{export_filename, export_to_file_global, open_file};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -124,7 +124,7 @@ impl TableDelegate for ScriptTableDelegate {
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("edit-sv-btn")
+                        Button::new(("edit-sv-btn", row_ix))
                             .icon(CustomIconName::FilePenLine)
                             .ghost()
                             .small()
@@ -134,7 +134,7 @@ impl TableDelegate for ScriptTableDelegate {
                             })),
                     )
                     .child(
-                        Button::new("delete-sv-btn")
+                        Button::new(("delete-sv-btn", row_ix))
                             .icon(CustomIconName::X)
                             .ghost()
                             .small()
@@ -275,14 +275,18 @@ impl ZedisScriptEditor {
             view_delete.update(cx, |this, cx| this.handle_delete(row_ix, window, cx));
         };
 
+        let total = (content_area_width(window, cx) - px(32.)).max(px(680.));
+        let mode_w = px(80.);
+        let actions_w = px(88.);
+        let flex_w = (total - mode_w - actions_w).max(px(450.));
         let columns = vec![
-            Column::new("server_name", i18n_script_editor(cx, "server_name")).width(px(130.)),
-            Column::new("name", i18n_script_editor(cx, "name")).width(px(120.)),
-            Column::new("shell_command", i18n_script_editor(cx, "shell_command")).width(px(200.)),
-            Column::new("encode_command", i18n_script_editor(cx, "encode_command")).width(px(180.)),
-            Column::new("match_pattern", i18n_script_editor(cx, "match_pattern")).width(px(150.)),
-            Column::new("mode", i18n_script_editor(cx, "mode")).width(px(80.)),
-            Column::new("actions", i18n_script_editor(cx, "actions")).width(px(100.)),
+            Column::new("server_name", i18n_script_editor(cx, "server_name")).width(flex_w * 0.15),
+            Column::new("name", i18n_script_editor(cx, "name")).width(flex_w * 0.15),
+            Column::new("shell_command", i18n_script_editor(cx, "shell_command")).width(flex_w * 0.28),
+            Column::new("encode_command", i18n_script_editor(cx, "encode_command")).width(flex_w * 0.22),
+            Column::new("match_pattern", i18n_script_editor(cx, "match_pattern")).width(flex_w * 0.20),
+            Column::new("mode", i18n_script_editor(cx, "mode")).width(mode_w),
+            Column::new("actions", i18n_script_editor(cx, "actions")).width(actions_w),
         ];
 
         let delegate = ScriptTableDelegate::new(items, servers, columns, on_edit, on_delete);
@@ -404,32 +408,27 @@ impl ZedisScriptEditor {
         field_errors.update(cx, |s, _| s.clear());
 
         if server_id.is_empty() {
+            let msg = i18n_common(cx, "server_required");
             field_errors.update(cx, |s, _| {
-                s.insert(
-                    self.server_select_state.entity_id().to_string(),
-                    "server is required".into(),
-                );
+                s.insert(self.server_select_state.entity_id().to_string(), msg);
             });
         }
         if name.is_empty() {
+            let msg = i18n_common(cx, "name_required");
             field_errors.update(cx, |s, _| {
-                s.insert(self.name_state.entity_id().to_string(), "name is required".into());
+                s.insert(self.name_state.entity_id().to_string(), msg);
             });
         }
         if shell_command.is_empty() {
+            let msg = i18n_script_editor(cx, "shell_command_required");
             field_errors.update(cx, |s, _| {
-                s.insert(
-                    self.shell_command_state.entity_id().to_string(),
-                    "shell command is required".into(),
-                );
+                s.insert(self.shell_command_state.entity_id().to_string(), msg);
             });
         }
         if match_pattern.is_empty() {
+            let msg = i18n_common(cx, "match_pattern_required");
             field_errors.update(cx, |s, _| {
-                s.insert(
-                    self.match_pattern_state.entity_id().to_string(),
-                    "match pattern is required".into(),
-                );
+                s.insert(self.match_pattern_state.entity_id().to_string(), msg);
             });
         }
         if !field_errors.read(cx).is_empty() {

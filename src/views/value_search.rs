@@ -71,7 +71,7 @@ use gpui_kit::component::{
 use preview::{Preview, new_preview_editor, opens_as_tree};
 use std::{cell::Cell, mem::take, rc::Rc, sync::Arc, time::Duration};
 use web_time::Instant;
-use zedis_ui::stat_chip;
+use zedis_ui::{panel_header, stat_chip};
 
 // The scan cap, time budget and match cap are user-tunable (Settings →
 // Key Behavior; `ZedisAppState::value_search_*`, clamped there). The
@@ -1180,13 +1180,8 @@ impl Render for ZedisValueSearch {
                 this.set_type(searchable(*filter), window, cx);
             }))
             .child(
-                h_flex()
-                    .items_center()
+                panel_header()
                     .gap_2()
-                    .px_3()
-                    .h(px(40.))
-                    .border_b_1()
-                    .border_color(border)
                     .child(
                         Button::new("vs-back")
                             .ghost()

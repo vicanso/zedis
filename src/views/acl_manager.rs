@@ -58,7 +58,7 @@ use gpui_kit::component::{
 use rust_i18n::t;
 use std::time::Duration;
 use tracing::error;
-use zedis_ui::{TextColumn, ZedisDialog, ZedisTextTable, fitted_table};
+use zedis_ui::{TextColumn, ZedisDialog, ZedisTextTable, fitted_table, panel_header};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -611,13 +611,8 @@ impl gpui::Render for ZedisAclManager {
                 .label(i18n_acl(cx, key))
                 .on_click(cx.listener(move |this, _, _w, cx| this.set_tab(tab, cx)))
         };
-        let header = h_flex()
-            .items_center()
+        let header = panel_header()
             .justify_between()
-            .px_4()
-            .h(px(40.))
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 h_flex()
                     .gap_2()

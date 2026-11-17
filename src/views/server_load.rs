@@ -47,7 +47,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Duration;
 use web_time::Instant;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, panel_header};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -813,13 +813,8 @@ impl Render for ZedisServerLoad {
             .size_full()
             .font_family(get_mono_font_family())
             .child(
-                h_flex()
-                    .items_center()
+                panel_header()
                     .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         Button::new("server-load-back")
                             .ghost()
