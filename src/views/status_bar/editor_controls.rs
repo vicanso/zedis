@@ -17,8 +17,8 @@
 
 use super::*;
 
-/// The Viewer menu's width: its longest choice, the tick and the paddings.
-const VIEWER_MENU_WIDTH: f32 = 96.;
+/// The Viewer menu's width in `rems`: its longest choice, the tick and the paddings.
+const VIEWER_MENU_WIDTH_REMS: f32 = 6.5;
 
 /// The viewers a string can be shown in, in the Viewer picker's order.
 pub(super) const VIEWER_MODES: [ViewMode; 3] = [ViewMode::Auto, ViewMode::Plain, ViewMode::Hex];
@@ -39,7 +39,8 @@ impl ZedisStatusBar {
         Button::new("soft-wrap")
             .ghost()
             .text_color(status_text)
-            .xsmall()
+            .small()
+            .compact()
             // A value too large to wrap is shown unwrapped whatever the
             // preference: the button says so instead of showing a tick for
             // something that is not happening.
@@ -81,27 +82,33 @@ impl ZedisStatusBar {
         let Some(data_format) = self.state.data_format.clone() else {
             return h_flex().into_any_element();
         };
-        Button::new("data-format")
-            .ghost()
-            .disabled(true)
-            .text_color(cx.theme().primary)
-            .tooltip(i18n_status_bar(cx, "data_format_tooltip"))
-            .icon(Icon::new(CustomIconName::Binary))
-            .label(data_format)
+        let tooltip = i18n_status_bar(cx, "data_format_tooltip");
+        let muted = cx.theme().muted_foreground;
+        h_flex()
+            .id("data-format")
+            .items_center()
+            .gap_1()
+            .px_1p5()
+            .text_color(muted)
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .child(Icon::new(CustomIconName::Binary).small().text_color(muted))
+            .child(Label::new(data_format).text_xs().text_color(muted))
             .into_any_element()
     }
 
-    pub(super) fn render_viewer_mode(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_viewer_mode(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.state.data_format.is_none() {
             return h_flex();
         };
         let label = i18n_status_bar(cx, "viewer");
-        h_flex().child(Label::new(label).mr_1()).child(
+        let menu_width = rems(VIEWER_MENU_WIDTH_REMS).to_pixels(window.rem_size());
+        h_flex().items_center().child(Label::new(label).text_xs().mr_1()).child(
             Select::new(&self.viewer_mode_state)
+                .small()
                 .appearance(false)
                 // Its own width, not the trigger's: the trigger is as wide
                 // as "Auto", and the menu cut "Plain" to "Pla…".
-                .menu_width(px(VIEWER_MENU_WIDTH)),
+                .menu_width(menu_width),
         )
     }
 
@@ -124,7 +131,7 @@ impl ZedisStatusBar {
         let status_bar = cx.entity().downgrade();
         Button::new("zedis-status-bar-view")
             .ghost()
-            .xsmall()
+            .small()
             .compact()
             .text_color(cx.theme().muted_foreground)
             .icon(Icon::new(CustomIconName::Binary))
@@ -132,9 +139,9 @@ impl ZedisStatusBar {
             // A menu, not a switch: the caret says so.
             .dropdown_caret(true)
             .tooltip(format_line.clone())
-            .dropdown_menu(move |menu, _window, cx| {
+            .dropdown_menu(move |menu, window, cx| {
                 let mut menu = menu
-                    .min_w(px(VIEWER_MENU_WIDTH * 2.))
+                    .min_w(rems(VIEWER_MENU_WIDTH_REMS * 2.).to_pixels(window.rem_size()))
                     .label(format_line.clone())
                     .separator()
                     .label(i18n_status_bar(cx, "viewer"));

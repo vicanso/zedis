@@ -36,11 +36,11 @@ use crate::{
 };
 use gpui::{
     Anchor, App, Entity, Hsla, MouseButton, Pixels, SharedString, Subscription, Task, TextAlign, Window, div,
-    prelude::*, px,
+    prelude::*, rems,
 };
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -110,38 +110,48 @@ const EDITOR_CONTROLS_MIN_WIDTH: f32 = 1120.;
 /// icon, with the editor's controls (folded) on the bar and without them.
 const LINK_LABEL_MIN_WIDTH_WITH_EDITOR: f32 = 860.;
 const LINK_LABEL_MIN_WIDTH: f32 = 810.;
+/// Below this effective content width (e.g. minimum 960px window with expanded
+/// sidebar or large UI font), drop secondary telemetry chips (clients / slowlog)
+/// so nothing is clipped at the window edge.
+const ALL_METRICS_MIN_WIDTH: f32 = 770.;
 
 /// What the bar has room for, from the most to the least. A bar that has to
 /// stay one line gives things up in this order, and whole: first the words
 /// beside its counts, then the editor's controls fold into one button, then
-/// the link chip lets its word go and keeps its icon — never half of
-/// something cut by the window's edge.
+/// the link chip lets its word go and keeps its icon, then secondary telemetry
+/// chips yield — never half of something cut by the window's edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum BarFit {
     Full,
     NoUnits,
     FoldedEditorControls,
     LinkIconOnly,
+    CompactTelemetry,
 }
 
 impl BarFit {
-    fn for_width(width: f32, editor_controls: bool) -> Self {
+    fn for_width(width: f32, rem_px: f32, editor_controls: bool) -> Self {
+        let effective_width = width * (16.0 / rem_px.max(12.0));
         if editor_controls {
-            if width >= UNITS_MIN_WIDTH_WITH_EDITOR {
+            if effective_width >= UNITS_MIN_WIDTH_WITH_EDITOR {
                 BarFit::Full
-            } else if width >= EDITOR_CONTROLS_MIN_WIDTH {
+            } else if effective_width >= EDITOR_CONTROLS_MIN_WIDTH {
                 BarFit::NoUnits
-            } else if width >= LINK_LABEL_MIN_WIDTH_WITH_EDITOR {
+            } else if effective_width >= LINK_LABEL_MIN_WIDTH_WITH_EDITOR {
                 BarFit::FoldedEditorControls
-            } else {
+            } else if effective_width >= ALL_METRICS_MIN_WIDTH {
                 BarFit::LinkIconOnly
+            } else {
+                BarFit::CompactTelemetry
             }
-        } else if width >= UNITS_MIN_WIDTH {
+        } else if effective_width >= UNITS_MIN_WIDTH {
             BarFit::Full
-        } else if width >= LINK_LABEL_MIN_WIDTH {
+        } else if effective_width >= LINK_LABEL_MIN_WIDTH {
             BarFit::NoUnits
-        } else {
+        } else if effective_width >= ALL_METRICS_MIN_WIDTH {
             BarFit::LinkIconOnly
+        } else {
+            BarFit::CompactTelemetry
         }
     }
 }
@@ -193,13 +203,11 @@ struct StatusBarServerState {
     active_alert_count: usize,
 }
 
-/// DB-dropdown row geometry, shared by the row renderer and the menu-width
-/// calculation so they can't drift apart. The rows render at `Size::Small`
-/// (⇒ `text_sm` = 14px) in the bar's JetBrains Mono (advance 0.6em), so a
-/// character is 14 × 0.6 = 8.4px.
-const DB_MENU_CHAR_W: f32 = 8.4;
+/// DB-dropdown row geometry in `rems`, shared by the row renderer and the
+/// menu-width calculation so they scale together with UI font size.
+const DB_MENU_CHAR_REMS: f32 = 0.56;
 /// Fixed label column ("DB: 15" = 6 mono chars) so the counts line up.
-const DB_LABEL_COL_W: f32 = 52.;
+const DB_LABEL_COL_REMS: f32 = 3.5;
 
 #[derive(Debug, Clone)]
 struct DbInfo {
@@ -226,7 +234,7 @@ impl SelectItem for DbInfo {
             .gap_3()
             // Fixed label column so the counts line up (mono font cascades
             // from the status bar).
-            .child(div().min_w(px(DB_LABEL_COL_W)).child(self.label.clone()))
+            .child(div().min_w(rems(DB_LABEL_COL_REMS)).child(self.label.clone()))
             .when(self.keys > 0, |this| {
                 this.child(
                     div()
@@ -587,7 +595,11 @@ impl ZedisStatusBar {
 
     /// What the bar has room for at the content's current width.
     fn bar_fit(&self, window: &Window, cx: &App) -> BarFit {
-        BarFit::for_width(content_area_width(window, cx).as_f32(), self.show_editor_controls(cx))
+        BarFit::for_width(
+            content_area_width(window, cx).as_f32(),
+            window.rem_size().as_f32(),
+            self.show_editor_controls(cx),
+        )
     }
 
     /// Render the error message
@@ -670,9 +682,8 @@ impl Render for ZedisStatusBar {
             // Monospace for the whole bar — cascades to every child label /
             // button / select text (icons are SVGs, unaffected).
             .font_family(get_mono_font_family())
-            .py_1p5()
-            .px_4()
-            .gap_4()
+            .px_3()
+            .gap_2()
             .border_t_1()
             .border_color(cx.theme().border)
             .text_color(status_text)
@@ -684,6 +695,7 @@ impl Render for ZedisStatusBar {
             // Right: telemetry (Connected · metrics) + editor settings.
             .child(
                 ZedisDivider::new()
+                    .compact()
                     .child(self.render_telemetry(window, cx))
                     .when(editor_controls && !folded, |this| {
                         this.child(self.render_editor_settings(window, cx))
@@ -968,8 +980,8 @@ mod tests {
     /// edge; there the editor's controls are folded into one button.
     #[test]
     fn the_bar_gives_things_up_in_order_as_it_narrows() {
-        let editor = |width: f32| BarFit::for_width(width, true);
-        let page = |width: f32| BarFit::for_width(width, false);
+        let editor = |width: f32| BarFit::for_width(width, 16.0, true);
+        let page = |width: f32| BarFit::for_width(width, 16.0, false);
         assert_eq!(editor(1400.), BarFit::Full);
         assert_eq!(editor(1200.), BarFit::NoUnits);
         assert_eq!(editor(1020.), BarFit::FoldedEditorControls);
@@ -977,6 +989,11 @@ mod tests {
         assert_eq!(page(1020.), BarFit::Full);
         assert_eq!(page(900.), BarFit::NoUnits);
         assert_eq!(page(780.), BarFit::LinkIconOnly);
+        assert_eq!(page(720.), BarFit::CompactTelemetry);
+        // Larger UI font scales down effective width so controls fold sooner.
+        assert_eq!(BarFit::for_width(1020., 20.0, false), BarFit::NoUnits);
+        assert_eq!(BarFit::for_width(1000., 20.0, false), BarFit::LinkIconOnly);
+        assert_eq!(BarFit::for_width(900., 20.0, false), BarFit::CompactTelemetry);
         // Narrower never shows more.
         let mut last = BarFit::Full;
         for width in (600..1500).rev().step_by(10) {

@@ -163,8 +163,11 @@ impl ZedisStatusBar {
         let latency_text: SharedString =
             format!("{:<width$}", latency_text.as_ref(), width = LATENCY_LABEL_CHARS).into();
         let status_text = cx.theme().muted_foreground;
-        let link_label = self.bar_fit(window, cx) < BarFit::LinkIconOnly;
+        let fit = self.bar_fit(window, cx);
+        let link_label = fit < BarFit::LinkIconOnly;
+        let compact_telemetry = fit >= BarFit::CompactTelemetry;
         ZedisDivider::new()
+            .compact()
             .child(
                 // One native ghost button covering icon + label, so the whole
                 // "Connected" chip is the click target (disconnect when up /
@@ -264,39 +267,41 @@ impl ZedisStatusBar {
                         )),
                         view: ServerView::MemoryAnalysis,
                     }))
-                    .child(Self::metric_chip(MetricChip {
-                        disabled_reason: chip_block(ServerView::Clients),
-                        id: "zedis-status-bar-clients",
-                        unit: unit("unit_clients"),
-                        icon: CustomIconName::AudioWaveform,
-                        label: server_state.clients.clone(),
-                        label_color: status_text,
-                        icon_color: status_text,
-                        tooltip: SharedString::from(format!(
-                            "{} · {}",
-                            // The Metrics page's card says the same: one label.
-                            info_reason
-                                .clone()
-                                .unwrap_or_else(|| i18n_common(cx, "clients_connected_blocked")),
-                            i18n_status_bar(cx, "toggle_clients_tooltip")
-                        )),
-                        view: ServerView::Clients,
-                    }))
-                    .child(Self::metric_chip(MetricChip {
-                        disabled_reason: chip_block(ServerView::Slowlog),
-                        id: "zedis-status-bar-server-slow-logs",
-                        unit: unit("unit_slow"),
-                        icon: CustomIconName::Snail,
-                        label: server_state.slow_log_tips.clone(),
-                        label_color: status_text,
-                        icon_color: status_text,
-                        tooltip: SharedString::from(format!(
-                            "{} · {}",
-                            i18n_status_bar(cx, "slowlog_stat_tooltip"),
-                            i18n_status_bar(cx, "toggle_slowlog_tooltip")
-                        )),
-                        view: ServerView::Slowlog,
-                    })),
+                    .when(!compact_telemetry, |this| {
+                        this.child(Self::metric_chip(MetricChip {
+                            disabled_reason: chip_block(ServerView::Clients),
+                            id: "zedis-status-bar-clients",
+                            unit: unit("unit_clients"),
+                            icon: CustomIconName::AudioWaveform,
+                            label: server_state.clients.clone(),
+                            label_color: status_text,
+                            icon_color: status_text,
+                            tooltip: SharedString::from(format!(
+                                "{} · {}",
+                                // The Metrics page's card says the same: one label.
+                                info_reason
+                                    .clone()
+                                    .unwrap_or_else(|| i18n_common(cx, "clients_connected_blocked")),
+                                i18n_status_bar(cx, "toggle_clients_tooltip")
+                            )),
+                            view: ServerView::Clients,
+                        }))
+                        .child(Self::metric_chip(MetricChip {
+                            disabled_reason: chip_block(ServerView::Slowlog),
+                            id: "zedis-status-bar-server-slow-logs",
+                            unit: unit("unit_slow"),
+                            icon: CustomIconName::Snail,
+                            label: server_state.slow_log_tips.clone(),
+                            label_color: status_text,
+                            icon_color: status_text,
+                            tooltip: SharedString::from(format!(
+                                "{} · {}",
+                                i18n_status_bar(cx, "slowlog_stat_tooltip"),
+                                i18n_status_bar(cx, "toggle_slowlog_tooltip")
+                            )),
+                            view: ServerView::Slowlog,
+                        }))
+                    }),
             )
     }
 

@@ -145,16 +145,16 @@ impl ZedisStatusBar {
     /// key counts, while any fixed width leaves blank space when counts
     /// are small or absent. Sized from the widest count in the current
     /// snapshot instead.
-    fn db_menu_width(&self) -> Pixels {
-        // px_2 row padding (16) + label column + gap to the check icon (4)
-        // + xsmall check icon (~14) + rounding slack (4).
-        let mut width = 16. + DB_LABEL_COL_W + 4. + 14. + 4.;
+    fn db_menu_width(&self, window: &Window) -> Pixels {
+        // px_2 row padding (1.0 rem) + label column + gap to the check icon
+        // (0.25 rem) + xsmall check icon (~1.0 rem) + rounding slack (0.25 rem).
+        let mut width_rems = 1.0 + DB_LABEL_COL_REMS + 0.25 + 1.0 + 0.25;
         let max_keys = self.db_key_counts.iter().copied().max().unwrap_or(0);
         if max_keys > 0 {
-            // gap_3 (12) + the widest grouped count at the mono advance.
-            width += 12. + group_thousands(max_keys).len() as f32 * DB_MENU_CHAR_W;
+            // gap_3 (0.75 rem) + the widest grouped count at the mono advance.
+            width_rems += 0.75 + group_thousands(max_keys).len() as f32 * DB_MENU_CHAR_REMS;
         }
-        px(width)
+        rems(width_rems).to_pixels(window.rem_size())
     }
 
     /// Render the server status.
@@ -188,19 +188,21 @@ impl ZedisStatusBar {
             features,
         };
         let status_text = cx.theme().muted_foreground;
+        let badge_radius = cx.theme().radius * 0.5;
         ZedisDivider::new()
+            .compact()
             .child(
                 h_flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1p5()
                     .when(!tag_text.is_empty() && tag_chip.is_some(), |this| {
                         let (bg, fg) = tag_chip.unwrap_or_else(|| (gpui::black(), gpui::white()));
                         this.child(
                             div()
                                 .px_1p5()
-                                .rounded_sm()
+                                .rounded(badge_radius)
                                 .bg(bg)
-                                .child(Label::new(tag_text).text_xs().text_color(fg)),
+                                .child(Label::new(tag_text).text_xs().font_semibold().text_color(fg)),
                         )
                     })
                     // Quiet outline badge when the connection points at a
@@ -212,7 +214,7 @@ impl ZedisStatusBar {
                             div()
                                 .id("zedis-status-bar-replica-badge")
                                 .px_1p5()
-                                .rounded_sm()
+                                .rounded(badge_radius)
                                 .border_1()
                                 .border_color(cx.theme().warning)
                                 .tooltip(move |window, cx| Tooltip::new(replica_tooltip.clone()).build(window, cx))
@@ -261,7 +263,7 @@ impl ZedisStatusBar {
                                     Select::new(&self.db_state)
                                         .small()
                                         .appearance(false)
-                                        .menu_width(self.db_menu_width()),
+                                        .menu_width(self.db_menu_width(window)),
                                 ),
                         )
                     })

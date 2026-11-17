@@ -20,11 +20,18 @@ use gpui_kit::component::{ActiveTheme, StyledExt, h_flex};
 pub struct ZedisDivider {
     style: StyleRefinement,
     children: Vec<AnyElement>,
+    compact: bool,
 }
 
 impl ZedisDivider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Use tighter horizontal margins around dividers (e.g., dense toolbars/status bars).
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     pub fn child(mut self, child: impl IntoElement) -> Self {
@@ -50,7 +57,8 @@ impl RenderOnce for ZedisDivider {
         for (i, child) in self.children.into_iter().enumerate() {
             container = container.child(child);
             if i < last {
-                container = container.child(div().h_4().w_px().flex_none().bg(color).mx_4());
+                let sep = div().h_4().w_px().flex_none().bg(color);
+                container = container.child(if self.compact { sep.mx_2() } else { sep.mx_4() });
             }
         }
         container
