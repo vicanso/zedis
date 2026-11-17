@@ -1203,7 +1203,6 @@ impl gpui::Render for ZedisMemoryAnalysis {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .font_family(get_mono_font_family())
             .gap_2()
             // ── Toolbar: one row where it fits, two where it does not ──
             // Everything on one line needs about 1750px, which no default

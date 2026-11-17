@@ -36,7 +36,7 @@ use crate::{
 use chrono::Local;
 #[cfg(not(target_family = "wasm"))]
 use gpui::Task;
-use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px, rems};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
@@ -452,7 +452,7 @@ impl Render for ZedisTerminal {
             .on_action(cx.listener(|this, action: &TerminalAction, window, cx| this.handle_action(action, window, cx)))
             .child(output_toolbar)
             .child(
-                div().flex_1().w_full().relative().child(
+                div().flex_1().min_h_0().w_full().relative().child(
                     div().absolute().inset_0().size_full().overflow_hidden().child(
                         // Read-only rather than disabled: the pane keeps
                         // focus, selection, ⌘C and a right-click menu (a
@@ -586,7 +586,7 @@ impl Render for ZedisTerminal {
                     .w_full()
                     .when(batch_mode, |this| {
                         this.child(
-                            div().w_full().h(px(180.)).border_t_1().border_color(border).child(
+                            div().w_full().h(rems(11.25)).border_t_1().border_color(border).child(
                                 Editor::new(&self.batch_input_state)
                                     .w_full()
                                     .h_full()
@@ -650,11 +650,11 @@ impl Render for ZedisTerminal {
                                             h_flex()
                                                 .px_2()
                                                 .py_1()
-                                                .rounded_sm()
+                                                .rounded(cx.theme().radius)
                                                 .items_start()
                                                 .justify_between()
                                                 .gap_2()
-                                                .when(is_selected, |this| this.bg(cx.theme().selection))
+                                                .when(is_selected, |this| this.bg(cx.theme().list_active))
                                                 .child(
                                                     div()
                                                         .min_w_0()

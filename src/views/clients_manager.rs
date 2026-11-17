@@ -19,7 +19,7 @@ use crate::connection::{
 };
 use crate::error::Error;
 use crate::helpers::channel;
-use crate::helpers::{format_duration_units, get_mono_font_family};
+use crate::helpers::format_duration_units;
 /// Redis Client Management viewer.
 ///
 /// Displays a sortable table of connected clients fetched via `CLIENT LIST`.
@@ -1174,8 +1174,6 @@ impl gpui::Render for ZedisClientsManager {
         v_flex()
             .size_full()
             .overflow_hidden()
-            // Monospace cascades to client addresses, IDs and last-command text.
-            .font_family(get_mono_font_family())
             // Toolbar
             .child(
                 h_flex()

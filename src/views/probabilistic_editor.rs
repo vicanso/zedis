@@ -27,7 +27,6 @@
 //! adds min / max / p50 / p90 / p99 (`TDIGEST.MIN` / `MAX` /
 //! `QUANTILE`). The viewer is read-only.
 
-use crate::helpers::get_mono_font_family;
 use crate::{
     connection::{Capability, ProbInfo, ProbeOutcome, ServerDb, prob_info, prob_probe},
     states::{ProbKind, ZedisGlobalStore, ZedisServerState, i18n_probabilistic},
@@ -349,7 +348,6 @@ impl Render for ZedisProbabilisticEditor {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)

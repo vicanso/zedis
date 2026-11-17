@@ -27,7 +27,7 @@
 
 use crate::connection::{ServerDb, TS_AGGREGATORS, TsMRange, TsSeries, has_positive_matcher, ts_mrange};
 use crate::error::Error;
-use crate::helpers::{get_mono_font_family, unix_ts_millis};
+use crate::helpers::unix_ts_millis;
 use crate::states::{
     ServerView, ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width, i18n_common,
     i18n_timeseries,
@@ -35,7 +35,7 @@ use crate::states::{
 use crate::views::{ChartParams, ChartSeries, ValueLabel, format_timestamp_ms, make_series_chart, value_range};
 use gpui::{Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, IconName, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -399,12 +399,11 @@ impl Render for ZedisTimeSeriesExplorer {
         let mut range_bar = h_flex().gap_1().items_center();
         for option in Window_::ALL {
             let label = i18n_timeseries(cx, option.i18n_key());
-            let button = Button::new(("ts-explorer-range", option as usize)).small().label(label);
-            let button = if option == self.window {
-                button.primary()
-            } else {
-                button.ghost()
-            };
+            let button = Button::new(("ts-explorer-range", option as usize))
+                .small()
+                .outline()
+                .selected(option == self.window)
+                .label(label);
             range_bar = range_bar.child(button.on_click(cx.listener(move |this, _, _, cx| {
                 this.set_window(option, cx);
             })));
@@ -412,6 +411,9 @@ impl Render for ZedisTimeSeriesExplorer {
 
         let bar = h_flex()
             .w_full()
+            .pb_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
             .gap_2()
             .items_center()
             // The way back and the page's name, as on every other tool page:
@@ -493,13 +495,7 @@ impl Render for ZedisTimeSeriesExplorer {
                 .into_any_element()
         };
 
-        v_flex()
-            .size_full()
-            .font_family(get_mono_font_family())
-            .gap_3()
-            .p_3()
-            .child(bar)
-            .child(body)
+        v_flex().size_full().gap_3().p_3().child(bar).child(body)
     }
 }
 

@@ -46,7 +46,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -531,12 +531,7 @@ impl ZedisMultiSearch {
         let muted = cx.theme().muted_foreground;
         let muted_bg = cx.theme().muted.opacity(0.35);
         let scope_button = |id: &'static str, label: SharedString, kind: ScopeKind, current: ScopeKind| {
-            let button = Button::new(id).small().label(label);
-            if kind == current {
-                button.primary()
-            } else {
-                button.ghost()
-            }
+            Button::new(id).small().outline().selected(kind == current).label(label)
         };
         // Segmented control on a subtle rail so the three modes read as one
         // control, not three loose buttons floating under the search field.
@@ -545,7 +540,7 @@ impl ZedisMultiSearch {
             .items_center()
             .gap_1()
             .p_0p5()
-            .rounded_lg()
+            .rounded(cx.theme().radius_lg)
             .bg(muted_bg)
             .child(
                 scope_button(
@@ -649,7 +644,7 @@ impl ZedisMultiSearch {
     ) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
-        let hover = cx.theme().list_active;
+        let hover = cx.theme().list_hover;
         let radius = cx.theme().radius;
         // Same recipe as the key tree's leaf zebra (`key_tree/delegate.rs`):
         // faint white-on-dark / black-on-light on odd indices so dense

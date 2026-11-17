@@ -20,7 +20,7 @@ use super::render::tag_color_label_key;
 use super::row_menu::RowMenu;
 use super::*;
 use crate::helpers::ttl_warning_color;
-use gpui::{AnyElement, DismissEvent, Div};
+use gpui::{AnyElement, DismissEvent, Div, rems};
 
 /// The selection checkbox of a key row, with the row's index.
 const ROW_CHECKBOX_ID: &str = "ktree-check";
@@ -169,9 +169,9 @@ impl ListDelegate for KeyTreeDelegate {
         // which made the accent vanish moments after selecting). Gated to leaf
         // keys: folders toggle expand/collapse on click, never "select".
         let is_selected_row = !is_folder && self.server_state.read(cx).key().as_ref() == Some(&entry.id);
-        // Theme-neutral selection fill (~10% foreground), the same recipe the
-        // sidebar uses so the highlight reads on any theme.
-        let selected_row_bg = cx.theme().foreground.alpha(0.1);
+        // Theme-neutral selection fill (`list_active`) so the active key reads
+        // clearly on any theme without competing with tag stripes.
+        let selected_row_bg = cx.theme().list_active;
         // Faint zebra stripe fill for banded leaf rows. Dark needs a higher
         // alpha than light — white-on-dark reads weaker than black-on-light at
         // the same opacity.
@@ -184,14 +184,8 @@ impl ListDelegate for KeyTreeDelegate {
         let show_ttl = self.server_state.read(cx).show_key_tree_ttl();
         let ttl_chip = ttl_chip(entry, show_ttl, cx);
 
-        // Full-bleed hover fill applied on the content div below. In dark a grey
-        // tint blends into the row, so use a saturated blue that stands out; in
-        // light the native `list_hover` already reads fine — leave it there.
-        let hover_bg = if is_dark {
-            cx.theme().blue.alpha(0.3)
-        } else {
-            cx.theme().blue.alpha(0.1)
-        };
+        // Quiet hover wash (`list_hover`), always weaker than `selected_row_bg`.
+        let hover_bg = cx.theme().list_hover;
         // The check column appears in the mode, and also whenever a
         // selection exists — modifier clicks can build one without it.
         let show_check_icon = (self.enabled_multiple_selection || !self.selected_items.is_empty()) && !is_folder;
@@ -272,10 +266,11 @@ impl ListDelegate for KeyTreeDelegate {
                         .border_color(row_border)
                         // Zebra: every second leaf under a folder gets a faint
                         // stripe; the selected row's fill overrides it, and
-                        // hover overrides both.
+                        // hover applies only to unselected rows so hover stays
+                        // quieter than selection.
                         .when(entry.stripe, |this| this.bg(stripe_bg))
                         .when(is_selected_row, |this| this.bg(selected_row_bg))
-                        .hover(|s| s.bg(hover_bg))
+                        .when(!is_selected_row, |this| this.hover(|s| s.bg(hover_bg)))
                         .children(guides)
                         .context_menu(move |menu, _window, cx| {
                             // This row's tooltip is withheld until the menu
@@ -631,8 +626,8 @@ fn ttl_slot(
                     // makes the row two lines
                     // tall (#190).
                     Label::new(chip_label)
-                        .text_size(px(10.))
-                        .w(px(TTL_CHIP_WIDTH))
+                        .text_size(rems(0.6875))
+                        .w(rems(2.25))
                         .whitespace_nowrap()
                         .text_right()
                         .text_color(chip_color)

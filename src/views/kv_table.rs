@@ -37,12 +37,11 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_kit::component::menu::DropdownMenu;
-use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
     button::{Button, ButtonGroup, ButtonVariants},
     h_flex,
-    input::{Escape, Input, InputEvent, InputState},
+    input::{Editor, EditorState, Escape, Input, InputEvent, InputState, TabSize},
     label::Label,
     resizable::{ResizableState, h_resizable, resizable_panel},
     table::{DataTable, TableEvent, TableState},
@@ -143,6 +142,12 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     /// The tree's document lags the form's text; rebuilt when the tree is
     /// next shown (see `sync_json_tree`).
     json_tree_stale: bool,
+    /// Read-only code editor for Decoded/Hex preview so users can select and copy text.
+    preview_editor: Option<Entity<EditorState>>,
+    /// Cached text currently loaded into `preview_editor`.
+    preview_editor_text: SharedString,
+    /// Guards against re-entrant `InputEvent::Change` snap-back in `preview_editor`.
+    preview_editor_reverting: bool,
     /// Whether the values have been modified
     values_modified: bool,
     /// Whether the values should be filled
@@ -416,6 +421,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             preview: PreviewMode::Decoded,
             json_tree,
             json_tree_stale: true,
+            preview_editor: None,
+            preview_editor_text: SharedString::default(),
+            preview_editor_reverting: false,
             values_modified: false,
             value_states,
             readonly,

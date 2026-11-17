@@ -21,7 +21,7 @@
 
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_features, server_view_title};
-use gpui::{Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, prelude::*, px};
+use gpui::{Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, prelude::*, rems};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, StyledExt,
     button::{Button, ButtonVariants},
@@ -77,13 +77,25 @@ impl Render for ZedisUnsupportedPanel {
         };
         let muted = cx.theme().muted_foreground;
         let warning = cx.theme().warning;
+        let max_body_width = rems(32.5);
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_3()
             .p_6()
-            .child(Icon::new(IconName::TriangleAlert).text_xl().text_color(warning))
+            .child(
+                div()
+                    .size_10()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(cx.theme().radius_lg)
+                    .bg(warning.alpha(0.1))
+                    .border_1()
+                    .border_color(warning.alpha(0.25))
+                    .child(Icon::new(IconName::TriangleAlert).size_5().text_color(warning)),
+            )
             .child(Label::new(title).font_semibold().text_lg().text_center())
             .child(
                 Label::new(body)
@@ -91,7 +103,7 @@ impl Render for ZedisUnsupportedPanel {
                     .text_color(muted)
                     .text_center()
                     .whitespace_normal()
-                    .max_w(px(520.)),
+                    .max_w(max_body_width),
             )
             .when_some(hint, |this, hint| {
                 this.child(
@@ -100,7 +112,7 @@ impl Render for ZedisUnsupportedPanel {
                         .text_color(muted)
                         .text_center()
                         .whitespace_normal()
-                        .max_w(px(520.)),
+                        .max_w(max_body_width),
                 )
             })
             .child(
@@ -126,5 +138,39 @@ impl Render for ZedisUnsupportedPanel {
                             }),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::init_ui;
+    use gpui::{AnyWindowHandle, ElementId, TestAppContext, px, size};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+
+    #[gpui::test]
+    fn unsupported_panel_renders_reprobe_and_back_actions(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let command = ServerView::Acl.required_commands()[0];
+        let handle: AnyWindowHandle = cx
+            .open_window(size(px(960.), px(680.)), |window, cx| {
+                let view = cx.new(|_| {
+                    ZedisUnsupportedPanel::new(server_state.clone(), ServerView::Acl, command, CommandStatus::Denied)
+                });
+                Root::new(view, window, cx)
+            })
+            .into();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let reprobe = ElementId::Name("unsupported-panel-reprobe".into());
+            let back = ElementId::Name("unsupported-panel-back".into());
+            let elements = window.elements();
+            assert!(elements.iter().any(|el| el.path().contains(&reprobe)));
+            assert!(elements.iter().any(|el| el.path().contains(&back)));
+        })
+        .expect("render unsupported panel");
     }
 }

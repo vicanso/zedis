@@ -26,8 +26,8 @@ use crate::connection::{ConflictMode, get_servers};
 use crate::states::i18n_copy;
 use gpui::{Entity, SharedString, Window, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Sizable,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Selectable, Sizable,
+    button::Button,
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
@@ -148,12 +148,9 @@ impl Render for ZedisCopyKeyDialog {
             let id_click = id.clone();
             let button = Button::new(SharedString::from(format!("copy-srv-{id}")))
                 .small()
+                .outline()
+                .selected(is_selected)
                 .label(name.clone());
-            let button = if is_selected {
-                button.primary()
-            } else {
-                button.outline()
-            };
             server_row = server_row.child(
                 button.on_click(cx.listener(move |this, _, _window, cx| this.select_server(id_click.clone(), cx))),
             );

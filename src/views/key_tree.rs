@@ -97,9 +97,6 @@ const EXPANDED_ITEMS_INITIAL_CAPACITY: usize = 10;
 /// per SCAN page, so a large keyspace would otherwise trigger a full-tree
 /// rebuild (clone + sort + build) hundreds of times per scan.
 const KEY_TREE_UPDATE_COALESCE: Duration = Duration::from_millis(100);
-/// Fixed width of the TTL chip, in pixels. Sized to fit the two-digit cap
-/// of `format_ttl_chip` (`59s` / `59m`) at 10px font with 1px borders.
-const TTL_CHIP_WIDTH: f32 = 34.0;
 /// Width of the hover-only inline delete button slot, in pixels. The button is
 /// absolutely positioned in this fixed slot at the row's right edge (out of
 /// flow → no reserved width); the TTL chip hides on hover so they don't overlap.

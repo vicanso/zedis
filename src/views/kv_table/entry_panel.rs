@@ -263,11 +263,71 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         cx.notify();
     }
 
+    /// Lazily create (and sync when text changes) the read-only `EditorState`
+    /// used by Decoded / Hex preview so users can select and copy text freely.
+    fn ensure_preview_editor(
+        &mut self,
+        text: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<EditorState> {
+        let editor = if let Some(editor) = &self.preview_editor {
+            editor.clone()
+        } else {
+            let editor = cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .language("json")
+                    .line_number(false)
+                    .folding(false)
+                    .soft_wrap(true)
+                    .show_whitespaces(false)
+                    .tab_size(TabSize {
+                        tab_size: 2,
+                        hard_tabs: false,
+                    })
+            });
+            let sub = cx.subscribe_in(&editor, window, |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::Change) || this.preview_editor_reverting {
+                    return;
+                }
+                if state.read(cx).value().as_ref() == this.preview_editor_text.as_ref() {
+                    return;
+                }
+                let expected = this.preview_editor_text.clone();
+                this.preview_editor_reverting = true;
+                state.update(cx, |s, cx| {
+                    s.set_value(expected, window, cx);
+                });
+                this.preview_editor_reverting = false;
+            });
+            self._subscriptions.push(sub);
+            self.preview_editor = Some(editor.clone());
+            editor
+        };
+        if self.preview_editor_text != text {
+            self.preview_editor_text = text.clone();
+            self.preview_editor_reverting = true;
+            editor.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+            });
+            self.preview_editor_reverting = false;
+        }
+        editor
+    }
+
     /// The decoded rendering, the JSON tree, or the hex of the open row's
     /// element, above the form that edits its bytes.
-    fn render_element_preview(&self, element: &KvElement, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_element_preview(
+        &mut self,
+        element: &KvElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
+        let border_color = theme.border;
+        let radius = theme.radius;
+        let yellow = theme.yellow;
         let decodable = element.is_decoded() || element.format() == DataFormat::Json;
         let mode = if decodable { self.preview } else { PreviewMode::Hex };
         let modes = preview_modes(self.edit_element_json);
@@ -299,8 +359,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .min_h_0()
                 .w_full()
                 .border_1()
-                .border_color(theme.border)
-                .rounded(px(4.))
+                .border_color(border_color)
+                .rounded(radius)
                 .child(self.json_tree.clone())
                 .into_any_element()
         } else {
@@ -310,17 +370,24 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
                 detect_and_decode(element.raw(), max_len).1
             };
-            div()
+            let editor = self.ensure_preview_editor(text, window, cx);
+            v_flex()
                 .flex_1()
                 .min_h_0()
                 .w_full()
                 .border_1()
-                .border_color(theme.border)
-                .rounded(px(4.))
-                .px_2()
-                .py_1()
-                .overflow_y_scrollbar()
-                .child(Label::new(text).text_xs().font_family(get_mono_font_family()))
+                .border_color(border_color)
+                .rounded(radius)
+                .overflow_hidden()
+                .child(
+                    Editor::new(&editor)
+                        .h_full()
+                        .w_full()
+                        .bordered(false)
+                        .appearance(false)
+                        .p_0()
+                        .font_family(get_mono_font_family()),
+                )
                 .into_any_element()
         };
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
@@ -345,7 +412,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         this.child(
                             Label::new(i18n_kv_table(cx, "binary_hex_hint"))
                                 .text_xs()
-                                .text_color(theme.yellow),
+                                .text_color(yellow),
                         )
                     })
                     .child(div().flex_1())
@@ -431,7 +498,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let preview = self
             .previewed_element()
             .cloned()
-            .map(|element| self.render_element_preview(&element, cx).into_any_element());
+            .map(|element| self.render_element_preview(&element, window, cx).into_any_element());
         v_flex()
             .size_full()
             .children(preview)

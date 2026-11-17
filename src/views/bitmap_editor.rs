@@ -28,7 +28,7 @@
 //! is capped at [`CAP_BITS`]; `BITCOUNT` / `BITPOS` stay whole-key.
 
 use crate::assets::CustomIconName;
-use crate::helpers::{canvas_surface_background, get_mono_font_family};
+use crate::helpers::canvas_surface_background;
 use crate::{
     connection::{BitOpKind, BitmapInfo, Capability, ServerDb, bit_field, bit_op, bitmap_info, set_bit},
     states::{ZedisServerState, dialog_button_props, i18n_bitmap, i18n_common},
@@ -669,7 +669,6 @@ impl Render for ZedisBitmapEditor {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)
@@ -725,12 +724,9 @@ impl Render for BitOpForm {
         for op in BitOpKind::ALL {
             let button = Button::new(SharedString::from(format!("bitop-{}", op.word())))
                 .small()
+                .outline()
+                .selected(op == selected)
                 .label(op.word());
-            let button = if op == selected {
-                button.primary()
-            } else {
-                button.outline()
-            };
             ops = ops.child(button.on_click(cx.listener(move |this, _, _window, cx| {
                 this.op = op;
                 cx.notify();

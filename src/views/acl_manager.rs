@@ -847,7 +847,6 @@ impl gpui::Render for ZedisAclManager {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .font_family(get_mono_font_family())
             .child(header)
             .children(persistence_hint.map(|hint| {
                 div()

@@ -469,8 +469,6 @@ impl gpui::Render for ZedisSlowlogEditor {
         v_flex()
             .size_full()
             .overflow_hidden()
-            // Monospace cascades to the logged commands, durations and timestamps.
-            .font_family(get_mono_font_family())
             // Toolbar. One row where it fits; where it does not, the
             // actions drop to a second row instead of running off the edge
             // (at 900px Export and Reset could not be reached).

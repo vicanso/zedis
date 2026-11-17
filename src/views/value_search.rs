@@ -1175,7 +1175,6 @@ impl Render for ZedisValueSearch {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             // The type dropdown dispatches these.
             .on_action(cx.listener(|this, filter: &ValueSearchTypeFilter, window, cx| {
                 this.set_type(searchable(*filter), window, cx);

@@ -53,6 +53,18 @@ impl ZedisBenchmark {
                 h_flex()
                     .gap_2()
                     .items_center()
+                    .child(
+                        Button::new("bench-back-btn")
+                            .small()
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(back_to_editor_tooltip(cx))
+                            .on_click(|_, _window, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+                                });
+                            }),
+                    )
                     .child(Icon::new(CustomIconName::Zap).text_color(theme.primary))
                     .child(Label::new(i18n_benchmark(cx, "title")).text_base().font_semibold())
                     .child(
@@ -88,18 +100,6 @@ impl ZedisBenchmark {
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.clear_history(cx);
                             })),
-                    )
-                    .child(
-                        Button::new("bench-back-btn")
-                            .small()
-                            .ghost()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip(back_to_editor_tooltip(cx))
-                            .on_click(|_, _window, cx| {
-                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
-                                });
-                            }),
                     ),
             )
             .into_any_element()
@@ -569,7 +569,7 @@ impl ZedisBenchmark {
                         .gap_1()
                         .px_2()
                         .py_0p5()
-                        .rounded(px(4.))
+                        .rounded(cx.theme().radius)
                         .bg(theme.secondary)
                         .child(Label::new(b.label.clone()).text_xs().text_color(theme.muted_foreground))
                         .child(
@@ -693,7 +693,7 @@ impl ZedisBenchmark {
                     .py_1p5()
                     .gap_2()
                     .items_center()
-                    .rounded(px(4.))
+                    .rounded(cx.theme().radius)
                     .when(is_selected, |this| this.bg(secondary_bg))
                     .hover(move |s| s.bg(hover_bg))
                     .on_click(cx.listener(move |this, _, _window, cx| {

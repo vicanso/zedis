@@ -36,10 +36,16 @@ use crate::helpers::{
 };
 use crate::states::{ZedisGlobalStore, ZedisServerState, dialog_button_props, i18n_common, i18n_editor, i18n_monitor};
 use crate::views::export_to_file;
-use gpui::{App, ClipboardItem, Entity, Hsla, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, Hsla, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt, button::Button, h_flex, label::Label,
-    notification::Notification, scroll::ScrollableElement, v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
+    button::Button,
+    h_flex,
+    input::{Editor, EditorState, InputEvent},
+    label::Label,
+    notification::Notification,
+    scroll::ScrollableElement,
+    v_flex,
 };
 use humansize::{DECIMAL, format_size};
 use rust_i18n::t;
@@ -199,6 +205,10 @@ pub struct ZedisKeyTimelineDialog {
     capturing: bool,
     show_raw: bool,
     pending_notification: Option<Notification>,
+    raw_editor: Option<Entity<EditorState>>,
+    raw_editor_text: SharedString,
+    raw_editor_reverting: bool,
+    _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -340,6 +350,10 @@ impl ZedisKeyTimelineDialog {
             capturing: false,
             show_raw: false,
             pending_notification: None,
+            raw_editor: None,
+            raw_editor_text: SharedString::default(),
+            raw_editor_reverting: false,
+            _subscriptions: Vec::new(),
             _tasks: Vec::new(),
         };
 
@@ -653,7 +667,7 @@ impl ZedisKeyTimelineDialog {
                     .w_full()
                     .px_2p5()
                     .py_2()
-                    .rounded(px(6.))
+                    .rounded(theme.radius)
                     .bg(row_bg)
                     .border_1()
                     .border_color(if is_selected { theme.primary } else { border })
@@ -720,10 +734,63 @@ impl ZedisKeyTimelineDialog {
             )
     }
 
-    fn render_detail_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn ensure_raw_editor(
+        &mut self,
+        text: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<EditorState> {
+        let editor = if let Some(editor) = &self.raw_editor {
+            editor.clone()
+        } else {
+            let editor = cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .language("json")
+                    .line_number(false)
+                    .folding(false)
+                    .soft_wrap(true)
+                    .show_whitespaces(false)
+            });
+            let sub = cx.subscribe_in(&editor, window, |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::Change) || this.raw_editor_reverting {
+                    return;
+                }
+                if state.read(cx).value().as_ref() == this.raw_editor_text.as_ref() {
+                    return;
+                }
+                let expected = this.raw_editor_text.clone();
+                this.raw_editor_reverting = true;
+                state.update(cx, |s, cx| {
+                    s.set_value(expected, window, cx);
+                });
+                this.raw_editor_reverting = false;
+            });
+            self._subscriptions.push(sub);
+            self.raw_editor = Some(editor.clone());
+            editor
+        };
+        if self.raw_editor_text != text {
+            self.raw_editor_text = text.clone();
+            self.raw_editor_reverting = true;
+            editor.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+            });
+            self.raw_editor_reverting = false;
+        }
+        editor
+    }
+
+    fn render_detail_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let border = theme.border;
+        let radius = theme.radius;
+        let secondary = theme.secondary;
+        let red = theme.red;
+        let yellow = theme.yellow;
+        let green = theme.green;
+        let primary = theme.primary;
+        let foreground = theme.foreground;
         let mono = get_mono_font_family();
 
         let Some((curr, prev_opt)) = self.selected_and_previous() else {
@@ -756,6 +823,7 @@ impl ZedisKeyTimelineDialog {
             ),
         };
 
+        let is_raw = curr.exists && (self.show_raw || prev_opt.is_none());
         let content_el = if !curr.exists {
             v_flex()
                 .p_3()
@@ -763,20 +831,19 @@ impl ZedisKeyTimelineDialog {
                 .child(
                     Label::new(i18n_editor(cx, "key_timeline_key_absent"))
                         .text_sm()
-                        .text_color(theme.red),
+                        .text_color(red),
                 )
                 .into_any_element()
-        } else if self.show_raw || prev_opt.is_none() {
-            v_flex()
-                .p_3()
-                .gap_0p5()
-                .children(curr.snapshot_text.lines().map(|line| {
-                    Label::new(line.to_string())
-                        .font_family(mono.clone())
-                        .text_xs()
-                        .text_color(theme.foreground)
-                        .into_any_element()
-                }))
+        } else if is_raw {
+            let text: SharedString = curr.snapshot_text.clone().into();
+            let editor = self.ensure_raw_editor(text, window, cx);
+            Editor::new(&editor)
+                .h_full()
+                .w_full()
+                .bordered(false)
+                .appearance(false)
+                .p_0()
+                .font_family(mono.clone())
                 .into_any_element()
         } else if let Some(prev) = prev_opt {
             let diff_lines = build_compact_diff(&prev.snapshot_text, &curr.snapshot_text);
@@ -793,7 +860,7 @@ impl ZedisKeyTimelineDialog {
                         Label::new(ttl_note)
                             .font_family(mono.clone())
                             .text_xs()
-                            .text_color(theme.yellow),
+                            .text_color(yellow),
                     )
                     .children(curr.snapshot_text.lines().take(40).map(|line| {
                         Label::new(format!("  {line}"))
@@ -809,10 +876,10 @@ impl ZedisKeyTimelineDialog {
                     .gap_0p5()
                     .children(diff_lines.into_iter().map(|line| {
                         let color = match line.kind {
-                            DiffLineKind::Added => theme.green,
-                            DiffLineKind::Removed => theme.red,
-                            DiffLineKind::Folded => theme.primary,
-                            DiffLineKind::Context => theme.foreground,
+                            DiffLineKind::Added => green,
+                            DiffLineKind::Removed => red,
+                            DiffLineKind::Folded => primary,
+                            DiffLineKind::Context => foreground,
                         };
                         Label::new(line.text)
                             .font_family(mono.clone())
@@ -837,8 +904,8 @@ impl ZedisKeyTimelineDialog {
                     .items_center()
                     .px_2()
                     .py_1()
-                    .rounded(px(4.))
-                    .bg(theme.secondary)
+                    .rounded(radius)
+                    .bg(secondary)
                     .child(
                         Label::new(header_text)
                             .font_family(mono)
@@ -847,17 +914,20 @@ impl ZedisKeyTimelineDialog {
                             .text_ellipsis(),
                     ),
             )
-            .child(
-                v_flex()
+            .child({
+                let frame = v_flex()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .rounded(px(6.))
+                    .rounded(radius)
                     .border_1()
-                    .border_color(border)
-                    .overflow_y_scrollbar()
-                    .child(content_el),
-            )
+                    .border_color(border);
+                if is_raw {
+                    frame.overflow_hidden().child(content_el).into_any_element()
+                } else {
+                    frame.overflow_y_scrollbar().child(content_el).into_any_element()
+                }
+            })
             .into_any_element()
     }
 }
@@ -940,7 +1010,7 @@ impl Render for ZedisKeyTimelineDialog {
                     .h(px(BODY_HEIGHT))
                     .gap_3()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_detail_pane(cx)),
+                    .child(self.render_detail_pane(window, cx)),
             )
     }
 }

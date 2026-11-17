@@ -151,7 +151,7 @@ impl ZedisDataDictionaryDialog {
                         div()
                             .px_1p5()
                             .py_0p5()
-                            .rounded(px(4.))
+                            .rounded(cx.theme().radius)
                             .border_1()
                             .border_color(border)
                             .child(

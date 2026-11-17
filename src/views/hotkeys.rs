@@ -369,6 +369,8 @@ impl ZedisHotkeys {
         let muted = theme.muted_foreground;
         let warning = theme.warning;
         let stripe_bg = theme.table_even;
+        let table_hover = theme.table_hover;
+        let mono = get_mono_font_family();
 
         let mut list = v_flex()
             .flex_1()
@@ -407,13 +409,22 @@ impl ZedisHotkeys {
                     .gap_2()
                     .items_center()
                     .when(ix % 2 != 0, |this| this.bg(stripe_bg))
+                    .hover(|s| s.bg(table_hover))
                     .on_click(cx.listener(move |this, _, _w, cx| this.copy_key(copy_key.clone(), cx)))
                     .child(
-                        div()
-                            .w(px(28.))
-                            .child(Label::new(format!("{}", ix + 1)).text_xs().text_color(muted)),
+                        div().w(px(28.)).child(
+                            Label::new(format!("{}", ix + 1))
+                                .font_family(mono.clone())
+                                .text_xs()
+                                .text_color(muted),
+                        ),
                     )
-                    .child(div().flex_1().min_w_0().child(Label::new(key).text_xs().truncate()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(key).font_family(mono.clone()).text_xs().truncate()),
+                    )
                     .child(
                         div()
                             .w(px(BAR_COL))
@@ -429,16 +440,20 @@ impl ZedisHotkeys {
                             ),
                     )
                     .child(
-                        h_flex()
-                            .w(px(NUM_COL))
-                            .justify_end()
-                            .child(Label::new(format_value(entry.value)).text_xs().font_semibold()),
+                        h_flex().w(px(NUM_COL)).justify_end().child(
+                            Label::new(format_value(entry.value))
+                                .font_family(mono.clone())
+                                .text_xs()
+                                .font_semibold(),
+                        ),
                     )
                     .child(
-                        h_flex()
-                            .w(px(PCT_COL))
-                            .justify_end()
-                            .child(Label::new(format!("{:.1}%", share * 100.0)).text_xs().text_color(muted)),
+                        h_flex().w(px(PCT_COL)).justify_end().child(
+                            Label::new(format!("{:.1}%", share * 100.0))
+                                .font_family(mono.clone())
+                                .text_xs()
+                                .text_color(muted),
+                        ),
                     ),
             );
         }
@@ -514,7 +529,6 @@ impl Render for ZedisHotkeys {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .child(
                 h_flex()
                     .items_center()

@@ -344,7 +344,7 @@ impl ZedisLuaScriptLibrary {
                         Editor::new(viewer)
                             .appearance(false)
                             .bordered(false)
-                            .disabled(true)
+                            .readonly(true)
                             .h_full()
                             .w_full()
                             .font_family(get_mono_font_family()),

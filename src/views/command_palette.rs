@@ -121,14 +121,20 @@ struct PaletteItem {
 }
 
 /// One `<sigil> label` segment of the palette footer's scope legend.
-fn scope_hint(sigil: &str, label: gpui::SharedString, chip_bg: gpui::Hsla, text: gpui::Hsla) -> impl IntoElement {
+fn scope_hint(
+    sigil: &str,
+    label: gpui::SharedString,
+    chip_bg: gpui::Hsla,
+    text: gpui::Hsla,
+    radius: gpui::Pixels,
+) -> impl IntoElement {
     gpui_kit::component::h_flex()
         .gap_1p5()
         .items_center()
         .child(
             div()
                 .px_1()
-                .rounded_sm()
+                .rounded(radius * 0.5)
                 .bg(chip_bg)
                 .child(Label::new(sigil.to_string()).text_xs()),
         )
@@ -984,12 +990,14 @@ impl Render for ZedisCommandPalette {
                                             i18n_command_palette(cx, "scope_commands"),
                                             active,
                                             muted,
+                                            radius,
                                         ))
                                         .child(scope_hint(
                                             "*",
                                             i18n_command_palette(cx, "scope_favorites"),
                                             active,
                                             muted,
+                                            radius,
                                         )),
                                 )
                                 .when(!query_str.is_empty(), |this| {

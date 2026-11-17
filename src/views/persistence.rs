@@ -1013,10 +1013,7 @@ impl Render for ZedisPersistence {
 
         let nodes = self.persistence_nodes(cx);
 
-        let mut body = v_flex()
-            .size_full()
-            .font_family(get_mono_font_family())
-            .overflow_y_scrollbar();
+        let mut body = v_flex().size_full().overflow_y_scrollbar();
         body = body.child(self.render_header(cx));
         if m.loading {
             body = body.child(self.render_loading_banner(cx));

@@ -67,7 +67,7 @@ impl ZedisTopology {
                     .child(Input::new(&self.meet_input).flex_1())
                     .child(
                         Button::new("topo-meet-btn")
-                            .primary()
+                            .outline()
                             .small()
                             .label(meet_label)
                             .disabled(!can_write)
@@ -114,7 +114,7 @@ impl ZedisTopology {
                     .child(Input::new(&self.replicate_master_input).flex_1())
                     .child(
                         Button::new("topo-replicate-btn")
-                            .primary()
+                            .outline()
                             .small()
                             .label(replicate_label)
                             .disabled(!can_write)

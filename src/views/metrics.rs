@@ -17,7 +17,7 @@ mod alerts_dialog;
 use crate::assets::CustomIconName;
 use crate::connection::{ServerCommand, get_server};
 use crate::helpers::saves_files;
-use crate::helpers::{build_csv, client_counts, format_unix_millis_with, get_mono_font_family, pacing};
+use crate::helpers::{build_csv, client_counts, format_unix_millis_with, pacing};
 use crate::states::{RedisMetrics, ServerView, get_metrics_cache, load_persisted_metrics};
 use crate::states::{
     ZedisGlobalStore, ZedisServerState, back_to_editor_tooltip, content_area_width, i18n_common, i18n_metrics,
@@ -931,7 +931,6 @@ impl Render for ZedisMetrics {
         };
         div()
             .size_full()
-            .font_family(get_mono_font_family())
             .p_2()
             .child(
                 div()

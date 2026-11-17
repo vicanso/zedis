@@ -21,7 +21,7 @@ use super::*;
 use crate::connection::{Capability, ServerCommand};
 use crate::helpers::{opens_files, saves_files};
 use crate::states::RedisValue;
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, rems};
 
 /// The inline TTL field, while the key bar shows it instead of the TTL button.
 const TTL_INPUT_ID: &str = "zedis-editor-ttl-input";
@@ -37,9 +37,9 @@ const TTL_INPUT_ID: &str = "zedis-editor-ttl-input";
 const KEY_NAME_PRIORITY_CHARS: f32 = 16.;
 /// The advance of the bundled mono face, in em.
 const MONO_ADVANCE_EM: f32 = 0.6;
-/// The one line of the name-and-facts strip that is drawn. What does not fit
-/// on it wraps to a second line, and that one is clipped.
-const KEY_FACTS_LINE_HEIGHT: f32 = 28.;
+/// The one line of the name-and-facts strip that is drawn, in `rems`. What
+/// does not fit on it wraps to a second line, and that one is clipped.
+const KEY_FACTS_LINE_HEIGHT_REMS: f32 = 1.75;
 
 /// What the bar shows of the selected value, read once a render.
 struct KeyFacts {
@@ -620,7 +620,7 @@ fn name_and_facts(
     object_el: Option<AnyElement>,
     cx: &App,
 ) -> impl IntoElement {
-    let line = px(KEY_FACTS_LINE_HEIGHT);
+    let line = rems(KEY_FACTS_LINE_HEIGHT_REMS);
     let name_width = key_name_priority_width(key.as_ref(), cx.theme().font_size.as_f32());
     h_flex()
         .flex_1()

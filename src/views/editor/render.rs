@@ -20,6 +20,7 @@ use super::*;
 use crate::connection::Capability;
 use crate::helpers::{has_file_dialogs, value_write_limit};
 use crate::views::{open_zmpop_dialog, past_write_limit};
+use gpui::rems;
 
 /// The no-key screen's shortcut list, by hot key id — only actions that work
 /// with nothing selected (key-bound ones like save / TTL / rename / delete
@@ -51,8 +52,15 @@ impl ZedisEditor {
             .justify_center()
             .gap_2()
             .p_4()
-            .child(Label::new(title).text_color(danger))
-            .child(Label::new(message).text_sm().text_color(muted))
+            .child(Label::new(title).font_semibold().text_color(danger))
+            .child(
+                Label::new(message)
+                    .text_sm()
+                    .text_color(muted)
+                    .text_center()
+                    .whitespace_normal()
+                    .max_w(rems(32.5)),
+            )
             .child(
                 Button::new("value-reload-retry")
                     .outline()

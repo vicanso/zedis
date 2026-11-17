@@ -22,7 +22,7 @@ use crate::{
     helpers::{fast_contains_ignore_case, format_duration},
     states::{StreamInfoData, i18n_stream_editor},
 };
-use gpui::{App, Context, SharedString, Window, div, prelude::*, px};
+use gpui::{App, Context, SharedString, Window, div, prelude::*, px, rems};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
@@ -243,7 +243,7 @@ impl ZedisStreamEditor {
             .w_full()
             .gap_2()
             .p_3()
-            .rounded_lg()
+            .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(border)
             .child(
@@ -298,7 +298,7 @@ impl ZedisStreamEditor {
                     .w_full()
                     .gap_2()
                     .p_3()
-                    .rounded_lg()
+                    .rounded(cx.theme().radius_lg)
                     .border_1()
                     .border_color(border)
                     .child(
@@ -889,10 +889,10 @@ impl ZedisStreamEditor {
         // clips instead of scrolling (see the CLAUDE.md gotcha).
         v_flex()
             .w_full()
-            .h(px(220.))
+            .h(rems(13.75))
             .border_1()
             .border_color(border)
-            .rounded_lg()
+            .rounded(cx.theme().radius_lg)
             .child(header)
             .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(list))
     }

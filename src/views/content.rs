@@ -29,7 +29,7 @@ use crate::{
         ZedisTerminal, ZedisTimeSeriesExplorer, ZedisUnsupportedPanel, ZedisValueSearch, ZedisWorkbench,
     },
 };
-use gpui::{AnyView, App, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, px};
+use gpui::{AnyView, App, Entity, FocusHandle, Focusable, Pixels, Subscription, Window, div, prelude::*, rems};
 use gpui_kit::component::{
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
@@ -39,7 +39,7 @@ use tracing::{debug, info};
 use zedis_ui::ZedisSkeletonLoading;
 
 // Constants for UI dimensions
-const LOADING_SKELETON_WIDTH: f32 = 600.0;
+const LOADING_SKELETON_MAX_REMS: f32 = 37.5;
 
 /// Main content area component for the Zedis application
 ///
@@ -519,9 +519,10 @@ impl ZedisContent {
     }
 
     fn render_loading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().w_full().h_full().items_center().justify_center().child(
+        v_flex().w_full().h_full().items_center().justify_center().px_4().child(
             div()
-                .w(px(LOADING_SKELETON_WIDTH))
+                .w_full()
+                .max_w(rems(LOADING_SKELETON_MAX_REMS))
                 .child(ZedisSkeletonLoading::new().text(i18n_common(cx, "loading"))),
         )
     }
@@ -608,6 +609,7 @@ impl Render for ZedisContent {
             // NavAction::Back.
             .key_context("Workspace")
             .flex_1()
+            .min_h_0()
             .h_full();
 
         match route {

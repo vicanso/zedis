@@ -21,9 +21,7 @@ use crate::connection::{
 use crate::error::Error;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{AiEndpoint, analyze_report};
-use crate::helpers::{
-    MemoryAnalysisAction, build_csv, format_duration, get_mono_font_family, group_thousands, unix_ts_millis,
-};
+use crate::helpers::{MemoryAnalysisAction, build_csv, format_duration, group_thousands, unix_ts_millis};
 use crate::states::{
     HINT_MEMORY_ANALYSIS, ReportFinding, ServerEvent, ServerView, ZedisGlobalStore, ZedisServerState,
     back_to_editor_tooltip, content_area_width, get_metrics_cache, i18n_common, i18n_hints, i18n_memory_analysis,
