@@ -119,3 +119,4 @@ pub use zedis_core::monogram::unique_monograms;
 pub use zedis_core::string::escape_glob;
 pub use zedis_core::ttl::{TtlChipKind, TtlFilter, format_ttl_chip, ttl_chip_kind};
 pub use zedis_core::validate::*;
+pub use zedis_core::{format_human_duration, parse_human_duration};

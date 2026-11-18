@@ -52,7 +52,7 @@ const NIGHTLY_TAG: &str = "nightly";
 
 /// A nightly published this soon after our own build time is this very
 /// build finishing its uploads, not a newer one.
-const NIGHTLY_GRACE: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
+const NIGHTLY_GRACE: jiff::SignedDuration = jiff::SignedDuration::from_mins(15);
 
 pub(super) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -313,12 +313,12 @@ fn fetch_from_release_list() -> Result<Option<UpdateInfo>> {
 /// the one running (`built_at`, both RFC 3339), beyond the grace window.
 pub(super) fn nightly_is_newer(published_at: &str, built_at: &str) -> bool {
     let (Ok(published), Ok(built)) = (
-        chrono::DateTime::parse_from_rfc3339(published_at.trim()),
-        chrono::DateTime::parse_from_rfc3339(built_at.trim()),
+        published_at.trim().parse::<jiff::Timestamp>(),
+        built_at.trim().parse::<jiff::Timestamp>(),
     ) else {
         return false;
     };
-    published - built > NIGHTLY_GRACE
+    published.duration_since(built) > NIGHTLY_GRACE
 }
 
 /// What the prompt calls the running build: the version, and for a nightly

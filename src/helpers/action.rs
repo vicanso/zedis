@@ -226,6 +226,9 @@ pub enum EditorAction {
     ViewBitmap,
     /// Delete the selected key (routes through the confirm dialog).
     Delete,
+    /// Delete the selected key without a confirmation prompt on non-PROD
+    /// servers (`delete_key = "...!"` in `keybindings.toml`).
+    DeleteWithoutConfirm,
     /// Open the rename dialog for the selected key.
     Rename,
     /// Open the cross-server "copy to…" dialog for the selected key.
@@ -542,6 +545,20 @@ fn command_key_spelling(keystroke: &str) -> Option<String> {
     twinned.then(|| twin.join("-"))
 }
 
+/// Splits a trailing `!` skip-prompt flag from a configured keystroke.
+///
+/// A literal `!` key (`"!"` or `"shift-!"`) is kept as the keystroke itself
+/// rather than treated as the suffix.
+pub fn strip_skip_prompt_suffix(raw: &str) -> (&str, bool) {
+    if raw == "!" || raw.ends_with("-!") {
+        return (raw, false);
+    }
+    match raw.strip_suffix('!') {
+        Some(base) if !base.trim().is_empty() => (base.trim_end(), true),
+        _ => (raw, false),
+    }
+}
+
 /// One user-configurable shortcut. `id` is the key in `keybindings.toml`
 /// (`helpers/keybindings.rs`); `reference` places it in the ⌘/ overlay as
 /// `(group title key, description key)`, both under the `shortcuts.` i18n
@@ -551,6 +568,7 @@ pub struct HotKey {
     pub default: &'static str,
     pub reference: Option<(&'static str, &'static str)>,
     bind: fn(&str, &App) -> KeyBinding,
+    bind_skip_prompt: Option<fn(&str, &App) -> KeyBinding>,
 }
 
 /// Bind one keystroke, resolving `secondary` for this machine.
@@ -569,13 +587,35 @@ fn bind_keystroke(keystroke: &str, action: impl Action, context: Option<&str>, c
 }
 
 impl HotKey {
-    /// The keystroke in effect: the user's override, else the default.
+    /// Whether appending `!` to this shortcut in `keybindings.toml` skips a
+    /// confirmation prompt.
+    pub const fn supports_skip_prompt(&self) -> bool {
+        self.bind_skip_prompt.is_some()
+    }
+
+    /// The keystroke in effect: the user's override (stripped of any trailing
+    /// `!` skip-prompt marker), else the default.
     pub fn effective(&self) -> &str {
         self.effective_in(keybinding_overrides())
     }
 
     fn effective_in<'a>(&'a self, overrides: &'a HashMap<String, String>) -> &'a str {
-        overrides.get(self.id).map(String::as_str).unwrap_or(self.default)
+        overrides
+            .get(self.id)
+            .map(|raw| strip_skip_prompt_suffix(raw.as_str()).0)
+            .unwrap_or(self.default)
+    }
+
+    /// Whether the override for this shortcut opts into skipping confirmation.
+    pub fn skips_prompt(&self) -> bool {
+        self.skips_prompt_in(keybinding_overrides())
+    }
+
+    fn skips_prompt_in(&self, overrides: &HashMap<String, String>) -> bool {
+        self.supports_skip_prompt()
+            && overrides
+                .get(self.id)
+                .is_some_and(|raw| strip_skip_prompt_suffix(raw.as_str()).1)
     }
 }
 
@@ -591,6 +631,7 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-k",
         reference: Some((GROUP_GENERAL, "command_palette")),
         bind: |keystroke, cx| bind_keystroke(keystroke, PaletteAction::Toggle, None, cx),
+        bind_skip_prompt: None,
     },
     // Quick-open recent keys (Zed/VS Code ⌘P style). Global so it works
     // from tool pages and after the picker closes (focus-independent).
@@ -599,6 +640,7 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-p",
         reference: Some((GROUP_GENERAL, "recent_keys")),
         bind: |keystroke, cx| bind_keystroke(keystroke, RecentKeysAction::Toggle, None, cx),
+        bind_skip_prompt: None,
     },
     // Multi-database search — ⌘⇧F, deliberately adjacent to the
     // key-tree filter's ⌘F ("search here" vs "search everywhere").
@@ -607,12 +649,14 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-shift-f",
         reference: Some((GROUP_GENERAL, "multi_search")),
         bind: |keystroke, cx| bind_keystroke(keystroke, MultiSearchAction::Toggle, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "keyboard_shortcuts",
         default: "secondary-/",
         reference: Some((GROUP_GENERAL, "keyboard_shortcuts")),
         bind: |keystroke, cx| bind_keystroke(keystroke, ShortcutsAction::Toggle, None, cx),
+        bind_skip_prompt: None,
     },
     // ⌘, — where every Mac app keeps its settings.
     HotKey {
@@ -620,42 +664,49 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-,",
         reference: Some((GROUP_GENERAL, "settings")),
         bind: |keystroke, cx| bind_keystroke(keystroke, SettingsAction::Editor, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "zoom_in",
         default: "secondary-=",
         reference: Some((GROUP_GENERAL, "zoom_in")),
         bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::In, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "zoom_out",
         default: "secondary--",
         reference: Some((GROUP_GENERAL, "zoom_out")),
         bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::Out, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "zoom_reset",
         default: "secondary-0",
         reference: Some((GROUP_GENERAL, "zoom_reset")),
         bind: |keystroke, cx| bind_keystroke(keystroke, ZoomAction::Reset, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "quit",
         default: "secondary-q",
         reference: Some((GROUP_GENERAL, "quit")),
         bind: |keystroke, cx| bind_keystroke(keystroke, MemuAction::Quit, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "new_key",
         default: "secondary-n",
         reference: Some((GROUP_EDITOR, "new_key")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Create, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "save",
         default: "secondary-s",
         reference: Some((GROUP_EDITOR, "save")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Save, None, cx),
+        bind_skip_prompt: None,
     },
     // Key-tree refresh is the primary, high-frequency action so it owns
     // plain `cmd-r`; value reload is the rarer one and takes `cmd-shift-r`.
@@ -664,29 +715,34 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-r",
         reference: Some((GROUP_EDITOR, "reload_keys")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::ReloadKeyTree, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "reload_value",
         default: "secondary-shift-r",
         reference: Some((GROUP_EDITOR, "reload_value")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Reload, None, cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "update_ttl",
         default: "secondary-t",
         reference: Some((GROUP_EDITOR, "update_ttl")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::UpdateTtl, None, cx),
+        bind_skip_prompt: None,
     },
     // Delete the selected key. A modifier combo (not bare Backspace) so it
     // can't fire while navigating the tree or typing; still routes through
-    // the confirm dialog (with PROD escalation), so a stray press is safe.
-    // When a text editor is focused it keeps ⌘⌫ for editing — the global
-    // delete only fires when no input consumes it.
+    // the confirm dialog (with PROD escalation) unless overridden with `!`
+    // in `keybindings.toml` on non-PROD connections. When a text editor is
+    // focused it keeps ⌘⌫ for editing — the global delete only fires when
+    // no input consumes it.
     HotKey {
         id: "delete_key",
         default: "secondary-backspace",
         reference: Some((GROUP_EDITOR, "delete_key")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Delete, None, cx),
+        bind_skip_prompt: Some(|keystroke, cx| bind_keystroke(keystroke, EditorAction::DeleteWithoutConfirm, None, cx)),
     },
     // Rename the selected key. ⌘E is free on macOS text inputs (unlike
     // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
@@ -697,6 +753,7 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-e",
         reference: Some((GROUP_EDITOR, "rename_key")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Rename, None, cx),
+        bind_skip_prompt: None,
     },
     // Focus the active page's filter box — except while focus is inside
     // any gpui-component `Input`: a context-free binding out-ranks every
@@ -709,12 +766,14 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-f",
         reference: Some((GROUP_EDITOR, "search")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Search, Some("!Input"), cx),
+        bind_skip_prompt: None,
     },
     HotKey {
         id: "terminal",
         default: "secondary-j",
         reference: Some((GROUP_EDITOR, "terminal")),
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Cmd, None, cx),
+        bind_skip_prompt: None,
     },
     // Close the window via ⌘W, mirroring the red close button (on macOS
     // that hides the app — `on_window_should_close` in `main.rs`). Not in
@@ -724,6 +783,7 @@ static HOT_KEYS: &[HotKey] = &[
         default: "secondary-w",
         reference: None,
         bind: |keystroke, cx| bind_keystroke(keystroke, MemuAction::Close, None, cx),
+        bind_skip_prompt: None,
     },
 ];
 
@@ -867,10 +927,15 @@ pub fn new_hot_keys(cx: &App) -> Vec<KeyBinding> {
     // the key that works there.
     for hot_key in HOT_KEYS {
         let keystroke = hot_key.effective();
+        let bind = if hot_key.skips_prompt() {
+            hot_key.bind_skip_prompt.unwrap_or(hot_key.bind)
+        } else {
+            hot_key.bind
+        };
         if let Some(twin) = web_twin(keystroke) {
-            keys.push((hot_key.bind)(&twin, cx));
+            keys.push(bind(&twin, cx));
         }
-        keys.push((hot_key.bind)(keystroke, cx));
+        keys.push(bind(keystroke, cx));
     }
     // `=` is the unshifted `+` key on every layout that has one, so both
     // spellings zoom in — unless the user moved zoom-in elsewhere.
@@ -951,6 +1016,26 @@ mod tests {
             "only the moved shortcut moves"
         );
         assert_eq!(hot_key_label_in("no_such_shortcut", &defaults), None);
+    }
+
+    #[test]
+    fn a_hint_strips_skip_prompt_suffix_and_flags_skip_prompt() {
+        assert_eq!(
+            strip_skip_prompt_suffix("secondary-backspace!"),
+            ("secondary-backspace", true)
+        );
+        assert_eq!(strip_skip_prompt_suffix("delete !"), ("delete", true));
+        assert_eq!(strip_skip_prompt_suffix("shift-!"), ("shift-!", false));
+        assert_eq!(strip_skip_prompt_suffix("!"), ("!", false));
+
+        let moved = HashMap::from([("delete_key".to_string(), "delete!".to_string())]);
+        assert_eq!(hot_key_label_in("delete_key", &moved).as_deref(), Some("DELETE"));
+        let delete_hk = HOT_KEYS
+            .iter()
+            .find(|hot_key| hot_key.id == "delete_key")
+            .expect("delete_key exists");
+        assert!(delete_hk.skips_prompt_in(&moved));
+        assert!(!delete_hk.skips_prompt_in(&HashMap::new()));
     }
 
     /// A hint names its shortcut by id, and a misspelt id would quietly draw

@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Dragonfly and Garnet: smoke lanes, not matrix lanes. Each speaks Redis's
-//! protocol and is not Redis: a dozen of the `standalone_*` tests do not hold
-//! on Dragonfly and half of them do not on Garnet (no streams, no `DUMP`, ACL
-//! selectors, `CLIENT PAUSE`, `OBJECT`, `PUBSUB CHANNELS`…), and holding every
-//! new test to a third and a fourth server is a cost their share of users does
-//! not pay for. What the README does promise is that they connect and the
-//! basics work — which is what broke unnoticed (Dragonfly's two-element `ROLE`
-//! failed the whole connect) for want of one test that dials it. These are
-//! those tests: `IT_SCENARIOS=dragonfly scripts/it/up.sh` (or `garnet`), then
-//! the filter of the same name. Everywhere else the variable is unset and they
-//! skip.
+//! Dragonfly, Garnet, and KiviDB: smoke lanes, not matrix lanes. Each speaks
+//! Redis's protocol and is not Redis: a dozen of the `standalone_*` tests do not
+//! hold on Dragonfly and half of them do not on Garnet (no streams, no `DUMP`,
+//! ACL selectors, `CLIENT PAUSE`, `OBJECT`, `PUBSUB CHANNELS`…), and holding
+//! every new test to additional server implementations is a cost their share
+//! of users does not pay for. What the README does promise is that they connect
+//! and the basics work — which is what broke unnoticed (Dragonfly's two-element
+//! `ROLE` failed the whole connect) for want of one test that dials it. These
+//! are those tests: `IT_SCENARIOS=dragonfly scripts/it/up.sh` (or `garnet`,
+//! `kividb`), then the filter of the same name. Everywhere else the variable is
+//! unset and they skip.
 
 use super::keys::scan_sees_every_type_it_wrote;
 use super::values::collections_page_and_write_through_their_operations;
@@ -126,6 +126,36 @@ fn garnet_collections_page_and_write_through_their_operations() {
     let addr = skip_unless!("ZEDIS_IT_GARNET");
     smol::block_on(async {
         let id = register(server("it-garnet-collections", addr)).await;
+        collections_page_and_write_through_their_operations(id).await;
+    });
+}
+
+#[test]
+#[ignore]
+fn kividb_connects_and_is_named_in_its_own_version() {
+    let addr = skip_unless!("ZEDIS_IT_KIVIDB");
+    smol::block_on(async {
+        let id = register(server("it-kividb", addr)).await;
+        compatible_server_connects_and_is_named(id, ServerFlavor::KiviDb).await;
+    });
+}
+
+#[test]
+#[ignore]
+fn kividb_scan_sees_every_type_it_wrote() {
+    let addr = skip_unless!("ZEDIS_IT_KIVIDB");
+    smol::block_on(async {
+        let id = register(server("it-kividb", addr)).await;
+        scan_sees_every_type_it_wrote(id).await;
+    });
+}
+
+#[test]
+#[ignore]
+fn kividb_collections_page_and_write_through_their_operations() {
+    let addr = skip_unless!("ZEDIS_IT_KIVIDB");
+    smol::block_on(async {
+        let id = register(server("it-kividb-collections", addr)).await;
         collections_page_and_write_through_their_operations(id).await;
     });
 }

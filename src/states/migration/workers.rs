@@ -28,7 +28,7 @@ pub(super) struct WorkerControl {
 }
 
 fn new_checkpoint(job: MigrationCheckpointJob, resume: Option<(String, MigrationResumeCursor)>) -> MigrationCheckpoint {
-    let now = Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let summary = match &job {
         MigrationCheckpointJob::Export {
             server_id,
@@ -74,7 +74,7 @@ fn new_checkpoint(job: MigrationCheckpointJob, resume: Option<(String, Migration
     let (id, cursor) = match resume {
         Some((id, cursor)) => (id, cursor),
         None => (
-            format!("mig-{}", Utc::now().timestamp_nanos_opt().unwrap_or(now * 1_000_000)),
+            format!("mig-{}", jiff::Timestamp::now().as_nanosecond()),
             MigrationResumeCursor::default(),
         ),
     };
@@ -89,7 +89,7 @@ fn new_checkpoint(job: MigrationCheckpointJob, resume: Option<(String, Migration
 }
 
 fn update_checkpoint(cp: &mut MigrationCheckpoint, cursor: MigrationResumeCursor) {
-    cp.updated_at = Utc::now().timestamp();
+    cp.updated_at = jiff::Timestamp::now().as_second();
     cp.cursor = cursor;
     save_migration_checkpoint(cp);
 }
@@ -321,7 +321,7 @@ async fn export_worker(
         source_redis_version: redis_version,
         source_db: db as u32,
         key_count,
-        created_at_ms: Utc::now().timestamp_millis(),
+        created_at_ms: jiff::Timestamp::now().as_millisecond(),
     };
 
     let path_for_open = output_path.clone();
@@ -688,7 +688,7 @@ async fn import_binary_worker(
             break;
         }
         let batch_len = batch.len();
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = jiff::Timestamp::now().as_millisecond();
         let mut expired = Vec::new();
         batch.retain_mut(|entry| match ttl_left(entry.pttl_ms, dumped_at_ms, now_ms) {
             Some(left) => {

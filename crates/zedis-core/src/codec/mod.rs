@@ -130,11 +130,11 @@ fn describe_instant(seconds: i64) -> Option<String> {
 }
 
 /// A span by its two largest units: `3days 4h`, `4months 20days`. Rounding to
-/// the minute is not enough for a long one — a humantime month is 30.44 days,
+/// the minute is not enough for a long one — a formatted month is 30.44 days,
 /// so months leave hours, minutes and seconds behind (`4months 21days 1h 47m
 /// 36s`), a precision nobody reads in "how long ago was this issued".
 fn coarse_span(span: Duration) -> String {
-    let whole = humantime::format_duration(span).to_string();
+    let whole = crate::duration::format_human_duration(span);
     whole.split(' ').take(2).collect::<Vec<_>>().join(" ")
 }
 

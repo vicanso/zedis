@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::duration::parse_human_duration;
+
 pub fn validate_ttl(s: &str) -> bool {
     if s.is_empty() || s.parse::<usize>().is_ok() {
         return true;
     }
-    humantime::parse_duration(s).is_ok()
+    parse_human_duration(s).is_ok()
 }
 
 /// The whole seconds a TTL field asks for: a bare number is seconds, anything
-/// else a humantime duration (`90s`, `1h30m`, `7d`). `None` when it asks for
+/// else a human-readable duration (`90s`, `1h30m`, `7d`). `None` when it asks for
 /// nothing `EXPIRE` should be sent — blank, unparsable, or under one second.
 ///
 /// Zero is refused on purpose: `EXPIRE key 0` is a TTL already in the past,
@@ -32,7 +34,7 @@ pub fn ttl_secs(s: &str) -> Option<u64> {
     let s = s.trim();
     let secs = match s.parse::<u64>() {
         Ok(secs) => secs,
-        Err(_) => humantime::parse_duration(s).ok()?.as_secs(),
+        Err(_) => parse_human_duration(s).ok()?.as_secs(),
     };
     (secs > 0).then_some(secs)
 }

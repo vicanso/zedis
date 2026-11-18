@@ -18,7 +18,7 @@
 //! is the file plumbing. Settings picks the path with a save dialog.
 
 use crate::error::Error;
-use chrono::Local;
+use jiff::ZonedDateTime;
 use std::path::Path;
 use zedis_core::fs::write_file_atomic;
 use zedis_db::{ImportSummary, LocalDataBackup, export_local_data, import_local_data};
@@ -29,10 +29,10 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 /// write it — a machine with no Downloads folder must not silently land the
 /// file in the config directory.
 pub fn export_local_data_json() -> Result<(String, Vec<u8>)> {
-    let now = Local::now();
-    let backup = export_local_data(env!("CARGO_PKG_VERSION"), now.timestamp())?;
+    let now = ZonedDateTime::now();
+    let backup = export_local_data(env!("CARGO_PKG_VERSION"), now.timestamp().as_second())?;
     let json = serde_json::to_vec_pretty(&backup)?;
-    let name = format!("zedis-local-data-{}.json", now.format("%Y%m%d-%H%M%S"));
+    let name = format!("zedis-local-data-{}.json", now.strftime("%Y%m%d-%H%M%S"));
     Ok((name, json))
 }
 

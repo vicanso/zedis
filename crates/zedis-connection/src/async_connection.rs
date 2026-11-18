@@ -91,7 +91,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub(crate) static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     let value = std::env::var("REDIS_DELAY").unwrap_or_default();
-    humantime::parse_duration(&value).ok()
+    zedis_core::parse_human_duration(&value).ok()
 });
 
 struct MultiplexedConnectionCache {

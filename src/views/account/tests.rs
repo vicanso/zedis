@@ -30,11 +30,11 @@ use crate::connection::{
     BridgeDisposition, BridgeInvite, BridgeNewInvite, BridgeOrphans, BridgeOwned, BridgeOwnedItem, BridgeSignup,
 };
 use crate::test_support::init_ui;
-use chrono::{Duration, Utc};
 use gpui::{AnyWindowHandle, TestAppContext, size};
 use gpui_kit::component::Root;
 use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::test::TestWindowExt;
+use jiff::{Span, Timestamp, tz::TimeZone};
 use std::sync::Mutex;
 use zedis_ui::ZedisSelectEvent;
 
@@ -574,7 +574,8 @@ fn an_administrator_s_token_expires_in_ninety_days_by_default(cx: &mut TestAppCo
     })
     .expect("the window is open");
     cx.run_until_parked();
-    let day = (Utc::now().date_naive() + Duration::days(ADMIN_TOKEN_DAYS)).format("%Y-%m-%d");
+    let day = (Timestamp::now().to_zoned_datetime(TimeZone::UTC).date() + Span::new().days(ADMIN_TOKEN_DAYS))
+        .strftime("%Y-%m-%d");
     assert_eq!(
         bridge.requests(),
         vec![format!("issue Some(\"ai\") laptop Some(\"{day}\")")]
@@ -741,7 +742,7 @@ fn the_audit_narrows_to_a_server_and_a_period(cx: &mut TestAppContext) {
     })
     .expect("the window is open");
     cx.run_until_parked();
-    let before = Utc::now().timestamp_millis();
+    let before = Timestamp::now().as_millisecond();
     click(cx, window, AUDIT_SEARCH_ID);
     let asked = bridge.audits.lock().expect("lock").last().cloned().expect("asked");
     assert_eq!(asked.server.as_deref(), Some("srv-2"));

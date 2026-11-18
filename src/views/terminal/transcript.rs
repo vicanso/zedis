@@ -215,7 +215,10 @@ fn write_output_file(text: &str) -> io::Result<PathBuf> {
     let dir = get_download_dir()
         .or_else(|| get_or_create_config_dir().ok())
         .ok_or_else(|| io::Error::other("no directory to write the output to"))?;
-    let path = dir.join(format!("zedis-terminal-{}.txt", Local::now().format("%Y%m%d-%H%M%S")));
+    let path = dir.join(format!(
+        "zedis-terminal-{}.txt",
+        jiff::ZonedDateTime::now().strftime("%Y%m%d-%H%M%S")
+    ));
     write_file_atomic(&path, text.as_bytes())?;
     Ok(path)
 }

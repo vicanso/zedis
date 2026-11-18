@@ -1170,7 +1170,10 @@ impl Render for ZedisEditor {
                     cx.notify();
                 }
                 EditorAction::Delete => {
-                    this.delete_key(window, cx);
+                    this.delete_key(false, window, cx);
+                }
+                EditorAction::DeleteWithoutConfirm => {
+                    this.delete_key(true, window, cx);
                 }
                 EditorAction::Rename => {
                     this.open_rename_dialog(window, cx);

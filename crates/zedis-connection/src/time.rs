@@ -13,18 +13,19 @@
 // limitations under the License.
 
 use crate::error::Error;
-use chrono::Local;
+use jiff::Timestamp;
 use std::time::Duration;
+use zedis_core::parse_human_duration;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Helper function to get current Unix timestamp in seconds.
 pub fn unix_ts() -> i64 {
-    Local::now().timestamp()
+    Timestamp::now().as_second()
 }
 /// Helper function to get current Unix timestamp in milliseconds.
 pub fn unix_ts_millis() -> i64 {
-    Local::now().timestamp_millis()
+    Timestamp::now().as_millisecond()
 }
 
 /// Parse a duration string into a Duration.
@@ -32,5 +33,5 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     if let Ok(secs) = s.parse::<u64>() {
         return Ok(Duration::from_secs(secs));
     }
-    humantime::parse_duration(s).map_err(|e| Error::Invalid { message: e.to_string() })
+    parse_human_duration(s).map_err(|e| Error::Invalid { message: e.to_string() })
 }

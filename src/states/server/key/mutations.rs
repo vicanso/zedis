@@ -21,7 +21,7 @@ use crate::connection::{
     flush_db, key_types, persist_key, rename_key, set_hash_fields_ttl, set_keys_ttl, set_ttl_matching,
 };
 use crate::db::move_local_records;
-use crate::helpers::{format_ttl_chip, parse_duration};
+use crate::helpers::{format_ttl_chip, parse_duration, parse_human_duration};
 use crate::states::{i18n_key_tree, i18n_status_bar};
 use rust_i18n::t;
 use std::time::Duration;
@@ -724,7 +724,7 @@ impl ZedisServerState {
         } else if let Ok(secs) = ttl.trim().parse::<u64>() {
             secs as i64
         } else {
-            humantime::parse_duration(ttl.trim())
+            parse_human_duration(ttl.trim())
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(-1)
         };
@@ -737,7 +737,7 @@ impl ZedisServerState {
                 } else if let Ok(secs) = ttl.parse::<u64>() {
                     Some(secs)
                 } else {
-                    let ttl = humantime::parse_duration(&ttl).map_err(|e| Error::Invalid { message: e.to_string() })?;
+                    let ttl = parse_human_duration(&ttl).map_err(|e| Error::Invalid { message: e.to_string() })?;
                     Some(ttl.as_secs())
                 };
                 let command = key_type.create_command();

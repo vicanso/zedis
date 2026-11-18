@@ -66,6 +66,10 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant        (zbus 5)
     "RUSTSEC-2026-0371", # zbus_names      (zbus 5)
     "RUSTSEC-2026-0372", # zvariant_derive (zbus 5)
+    # chrono is unmaintained (RUSTSEC-2026-0543, #282). Direct workspace code
+    # uses `jiff`; chrono remains only as a transitive dependency through
+    # gpui-kit / gpui-pre and russh-util until upstream crates move off it.
+    "RUSTSEC-2026-0543", # chrono          (gpui-kit, gpui-pre, russh-util)
 
     # zstd 0.13.3 / zstd-safe 7.3.0, issues #244–#256. Reached only through
     # rust-embed's `compression` → include-flate 0.3.4, which pins zstd 0.13.

@@ -286,6 +286,7 @@ mod tests {
             ServerFlavor::Dragonfly,
             ServerFlavor::KeyDb,
             ServerFlavor::Kvrocks,
+            ServerFlavor::KiviDb,
         ] {
             assert!(set_keepttl_is_safe(flavor), "{flavor:?}");
         }

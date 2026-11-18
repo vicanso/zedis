@@ -26,7 +26,7 @@
 use super::logs_dir;
 #[cfg(not(target_family = "wasm"))]
 use super::unix_ts;
-use chrono::Local;
+use jiff::ZonedDateTime;
 use std::backtrace::Backtrace;
 #[cfg(not(target_family = "wasm"))]
 use std::fs;
@@ -135,7 +135,7 @@ fn format_report(context: &CrashContext, message: &str, location: &str, thread: 
          message: {}\n\
          \n\
          backtrace:\n{}\n",
-        Local::now().to_rfc3339(),
+        ZonedDateTime::now().strftime("%Y-%m-%dT%H:%M:%S%:z"),
         context.version,
         context.git_sha,
         context.renderer,

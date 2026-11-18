@@ -28,7 +28,6 @@ use crate::helpers::{media_type_for, web_download, web_upload};
 #[cfg(not(target_family = "wasm"))]
 use crate::states::i18n_common;
 use crate::states::{GlobalEvent, NotificationAction, ZedisGlobalStore, ZedisServerState};
-use chrono::Local;
 use gpui::{App, Context, Entity, SharedString, Task, Window};
 #[cfg(not(target_family = "wasm"))]
 use gpui::{PathPromptOptions, prelude::*};
@@ -409,7 +408,7 @@ pub(crate) fn export_filename_with(stem: &str, extension: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let slug = slug.trim_matches('-');
-    let ts = Local::now().format("%Y%m%d-%H%M%S");
+    let ts = jiff::ZonedDateTime::now().strftime("%Y%m%d-%H%M%S");
     if slug.is_empty() {
         format!("zedis-{ts}.{extension}")
     } else {

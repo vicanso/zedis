@@ -20,7 +20,7 @@
 use super::crash::CRASH_REPORT_PREFIX;
 use super::logs_dir;
 use super::zip::ZipWriter;
-use chrono::Local;
+use jiff::ZonedDateTime;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ pub fn export_diagnostics(input: &DiagnosticsInput) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("no directory to write the bundle to"))?;
     let path = dir.join(format!(
         "zedis-diagnostics-{}.zip",
-        Local::now().format("%Y%m%d-%H%M%S")
+        ZonedDateTime::now().strftime("%Y%m%d-%H%M%S")
     ));
     let archive = build_archive(input, logs_dir().as_deref())?;
     write_file_atomic(&path, &archive)?;

@@ -17,8 +17,8 @@ use super::string::encode_with_script_viewer;
 use super::{Result, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::{HeatMetric, StringWrite, json_merge, json_set, string_set};
 use bytes::Bytes;
-use chrono::Local;
 use gpui::{Hsla, SharedString, prelude::*, rgb};
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -963,29 +963,29 @@ impl RedisValue {
     /// Special Redis TTL codes:
     /// - -1: No expiration set
     /// - -2: Key does not exist or is expired
-    pub fn ttl(&self) -> Option<chrono::Duration> {
+    pub fn ttl(&self) -> Option<SignedDuration> {
         let expire_at = self.expire_at?;
 
         // Handle special Redis TTL codes
         if expire_at < 0 {
-            return Some(chrono::Duration::seconds(expire_at));
+            return Some(SignedDuration::from_secs(expire_at));
         }
 
         // Calculate remaining time
-        let now = Local::now().timestamp();
+        let now = Timestamp::now().as_second();
         let remaining = expire_at.saturating_sub(now);
         // if the remaining time is less than 0, return expired
         if remaining < 0 {
-            return Some(chrono::Duration::seconds(-2));
+            return Some(SignedDuration::from_secs(-2));
         }
 
-        Some(chrono::Duration::seconds(remaining))
+        Some(SignedDuration::from_secs(remaining))
     }
 
     /// Remaining TTL in the encoding the key-tree cache uses (`-1` none,
     /// `-2` gone, `>= 0` seconds left). `None` when expiry was never loaded.
     pub fn ttl_secs(&self) -> Option<i64> {
-        Some(self.ttl()?.num_seconds())
+        Some(self.ttl()?.as_secs())
     }
 
     /// Returns the key type
@@ -1109,7 +1109,7 @@ mod select_placeholder_tests {
             Some(-2)
         );
         let remaining = RedisValue {
-            expire_at: Some(Local::now().timestamp() + 90),
+            expire_at: Some(Timestamp::now().as_second() + 90),
             ..Default::default()
         }
         .ttl_secs()
@@ -1198,7 +1198,7 @@ impl ZedisServerState {
         let (format, original_size, original_bytes_value, is_redis_json, ttl) = {
             let Some(value) = self.open.value.as_ref() else { return };
             let Some(bv) = value.bytes_value() else { return };
-            let ttl = value.ttl().map(|t| t.num_milliseconds()).unwrap_or_default();
+            let ttl = value.ttl().map(|t| t.as_millis() as i64).unwrap_or_default();
             (bv.format, value.size, bv, value.is_redis_json(), ttl)
         };
 
@@ -1372,7 +1372,7 @@ impl ZedisServerState {
         let (format, original_size, original_bytes_value, ttl) = {
             let Some(value) = self.open.value.as_ref() else { return };
             let Some(bv) = value.bytes_value() else { return };
-            let ttl = value.ttl().map(|t| t.num_milliseconds()).unwrap_or_default();
+            let ttl = value.ttl().map(|t| t.as_millis() as i64).unwrap_or_default();
             (bv.format, value.size, bv, ttl)
         };
 

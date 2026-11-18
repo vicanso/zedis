@@ -364,7 +364,7 @@ impl ZedisAppState {
         if server.id.is_empty() {
             server.id = Uuid::now_v7().to_string();
         }
-        server.updated_at = Some(Local::now().to_string());
+        server.updated_at = Some(jiff::ZonedDateTime::now().to_string());
         cx.spawn(async move |handle, cx| {
             let task = cx.background_spawn(async move {
                 if server.name.is_empty() {
@@ -450,7 +450,7 @@ impl ZedisAppState {
                     if server.id.is_empty() {
                         server.id = Uuid::now_v7().to_string();
                     }
-                    server.updated_at = Some(Local::now().to_string());
+                    server.updated_at = Some(jiff::ZonedDateTime::now().to_string());
                     if let Some(existing) = current.iter_mut().find(|s| s.id == server.id) {
                         if server.sort_order.is_none() {
                             server.sort_order = existing.sort_order;

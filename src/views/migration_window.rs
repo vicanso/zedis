@@ -36,7 +36,6 @@ use crate::states::{
     i18n_migration, load_migration_checkpoints,
 };
 use crate::views::{confirm_dangerous_command, open_compare_for_key};
-use chrono::Utc;
 use gpui::{
     App, Bounds, Entity, FocusHandle, Focusable, KeyDownEvent, SharedString, Subscription, Task, TitlebarOptions,
     Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
@@ -714,7 +713,7 @@ impl ZedisMigrationWindow {
     }
 
     fn suggested_filename(&self) -> String {
-        let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S");
         match &self.mode {
             MigrationWindowMode::Export { server_name, db, .. } => {
                 let safe_name: String = server_name

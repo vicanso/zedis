@@ -16,11 +16,12 @@
 //! in at `/v1/mcp` with, and nowhere else.
 
 use super::*;
-use chrono::{Duration, NaiveDate, Utc};
+use crate::helpers::{picker_before_matcher, to_picker_date};
 use gpui_kit::component::{
     date_picker::{DatePicker, DatePickerState},
     input::{Input, InputState},
 };
+use jiff::{Span, Timestamp, civil::Date, tz::TimeZone};
 
 pub(super) const TOKEN_NAME_ID: &str = "account-token-name";
 pub(super) const ISSUE_TOKEN_ID: &str = "account-issue-token";
@@ -52,8 +53,8 @@ pub(super) const ADMIN_TOKEN_DAYS: i64 = 90;
 
 /// The first day a token may expire on. The bridge refuses a day already
 /// begun (UTC midnight is when a token stops), so today is not offered.
-pub(super) fn first_expiry_day() -> NaiveDate {
-    Utc::now().date_naive() + Duration::days(1)
+pub(super) fn first_expiry_day() -> Date {
+    Timestamp::now().to_zoned_datetime(TimeZone::UTC).date() + Span::new().days(1)
 }
 
 /// A picker for a token's expiry, which offers no day the bridge would
@@ -65,9 +66,12 @@ pub(super) fn expiry_picker(
 ) -> Entity<DatePickerState> {
     let first = first_expiry_day();
     cx.new(|cx| {
-        let mut state = DatePickerState::new(window, cx).disabled_matcher(move |day: &NaiveDate| *day < first);
-        if let Some(days) = days {
-            state.set_date(Utc::now().date_naive() + Duration::days(days), window, cx);
+        let mut state = DatePickerState::new(window, cx).disabled_matcher(picker_before_matcher(first));
+        if let Some(days) = days
+            && let Some(date) =
+                to_picker_date(Timestamp::now().to_zoned_datetime(TimeZone::UTC).date() + Span::new().days(days))
+        {
+            state.set_date(date, window, cx);
         }
         state
     })

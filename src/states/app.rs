@@ -31,7 +31,6 @@ use crate::helpers::{
 use crate::helpers::{DEFAULT_DATE_FORMAT, TimeZonePref};
 use crate::startup::is_nightly_build;
 use crate::states::i18n_common;
-use chrono::Local;
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, EventEmitter, Global, Pixels, SharedString, Window};
 use gpui_kit::component::ThemeMode;
 use schemars::JsonSchema;

@@ -20,15 +20,15 @@ use crate::{
     components::KeyTypeBadge,
     connection::HeatMetric,
     connection::{
-        ConflictMode, CopyLoss, CopyPreflight, RestoreStatus, ServerDb, copy_key, copy_preflight, floors, get_server,
-        get_servers, key_bytes, zset_looks_geo,
+        Capability, ConflictMode, CopyLoss, CopyPreflight, RestoreStatus, ServerDb, copy_key, copy_preflight, floors,
+        get_server, get_servers, key_bytes, zset_looks_geo,
     },
     constants::EDITOR_KEY_BAR_HEIGHT,
     db::get_favorites_manager,
     helpers::{
         DeepLink, EditorAction, KeyOpAction, PickFailure, card_background, format_duration, format_duration_units,
-        format_unix_secs, get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs, unix_ts, validate_ttl,
-        with_hot_key,
+        format_human_duration, format_unix_secs, get_mono_font_family, hot_key_label, humanize_keystroke, ttl_secs,
+        unix_ts, validate_ttl, with_hot_key,
     },
     states::{
         ConnectionErrorKind, DataFormat, HINT_EDITOR_GUIDE, KeyType, LinkProblem, MAX_INLINE_VALUE_SIZE, ServerEvent,
@@ -247,11 +247,9 @@ fn format_ttl_string(ttl: &str) -> String {
 /// Past a day, humantime spells months (`11months 18days 12hours…`) which
 /// this 120px field truncates to `11months 1`. Days and leftover hours
 /// (`353d 12h`) still parse and fit.
-fn ttl_field_text(ttl: Option<chrono::Duration>) -> SharedString {
-    match ttl.and_then(|ttl| u64::try_from(ttl.num_seconds()).ok()) {
-        Some(secs) if secs > 0 && secs < 86_400 => {
-            humantime::format_duration(Duration::from_secs(secs)).to_string().into()
-        }
+fn ttl_field_text(ttl: Option<jiff::SignedDuration>) -> SharedString {
+    match ttl.and_then(|ttl| u64::try_from(ttl.as_secs()).ok()) {
+        Some(secs) if secs > 0 && secs < 86_400 => format_human_duration(Duration::from_secs(secs)).into(),
         Some(secs) if secs > 0 => {
             let days = secs / 86_400;
             let hours = (secs % 86_400) / 3_600;
@@ -725,14 +723,25 @@ impl ZedisEditor {
         cx.notify();
     }
 
-    /// Delete the currently selected key with confirmation dialog
-    fn delete_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Delete the currently selected key with confirmation dialog (or
+    /// immediately on non-PROD servers when `skip_confirm` is true).
+    fn delete_key(&mut self, skip_confirm: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.server_state.read(cx).can(Capability::DeleteKey) {
+            return;
+        }
         let Some(key) = self.server_state.read(cx).key() else {
             return;
         };
 
         let server_state = self.server_state.clone();
         let server_id = self.server_state.read(cx).server_id().to_string();
+        let high_risk = get_server(&server_id).is_ok_and(|server| server.is_high_risk_tag());
+        if skip_confirm && !high_risk {
+            server_state.update(cx, move |state, cx| {
+                state.delete_select_key(key, cx);
+            });
+            return;
+        }
         let name = key.clone();
         confirm_delete_key(&server_id, &name, window, cx, move |_window, cx| {
             let key = key.clone();
@@ -1148,18 +1157,18 @@ mod tests {
 
     #[test]
     fn the_ttl_field_opens_with_the_time_left_in_a_form_it_reads_back() {
-        let text = ttl_field_text(Some(chrono::Duration::seconds(5405)));
+        let text = ttl_field_text(Some(jiff::SignedDuration::from_secs(5405)));
         assert_eq!(text.as_ref(), "1h 30m 5s");
         assert_eq!(ttl_secs(&format_ttl_string(&text)), Some(5405));
         // A year-scale TTL stays compact and parseable — humantime would
         // open as `11months 18days…` and the field would clip it.
         let long = 353 * 86_400 + 12 * 3_600;
-        let text = ttl_field_text(Some(chrono::Duration::seconds(long)));
+        let text = ttl_field_text(Some(jiff::SignedDuration::from_secs(long)));
         assert_eq!(text.as_ref(), "353d 12h");
         assert_eq!(ttl_secs(&format_ttl_string(&text)), Some(long as u64));
         // No TTL (-1), a missing key (-2) and none at all open empty.
-        assert!(ttl_field_text(Some(chrono::Duration::seconds(-1))).is_empty());
-        assert!(ttl_field_text(Some(chrono::Duration::seconds(-2))).is_empty());
+        assert!(ttl_field_text(Some(jiff::SignedDuration::from_secs(-1))).is_empty());
+        assert!(ttl_field_text(Some(jiff::SignedDuration::from_secs(-2))).is_empty());
         assert!(ttl_field_text(None).is_empty());
     }
 

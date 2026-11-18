@@ -16,7 +16,6 @@ use crate::assets::Assets;
 use crate::helpers::{BuildVariant, platform_info};
 use crate::states::i18n_common;
 use crate::views::secondary_window::{active_window_display, open_secondary_window};
-use chrono::{Datelike, Local};
 use gpui::{
     App, Bounds, Image, ImageFormat, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px,
     size,
@@ -97,7 +96,7 @@ fn collect_system_info(window: &Window) -> String {
 }
 
 fn build_config(cx: &App) -> AboutConfig {
-    let year = Local::now().year().to_string();
+    let year = jiff::ZonedDateTime::now().year().to_string();
     let years = if year == "2026" {
         "2026".to_string()
     } else {

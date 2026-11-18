@@ -28,7 +28,6 @@ use crate::connection::{
 use crate::db::{JobManager, StoredJobRecord};
 use crate::error::Error;
 use ahash::AHashSet;
-use chrono::Utc;
 use gpui::SharedString;
 use gpui::prelude::*;
 use gpui::{EventEmitter, Task};

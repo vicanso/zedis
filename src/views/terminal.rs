@@ -33,8 +33,6 @@ use crate::{
     views::{bridge_danger, confirm_dangerous_command},
 };
 #[cfg(not(target_family = "wasm"))]
-use chrono::Local;
-#[cfg(not(target_family = "wasm"))]
 use gpui::Task;
 use gpui::{App, ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px, rems};
 use gpui_kit::component::{

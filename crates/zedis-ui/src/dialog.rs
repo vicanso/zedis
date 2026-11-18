@@ -176,10 +176,10 @@ impl ZedisDialog {
     }
 
     /// Marks an alert as the confirmation of a destructive action: OK is
-    /// drawn in the danger colour, and Return answers Cancel instead of OK —
-    /// the default button of such a dialog has to be the safe one, or a
-    /// stray Return after "Delete key" deletes it. OK still answers a click,
-    /// and Space once it holds the focus.
+    /// drawn in the danger colour, `Cancel` receives initial focus so an
+    /// immediate `Return` cancels safely without running the destructive
+    /// action, and tabbing to the OK button lets `Return` or `Space`
+    /// confirm it (alongside clicking it directly).
     ///
     /// Needs [`Self::ok_text`] and [`Self::cancel_text`]: the buttons are
     /// this dialog's own, because an alert's stock buttons send Return and
@@ -231,6 +231,7 @@ impl ZedisDialog {
         } else {
             None
         };
+        let danger_handles = danger.then(|| (cx.focus_handle(), cx.focus_handle()));
 
         /// Applies common configuration to a dialog.
         /// Works with both `Dialog` and `AlertDialog` since they share the same builder API.
@@ -255,10 +256,19 @@ impl ZedisDialog {
                 } else if let Some(ref msg) = message {
                     d = d.child(msg.to_string());
                 }
-                if danger {
-                    // Return closes the dialog and runs nothing: on a
-                    // destructive confirm the default answer is Cancel.
-                    d = d.on_ok(|_, _, _| true);
+                if let Some((_, ref ok_focus)) = danger_handles {
+                    // Cancel holds initial focus so an immediate Return
+                    // cancels safely; once the user tabs to the destructive
+                    // button, Return confirms it.
+                    let ok_focus = ok_focus.clone();
+                    let ok_cb = on_ok.clone();
+                    d = d.on_ok(move |e, window, cx| {
+                        if ok_focus.is_focused(window) {
+                            ok_cb.as_ref().map(|f| f(e, window, cx)).unwrap_or(true)
+                        } else {
+                            true
+                        }
+                    });
                 } else if let Some(ref ok) = on_ok {
                     let ok = ok.clone();
                     d = d.on_ok(move |e, w, cx| ok(e, w, cx));
@@ -282,23 +292,25 @@ impl ZedisDialog {
                     let mut footer = DialogFooter::new();
                     if let Some(cancel) = cancel_label {
                         let close_cb = on_close.clone();
-                        footer = footer.child(
-                            Button::new("zedis-dialog-cancel")
-                                .label(cancel)
-                                .outline()
-                                .on_click(move |e, window, cx| {
-                                    window.close_dialog(cx);
-                                    if let Some(cb) = &close_cb {
-                                        cb(e, window, cx);
-                                    }
-                                }),
-                        );
+                        let mut cancel_btn = Button::new("zedis-dialog-cancel").label(cancel).outline();
+                        if let Some((ref cancel_focus, _)) = danger_handles {
+                            cancel_btn = cancel_btn.track_focus(cancel_focus);
+                        }
+                        footer = footer.child(cancel_btn.on_click(move |e, window, cx| {
+                            window.close_dialog(cx);
+                            if let Some(cb) = &close_cb {
+                                cb(e, window, cx);
+                            }
+                        }));
                     }
                     if let Some(ok) = ok_label {
                         let ok_cb = on_ok.clone();
                         let close_cb = on_close.clone();
                         let button = Button::new("zedis-dialog-ok").label(ok);
-                        let button = if danger { button.danger() } else { button.primary() };
+                        let mut button = if danger { button.danger() } else { button.primary() };
+                        if let Some((_, ref ok_focus)) = danger_handles {
+                            button = button.track_focus(ok_focus);
+                        }
                         footer = footer.child(button.on_click(move |e, window, cx| {
                             // Mirror the ConfirmDialog contract: on_ok
                             // returning false keeps the dialog open.
@@ -321,7 +333,16 @@ impl ZedisDialog {
             // No `overlay_closable` here: gpui-component disabled backdrop
             // dismissal for alert dialogs, so the setter is deprecated and
             // does nothing.
-            window.open_alert_dialog(cx, move |dialog, _, _| apply_config!(dialog).close_button(true));
+            let initial_focus = std::cell::Cell::new(danger);
+            let cancel_focus = danger_handles.as_ref().map(|(cancel_focus, _)| cancel_focus.clone());
+            window.open_alert_dialog(cx, move |dialog, window, cx| {
+                if initial_focus.replace(false)
+                    && let Some(ref cancel_focus) = cancel_focus
+                {
+                    cancel_focus.focus(window, cx);
+                }
+                apply_config!(dialog).close_button(true)
+            });
         } else {
             window.open_dialog(cx, move |dialog, _, _| {
                 let mut d = apply_config!(dialog);
@@ -416,5 +437,40 @@ mod tests {
         let ran = ask(cx, handle, false);
         press_return(cx, handle);
         assert!(ran.get(), "a plain alert's Return is its OK");
+    }
+
+    #[gpui::test]
+    fn tabbing_to_destructive_ok_confirms_on_return(cx: &mut TestAppContext) {
+        let handle = window(cx);
+
+        let ran = ask(cx, handle, true);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("tab", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        assert!(!press_return(cx, handle), "Return closes the dialog once OK is focused");
+        assert!(ran.get(), "and runs the destructive action");
+
+        // Space on the focused destructive button also confirms once.
+        let ran = ask(cx, handle, true);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("tab", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("space", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let still_open = cx
+            .update_window(handle, |_, window, cx| window.has_active_dialog(cx))
+            .expect("the window is open");
+        assert!(!still_open, "Space closes the dialog");
+        assert!(ran.get(), "and runs the destructive action");
     }
 }

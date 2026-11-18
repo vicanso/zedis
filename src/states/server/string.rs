@@ -22,9 +22,9 @@ use crate::{
     error::Error,
 };
 use bytes::Bytes;
-use chrono::DateTime;
 use flate2::read::GzDecoder;
 use gpui::SharedString;
+use jiff::Timestamp;
 use lz4_flex::block::decompress_size_prepended;
 use ruzstd::decoding::StreamingDecoder;
 use serde_json::Value;
@@ -363,20 +363,20 @@ impl RedisBytesValue {
 fn format_unix_timestamp(bytes: &[u8]) -> Option<SharedString> {
     let raw = std::str::from_utf8(bytes).ok()?;
     let value: i64 = raw.parse().ok()?;
-    let (dt, unit) = if bytes.len() == 13 {
-        (DateTime::from_timestamp_millis(value)?, "milliseconds")
+    let (ts, unit) = if bytes.len() == 13 {
+        (Timestamp::from_millisecond(value).ok()?, "milliseconds")
     } else {
-        (DateTime::from_timestamp(value, 0)?, "seconds")
+        (Timestamp::from_second(value).ok()?, "seconds")
     };
     // The configured zone + layout first, the other zone under it, so a
     // UTC-minded user and a local-minded one both get their answer on the
     // first line.
     let primary = configured_time_zone();
-    let (other_label, other) = format_datetime_other_zone(&dt);
+    let (other_label, other) = format_datetime_other_zone(ts);
     let text = format!(
         "{raw} ({unit})\n{}: {}\n{other_label}: {other}",
         primary.label(),
-        format_datetime_in(&dt, primary),
+        format_datetime_in(ts, primary),
     );
     Some(SharedString::from(text))
 }

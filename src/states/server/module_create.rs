@@ -18,6 +18,7 @@
 use super::{KeyType, ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::{BfReserve, CfReserve, ProbKind, TsCreate, bf_reserve, cf_reserve, expire_key, ts_create};
 use crate::error::Error;
+use crate::helpers::parse_human_duration;
 use gpui::{Context, SharedString};
 use std::sync::Arc;
 
@@ -47,7 +48,7 @@ fn parse_optional_ttl_secs(ttl: &str) -> Result<Option<u64>, Error> {
     if let Ok(secs) = trimmed.parse::<u64>() {
         return Ok(Some(secs));
     }
-    let duration = humantime::parse_duration(trimmed).map_err(|e| Error::Invalid { message: e.to_string() })?;
+    let duration = parse_human_duration(trimmed).map_err(|e| Error::Invalid { message: e.to_string() })?;
     Ok(Some(duration.as_secs()))
 }
 

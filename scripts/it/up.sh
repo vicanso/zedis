@@ -24,11 +24,12 @@
 #                                       27000-27005; `IT_CLUSTER_BASE=7100` moves the block when
 #                                       those are taken)
 #   dragonfly   127.0.0.1:16391   one Dragonfly, for the three `dragonfly_*` smoke tests
-#   garnet      127.0.0.1:16392   one Garnet, for the three `garnet_*` ones. Both are opt-in
-#                                 (`IT_SCENARIOS=dragonfly`, `IT_SCENARIOS=garnet`) and docker
+#   garnet      127.0.0.1:16392   one Garnet, for the three `garnet_*` ones.
+#   kividb      127.0.0.1:16393   one KiviDB, for the three `kividb_*` ones. All three are
+#                                 opt-in (`IT_SCENARIOS=dragonfly|garnet|kividb`) and docker
 #                                 only: each is another program with its own image
-#                                 (`DRAGONFLY_IMAGE`, `GARNET_IMAGE`) and flags, not a scenario
-#                                 the Redis / Valkey image can play
+#                                 (`DRAGONFLY_IMAGE`, `GARNET_IMAGE`, `KIVIDB_IMAGE`) and
+#                                 flags, not a scenario the Redis / Valkey image can play
 #
 # Sentinel and cluster are the two topologies whose auth plumbing is not just "send AUTH"
 # (`masterauth` for replication, `sentinel auth-pass` for monitoring, a redirect that has to
@@ -79,6 +80,7 @@ PORT_SSH=$((PORT_BASE + 10))
 PORT_SSH_RSA=$((PORT_BASE + 11))
 PORT_DRAGONFLY=$((PORT_BASE + 12))
 PORT_GARNET=$((PORT_BASE + 13))
+PORT_KIVIDB=$((PORT_BASE + 14))
 PORT_SENTINEL=$((PORT_BASE + 100))
 PORT_CLUSTER_BASE=${IT_CLUSTER_BASE:-17000}
 MASTER_NAME=mymaster
@@ -233,17 +235,18 @@ if has standalone; then
   env_put ZEDIS_IT_STANDALONE "127.0.0.1:$PORT_STANDALONE"
 fi
 
-# ── dragonfly, garnet ────────────────────────────────────────────────────
+# ── dragonfly, garnet, kividb ────────────────────────────────────────────
 # Servers that speak Redis's protocol and are other programs. Not `start`:
 # each has its own image, its own flags, and no redis-cli in sight. Never in
 # the default list — each is a smoke lane of three tests (`dragonfly_*`,
-# `garnet_*` in tests/live/compatible.rs), there to notice the day it stops connecting, not a
-# topology the suite is held to.
+# `garnet_*`, `kividb_*` in tests/live/compatible.rs), there to notice the
+# day it stops connecting, not a topology the suite is held to.
 #
 # The images are pinned here, and bumped by hand: a red lane should mean
 # this repository changed, not theirs.
 DRAGONFLY_IMAGE=${DRAGONFLY_IMAGE:-docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2}
 GARNET_IMAGE=${GARNET_IMAGE:-ghcr.io/microsoft/garnet:2.2.1}
+KIVIDB_IMAGE=${KIVIDB_IMAGE:-ghcr.io/kividbio/kividb:v1.2.2}
 smoke_server() { # <scenario> <env var> <port> <image> <server args…>
   local name=$1 var=$2 port=$3 image=$4 up=0
   shift 4
@@ -279,6 +282,10 @@ if has dragonfly; then
 fi
 if has garnet; then
   smoke_server garnet ZEDIS_IT_GARNET "$PORT_GARNET" "$GARNET_IMAGE" --port "$PORT_GARNET"
+fi
+if has kividb; then
+  smoke_server kividb ZEDIS_IT_KIVIDB "$PORT_KIVIDB" "$KIVIDB_IMAGE" \
+    --port "$PORT_KIVIDB" --protected-mode no
 fi
 
 # One CA for both TLS scenarios, generated once: `tls` verifies the server,

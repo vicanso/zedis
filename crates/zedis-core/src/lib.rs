@@ -24,6 +24,7 @@ pub mod codec;
 pub mod csv;
 pub mod deep_link;
 pub mod diff;
+pub mod duration;
 pub mod env;
 pub mod features;
 /// Config, cache and download directories.
@@ -55,6 +56,8 @@ pub mod tally;
 pub mod ttl;
 pub mod ttl_cache;
 pub mod validate;
+
+pub use duration::{DurationParseError, format_human_duration, parse_human_duration};
 
 /// Auto-load cap for whole-payload value types (String / RedisJSON) and
 /// persisted key timeline snapshots.

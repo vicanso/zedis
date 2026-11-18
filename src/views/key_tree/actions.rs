@@ -18,7 +18,7 @@
 
 use super::key_actions::{
     clear_favorites, clear_recent_keys, delete_key, delete_picks, edit_key_tag, export_folder, export_key,
-    export_picks, persist_folder, persist_picks, set_ttl_folder, set_ttl_key, set_ttl_picks, tag_picks,
+    export_picks, persist_folder, persist_picks, picked_keys, set_ttl_folder, set_ttl_key, set_ttl_picks, tag_picks,
     toggle_favorite,
 };
 use super::*;
@@ -390,6 +390,36 @@ fn on_editor_action(
                 window.dispatch_action(Box::new(KeyTreeAction::DeleteKey(key)), cx);
             }
         }
+        EditorAction::DeleteWithoutConfirm => {
+            let (server_id, open_key, can_delete_key, can_delete_keys) = {
+                let state = this.server_state.read(cx);
+                (
+                    state.server_id().to_string(),
+                    state.key(),
+                    state.can(Capability::DeleteKey),
+                    state.can(Capability::DeleteKeys),
+                )
+            };
+            let high_risk = get_server(&server_id).is_ok_and(|server| server.is_high_risk_tag());
+            let keys = picked_keys(this, cx);
+            if !keys.is_empty() {
+                if high_risk {
+                    window.dispatch_action(Box::new(KeyTreeAction::DeleteMultipleKeys), cx);
+                } else if can_delete_keys {
+                    this.server_state.update(cx, |state, cx| {
+                        state.unlink_keys(keys, cx);
+                    });
+                }
+            } else if let Some(key) = open_key {
+                if high_risk {
+                    window.dispatch_action(Box::new(KeyTreeAction::DeleteKey(key)), cx);
+                } else if can_delete_key {
+                    this.server_state.update(cx, |state, cx| {
+                        state.delete_key(key, cx);
+                    });
+                }
+            }
+        }
         _ => {
             cx.propagate();
         }
@@ -610,6 +640,11 @@ mod tests {
             "confirm",
             "⌘⌫ on picks"
         );
+        assert_eq!(
+            dialog_of(cx, handle, &tree, EditorAction::DeleteWithoutConfirm),
+            "none",
+            "skip-prompt delete on picks opens no dialog on non-PROD servers"
+        );
 
         assert_eq!(dialog_of(cx, handle, &tree, A::DeleteKey("k".into())), "confirm");
         assert_eq!(dialog_of(cx, handle, &tree, A::SetTtlKey("k".into())), "ttl");
@@ -630,6 +665,11 @@ mod tests {
             dialog_of(cx, handle, &tree, EditorAction::Delete),
             "confirm",
             "⌘⌫ on the open key"
+        );
+        assert_eq!(
+            dialog_of(cx, handle, &tree, EditorAction::DeleteWithoutConfirm),
+            "none",
+            "skip-prompt delete on the open key opens no dialog on non-PROD servers"
         );
 
         send(cx, handle, &tree, EditorAction::Search);

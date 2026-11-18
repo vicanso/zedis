@@ -20,7 +20,7 @@ use crate::db::TRASH_MAX_BULK_KEYS;
 use crate::states::recycles_deleted_keys;
 
 /// The keys picked in the tree, in no particular order.
-fn picked_keys(this: &ZedisKeyTree, cx: &mut App) -> Vec<SharedString> {
+pub(super) fn picked_keys(this: &ZedisKeyTree, cx: &mut App) -> Vec<SharedString> {
     this.key_tree_list_state.update(cx, |state, _cx| {
         state
             .delegate()

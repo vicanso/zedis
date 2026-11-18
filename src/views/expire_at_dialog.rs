@@ -20,7 +20,7 @@
 //! type it.
 //!
 //! `DatePicker` is date-only, so the instant is composed here from a picked
-//! `NaiveDate` plus a typed `HH:MM[:SS]`, both read in the Settings time
+//! calendar date plus a typed `HH:MM[:SS]`, both read in the Settings time
 //! zone like every other timestamp in the app. The preview line resolves
 //! them the same way the OK button will, so what the dialog says is what
 //! the server gets — including the refusal to accept an instant that has
@@ -28,12 +28,11 @@
 //! that belongs to the delete button, not to a mistyped hour.
 
 use crate::helpers::{
-    format_duration_units, format_unix_secs, parse_clock_input, unix_secs_from_parts, unix_secs_to_parts, unix_ts,
+    format_duration_units, format_unix_secs, from_picker_date, parse_clock_input, picker_before_matcher,
+    to_picker_date, unix_secs_from_parts, unix_secs_to_parts, unix_ts,
 };
 use crate::states::{ZedisGlobalStore, i18n_editor, i18n_expire_at};
-use chrono::{Duration as ChronoDuration, NaiveDate, NaiveTime};
 use gpui::{Entity, SharedString, Window, prelude::*, px};
-use gpui_kit::component::calendar::Matcher;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerState};
 use gpui_kit::component::{
     ActiveTheme, Sizable,
@@ -43,6 +42,10 @@ use gpui_kit::component::{
     label::Label,
     v_flex,
 };
+use jiff::{
+    SignedDuration, Timestamp,
+    civil::{Date, Time},
+};
 use rust_i18n::t;
 use std::time::Duration;
 
@@ -51,7 +54,7 @@ use std::time::Duration;
 struct ExpirePreset {
     id: &'static str,
     i18n_key: &'static str,
-    offset: ChronoDuration,
+    offset: SignedDuration,
     /// Truncate to the start of the day after applying the offset — how
     /// "tonight" and "tomorrow" differ from "+24h".
     midnight: bool,
@@ -61,25 +64,25 @@ const PRESETS: &[ExpirePreset] = &[
     ExpirePreset {
         id: "1h",
         i18n_key: "preset_1h",
-        offset: ChronoDuration::hours(1),
+        offset: SignedDuration::from_hours(1),
         midnight: false,
     },
     ExpirePreset {
         id: "1d",
         i18n_key: "preset_1d",
-        offset: ChronoDuration::days(1),
+        offset: SignedDuration::from_hours(24),
         midnight: false,
     },
     ExpirePreset {
         id: "7d",
         i18n_key: "preset_7d",
-        offset: ChronoDuration::days(7),
+        offset: SignedDuration::from_hours(7 * 24),
         midnight: false,
     },
     ExpirePreset {
         id: "midnight",
         i18n_key: "preset_midnight",
-        offset: ChronoDuration::days(1),
+        offset: SignedDuration::from_hours(24),
         midnight: true,
     },
 ];
@@ -96,8 +99,7 @@ impl ZedisExpireAtDialog {
     /// user is about to replace anyway, and never an empty form.
     pub fn new(current: Option<i64>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let seed = current.filter(|at| *at > unix_ts()).unwrap_or_else(|| unix_ts() + 3600);
-        let (date, time) =
-            unix_secs_to_parts(seed).unwrap_or_else(|| (chrono::Local::now().date_naive(), NaiveTime::MIN));
+        let (date, time) = unix_secs_to_parts(seed).unwrap_or_else(|| (jiff::ZonedDateTime::now().date(), Time::MIN));
         // Yesterday and earlier are greyed out: no time of day can rescue a
         // date that is already over, and the preview would only be able to
         // say so after the fact. Today stays selectable — a later hour
@@ -106,22 +108,24 @@ impl ZedisExpireAtDialog {
         let date_state = cx.new(|cx| {
             let mut state = DatePickerState::new(window, cx).date_format("%Y-%m-%d");
             if let Some(today) = today {
-                state = state.disabled_matcher(Matcher::custom(move |day: &NaiveDate| *day < today));
+                state = state.disabled_matcher(picker_before_matcher(today));
             }
-            state.set_date(date, window, cx);
+            if let Some(picker_date) = to_picker_date(date) {
+                state.set_date(picker_date, window, cx);
+            }
             state
         });
         let time_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("14:30:00")
-                .default_value(time.format("%H:%M:%S").to_string())
+                .default_value(time.strftime("%H:%M:%S").to_string())
         });
         Self { date_state, time_state }
     }
 
     /// The picked date, if the calendar has one.
-    fn date(&self, cx: &gpui::App) -> Option<NaiveDate> {
-        self.date_state.read(cx).date().start()
+    fn date(&self, cx: &gpui::App) -> Option<Date> {
+        from_picker_date(self.date_state.read(cx).date())
     }
 
     /// The composed instant, or `None` when the date is missing, the clock
@@ -136,22 +140,25 @@ impl ZedisExpireAtDialog {
         let Some(preset) = PRESETS.iter().find(|p| p.id == preset_id) else {
             return;
         };
-        let Some(target) = chrono::DateTime::from_timestamp(unix_ts(), 0) else {
+        let Ok(target) = Timestamp::from_second(unix_ts()) else {
             return;
         };
         let target = target + preset.offset;
-        let Some((date, mut time)) = unix_secs_to_parts(target.timestamp()) else {
+        let Some((date, mut time)) = unix_secs_to_parts(target.as_second()) else {
             return;
         };
         // "Tomorrow 00:00" is the offset's date at the start of the day —
         // which is a different instant from "+24h" whenever it is not
         // already midnight, and the one people actually mean.
         if preset.midnight {
-            time = NaiveTime::MIN;
+            time = Time::MIN;
         }
-        self.date_state.update(cx, |state, cx| state.set_date(date, window, cx));
+        if let Some(picker_date) = to_picker_date(date) {
+            self.date_state
+                .update(cx, |state, cx| state.set_date(picker_date, window, cx));
+        }
         self.time_state.update(cx, |state, cx| {
-            state.set_value(time.format("%H:%M:%S").to_string(), window, cx);
+            state.set_value(time.strftime("%H:%M:%S").to_string(), window, cx);
         });
         cx.notify();
     }

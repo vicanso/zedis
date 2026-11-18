@@ -461,6 +461,7 @@ pub enum ServerFlavor {
     KeyDb,
     Kvrocks,
     Garnet,
+    KiviDb,
 }
 
 impl ServerFlavor {
@@ -473,9 +474,10 @@ impl ServerFlavor {
                 "dragonfly_version" => return ServerFlavor::Dragonfly,
                 "kvrocks_version" | "kvrocks_mode" => return ServerFlavor::Kvrocks,
                 "garnet_version" => return ServerFlavor::Garnet,
+                "kividb_version" => return ServerFlavor::KiviDb,
                 "keydb_version" | "keydb_mode" => return ServerFlavor::KeyDb,
                 "valkey_version" => flavor = ServerFlavor::Valkey,
-                // Dragonfly / Garnet advertise a Redis version for client
+                // Dragonfly / Garnet / KiviDB advertise a Redis version for client
                 // compatibility; the `*_version` keys above take precedence.
                 "server_name" if value.eq_ignore_ascii_case("valkey") => flavor = ServerFlavor::Valkey,
                 _ => {}
@@ -500,6 +502,7 @@ impl ServerFlavor {
             ServerFlavor::KeyDb => Some("keydb_version"),
             ServerFlavor::Kvrocks => Some("kvrocks_version"),
             ServerFlavor::Garnet => Some("garnet_version"),
+            ServerFlavor::KiviDb => Some("kividb_version"),
         }
     }
 
@@ -520,6 +523,7 @@ impl ServerFlavor {
             ServerFlavor::KeyDb => "KeyDB",
             ServerFlavor::Kvrocks => "Kvrocks",
             ServerFlavor::Garnet => "Garnet",
+            ServerFlavor::KiviDb => "KiviDB",
         }
     }
 }
@@ -729,6 +733,9 @@ mod tests {
             ServerFlavor::from_info([("kvrocks_version", "2.8")]),
             ServerFlavor::Kvrocks
         );
+        let kividb = [("redis_version", "8.10.0"), ("kividb_version", "1.2.2")];
+        assert_eq!(ServerFlavor::from_info(kividb), ServerFlavor::KiviDb);
+        assert_eq!(ServerFlavor::KiviDb.own_version(kividb).as_deref(), Some("1.2.2"));
         assert_eq!(
             ServerFlavor::from_info([("redis_version", "7.2.4")]),
             ServerFlavor::Redis

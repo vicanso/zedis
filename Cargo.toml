@@ -82,7 +82,6 @@ async-channel = "2.5.0"
 base64 = { workspace = true }
 bitflags = "2.13.2"
 bytes = "1.12.1"
-chrono = { workspace = true }
 dashmap = {workspace = true}
 flate2 = "1.1.11"
 futures = { workspace = true }
@@ -92,7 +91,7 @@ gpui-kit = { workspace = true }
 gpui_macros = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 humansize = "2.1.3"
-humantime = {workspace = true}
+jiff = { workspace = true }
 infer = "0.22.0"
 # `default-features = false` keeps the `frame` codec (and its twox-hash
 # dependency) out — we only ever decode raw LZ4 blocks — so the features we
@@ -229,6 +228,8 @@ rust-embed = { version = "8.12.0", default-features = false, features = [
 # makes, for the same reason — no runtime, no TLS, no cluster routing, because
 # the bridge does all of that on the other side.
 [target.'cfg(target_family = "wasm")'.dependencies]
+# Browser `Date` + time zone support for `jiff::Timestamp::now()` / `Zoned::now()`.
+jiff = { workspace = true, features = ["js"] }
 # `get_locale()` reads `navigator.languages` only behind this feature; without
 # it the call answers `None` in a browser and every visitor starts in English
 # whatever their browser says. The desktop backends need no feature.
@@ -282,7 +283,6 @@ dashmap = "6.2.1"
 # key tree's snapshot of it is a pointer copy and arrives sorted.
 imbl = "7.0.2"
 indexmap = "2.14.2"
-humantime = "2.4.0"
 serde = "1.0.229"
 # `preserve_order` keeps `json!` maps in insertion order, which the
 # readable export relies on to mirror its CSV column order (key, type,
@@ -296,10 +296,10 @@ aes-gcm = "0.11.1"
 arc-swap = "1.9.5"
 argon2 = "0.6.0"
 base64 = "0.23.1"
-chrono = "0.4.45"
 directories = "6.0.0"
 futures = "0.3.34"
 home = "0.5.12"
+jiff = "1.0.1"
 # Native OS keychain for the config-encryption master key, with the v4 default
 # feature set (apple-native / windows-native / zbus-secret-service stores). On
 # Linux keyring isn't pulled in at all (see zedis-connection's target-gated
@@ -404,7 +404,7 @@ gpui_web = { package = "gpui-pre-web", version = "0.3.12" }
 # (`gpui-fast-*`: not enabled here, never compiled). The lockfile covers
 # those too. `unicode-properties` 0.1.3 is what gpui-pre-web and rustybuzz
 # ask for; gpui-pre-macos no longer pins `cocoa` (`zed-scap` brings 0.25).
-gpui-kit = { version = "0.9.1" }
+gpui-kit = { version = "0.10.0" }
 
 [build-dependencies]
 winres = "0.1.12"

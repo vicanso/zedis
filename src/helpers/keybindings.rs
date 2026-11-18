@@ -22,7 +22,7 @@
 //! ([`new_hot_keys`]) and the ⌘/ reference overlay
 //! ([`shortcut_reference`]) show the same keys.
 
-use crate::helpers::hot_key_table;
+use crate::helpers::{hot_key_table, strip_skip_prompt_suffix};
 use gpui::{Keystroke, OperatingSystem};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,14 +101,24 @@ pub fn parse_keybinding_overrides(text: &str) -> (HashMap<String, String>, Vec<S
             continue;
         };
         let keystroke = keystroke.trim();
-        if !keystroke_is_valid(keystroke) {
+        let (base_keystroke, skip_prompt) = strip_skip_prompt_suffix(keystroke);
+        if skip_prompt && !hot_key.supports_skip_prompt() {
+            warnings.push(format!("shortcut `{id}` has no confirmation prompt to skip with `!`"));
+            continue;
+        }
+        if !keystroke_is_valid(base_keystroke) {
             warnings.push(format!("shortcut `{id}`: invalid keystroke `{keystroke}`"));
             continue;
         }
-        if keystroke == hot_key.default {
+        if !skip_prompt && base_keystroke == hot_key.default {
             continue;
         }
-        overrides.insert(id, keystroke.to_string());
+        let stored = if skip_prompt {
+            format!("{base_keystroke}!")
+        } else {
+            base_keystroke.to_string()
+        };
+        overrides.insert(id, stored);
     }
     (overrides, warnings)
 }
@@ -141,7 +151,9 @@ pub fn keybindings_template() -> String {
          #   keys: a-z, 0-9, f1-f12, enter, escape, tab, space, backspace,\n\
          #         delete, up, down, left, right, home, end, pageup, pagedown,\n\
          #         and punctuation such as `/`, `=`, `-`, `[`\n\
-         # A chord is two keystrokes separated by a space: \"ctrl-k ctrl-s\".\n\n",
+         # A chord is two keystrokes separated by a space: \"ctrl-k ctrl-s\".\n\
+         # Append `!` to `delete_key` to skip the confirmation prompt on\n\
+         # non-PROD connections, e.g. `delete_key = \"secondary-backspace!\"`.\n\n",
     );
     for hot_key in hot_key_table() {
         out.push_str(&format!("# {} = \"{}\"\n", hot_key.id, hot_key.default));
@@ -201,5 +213,21 @@ mod tests {
         let (overrides, warnings) = parse_keybinding_overrides("[[[");
         assert!(overrides.is_empty());
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn skip_prompt_suffix_is_accepted_only_where_supported() {
+        let text = "delete_key = \"secondary-backspace!\"\ncommand_palette = \"secondary-k!\"\n";
+        let (overrides, warnings) = parse_keybinding_overrides(text);
+        assert_eq!(
+            overrides.get("delete_key").map(String::as_str),
+            Some("secondary-backspace!")
+        );
+        assert!(!overrides.contains_key("command_palette"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        let (overrides, warnings) = parse_keybinding_overrides("delete_key = \"delete!\"\n");
+        assert_eq!(overrides.get("delete_key").map(String::as_str), Some("delete!"));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }

@@ -873,7 +873,7 @@ fn standalone_keyspace_operations_answer_for_one_key_and_for_a_prefix() {
         // TTLs: one key, then a whole prefix with its condition.
         expire_key(&at, &format!("{prefix}:s"), 300).await.expect("expire");
         assert!((1..=300).contains(&key_type_and_ttl(&at, &format!("{prefix}:s")).await.expect("ttl").1));
-        let deadline = chrono::Utc::now().timestamp() + 600;
+        let deadline = jiff::Timestamp::now().as_second() + 600;
         expire_key_at(&at, &format!("{prefix}:s"), deadline)
             .await
             .expect("expireat");

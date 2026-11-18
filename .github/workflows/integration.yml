@@ -143,19 +143,20 @@ jobs:
         if: always()
         run: scripts/it/down.sh
 
-  # Dragonfly and Garnet speak Redis's protocol and are not Redis. They are
-  # not lanes of the matrix above — a dozen of those tests do not hold on
-  # Dragonfly and half of them do not on Garnet, and nothing here should make
-  # a new test answer to a third and a fourth server. What each has is three
-  # tests of its own (`dragonfly_*`, `garnet_*`): it connects, it is
-  # identified, the key tree's scan and the collection editors' operations
-  # work. That is the promise the README makes, and both lanes paid for
-  # themselves the day they were added: Dragonfly answers `ROLE` in two
-  # elements, which failed every connect to it, and Garnet answers `+OK` to a
-  # `SET … KEEPTTL` that deletes the key, which is how the editor saved.
+  # Dragonfly, Garnet, and KiviDB speak Redis's protocol and are not Redis.
+  # They are not lanes of the matrix above — a dozen of those tests do not
+  # hold on Dragonfly and half of them do not on Garnet, and nothing here
+  # should make a new test answer to additional server implementations. What
+  # each has is three tests of its own (`dragonfly_*`, `garnet_*`,
+  # `kividb_*`): it connects, it is identified, the key tree's scan and the
+  # collection editors' operations work. That is the promise the README
+  # makes, and both earlier lanes paid for themselves the day they were
+  # added: Dragonfly answers `ROLE` in two elements, which failed every
+  # connect to it, and Garnet answers `+OK` to a `SET … KEEPTTL` that
+  # deletes the key, which is how the editor saved.
   #
   # The images are pinned in scripts/it/up.sh (`DRAGONFLY_IMAGE`,
-  # `GARNET_IMAGE`), which is also what a local run uses.
+  # `GARNET_IMAGE`, `KIVIDB_IMAGE`), which is also what a local run uses.
   smoke:
     name: ${{ matrix.server }}
     runs-on: ubuntu-latest
@@ -168,6 +169,8 @@ jobs:
             started: ZEDIS_IT_DRAGONFLY
           - server: garnet
             started: ZEDIS_IT_GARNET
+          - server: kividb
+            started: ZEDIS_IT_KIVIDB
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

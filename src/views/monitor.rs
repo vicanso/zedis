@@ -124,8 +124,8 @@ fn parse_monitor_line(line: &str, node_label: &str) -> Option<MonitorEntry> {
     // Parse timestamp
     let ts_str = ts_part.trim();
     let timestamp: SharedString = if let Ok(secs) = ts_str.parse::<f64>() {
-        let dt = chrono::DateTime::from_timestamp(secs as i64, ((secs.fract()) * 1_000_000_000.0) as u32);
-        dt.map(|d| format_clock(&d, true))
+        let dt = jiff::Timestamp::new(secs as i64, ((secs.fract()) * 1_000_000_000.0) as i32).ok();
+        dt.map(|d| format_clock(d, true))
             .unwrap_or_else(|| ts_str.to_string())
             .into()
     } else {

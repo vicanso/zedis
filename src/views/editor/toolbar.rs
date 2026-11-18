@@ -209,7 +209,7 @@ impl ZedisEditor {
             if !pending_first_load {
                 // Format TTL display
                 ttl = if let Some(ttl) = value.ttl() {
-                    let seconds = ttl.num_seconds();
+                    let seconds = ttl.as_secs();
                     if seconds == -2 {
                         i18n_common(cx, "expired")
                     } else if seconds < 0 {

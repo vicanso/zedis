@@ -253,7 +253,7 @@ impl Zedis {
             store.theme(),
             store.theme_name(),
             is_app_store_build(),
-            chrono::Local::now().to_rfc3339(),
+            jiff::ZonedDateTime::now().strftime("%Y-%m-%dT%H:%M:%S%:z"),
         );
         let app_config = store.redacted_toml().unwrap_or_else(|e| format!("<unavailable: {e}>"));
         let locale = store.locale().to_string();

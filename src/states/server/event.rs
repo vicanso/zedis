@@ -433,7 +433,7 @@ impl ZedisServerState {
             }
             EditorAction::PersistTtl => Capability::PersistTtl,
             EditorAction::ImportValue => Capability::ImportValue,
-            EditorAction::Delete => Capability::DeleteKey,
+            EditorAction::Delete | EditorAction::DeleteWithoutConfirm => Capability::DeleteKey,
             EditorAction::Rename => Capability::RenameKey,
             EditorAction::CopyTo => Capability::CopyKeyToServer,
             EditorAction::CopyKeyLink => Capability::CopyToClipboard,

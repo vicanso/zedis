@@ -20,9 +20,9 @@ use super::*;
 use crate::helpers::browser_store_path;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::get_or_create_config_dir;
-use crate::helpers::write_file_atomic_with_backup;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::{decrypt, encrypt};
+use crate::helpers::{format_human_duration, write_file_atomic_with_backup};
 #[cfg(target_family = "wasm")]
 use crate::states::save_preferences;
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -282,7 +282,7 @@ pub(super) fn timeout_text(timeout: Duration) -> String {
     if timeout.subsec_nanos() == 0 {
         timeout.as_secs().to_string()
     } else {
-        humantime::format_duration(timeout).to_string()
+        format_human_duration(timeout)
     }
 }
 

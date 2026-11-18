@@ -22,7 +22,12 @@
 //! pure helpers with no `App` in reach. File-name stamps and diagnostics
 //! deliberately stay on their own fixed formats.
 
-use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Utc};
+use gpui_kit::component::calendar::{Date as PickerDate, Matcher};
+use jiff::{
+    Timestamp,
+    civil::{Date, Time},
+    tz::{Disambiguation, TimeZone},
+};
 use std::sync::RwLock;
 
 /// Which zone timestamps are rendered in.
@@ -122,9 +127,12 @@ pub fn date_format_by_id(id: &str) -> &'static DateFormat {
 pub fn date_format_sample(format: &DateFormat) -> String {
     // 2026-03-04 15:06:07 UTC — every field is distinct, so the day / month
     // order and the 12-hour marker are visible at a glance.
-    match Utc.with_ymd_and_hms(2026, 3, 4, 15, 6, 7).single() {
-        Some(sample) => sample.format(format.pattern).to_string(),
-        None => format.pattern.to_string(),
+    match jiff::civil::date(2026, 3, 4)
+        .at(15, 6, 7, 0)
+        .to_zoned_datetime(TimeZone::UTC)
+    {
+        Ok(sample) => sample.strftime(format.pattern).to_string(),
+        Err(_) => format.pattern.to_string(),
     }
 }
 
@@ -157,53 +165,56 @@ pub fn configured_time_zone() -> TimeZonePref {
     current().0
 }
 
-fn render<Tz: TimeZone>(dt: &DateTime<Tz>, zone: TimeZonePref, pattern: &str) -> String {
+fn tz_for(zone: TimeZonePref) -> TimeZone {
     match zone {
-        TimeZonePref::Local => dt.with_timezone(&Local).format(pattern).to_string(),
-        TimeZonePref::Utc => dt.with_timezone(&Utc).format(pattern).to_string(),
+        TimeZonePref::Local => TimeZone::system(),
+        TimeZonePref::Utc => TimeZone::UTC,
     }
 }
 
+fn render(ts: Timestamp, zone: TimeZonePref, pattern: &str) -> String {
+    ts.to_zoned_datetime(tz_for(zone)).strftime(pattern).to_string()
+}
+
 /// Full date + time in the configured zone and layout.
-pub fn format_datetime<Tz: TimeZone>(dt: &DateTime<Tz>) -> String {
+pub fn format_datetime(ts: Timestamp) -> String {
     let (zone, format) = current();
-    render(dt, zone, format.pattern)
+    render(ts, zone, format.pattern)
 }
 
 /// Full date + time in an explicit zone but the configured layout — the
 /// timestamp preview shows the instant in both zones.
-pub fn format_datetime_in<Tz: TimeZone>(dt: &DateTime<Tz>, zone: TimeZonePref) -> String {
-    render(dt, zone, current().1.pattern)
+pub fn format_datetime_in(ts: Timestamp, zone: TimeZonePref) -> String {
+    render(ts, zone, current().1.pattern)
 }
 
 /// The instant in the zone the user did *not* pick, labelled — the second
 /// line of the timestamp preview.
-pub fn format_datetime_other_zone<Tz: TimeZone>(dt: &DateTime<Tz>) -> (&'static str, String) {
+pub fn format_datetime_other_zone(ts: Timestamp) -> (&'static str, String) {
     let other = configured_time_zone().other();
-    (other.label(), format_datetime_in(dt, other))
+    (other.label(), format_datetime_in(ts, other))
 }
 
-/// Unix seconds → configured date + time; `None` when out of chrono's range.
+/// Unix seconds → configured date + time; `None` when out of `jiff`'s range.
 pub fn format_unix_secs(ts: i64) -> Option<String> {
-    DateTime::from_timestamp(ts, 0).map(|dt| format_datetime(&dt))
+    Timestamp::from_second(ts).ok().map(format_datetime)
 }
 
 /// Unix milliseconds rendered with an explicit pattern in the configured
 /// zone — chart axis ticks and other short forms that keep their own layout.
 pub fn format_unix_millis_with(ms: i64, pattern: &str) -> Option<String> {
-    DateTime::from_timestamp_millis(ms).map(|dt| render(&dt, configured_time_zone(), pattern))
+    Timestamp::from_millisecond(ms)
+        .ok()
+        .map(|ts| render(ts, configured_time_zone(), pattern))
 }
 
 /// Split a unix instant into the calendar date and wall-clock time the
 /// configured zone shows it at — what a date picker and a time field have
 /// to be filled with so they agree with every timestamp elsewhere.
-pub fn unix_secs_to_parts(ts: i64) -> Option<(NaiveDate, NaiveTime)> {
-    let dt = DateTime::from_timestamp(ts, 0)?;
-    let naive = match current().0 {
-        TimeZonePref::Local => dt.with_timezone(&Local).naive_local(),
-        TimeZonePref::Utc => dt.naive_utc(),
-    };
-    Some((naive.date(), naive.time()))
+pub fn unix_secs_to_parts(ts: i64) -> Option<(Date, Time)> {
+    let ts = Timestamp::from_second(ts).ok()?;
+    let dt = ts.to_zoned_datetime(tz_for(current().0)).datetime();
+    Some((dt.date(), dt.time()))
 }
 
 /// A picked date + typed time back to a unix instant, read in the
@@ -212,39 +223,55 @@ pub fn unix_secs_to_parts(ts: i64) -> Option<(NaiveDate, NaiveTime)> {
 /// A local time that a DST jump makes ambiguous resolves to the earlier of
 /// the two readings rather than failing; the alternative is refusing an
 /// hour of the year.
-pub fn unix_secs_from_parts(date: NaiveDate, time: NaiveTime) -> Option<i64> {
-    let naive = date.and_time(time);
-    match current().0 {
-        TimeZonePref::Local => Local.from_local_datetime(&naive).earliest().map(|dt| dt.timestamp()),
-        TimeZonePref::Utc => Some(naive.and_utc().timestamp()),
-    }
+pub fn unix_secs_from_parts(date: Date, time: Time) -> Option<i64> {
+    let dt = jiff::civil::DateTime::from_parts(date, time);
+    tz_for(current().0)
+        .to_ambiguous_zoned_datetime(dt)
+        .disambiguate(Disambiguation::Earlier)
+        .ok()
+        .map(|z| z.timestamp().as_second())
+}
+
+/// Convert a [`Date`] to `gpui_kit`'s `DatePicker` date value.
+pub fn to_picker_date(date: Date) -> Option<PickerDate> {
+    date.to_string().parse().ok().map(|d| PickerDate::Single(Some(d)))
+}
+
+/// Convert `gpui_kit`'s `DatePicker` date value back to [`Date`].
+pub fn from_picker_date(date: PickerDate) -> Option<Date> {
+    date.format("%Y-%m-%d")?.parse().ok()
+}
+
+/// A `DatePicker` matcher that disables every day strictly before `before`.
+pub fn picker_before_matcher(before: Date) -> Matcher {
+    Matcher::interval(before.to_string().parse().ok(), None)
 }
 
 /// A typed time of day: `HH:MM` or `HH:MM:SS`, 24-hour. Deliberately not
 /// forgiving about 12-hour input — "7:30" with no meridiem would be a
 /// twelve-hour guess on a field that sets when a key dies.
-pub fn parse_clock_input(input: &str) -> Option<NaiveTime> {
+pub fn parse_clock_input(input: &str) -> Option<Time> {
     let input = input.trim();
-    NaiveTime::parse_from_str(input, "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(input, "%H:%M"))
+    Time::strptime("%H:%M:%S", input)
+        .or_else(|_| Time::strptime("%H:%M", input))
         .ok()
 }
 
 /// Time of day (`HH:MM:SS`, optionally with milliseconds) in the
 /// configured zone, for the live panels' clock columns.
-pub fn format_clock<Tz: TimeZone>(dt: &DateTime<Tz>, millis: bool) -> String {
+pub fn format_clock(ts: Timestamp, millis: bool) -> String {
     let pattern = if millis { CLOCK_MILLIS_PATTERN } else { CLOCK_PATTERN };
-    render(dt, configured_time_zone(), pattern)
+    render(ts, configured_time_zone(), pattern)
 }
 
 /// The current time of day in the configured zone.
 pub fn now_clock(millis: bool) -> String {
-    format_clock(&Utc::now(), millis)
+    format_clock(Timestamp::now(), millis)
 }
 
 /// The current date + time in the configured zone and layout.
 pub fn now_datetime() -> String {
-    format_datetime(&Utc::now())
+    format_datetime(Timestamp::now())
 }
 
 #[cfg(test)]
@@ -270,12 +297,12 @@ mod tests {
             format_unix_millis_with(ts * 1000, "%m-%d %H:%M").as_deref(),
             Some("03-04 15:06")
         );
-        let dt = DateTime::from_timestamp(ts, 250_000_000).expect("in range");
-        assert_eq!(format_clock(&dt, true), "15:06:07.250");
-        assert_eq!(format_clock(&dt, false), "15:06:07");
-        let (label, other) = format_datetime_other_zone(&dt);
+        let dt = Timestamp::new(ts, 250_000_000).expect("in range");
+        assert_eq!(format_clock(dt, true), "15:06:07.250");
+        assert_eq!(format_clock(dt, false), "15:06:07");
+        let (label, other) = format_datetime_other_zone(dt);
         assert_eq!(label, "Local");
-        assert_eq!(other, format_datetime_in(&dt, TimeZonePref::Local));
+        assert_eq!(other, format_datetime_in(dt, TimeZonePref::Local));
         set_datetime_prefs(TimeZonePref::Local, DEFAULT_DATE_FORMAT);
     }
 
@@ -308,7 +335,12 @@ mod tests {
                 // different clock from every other timestamp on screen.
                 assert_eq!(
                     format_unix_millis_with(ts * 1000, "%Y-%m-%d %H:%M:%S").as_deref(),
-                    Some(date.and_time(time).format("%Y-%m-%d %H:%M:%S").to_string().as_str()),
+                    Some(
+                        jiff::civil::DateTime::from_parts(date, time)
+                            .strftime("%Y-%m-%d %H:%M:%S")
+                            .to_string()
+                            .as_str()
+                    ),
                     "{} / {} clock mismatch",
                     zone.name(),
                     format.id
@@ -321,8 +353,8 @@ mod tests {
     #[test]
     fn parts_are_read_in_the_configured_zone() {
         let _guard = lock();
-        let date = NaiveDate::from_ymd_opt(2026, 3, 4).expect("valid date");
-        let time = NaiveTime::from_hms_opt(15, 6, 7).expect("valid time");
+        let date = jiff::civil::date(2026, 3, 4);
+        let time = jiff::civil::time(15, 6, 7, 0);
         set_datetime_prefs(TimeZonePref::Utc, DEFAULT_DATE_FORMAT);
         assert_eq!(unix_secs_from_parts(date, time), Some(1_772_636_767));
         assert_eq!(unix_secs_to_parts(1_772_636_767), Some((date, time)));
@@ -330,20 +362,20 @@ mod tests {
         // UTC, which is the whole reason this goes through the preference.
         set_datetime_prefs(TimeZonePref::Local, DEFAULT_DATE_FORMAT);
         let local = unix_secs_from_parts(date, time).expect("resolvable");
-        let offset = Local
-            .from_local_datetime(&date.and_time(time))
-            .earliest()
+        let offset = TimeZone::system()
+            .to_ambiguous_zoned_datetime(jiff::civil::DateTime::from_parts(date, time))
+            .disambiguate(Disambiguation::Earlier)
             .expect("resolvable")
             .offset()
-            .local_minus_utc() as i64;
+            .seconds() as i64;
         assert_eq!(local, 1_772_636_767 - offset);
     }
 
     #[test]
     fn clock_input_takes_hh_mm_and_hh_mm_ss_only() {
-        assert_eq!(parse_clock_input("14:30"), NaiveTime::from_hms_opt(14, 30, 0));
-        assert_eq!(parse_clock_input("  14:30:05 "), NaiveTime::from_hms_opt(14, 30, 5));
-        assert_eq!(parse_clock_input("00:00"), NaiveTime::from_hms_opt(0, 0, 0));
+        assert_eq!(parse_clock_input("14:30"), Some(jiff::civil::time(14, 30, 0, 0)));
+        assert_eq!(parse_clock_input("  14:30:05 "), Some(jiff::civil::time(14, 30, 5, 0)));
+        assert_eq!(parse_clock_input("00:00"), Some(jiff::civil::time(0, 0, 0, 0)));
         // No meridiem guessing, no bare hours, no nonsense.
         assert_eq!(parse_clock_input("2:30 PM"), None);
         assert_eq!(parse_clock_input("14"), None);
@@ -358,5 +390,19 @@ mod tests {
         assert_eq!(date_format_sample(date_format_by_id("mdy")), "03/04/2026 03:06:07 PM");
         assert_eq!(TimeZonePref::from_name("utc"), TimeZonePref::Utc);
         assert_eq!(TimeZonePref::from_name("anything"), TimeZonePref::Local);
+    }
+
+    #[test]
+    fn picker_dates_round_trip_and_disable_earlier_days() {
+        let day = jiff::civil::date(2026, 3, 4);
+        let picker = to_picker_date(day).expect("valid picker date");
+        assert_eq!(from_picker_date(picker), Some(day));
+
+        let matcher = picker_before_matcher(day);
+        let yesterday = to_picker_date(jiff::civil::date(2026, 3, 3)).expect("valid yesterday");
+        let tomorrow = to_picker_date(jiff::civil::date(2026, 3, 5)).expect("valid tomorrow");
+        assert!(matcher.is_match(&yesterday));
+        assert!(!matcher.is_match(&picker));
+        assert!(!matcher.is_match(&tomorrow));
     }
 }

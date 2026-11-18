@@ -729,14 +729,13 @@ fn import_error_message(cx: &gpui::App, err: &ImportError) -> SharedString {
 /// can't be parsed. Date-only granularity (no time-of-day) keeps it robust to
 /// the `T`-vs-space separator and avoids timezone parsing.
 fn format_updated_relative(updated_at: &str, locale: &str) -> String {
-    use chrono::{Local, NaiveDate};
     let Some(date_str) = updated_at.get(..10) else {
         return updated_at.to_string();
     };
-    let Ok(then) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+    let Ok(then) = date_str.parse::<jiff::civil::Date>() else {
         return updated_at.to_string();
     };
-    let days = (Local::now().date_naive() - then).num_days().max(0);
+    let days = (jiff::ZonedDateTime::now().date() - then).get_days().max(0);
     if days == 0 {
         t!("servers.edited_today", locale = locale).to_string()
     } else if days < 30 {

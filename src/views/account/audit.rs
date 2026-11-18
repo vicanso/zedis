@@ -19,12 +19,12 @@
 
 use super::*;
 use crate::connection::{BridgeAuditPage, BridgeAuditQuery, get_servers};
-use chrono::{DateTime, Utc};
 use gpui::Subscription;
 use gpui_kit::component::{
     input::{Input, InputState},
     table::{DataTable, TableEvent, TableState},
 };
+use jiff::Timestamp;
 use zedis_ui::{TextColumn, ZedisSelect, ZedisSelectEvent, ZedisTextTable, fitted_table};
 
 const TABLE_HEIGHT: f32 = 300.;
@@ -160,7 +160,7 @@ impl AuditForm {
     /// time.
     fn since_ms(&self) -> Option<i64> {
         let (secs, _) = PERIODS.get(self.period_index.checked_sub(1)?)?;
-        Some(Utc::now().timestamp_millis() - secs * 1000)
+        Some(Timestamp::now().as_millisecond() - secs * 1000)
     }
 
     /// The table's rows: time, account, event, server, and the line's place.
@@ -173,8 +173,8 @@ impl AuditForm {
                 let text = |field: &str| SharedString::from(value[field].as_str().unwrap_or_default().to_string());
                 let time = value["ts"]
                     .as_str()
-                    .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
-                    .and_then(|ts| u64::try_from(ts.timestamp()).ok())
+                    .and_then(|ts| ts.parse::<Timestamp>().ok())
+                    .and_then(|ts| u64::try_from(ts.as_second()).ok())
                     .map(when)
                     .unwrap_or_default();
                 let server = value["server"]["name"].as_str().unwrap_or_default().to_string();

@@ -17,6 +17,7 @@
 
 use super::top_commands::{format_bytes, format_us_as_ms};
 use super::*;
+use crate::helpers::format_human_duration;
 
 /// A single row in the slowlog table, pre-formatted for display.
 #[derive(Clone, Debug)]
@@ -72,7 +73,7 @@ impl SlowLogRow {
             let text = if ms < 1000 {
                 format_us_as_ms(us)
             } else {
-                humantime::format_duration(Duration::from_millis(ms)).to_string()
+                format_human_duration(Duration::from_millis(ms))
             };
             (ms, us, text)
         } else {

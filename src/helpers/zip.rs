@@ -17,8 +17,8 @@
 //! of a `zip` dependency. Readers everywhere (Finder, Explorer, `unzip`,
 //! GitHub's issue attachments) open what it writes.
 
-use chrono::{Datelike, Local, Timelike};
 use flate2::{Compression, Crc, write::DeflateEncoder};
+use jiff::ZonedDateTime;
 use std::io::Write;
 
 const LOCAL_HEADER: u32 = 0x0403_4b50;
@@ -130,7 +130,7 @@ impl ZipWriter {
 
 /// MS-DOS time/date fields (2-second resolution, years from 1980).
 fn dos_time_now() -> (u16, u16) {
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let time = ((now.hour() as u16) << 11) | ((now.minute() as u16) << 5) | (now.second() as u16 / 2);
     let year = (now.year().clamp(1980, 2107) - 1980) as u16;
     let date = (year << 9) | ((now.month() as u16) << 5) | now.day() as u16;
