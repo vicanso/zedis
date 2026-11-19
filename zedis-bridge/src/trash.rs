@@ -423,7 +423,6 @@ mod tests {
             ..store
         };
         let first = store.put("srv", entry("a", b"1")).expect("put");
-        std::thread::sleep(Duration::from_millis(2));
         for n in 0..3 {
             store.put("srv", entry(&n.to_string(), b"1")).expect("put");
         }

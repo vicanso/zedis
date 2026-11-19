@@ -48,10 +48,10 @@ fn cluster_keyspace_events_come_from_every_master() {
             cmd("SET").arg(key).arg("v").exec_async(&mut c).await.expect("set");
         }
         let mut heard = HashSet::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while heard.len() < keys.len() && std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while heard.len() < keys.len() && Instant::now() < deadline {
             let next = smol::future::or(async { subscription.next_message().await }, async {
-                smol::Timer::after(std::time::Duration::from_millis(200)).await;
+                smol::Timer::after(Duration::from_millis(200)).await;
                 None
             })
             .await;
@@ -195,21 +195,15 @@ fn cluster_discovers_nodes_and_scans_every_master() {
         // against the scanned keys. The other cluster tests run in parallel
         // and write keys between the two snapshots, so on a mismatch take
         // both again rather than fail on a one-key race.
-        let mut agreed = false;
-        for _ in 0..50 {
+        let agreed = wait_until(Duration::from_secs(10), Duration::from_millis(50), async || {
             let routed = client.dbsize().await.expect("dbsize");
             let (_, per_master): (_, Vec<u64>) = client
                 .query_async_masters(vec![cmd("DBSIZE")])
                 .await
                 .expect("per-master dbsize");
-            if routed == per_master.iter().sum::<u64>() {
-                agreed = true;
-                break;
-            }
-            // Back-to-back retries can all land inside another test's burst
-            // of writes; a short pause lets one pair fall between them.
-            smol::Timer::after(std::time::Duration::from_millis(20)).await;
-        }
+            routed == per_master.iter().sum::<u64>()
+        })
+        .await;
         assert!(agreed, "routed DBSIZE sums every master");
 
         let features = probe_server_features(&id, 0).await.expect("probe");
@@ -514,25 +508,45 @@ fn cluster_rename_key_spans_hash_slots() {
                 .await
                 .expect("xadd initial");
             let mut tail = StreamTail::open(&at, &stream_key).await.expect("open cluster tail");
+            let (done_tx, done_rx) = smol::channel::bounded::<()>(1);
             let writer = smol::spawn({
                 let at = at.clone();
                 let stream_key = stream_key.clone();
                 async move {
-                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
-                    stream_add(&at, &stream_key, "*", &[("f".into(), "v1".into())])
-                        .await
-                        .expect("xadd live");
+                    loop {
+                        let stopped = smol::future::or(
+                            async {
+                                let _ = done_rx.recv().await;
+                                true
+                            },
+                            async {
+                                smol::Timer::after(Duration::from_millis(100)).await;
+                                false
+                            },
+                        )
+                        .await;
+                        if stopped {
+                            break;
+                        }
+                        stream_add(&at, &stream_key, "*", &[("f".into(), "v1".into())])
+                            .await
+                            .expect("xadd live");
+                    }
                 }
             });
             let mut seen = Vec::new();
-            for _ in 0..10 {
-                seen.extend(tail.next_batch(500, 10).await.expect("xread block on cluster"));
-                if !seen.is_empty() {
-                    break;
-                }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while seen.is_empty() && Instant::now() < deadline {
+                seen.extend(tail.next_batch(1_000, 10).await.expect("xread block on cluster"));
             }
+            drop(done_tx);
             writer.await;
-            assert_eq!(seen.len(), 1);
+            assert!(!seen.is_empty(), "stream tail never received a live entry");
+            assert!(
+                seen.iter()
+                    .all(|(_, fields)| fields == &[("f".to_string(), b"v1".to_vec())]),
+                "only live entries should arrive: {seen:?}"
+            );
             delete_key(&at, &stream_key).await.expect("cleanup stream");
         }
     });

@@ -280,7 +280,22 @@ mod tests {
     use super::storage::TrashBody;
     use super::*;
     use gpui::http_client::FakeHttpClient;
+    use std::time::{Duration, Instant};
     use zedis_connection::{KillOutcome, set_servers_cache};
+
+    /// Poll `done` until it returns `true` or `timeout` elapses.
+    fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if done() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     /// One request a fake bridge was sent: method, address, body.
     type Sent = (String, String, String);
@@ -440,12 +455,10 @@ mod tests {
             shared: true,
         });
         transport.delete_script("s 1".to_string());
-        for _ in 0..200 {
-            if seen.lock().expect("lock").len() == 5 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        assert!(
+            wait_until(Duration::from_secs(10), || seen.lock().expect("lock").len() == 5),
+            "all five queued page-data writes landed"
+        );
         let seen = seen.lock().expect("lock");
         let asked: Vec<(&str, &str)> = seen.iter().map(|(m, u, _)| (m.as_str(), u.as_str())).collect();
         assert_eq!(
@@ -653,13 +666,10 @@ mod tests {
         let (transport, seen) = transport_recording(204, "");
         assert!(!transport.writes_pending());
         transport.put_row("favorites".to_string(), "srv:0".to_string(), Some("[]".to_string()));
-        for _ in 0..200 {
-            if !transport.writes_pending() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(!transport.writes_pending(), "answered");
+        assert!(
+            wait_until(Duration::from_secs(10), || !transport.writes_pending()),
+            "answered"
+        );
         assert_eq!(seen.lock().expect("lock").len(), 1);
         transport.refresh_soon();
         let mut requests = transport.take_refresh_requests().expect("the listener, once");
@@ -1203,12 +1213,10 @@ mod tests {
             transport.poll_watch("t".into()).await.expect("poll");
         });
         transport.release_watch("t".into());
-        for _ in 0..200 {
-            if seen.lock().expect("lock").len() == 7 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        assert!(
+            wait_until(Duration::from_secs(10), || seen.lock().expect("lock").len() == 7),
+            "the detached watch release landed"
+        );
 
         let routes = routes(&seen);
         let paths: Vec<(&str, &str)> = routes.iter().map(|(m, p, _)| (m.as_str(), p.as_str())).collect();

@@ -173,20 +173,16 @@ fn standalone_channel_subscription_delivers_both_kinds_of_pubsub() {
 
         // Dropping it is the unsubscribe.
         drop(subscription);
-        let mut gone = false;
-        for _ in 0..50 {
+        let gone = wait_until(Duration::from_secs(5), Duration::from_millis(50), async || {
             let receivers: i64 = cmd("PUBLISH")
                 .arg(format!("{channel}:a"))
                 .arg("x")
                 .query_async(&mut c)
                 .await
                 .expect("publish");
-            if receivers == 0 {
-                gone = true;
-                break;
-            }
-            smol::Timer::after(std::time::Duration::from_millis(20)).await;
-        }
+            receivers == 0
+        })
+        .await;
         assert!(gone, "a dropped subscription must close its connection");
 
         if !supports(&id, floors::SHARDED_PUBSUB).await {
@@ -198,15 +194,10 @@ fn standalone_channel_subscription_delivers_both_kinds_of_pubsub() {
             .expect("ssubscribe");
         // The push connection acknowledges asynchronously: publish until the
         // server counts the subscriber.
-        let mut delivered = false;
-        for _ in 0..50 {
-            let receivers = publish(&at, &channel, "shard", true).await.expect("spublish");
-            if receivers > 0 {
-                delivered = true;
-                break;
-            }
-            smol::Timer::after(std::time::Duration::from_millis(20)).await;
-        }
+        let delivered = wait_until(Duration::from_secs(5), Duration::from_millis(50), async || {
+            publish(&at, &channel, "shard", true).await.expect("spublish") > 0
+        })
+        .await;
         assert!(delivered, "the sharded subscriber never showed up");
         let msg = sharded.next_message().await.expect("sharded message");
         assert_eq!(
@@ -237,15 +228,9 @@ fn standalone_monitor_feed_carries_the_commands_the_server_receives() {
         let _: Option<String> = cmd("GET").arg(&marker).query_async(&mut c).await.expect("get");
         // The suite runs in parallel against this server, so the feed carries
         // everyone's commands; ours is in there.
-        let mut found = None;
-        for _ in 0..5_000 {
-            let line = feed.next_line().await.expect("the feed stays open");
-            if line.contains(&marker) {
-                found = Some(line);
-                break;
-            }
-        }
-        let line = found.expect("the GET never appeared in the feed");
+        let line = monitored(&mut feed, &marker)
+            .await
+            .expect("the GET never appeared in the feed");
         assert!(line.to_ascii_uppercase().contains("\"GET\""), "{line}");
 
         let nowhere = ServerDb::new("it-no-such-server", 0);

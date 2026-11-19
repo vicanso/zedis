@@ -679,6 +679,7 @@ mod tests {
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// An entry with every field the form has filled, on a type that shows
     /// the Sentinel settings, with both passphrases' keys there to show them.
@@ -782,12 +783,13 @@ mod tests {
         .expect("the window is open");
         // The write is on a thread of its own, which a loaded machine may
         // be slow to run.
-        for _ in 0..3_000 {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
             cx.run_until_parked();
-            if saved.get() {
+            if saved.get() || Instant::now() >= deadline {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
         assert!(saved.get(), "the list was saved");
         let saved = get_server(&entry.id).expect("the form saved the entry");

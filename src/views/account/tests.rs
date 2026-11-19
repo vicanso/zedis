@@ -32,7 +32,6 @@ use crate::connection::{
 use crate::test_support::init_ui;
 use gpui::{AnyWindowHandle, TestAppContext, size};
 use gpui_kit::component::Root;
-use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::test::TestWindowExt;
 use jiff::{Span, Timestamp, tz::TimeZone};
 use std::sync::Mutex;
@@ -606,13 +605,6 @@ fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<SharedS
     cx.run_until_parked();
 }
 
-/// A dialog slides in on the real clock (gpui's `Animation` reads
-/// `Instant::now()`, which a test does not drive), so a click aimed at where
-/// a button was drawn mid-slide lands beside it. Wait for it to stop.
-fn let_the_dialog_land() {
-    std::thread::sleep(*ANIMATION_DURATION + std::time::Duration::from_millis(50));
-}
-
 /// What a deleted account kept to itself goes to the administrator who
 /// deletes it unless another answer is picked — and sharing it, which hands
 /// every account its saved passwords, is never what is picked for them.
@@ -631,7 +623,6 @@ fn a_deleted_account_s_own_go_to_the_administrator_unless_told_otherwise(cx: &mu
     })
     .expect("the window is open");
     click(cx, window, DELETE_ACCOUNT_ID);
-    let_the_dialog_land();
     click(cx, window, "zedis-dialog-ok");
     assert_eq!(bridge.requests(), vec![r#"delete bob HandTo("alice")"#]);
 
@@ -641,7 +632,6 @@ fn a_deleted_account_s_own_go_to_the_administrator_unless_told_otherwise(cx: &mu
     })
     .expect("the window is open");
     click(cx, window, DELETE_ACCOUNT_ID);
-    let_the_dialog_land();
     click(cx, window, SHARE_ID);
     click(cx, window, "zedis-dialog-ok");
     assert_eq!(bridge.requests().last().map(String::as_str), Some("delete bob Share"));
@@ -663,7 +653,6 @@ fn what_a_deleted_account_left_is_listed_and_settled(cx: &mut TestAppContext) {
     })
     .expect("the window is open");
     click(cx, window, format!("{SETTLE_ORPHANS_ID}-ghost"));
-    let_the_dialog_land();
     click(cx, window, "zedis-dialog-ok");
     assert_eq!(bridge.requests(), vec![r#"settle ghost HandTo("alice")"#]);
 }

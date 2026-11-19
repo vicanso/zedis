@@ -245,19 +245,22 @@ fn cluster_migrates_slots_atomically_on_valkey_9_and_redis_8_4() {
             what: &str,
         ) -> zedis_connection::AtomicSlotMigration {
             let mut last = Vec::new();
-            for _ in 0..160 {
+            if let Some(found) = poll_until(Duration::from_secs(40), Duration::from_millis(250), async || {
                 last = cluster_get_slot_migrations(conn, dialect)
                     .await
                     .expect("migration status");
-                if let Some(found) = last.iter().find(|migration| {
-                    migration.is_export()
-                        && migration.target_node == target_id
-                        && !before.contains(&migration.name)
-                        && !migration.is_active()
-                }) {
-                    return found.clone();
-                }
-                smol::Timer::after(std::time::Duration::from_millis(250)).await;
+                last.iter()
+                    .find(|migration| {
+                        migration.is_export()
+                            && migration.target_node == target_id
+                            && !before.contains(&migration.name)
+                            && !migration.is_active()
+                    })
+                    .cloned()
+            })
+            .await
+            {
+                return found;
             }
             panic!("{what}: {last:?}");
         }
@@ -687,13 +690,11 @@ fn cluster_meet_and_forget_are_told_to_every_master() {
             .await
             .expect("every master takes a member it knows");
         let mut after = Vec::new();
-        for _ in 0..80 {
+        let _ = wait_until(Duration::from_secs(20), Duration::from_millis(250), async || {
             after = node_tables(&masters).await;
-            if after == before {
-                break;
-            }
-            smol::Timer::after(std::time::Duration::from_millis(250)).await;
-        }
+            after == before
+        })
+        .await;
         assert_eq!(after, before, "the handshake settled on the node every master had");
 
         let unknown = "deadbeef".repeat(5);

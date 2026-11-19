@@ -584,14 +584,16 @@ fn stack_search_index_size_tag_values_and_spelling() {
         // runs for a moment even with nothing to backfill, so the state is
         // waited for rather than read once: that moment is what the panel
         // now shows instead of a ready index answering from half its keys.
-        let mut info = ft_info(&at, &index).await.expect("ft.info");
-        for _ in 0..50 {
-            if !info.indexing {
-                break;
+        let mut last = ft_info(&at, &index).await.expect("ft.info");
+        let info = poll_until(Duration::from_secs(10), Duration::from_millis(100), async || {
+            if !last.indexing {
+                return Some(last.clone());
             }
-            smol::Timer::after(std::time::Duration::from_millis(100)).await;
-            info = ft_info(&at, &index).await.expect("ft.info");
-        }
+            last = ft_info(&at, &index).await.expect("ft.info");
+            (!last.indexing).then(|| last.clone())
+        })
+        .await
+        .unwrap_or(last);
         assert_eq!(info.num_docs, 2);
         assert!(!info.indexing, "the backfill is over: {info:?}");
         assert_eq!(info.percent_indexed, Some(1.0), "{info:?}");
@@ -875,14 +877,16 @@ fn stack_search_index_is_created_altered_aggregated_and_dropped() {
                 .await
                 .expect("hset");
         }
-        let mut info = ft_info(&at, &index).await.expect("ft.info");
-        for _ in 0..50 {
-            if !info.indexing && info.num_docs == 3 {
-                break;
+        let mut last = ft_info(&at, &index).await.expect("ft.info");
+        let info = poll_until(Duration::from_secs(10), Duration::from_millis(100), async || {
+            if !last.indexing && last.num_docs == 3 {
+                return Some(last.clone());
             }
-            smol::Timer::after(std::time::Duration::from_millis(100)).await;
-            info = ft_info(&at, &index).await.expect("ft.info");
-        }
+            last = ft_info(&at, &index).await.expect("ft.info");
+            (!last.indexing && last.num_docs == 3).then(|| last.clone())
+        })
+        .await
+        .unwrap_or(last);
         assert_eq!(info.num_docs, 3, "the schema indexed every document: {info:?}");
 
         // A field added later is searchable on what is written after it.
@@ -905,20 +909,18 @@ fn stack_search_index_is_created_altered_aggregated_and_dropped() {
                 limit: (0, 10),
                 ..Default::default()
             };
-            let mut hits = Vec::new();
-            for _ in 0..50 {
-                hits = ft_search(&at, &index, "@n:[50 50]", &opts)
+            let hits = poll_until(Duration::from_secs(10), Duration::from_millis(100), async || {
+                let hits: Vec<String> = ft_search(&at, &index, "@n:[50 50]", &opts)
                     .await
                     .expect("ft.search")
                     .hits
                     .into_iter()
                     .map(|hit| hit.doc_id)
                     .collect();
-                if !hits.is_empty() {
-                    break;
-                }
-                smol::Timer::after(std::time::Duration::from_millis(100)).await;
-            }
+                (!hits.is_empty()).then_some(hits)
+            })
+            .await
+            .unwrap_or_default();
             assert_eq!(hits, [format!("{prefix}:d")], "the added NUMERIC field answers a range");
         } else {
             eprintln!("skipped FT.ALTER: not in this module");
@@ -1098,13 +1100,15 @@ fn stack_module_reserves_and_aggregate_cursor_round_trip() {
                     .await
                     .expect("hset");
             }
-            for _ in 0..30 {
+            let mut last_info = None;
+            let ready = wait_until(Duration::from_secs(10), Duration::from_millis(100), async || {
                 let info = ft_info(&at, &index).await.expect("ft.info");
-                if !info.indexing && info.num_docs == 3 {
-                    break;
-                }
-                smol::Timer::after(std::time::Duration::from_millis(100)).await;
-            }
+                let done = !info.indexing && info.num_docs == 3;
+                last_info = Some(info);
+                done
+            })
+            .await;
+            assert!(ready, "index ready before aggregate cursor: {last_info:?}");
             let opts = AggregateOptions {
                 group_by: vec!["kind".to_string()],
                 reducer: Some(ReducerSpec {

@@ -64,17 +64,11 @@ fn busy_script_kill_stops_a_runaway_script() {
                 .query_async::<redis::Value>(&mut runaway)
                 .await
         });
-        smol::Timer::after(std::time::Duration::from_millis(500)).await;
-
-        let mut killed = false;
-        for _ in 0..20 {
+        let killed = wait_until(Duration::from_secs(10), Duration::from_millis(100), async || {
             let replies = kill_running(&entry, KillTarget::Script).await.expect("kill");
-            if replies.iter().any(|r| r.outcome == KillOutcome::Killed) {
-                killed = true;
-                break;
-            }
-            smol::Timer::after(std::time::Duration::from_millis(200)).await;
-        }
+            replies.iter().any(|r| r.outcome == KillOutcome::Killed)
+        })
+        .await;
         assert!(killed, "SCRIPT KILL never reached the busy server");
         let outcome = script.await;
         assert!(outcome.is_err(), "the script must have been stopped: {outcome:?}");

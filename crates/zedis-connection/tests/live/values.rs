@@ -1101,35 +1101,83 @@ fn standalone_stream_tail_returns_only_what_arrives_after_it_opened() {
         // The entries are written while the tail is blocked, and that is not
         // incidental: `XREAD … $` resolves `$` when the command is *sent*, so
         // anything written beforehand is already in the past and a tail that
-        // reads after the writes sees nothing. The concurrency is what
-        // exercises the cursor at all.
-        let writer = smol::spawn({
+        // reads after the writes sees nothing. First wake `$` with a stoppable
+        // producer so the tail locks onto a concrete stream ID, then write the
+        // ordered payload deterministically.
+        let (done_tx, done_rx) = smol::channel::bounded::<()>(1);
+        let waker = smol::spawn({
             let key = key.clone();
             let mut c = c.clone();
             async move {
-                smol::Timer::after(std::time::Duration::from_millis(100)).await;
-                for n in 1..=2 {
+                loop {
                     let _: String = cmd("XADD")
                         .arg(&key)
                         .arg("*")
-                        .arg("n")
-                        .arg(n)
-                        .arg("name")
-                        .arg("zedis")
+                        .arg("wake")
+                        .arg("1")
                         .query_async(&mut c)
                         .await
-                        .expect("xadd");
+                        .expect("xadd wake");
+                    let stopped = smol::future::or(
+                        async {
+                            let _ = done_rx.recv().await;
+                            true
+                        },
+                        async {
+                            smol::Timer::after(Duration::from_millis(100)).await;
+                            false
+                        },
+                    )
+                    .await;
+                    if stopped {
+                        break;
+                    }
                 }
             }
         });
-        let mut seen = Vec::new();
-        for _ in 0..10 {
-            seen.extend(tail.next_batch(500, 10).await.expect("next batch"));
-            if seen.len() >= 2 {
+        let mut woke = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while woke.is_empty() && Instant::now() < deadline {
+            woke.extend(tail.next_batch(1_000, 10).await.expect("wake batch"));
+        }
+        drop(done_tx);
+        waker.await;
+        assert!(!woke.is_empty(), "tail never woke on live entries");
+        assert!(
+            woke.iter()
+                .all(|(_, fields)| fields == &[("wake".to_string(), b"1".to_vec())]),
+            "unexpected entry while waking: {woke:?}"
+        );
+        loop {
+            let extra = tail.next_batch(1, 100).await.expect("drain wake");
+            if extra.is_empty() {
                 break;
             }
+            assert!(
+                extra
+                    .iter()
+                    .all(|(_, fields)| fields == &[("wake".to_string(), b"1".to_vec())]),
+                "unexpected entry while draining: {extra:?}"
+            );
         }
-        writer.await;
+
+        for n in 1..=2 {
+            let _: String = cmd("XADD")
+                .arg(&key)
+                .arg("*")
+                .arg("n")
+                .arg(n)
+                .arg("name")
+                .arg("zedis")
+                .query_async(&mut c)
+                .await
+                .expect("xadd");
+        }
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while seen.len() < 2 && Instant::now() < deadline {
+            seen.extend(tail.next_batch(1_000, 10).await.expect("next batch"));
+        }
         let fields: Vec<_> = seen.iter().map(|(_, fields)| fields.clone()).collect();
         let pair = |n: &str| {
             vec![

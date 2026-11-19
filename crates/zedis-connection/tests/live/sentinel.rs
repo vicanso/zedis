@@ -77,34 +77,26 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
         // Force a failover and wait for the sentinel to promote the replica.
         // Right after the topology starts the sentinel may not have rated
         // the replica yet (`NOGOODSLAVE`): retry for a while.
-        let mut started = false;
-        for _ in 0..60 {
+        let started = wait_until(Duration::from_secs(30), Duration::from_millis(250), async || {
             let reply: Result<String, redis::RedisError> = cmd("SENTINEL")
                 .arg("FAILOVER")
                 .arg(&master_name)
                 .query_async(&mut sentinel)
                 .await;
             match reply {
-                Ok(_) => {
-                    started = true;
-                    break;
-                }
-                Err(e) if e.to_string().contains("NOGOODSLAVE") => {
-                    smol::Timer::after(std::time::Duration::from_millis(500)).await;
-                }
+                Ok(_) => true,
+                Err(e) if e.to_string().contains("NOGOODSLAVE") => false,
                 Err(e) => panic!("sentinel failover: {e}"),
             }
-        }
+        })
+        .await;
         assert!(started, "sentinel never accepted the failover");
-        let mut after = before;
-        for _ in 0..60 {
-            smol::Timer::after(std::time::Duration::from_millis(500)).await;
-            after = sentinel_master_port(&mut sentinel, &master_name).await;
-            if after != before {
-                break;
-            }
-        }
-        assert_ne!(after, before, "sentinel never promoted the replica");
+        let after = poll_until(Duration::from_secs(30), Duration::from_millis(250), async || {
+            let port = sentinel_master_port(&mut sentinel, &master_name).await;
+            (port != before).then_some(port)
+        })
+        .await
+        .expect("sentinel never promoted the replica");
         // The sentinel announces the new master before it has reconfigured
         // the old one; wait until the demoted node itself reports `slave`
         // (replica-read-only is the default, so writes bounce from then on).
@@ -112,17 +104,16 @@ fn sentinel_resolves_the_master_and_follows_a_failover() {
         // reconfiguration, so poll on a fresh connection each time.
         // A data node, so the data password — not the sentinel's.
         let demoted_server = protected_server("it-demoted", ("127.0.0.1".into(), before));
-        let mut is_replica = false;
-        for _ in 0..60 {
+        let is_replica = wait_until(Duration::from_secs(30), Duration::from_millis(250), async || {
             if let Ok(mut demoted) = open_single_connection(&demoted_server, 0, false).await
                 && let Ok(info) = cmd("INFO").arg("replication").query_async::<String>(&mut demoted).await
                 && info.contains("role:slave")
             {
-                is_replica = true;
-                break;
+                return true;
             }
-            smol::Timer::after(std::time::Duration::from_millis(500)).await;
-        }
+            false
+        })
+        .await;
         assert!(is_replica, "the old master was never reconfigured as a replica");
 
         // The cached client still talks to the demoted node: a write now

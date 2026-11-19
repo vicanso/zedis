@@ -594,6 +594,7 @@ mod tests {
     use crate::trash::NewEntry;
     use std::sync::Once;
     use std::time::Duration;
+    use tokio::time::Instant;
     use uuid::Uuid;
     use zedis_connection::RedisServer;
     use zedis_connection::{disable_keychain, get_server, install_crypto_provider};
@@ -772,8 +773,9 @@ mod tests {
                 line: format!(r#"{{"event":"{event}","account":"{auditor}","n":{n}}}"#).into_bytes(),
             });
         }
-        let mut kept = 0;
-        for _ in 0..100 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut kept;
+        loop {
             kept = log
                 .query(AuditQuery {
                     account: Some(auditor.clone()),
@@ -783,10 +785,10 @@ mod tests {
                 .expect("query")
                 .lines
                 .len();
-            if kept == 3 {
+            if kept == 3 || Instant::now() >= deadline {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert_eq!(kept, 3);
         assert!(

@@ -319,16 +319,16 @@ fn standalone_server_operations_describe_and_administer_the_server() {
         // CANCEL test's on Valkey 8.1+, whose child is reaped some time after
         // the cancel — and a second one is refused as "already in progress"
         // until it is gone; ours goes in then.
-        let mut started = bgsave(&at).await;
-        for _ in 0..100 {
-            match &started {
-                Err(e) if e.to_string().contains("already in progress") => {
-                    smol::Timer::after(std::time::Duration::from_millis(100)).await;
-                    started = bgsave(&at).await;
-                }
-                _ => break,
-            }
-        }
+        let started = poll_until(
+            Duration::from_secs(15),
+            Duration::from_millis(100),
+            async || match bgsave(&at).await {
+                Err(e) if e.to_string().contains("already in progress") => None,
+                other => Some(other),
+            },
+        )
+        .await
+        .expect("bgsave settled within timeout");
         started.expect("bgsave");
         bgrewriteaof(&at).await.expect("bgrewriteaof");
         let saved = master_infos(&at, None).await.expect("infos");
@@ -478,17 +478,28 @@ fn standalone_client_pause_and_filtered_kill() {
             .expect("pause");
         if mode_supported {
             client_unpause(&at).await.expect("unpause");
+            let key = unique("pause");
+            cmd("SET")
+                .arg(&key)
+                .arg("after")
+                .exec_async(&mut c)
+                .await
+                .expect("a write after the pause");
+            cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
         } else {
-            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+            let key = unique("pause");
+            let wrote = wait_until(Duration::from_secs(5), Duration::from_millis(50), async || {
+                if cmd("SET").arg(&key).arg("after").exec_async(&mut c).await.is_ok() {
+                    true
+                } else {
+                    c = conn(&id, 0).await;
+                    false
+                }
+            })
+            .await;
+            assert!(wrote, "a write after the pause");
+            cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
         }
-        let key = unique("pause");
-        cmd("SET")
-            .arg(&key)
-            .arg("after")
-            .exec_async(&mut c)
-            .await
-            .expect("a write after the pause");
-        cmd("DEL").arg(&key).exec_async(&mut c).await.expect("del");
 
         // A victim connection, found by its id in the listing, killed by ADDR.
         let mut victim = open_single_connection(&entry, 0, false)
@@ -799,9 +810,17 @@ fn standalone_bgsave_cancel_stops_a_snapshot_on_valkey_8_1() {
                 false
             }
         };
+        let mut c = conn(&id, 0).await;
         let _started = bgsave(&at).await;
         taken(bgsave_cancel(&at).await);
-        smol::Timer::after(std::time::Duration::from_millis(500)).await;
+        let _ = wait_until(Duration::from_secs(5), Duration::from_millis(50), async || {
+            cmd("INFO")
+                .arg("persistence")
+                .query_async::<String>(&mut c)
+                .await
+                .is_ok_and(|info| info.contains("rdb_bgsave_in_progress:0"))
+        })
+        .await;
         taken(bgsave_cancel(&at).await);
     });
 }

@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Once;
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 use zedis_connection::error::ConnectionErrorKind;
 use zedis_connection::floors::{self, Floor};
 use zedis_connection::{
@@ -276,6 +277,51 @@ async fn supports(id: &str, floor: Floor) -> bool {
         .await
         .expect("client")
         .supports(floor)
+}
+
+/// Poll `check` every `interval` until it returns `Some(value)` or `timeout`
+/// elapses. Bounds wall-clock wait instead of a fixed iteration count, so
+/// network RTT jitter neither fails early nor stretches a timeout.
+async fn poll_until<T>(timeout: Duration, interval: Duration, mut check: impl AsyncFnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = check().await {
+            return Some(value);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        smol::Timer::after(interval.min(deadline - now)).await;
+    }
+}
+
+/// Poll `check` every `interval` until it returns `true` or `timeout` elapses.
+async fn wait_until(timeout: Duration, interval: Duration, mut check: impl AsyncFnMut() -> bool) -> bool {
+    poll_until(timeout, interval, async || check().await.then_some(()))
+        .await
+        .is_some()
+}
+
+/// The first line of `feed` that mentions `marker`, bounded by wall-clock time
+/// so a missed line fails cleanly instead of hanging the suite.
+async fn monitored(feed: &mut MonitorFeed, marker: &str) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for _ in 0..5_000 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let line = smol::future::or(feed.next_line(), async {
+            smol::Timer::after(remaining).await;
+            None
+        })
+        .await?;
+        if line.contains(marker) {
+            return Some(line);
+        }
+    }
+    None
 }
 
 mod acl;

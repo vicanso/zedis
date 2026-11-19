@@ -23,6 +23,7 @@ use crate::auth::{Login, LoginChange, Logins, Throttle, attempt_key, hex};
 use crate::store::{STORE_POLL, conformance};
 use sha2::{Digest, Sha256};
 use sqlx::AssertSqlSafe;
+use tokio::time::Instant;
 use zedis_connection::{RedisServer, disable_keychain, get_server};
 use zedis_core::fs::override_config_dir;
 
@@ -295,14 +296,18 @@ async fn failed_sign_ins_are_counted_across_bridges() {
 /// runner the writes have been seen to land later than a quarter of a poll
 /// (`postgres:18`, 2026-10-26).
 async fn merged_until(throttle: &Throttle, key: &str, blocked: bool) -> bool {
-    for _ in 0..100 {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
         throttle.merge().await;
         if throttle.blocked(key) == blocked {
             return true;
         }
-        tokio::time::sleep(STORE_POLL / 20).await;
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((STORE_POLL / 20).min(deadline - now)).await;
     }
-    false
 }
 
 /// The server list: a change lands in the cache the pool dials from, a
@@ -586,13 +591,14 @@ async fn the_audit_is_kept_read_back_and_pruned() {
         ..AuditQuery::default()
     };
     // The writer is a task of its own.
-    let mut kept = 0;
-    for _ in 0..100 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut kept;
+    loop {
         kept = log.query(mine()).await.expect("query").lines.len();
-        if kept == 3 {
+        if kept == 3 || Instant::now() >= deadline {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(kept, 3);
     let n = |page: &crate::store::AuditPage| -> Vec<i64> {

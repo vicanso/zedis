@@ -16,18 +16,6 @@
 
 use super::*;
 
-/// The first line of `feed` that mentions `marker`. The suite runs in
-/// parallel against the same servers, so a feed carries everyone's commands.
-async fn monitored(feed: &mut MonitorFeed, marker: &str) -> Option<String> {
-    for _ in 0..5_000 {
-        let line = feed.next_line().await?;
-        if line.contains(marker) {
-            return Some(line);
-        }
-    }
-    None
-}
-
 #[test]
 #[ignore]
 fn tls_connects_with_the_root_cert_and_in_insecure_mode() {
@@ -319,19 +307,15 @@ fn ssh_tunnel_carries_the_connection_to_the_standalone_server() {
         assert!(line.to_ascii_uppercase().contains("\"GET\""), "{line}");
         // Dropping the feed closes its connection, busy server or idle.
         drop(feed);
-        let mut closed = false;
-        for _ in 0..50 {
+        let closed = wait_until(Duration::from_secs(10), Duration::from_millis(100), async || {
             let clients: String = cmd("CLIENT")
                 .arg("LIST")
                 .query_async(&mut direct_conn)
                 .await
                 .expect("client list");
-            if our_monitors(clients) == 0 {
-                closed = true;
-                break;
-            }
-            smol::Timer::after(std::time::Duration::from_millis(100)).await;
-        }
+            our_monitors(clients) == 0
+        })
+        .await;
         assert!(closed, "the tunnelled MONITOR outlived its feed");
 
         // And through a password, which the tunnelled feed sends itself:

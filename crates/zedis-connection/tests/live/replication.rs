@@ -20,13 +20,14 @@ use super::*;
 /// link coming up takes the pair a moment.
 async fn wait_replication(id: &str, what: &str, ok: impl Fn(&ReplicationInfo) -> bool) -> ReplicationInfo {
     let mut last = ReplicationInfo::default();
-    for _ in 0..80 {
+    if let Some(info) = poll_until(Duration::from_secs(20), Duration::from_millis(250), async || {
         let client = get_connection_manager().get_client(id, 0).await.expect("client");
         last = client.replication_info().await.expect("INFO replication");
-        if ok(&last) {
-            return last;
-        }
-        smol::Timer::after(std::time::Duration::from_millis(250)).await;
+        ok(&last).then(|| last.clone())
+    })
+    .await
+    {
+        return info;
     }
     panic!("{what}: {last:?}");
 }
