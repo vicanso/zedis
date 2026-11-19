@@ -504,11 +504,14 @@ impl ZedisKeyTree {
             }
         }));
 
+        let flat_view = cx.global::<ZedisGlobalStore>().read(cx).key_tree_flat_view();
+
         let mut this = Self {
             focus_handle,
             state: KeyTreeState {
                 query_mode,
                 regex_mode,
+                flat_view,
                 server_id: server_id.into(),
                 refresh_interval_sec,
                 expanded_items: AHashSet::with_capacity(EXPANDED_ITEMS_INITIAL_CAPACITY),
@@ -575,7 +578,11 @@ impl ZedisKeyTree {
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
-        self.state = KeyTreeState::default();
+        let flat_view = cx.global::<ZedisGlobalStore>().read(cx).key_tree_flat_view();
+        self.state = KeyTreeState {
+            flat_view,
+            ..Default::default()
+        };
         // Picks are key names, and a rebuild keeps the ones that still have
         // a row — so another server or database, which may well have keys of
         // the same names, has to start with none.

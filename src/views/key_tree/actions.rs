@@ -22,7 +22,7 @@ use super::key_actions::{
     toggle_favorite,
 };
 use super::*;
-use crate::states::ModuleTypeId;
+use crate::states::{ModuleTypeId, update_app_state_and_save_quiet};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Action)]
 pub(super) enum KeyTreeAction {
@@ -252,7 +252,11 @@ fn on_tree_action(this: &mut ZedisKeyTree, e: &KeyTreeAction, window: &mut Windo
             }
         }
         KeyTreeAction::ToggleFlatView => {
-            this.state.flat_view = !this.state.flat_view;
+            let flat = !this.state.flat_view;
+            this.state.flat_view = flat;
+            update_app_state_and_save_quiet(cx, "save_key_tree_flat_view", move |state, _| {
+                state.set_key_tree_flat_view(flat);
+            });
             this.update_key_tree(true, cx);
         }
         KeyTreeAction::ToggleRegexMode => {
@@ -787,5 +791,40 @@ mod tests {
                 "range anchor moved to key_b's row"
             );
         });
+    }
+
+    /// Flat list preference is saved in `ZedisAppState` so reopening the tree
+    /// or switching servers preserves the chosen mode.
+    #[gpui::test]
+    fn flat_view_preference_persists_across_new_trees_and_server_switches(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let (handle, tree, server_state) = open_tree(cx, None);
+        assert!(!tree_state(cx, &tree, |s| s.flat_view));
+
+        send(cx, handle, &tree, KeyTreeAction::ToggleFlatView);
+        assert!(tree_state(cx, &tree, |s| s.flat_view));
+        assert!(cx.update(|cx| cx.global::<ZedisGlobalStore>().read(cx).key_tree_flat_view()));
+
+        server_state.update(cx, |state, cx| state.select("srv-b".into(), 0, cx));
+        cx.run_until_parked();
+        assert!(
+            tree_state(cx, &tree, |s| s.flat_view),
+            "switching servers keeps flat view enabled"
+        );
+
+        let (reopened_handle, reopened, _) = open_tree(cx, None);
+        assert!(
+            tree_state(cx, &reopened, |s| s.flat_view),
+            "a newly opened tree reads the persisted flat view"
+        );
+
+        send(cx, reopened_handle, &reopened, KeyTreeAction::ToggleFlatView);
+        assert!(!cx.update(|cx| cx.global::<ZedisGlobalStore>().read(cx).key_tree_flat_view()));
+
+        let (_, third, _) = open_tree(cx, None);
+        assert!(
+            !tree_state(cx, &third, |s| s.flat_view),
+            "toggling back off persists tree mode"
+        );
     }
 }

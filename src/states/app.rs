@@ -453,6 +453,9 @@ pub struct ZedisAppState {
     /// is skipped (cheaper scans on large dbs) and no chip is rendered.
     /// Defaults to `true`.
     show_key_tree_ttl: Option<bool>,
+    /// Whether the key tree shows keys as a flat list (`true`) instead of a
+    /// nested folder tree (unset / `false`, the default).
+    key_tree_flat_view: Option<bool>,
     /// When `true`, the Live Monitor shows the commands Zedis's own
     /// connections send (the heartbeat's `INFO`, the key tree's `SCAN`…)
     /// among everyone else's. Defaults to `false`: on a quiet server they
@@ -1039,6 +1042,13 @@ impl ZedisAppState {
     pub fn set_show_key_tree_ttl(&mut self, enabled: bool) {
         self.show_key_tree_ttl = Some(enabled);
     }
+    /// Whether the key tree opens in flat-list mode, as it was last left.
+    pub fn key_tree_flat_view(&self) -> bool {
+        self.key_tree_flat_view.unwrap_or(false)
+    }
+    pub fn set_key_tree_flat_view(&mut self, flat: bool) {
+        self.key_tree_flat_view = Some(flat);
+    }
     pub fn monitor_show_own_commands(&self) -> bool {
         self.monitor_show_own_commands.unwrap_or(false)
     }
@@ -1307,6 +1317,7 @@ mod upgrade_fixtures {
         assert!(state.window_placements.is_empty());
         assert!(state.last_db.is_empty());
         assert_eq!(state.multi_search_scope, MultiSearchScope::default());
+        assert!(!state.key_tree_flat_view());
     }
 
     #[test]
@@ -1340,6 +1351,22 @@ mod upgrade_fixtures {
             assert_eq!(again.key_tree_width, state.key_tree_width);
             assert_eq!(again.route_token, state.route_token);
         }
+    }
+
+    #[test]
+    fn key_tree_flat_view_round_trips_through_toml() {
+        let mut state = super::ZedisAppState::default();
+        assert!(!state.key_tree_flat_view());
+
+        state.set_key_tree_flat_view(true);
+        let written = toml::to_string(&state).expect("serialize");
+        let again: super::ZedisAppState = toml::from_str(&written).expect("re-parse");
+        assert!(again.key_tree_flat_view());
+
+        state.set_key_tree_flat_view(false);
+        let written = toml::to_string(&state).expect("serialize");
+        let again: super::ZedisAppState = toml::from_str(&written).expect("re-parse");
+        assert!(!again.key_tree_flat_view());
     }
 }
 
