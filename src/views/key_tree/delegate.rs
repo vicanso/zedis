@@ -96,13 +96,23 @@ pub(super) struct KeyTreeDelegate {
     /// opened over the menu's first item — Delete key…, which a report then
     /// said was not there (#226).
     pub(super) menu_row: Rc<RefCell<Option<SharedString>>>,
+    /// Folder row currently selected in the tree via click or keyboard
+    /// navigation. While set, the tree highlights this folder instead of
+    /// the editor's open leaf key so `delete_key` targets the visible
+    /// selection unambiguously.
+    pub(super) selected_folder: Option<SharedString>,
 }
 
 impl KeyTreeDelegate {
+    pub(super) fn is_multi_selecting(&self) -> bool {
+        self.enabled_multiple_selection || !self.selected_items.is_empty()
+    }
+
     pub(super) fn clear_selection(&mut self) {
         self.selected_items.clear();
         self.range_base.clear();
         self.range_anchor = None;
+        self.selected_folder = None;
     }
 
     /// Keep the picks that still have a row after a rebuild. They are key
@@ -114,6 +124,11 @@ impl KeyTreeDelegate {
         retain_picks_with_rows(&mut self.selected_items, &self.items);
         self.range_base = self.selected_items.clone();
         self.range_anchor = None;
+        if let Some(folder) = &self.selected_folder
+            && !self.items.iter().any(|item| item.is_folder && &item.id == folder)
+        {
+            self.selected_folder = None;
+        }
     }
 
     /// Pick or unpick one key and move the Shift anchor to its row, as a
@@ -122,6 +137,7 @@ impl KeyTreeDelegate {
     pub(super) fn set_pick(&mut self, id: SharedString, picked: bool, row: usize) {
         if picked {
             self.selected_items.insert(id);
+            self.selected_folder = None;
         } else {
             self.selected_items.remove(&id);
         }
@@ -163,12 +179,13 @@ impl ListDelegate for KeyTreeDelegate {
         let is_folder = entry.is_folder;
         let is_scanning = entry.is_scanning;
 
-        // Selection — highlight the row whose key is the editor's active key,
-        // keyed off the persistent server-state key so it survives tree
-        // rebuilds (the list's selected index is cleared on every rebuild,
-        // which made the accent vanish moments after selecting). Gated to leaf
-        // keys: folders toggle expand/collapse on click, never "select".
-        let is_selected_row = !is_folder && self.server_state.read(cx).key().as_ref() == Some(&entry.id);
+        // Selection — highlight either the folder currently focused in the
+        // tree or the editor's active leaf key, keyed off persistent state so
+        // it survives tree rebuilds without showing two active rows at once.
+        let is_selected_row = match &self.selected_folder {
+            Some(folder) => is_folder && folder == &entry.id,
+            None => !is_folder && self.server_state.read(cx).key().as_ref() == Some(&entry.id),
+        };
         // Theme-neutral selection fill (`list_active`) so the active key reads
         // clearly on any theme without competing with tag stripes.
         let selected_row_bg = cx.theme().list_active;
@@ -372,6 +389,9 @@ impl ListDelegate for KeyTreeDelegate {
             // The base plus the new range, not the old selection plus it:
             // that is what lets a nearer second click shrink the range.
             self.selected_items = range_selection(&self.range_base, &self.items, anchor, ix.row);
+            if !self.selected_items.is_empty() {
+                self.selected_folder = None;
+            }
             return;
         }
         if !selectable {
@@ -831,6 +851,7 @@ mod tests {
                 readonly: false,
                 server_state: server_state.clone(),
                 menu_row: Default::default(),
+                selected_folder: None,
             };
             let state = cx.new(|cx| ListState::new(delegate, window, cx));
             list = Some(state.clone());
@@ -900,6 +921,7 @@ mod tests {
                 readonly,
                 server_state,
                 menu_row: Default::default(),
+                selected_folder: None,
             };
             let state = cx.new(|cx| ListState::new(delegate, window, cx));
             list = Some(state.clone());

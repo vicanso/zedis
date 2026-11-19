@@ -731,18 +731,19 @@ static HOT_KEYS: &[HotKey] = &[
         bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::UpdateTtl, None, cx),
         bind_skip_prompt: None,
     },
-    // Delete the selected key. A modifier combo (not bare Backspace) so it
-    // can't fire while navigating the tree or typing; still routes through
-    // the confirm dialog (with PROD escalation) unless overridden with `!`
-    // in `keybindings.toml` on non-PROD connections. When a text editor is
-    // focused it keeps ⌘⌫ for editing — the global delete only fires when
-    // no input consumes it.
+    // Delete the selected key (or selected folder in the key tree). A modifier
+    // combo by default (not bare Backspace) so it can't fire accidentally while
+    // navigating; `!Input` prevents custom bare bindings such as `delete` from
+    // hijacking text editing inside any `Input`. Always asks before deleting a
+    // folder; `!` skips the prompt only for keys on non-PROD connections.
     HotKey {
         id: "delete_key",
         default: "secondary-backspace",
         reference: Some((GROUP_EDITOR, "delete_key")),
-        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Delete, None, cx),
-        bind_skip_prompt: Some(|keystroke, cx| bind_keystroke(keystroke, EditorAction::DeleteWithoutConfirm, None, cx)),
+        bind: |keystroke, cx| bind_keystroke(keystroke, EditorAction::Delete, Some("!Input"), cx),
+        bind_skip_prompt: Some(|keystroke, cx| {
+            bind_keystroke(keystroke, EditorAction::DeleteWithoutConfirm, Some("!Input"), cx)
+        }),
     },
     // Rename the selected key. ⌘E is free on macOS text inputs (unlike
     // ⌘C/⌘V/⌘X), so it can be a global binding without stealing edit
@@ -996,6 +997,7 @@ pub fn new_hot_keys(cx: &App) -> Vec<KeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{KeyContext, TestAppContext};
     use std::path::Path;
 
     #[test]
@@ -1185,5 +1187,28 @@ mod tests {
         } else {
             assert_eq!(drawn, "Ctrl+1 … Ctrl+8");
         }
+    }
+
+    #[gpui::test]
+    fn delete_key_binds_outside_inputs(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let delete_hk = HOT_KEYS
+                .iter()
+                .find(|hot_key| hot_key.id == "delete_key")
+                .expect("delete_key exists");
+            let input_ctx = KeyContext::parse("Input").expect("input context");
+            let workspace_ctx = KeyContext::parse("Workspace").expect("workspace context");
+            let list_ctx = KeyContext::parse("List").expect("list context");
+            for binding in [
+                (delete_hk.bind)("delete", cx),
+                (delete_hk.bind_skip_prompt.expect("skip prompt"))("delete", cx),
+            ] {
+                let predicate = binding.predicate().expect("delete_key has !Input context");
+                assert!(!predicate.eval(std::slice::from_ref(&input_ctx)));
+                assert!(!predicate.eval(&[workspace_ctx.clone(), input_ctx.clone()]));
+                assert!(predicate.eval(std::slice::from_ref(&workspace_ctx)));
+                assert!(predicate.eval(&[workspace_ctx.clone(), list_ctx.clone()]));
+            }
+        });
     }
 }

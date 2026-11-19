@@ -152,8 +152,8 @@ pub fn keybindings_template() -> String {
          #         delete, up, down, left, right, home, end, pageup, pagedown,\n\
          #         and punctuation such as `/`, `=`, `-`, `[`\n\
          # A chord is two keystrokes separated by a space: \"ctrl-k ctrl-s\".\n\
-         # Append `!` to `delete_key` to skip the confirmation prompt on\n\
-         # non-PROD connections, e.g. `delete_key = \"secondary-backspace!\"`.\n\n",
+         # Append `!` to `delete_key` to skip the key confirmation prompt on\n\
+         # non-PROD connections (folder deletion always asks), e.g. `delete_key = \"secondary-backspace!\"`.\n\n",
     );
     for hot_key in hot_key_table() {
         out.push_str(&format!("# {} = \"{}\"\n", hot_key.id, hot_key.default));

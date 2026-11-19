@@ -1369,6 +1369,15 @@ impl ZedisServerState {
             .set_topology((description.slot_map.masters.len(), 0), description);
     }
 
+    /// Seed loaded keys into the scan snapshot so key-tree UI tests can exercise
+    /// real tree rebuilds without a live Redis server.
+    #[cfg(test)]
+    pub(crate) fn seed_keys_for_test(&mut self, keys: &[(&str, &str)], cx: &mut Context<Self>) {
+        let rows = keys.iter().map(|(k, ty)| ((*k).into(), (*ty).into(), -1)).collect();
+        self.extend_keys(rows);
+        cx.emit(ServerEvent::KeyTreeUpdated);
+    }
+
     /// Get the in-memory value history for `key` (newest first), if any.
     /// Returns `None` rather than an empty slice so callers can easily
     /// distinguish "never written" from "written and rolled back to 0".
