@@ -382,7 +382,7 @@ pub fn apply_json_op(doc: &mut Value, path: &str, op: JsonPathOp) -> Result<Json
             };
             let parent = resolve_mut(doc, parents).ok_or(JsonOpError::NotFound)?;
             let removed = match (last, parent) {
-                (PathSegment::Key(key), Value::Object(map)) => map.remove(key).is_some(),
+                (PathSegment::Key(key), Value::Object(map)) => map.shift_remove(key).is_some(),
                 (PathSegment::Index(index), Value::Array(items)) if *index < items.len() => {
                     items.remove(*index);
                     true
@@ -793,5 +793,23 @@ mod tests {
         assert_eq!(value_at(&doc, "$['a b'][0].c"), Some(&json!(3)));
         assert_eq!(value_at(&doc, "$.missing"), None);
         assert_eq!(value_at(&doc, "$[*]"), None);
+    }
+
+    #[test]
+    fn key_order_is_preserved_across_format_minify_and_del() {
+        let raw = r#"{"z":1,"a":2,"m":3}"#;
+        let pretty = format_json(raw).expect("pretty");
+        assert_eq!(pretty, "{\n  \"z\": 1,\n  \"a\": 2,\n  \"m\": 3\n}");
+        assert_eq!(minify_json(&pretty).expect("compact"), raw);
+
+        let mut doc: Value = serde_json::from_str(r#"{"z":1,"a":2,"m":3,"b":4}"#).expect("valid json");
+        assert_eq!(
+            apply_json_op(&mut doc, "$.z", JsonPathOp::Del),
+            Ok(JsonOpOutcome::Count(1))
+        );
+        assert_eq!(
+            serde_json::to_string(&doc).expect("serialize"),
+            r#"{"a":2,"m":3,"b":4}"#
+        );
     }
 }
