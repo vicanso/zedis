@@ -385,7 +385,7 @@ impl ZedisBenchmark {
                 .flex_1()
                 .p_3()
                 .gap_1()
-                .rounded(px(6.))
+                .rounded(theme.radius_lg)
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.background)
@@ -606,7 +606,7 @@ impl ZedisBenchmark {
                     .min_w(px(360.))
                     .p_3()
                     .gap_2()
-                    .rounded(px(6.))
+                    .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
                     .child(
@@ -623,7 +623,7 @@ impl ZedisBenchmark {
                     .min_w(px(360.))
                     .p_3()
                     .gap_2()
-                    .rounded(px(6.))
+                    .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
                     .child(
@@ -642,6 +642,7 @@ impl ZedisBenchmark {
         let secondary_bg = cx.theme().secondary;
         let hover_bg = cx.theme().list_hover;
         let border_col = cx.theme().border;
+        let radius_lg = cx.theme().radius_lg;
         let mono = get_mono_font_family();
         let selected_id = self.selected_entry().map(|e| e.id);
         let baseline = self.baseline_id.and_then(|id| self.runs.iter().find(|r| r.id == id));
@@ -772,7 +773,7 @@ impl ZedisBenchmark {
             .w_full()
             .p_3()
             .gap_2()
-            .rounded(px(6.))
+            .rounded(radius_lg)
             .border_1()
             .border_color(border_col)
             .child(

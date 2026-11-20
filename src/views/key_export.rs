@@ -865,7 +865,7 @@ fn sample_block(sample_lines: Vec<SharedString>, cx: &App) -> AnyElement {
     let block = v_flex()
         .border_1()
         .border_color(theme.border)
-        .rounded(px(4.))
+        .rounded(theme.radius)
         .px_2()
         .py_1()
         .children(

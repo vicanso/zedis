@@ -760,7 +760,7 @@ impl Render for ZedisCompareWindow {
                     .w_full()
                     .border_1()
                     .border_color(theme.border)
-                    .rounded(px(4.))
+                    .rounded(theme.radius)
                     .child(DataTable::new(&table).bordered(false)),
             );
 
