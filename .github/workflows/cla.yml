@@ -1,0 +1,23 @@
+name: "CLA"
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  cla:
+    name: CLA accepted
+    if: github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify CLA checkbox in PR description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n' "$PR_BODY" | grep -qiE '^\s*-\s*\[x\]\s*⚖️\s*\*\*(I have read and agree to the \[Zedis Contributor License Agreement\]\(CLA\.md\)|我已阅读并同意 \[Zedis 贡献者许可协议\]\(CLA\.md\))'; then
+            echo "CLA agreement checkbox is checked."
+            exit 0
+          fi
+          echo "::error::Please read CLA.md and check the CLA agreement box in the Pull Request description (English or Chinese)."
+          exit 1
