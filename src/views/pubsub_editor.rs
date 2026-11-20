@@ -684,7 +684,6 @@ impl Render for ZedisPubsubEditor {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .overflow_hidden()
             .child(self.render_subscribe_bar(window, cx))
             // SUBSCRIBE missing / denied on this server (proxies that don't
@@ -727,13 +726,18 @@ impl Render for ZedisPubsubEditor {
                         ))
                     })
                     .when(!is_empty, |this| {
-                        this.child(fitted_table(
-                            &self.table_state,
-                            DataTable::new(&self.table_state)
-                                .stripe(true)
-                                .bordered(false)
-                                .scrollbar_visible(true, true),
-                        ))
+                        this.child(
+                            div()
+                                .size_full()
+                                .font_family(get_mono_font_family())
+                                .child(fitted_table(
+                                    &self.table_state,
+                                    DataTable::new(&self.table_state)
+                                        .stripe(true)
+                                        .bordered(false)
+                                        .scrollbar_visible(true, true),
+                                )),
+                        )
                     }),
             )
             // PUBLISH mutates server state (Capability::PublishMessage);

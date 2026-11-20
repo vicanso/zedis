@@ -201,7 +201,12 @@ impl ZedisTimeSeriesEditor {
                 .gap_1()
                 .items_baseline()
                 .child(Label::new(label).text_xs().text_color(muted))
-                .child(Label::new(value).text_xs().font_semibold())
+                .child(
+                    Label::new(value)
+                        .font_family(get_mono_font_family())
+                        .text_xs()
+                        .font_semibold(),
+                )
         };
 
         let mut row = h_flex().flex_wrap().gap_x_4().gap_y_1().items_center();
@@ -695,13 +700,7 @@ impl Render for ZedisTimeSeriesEditor {
                 .into_any_element()
         };
 
-        v_flex()
-            .size_full()
-            .font_family(get_mono_font_family())
-            .gap_3()
-            .p_3()
-            .child(header)
-            .child(body)
+        v_flex().size_full().gap_3().p_3().child(header).child(body)
     }
 }
 

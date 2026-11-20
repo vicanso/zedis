@@ -780,19 +780,21 @@ impl gpui::Render for ZedisAclManager {
                     )
                     .into_any_element()
             } else {
-                fitted_table(
-                    &self.log_table,
-                    DataTable::new(&self.log_table)
-                        .stripe(true)
-                        .bordered(false)
-                        .scrollbar_visible(true, true),
-                )
-                .into_any_element()
+                div()
+                    .size_full()
+                    .font_family(get_mono_font_family())
+                    .child(fitted_table(
+                        &self.log_table,
+                        DataTable::new(&self.log_table)
+                            .stripe(true)
+                            .bordered(false)
+                            .scrollbar_visible(true, true),
+                    ))
+                    .into_any_element()
             };
             return v_flex()
                 .size_full()
                 .overflow_hidden()
-                .font_family(get_mono_font_family())
                 .child(header)
                 .child(div().flex_1().w_full().min_h_0().child(log_body))
                 .into_any_element();

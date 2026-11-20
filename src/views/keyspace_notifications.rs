@@ -1093,13 +1093,18 @@ impl ZedisKeyspaceNotifications {
     }
 
     fn render_message_table(&self) -> impl IntoElement {
-        div().flex_1().w_full().min_h_0().child(fitted_table(
-            &self.table_state,
-            DataTable::new(&self.table_state)
-                .stripe(true)
-                .bordered(false)
-                .scrollbar_visible(true, true),
-        ))
+        div()
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .font_family(get_mono_font_family())
+            .child(fitted_table(
+                &self.table_state,
+                DataTable::new(&self.table_state)
+                    .stripe(true)
+                    .bordered(false)
+                    .scrollbar_visible(true, true),
+            ))
     }
 }
 
@@ -1115,7 +1120,7 @@ impl Render for ZedisKeyspaceNotifications {
 
         let show_empty = self.row_count == 0;
 
-        let mut body = v_flex().size_full().font_family(get_mono_font_family());
+        let mut body = v_flex().size_full();
         body = body.child(self.render_header(cx));
         if let Some(banner) = self.render_config_banner(cx) {
             body = body.child(banner);

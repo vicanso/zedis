@@ -629,7 +629,12 @@ impl ZedisGeoMap {
                 .py_0p5()
                 .rounded_md()
                 .bg(cx.theme().background.opacity(0.7))
-                .child(Label::new(format!("{lon:.5}, {lat:.5}")).text_xs().text_color(muted)),
+                .child(
+                    Label::new(format!("{lon:.5}, {lat:.5}"))
+                        .font_family(get_mono_font_family())
+                        .text_xs()
+                        .text_color(muted),
+                ),
         )
     }
 

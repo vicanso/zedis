@@ -706,6 +706,7 @@ impl ZedisServerLoad {
         let stripe_bg = theme.table_even;
         let warning = theme.warning;
         let yellow = theme.yellow;
+        let mono = get_mono_font_family();
         let mut list = v_flex().w_full().child(header);
         for (row_ix, r) in display.into_iter().enumerate() {
             let is_stripe = row_ix % 2 != 0;
@@ -721,6 +722,7 @@ impl ZedisServerLoad {
                     .py_1()
                     .gap_2()
                     .items_center()
+                    .font_family(mono.clone())
                     .when(is_stripe && !(hot_rate || hot_avg), |this| this.bg(stripe_bg))
                     .when(hot_rate || hot_avg, |this| this.bg(warning.opacity(0.08)))
                     .child(
@@ -811,7 +813,6 @@ impl Render for ZedisServerLoad {
 
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .child(
                 panel_header()
                     .gap_2()

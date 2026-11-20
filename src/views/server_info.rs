@@ -620,7 +620,6 @@ impl Render for ZedisServerInfo {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .font_family(get_mono_font_family())
             .child(self.render_toolbar(cx))
             .when_some(snapshot_banner, |this, banner| this.child(banner))
             .when_some(self.error.clone(), |this, message| {
@@ -657,13 +656,18 @@ impl Render for ZedisServerInfo {
                         )
                     })
                     .when(!is_empty, |this| {
-                        this.child(fitted_table(
-                            &self.table_state,
-                            DataTable::new(&self.table_state)
-                                .stripe(true)
-                                .bordered(false)
-                                .scrollbar_visible(true, true),
-                        ))
+                        this.child(
+                            div()
+                                .size_full()
+                                .font_family(get_mono_font_family())
+                                .child(fitted_table(
+                                    &self.table_state,
+                                    DataTable::new(&self.table_state)
+                                        .stripe(true)
+                                        .bordered(false)
+                                        .scrollbar_visible(true, true),
+                                )),
+                        )
                     }),
             )
     }

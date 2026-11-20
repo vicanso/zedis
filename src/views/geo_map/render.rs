@@ -119,7 +119,6 @@ impl Render for ZedisGeoMap {
         let has_points = self.data.as_ref().is_some_and(|d| !d.points.is_empty());
         v_flex()
             .size_full()
-            .font_family(get_mono_font_family())
             .gap_3()
             .p_3()
             .child(header)
