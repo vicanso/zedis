@@ -43,7 +43,7 @@ use gpui_kit::component::{
 };
 use rust_i18n::t;
 use std::sync::Arc;
-use zedis_ui::ZedisSkeletonLoading;
+use zedis_ui::{ZedisSkeletonLoading, panel_header};
 
 pub(crate) const METRICS_ALERTS_BTN_ID: &str = "metrics-alerts-btn";
 
@@ -929,119 +929,114 @@ impl Render for ZedisMetrics {
         } else {
             i18n_metrics(cx, "alerts_button_off")
         };
-        div()
-            .size_full()
-            .p_2()
+        let header = panel_header()
+            .justify_between()
             .child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .grid()
+                h_flex()
+                    .items_center()
                     .gap_2()
-                    .grid_cols(columns)
-                    .items_start()
-                    .justify_start()
                     .child(
-                        h_flex()
-                            .items_center()
-                            .col_span_full()
-                            .justify_between()
-                            .px_2()
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("metrics-back")
-                                            .ghost()
-                                            .small()
-                                            .icon(IconName::ArrowLeft)
-                                            .tooltip(back_to_editor_tooltip(cx))
-                                            .on_click(|_, _w, cx| {
-                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                                    store.update(cx, |state, cx| {
-                                                        state.go_to_view(ServerView::Editor, cx)
-                                                    });
-                                                });
-                                            }),
-                                    )
-                                    .child(Label::new(self.title.clone())),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .when(memory_report, |this| {
-                                        this.child(
-                                            Button::new("metrics-memory-report")
-                                                .ghost()
-                                                .small()
-                                                .icon(CustomIconName::MemoryStick)
-                                                .tooltip(i18n_metrics(cx, "memory_report_tooltip"))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    open_server_report_dialog(
-                                                        this.server_state.clone(),
-                                                        ServerReport::Memory,
-                                                        window,
-                                                        cx,
-                                                    )
-                                                })),
-                                        )
-                                    })
-                                    .child({
-                                        let btn = Button::new(METRICS_ALERTS_BTN_ID)
-                                            .small()
-                                            .icon(IconName::Bell)
-                                            .label(alerts_label)
-                                            .tooltip(i18n_metrics(cx, "alerts_button_tooltip"));
-                                        let btn = if active_alert_count > 0 {
-                                            btn.danger()
-                                        } else if alerts_enabled {
-                                            btn.outline()
-                                        } else {
-                                            btn.ghost()
-                                        };
-                                        btn.on_click(cx.listener(|this, _, window, cx| {
-                                            open_server_alerts_dialog(this.server_state.clone(), window, cx);
-                                        }))
-                                    })
-                                    .when(saves_files(), |this| {
-                                        this.child(
-                                            Button::new("metrics-export-csv")
-                                                .ghost()
-                                                .small()
-                                                .icon(CustomIconName::Download)
-                                                .tooltip(i18n_metrics(cx, "export_tooltip"))
-                                                .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
-                                        )
-                                    })
-                                    .child(h_flex().gap_1().children(MetricsRange::ALL.into_iter().map(|range| {
-                                        let selected = self.range == range;
-                                        Button::new(range.button_id())
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(selected)
-                                            .label(i18n_metrics(cx, range.label_key()))
-                                            .on_click(
-                                                cx.listener(move |this, _, _window, cx| this.set_range(range, cx)),
-                                            )
-                                    }))),
-                            ),
+                        Button::new("metrics-back")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip(back_to_editor_tooltip(cx))
+                            .on_click(|_, _w, cx| {
+                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                    store.update(cx, |state, cx| state.go_to_view(ServerView::Editor, cx));
+                                });
+                            }),
                     )
-                    .child(self.render_stat_cards(columns, cx))
-                    .when(has_chart_data, |this| {
-                        this.child(self.render_cpu_usage_chart(cx))
-                            .child(self.render_memory_usage_chart(cx))
-                            .child(self.render_fragmentation_chart(cx))
-                            .child(self.render_latency_chart(cx))
-                            .child(self.render_connected_clients_chart(cx))
-                            .child(self.render_net_kbps_chart(cx))
-                            .child(self.render_total_commands_processed_chart(cx))
-                            .child(self.render_key_hit_rate_chart(cx))
-                            .child(self.render_evicted_keys_chart(cx))
-                    }),
+                    .child(Label::new(self.title.clone()).font_semibold()),
             )
-            .overflow_y_scrollbar()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_wrap()
+                    .when(memory_report, |this| {
+                        this.child(
+                            Button::new("metrics-memory-report")
+                                .ghost()
+                                .small()
+                                .icon(CustomIconName::MemoryStick)
+                                .tooltip(i18n_metrics(cx, "memory_report_tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    open_server_report_dialog(
+                                        this.server_state.clone(),
+                                        ServerReport::Memory,
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        )
+                    })
+                    .child({
+                        let btn = Button::new(METRICS_ALERTS_BTN_ID)
+                            .small()
+                            .icon(IconName::Bell)
+                            .label(alerts_label)
+                            .tooltip(i18n_metrics(cx, "alerts_button_tooltip"));
+                        let btn = if active_alert_count > 0 {
+                            btn.danger()
+                        } else if alerts_enabled {
+                            btn.outline()
+                        } else {
+                            btn.ghost()
+                        };
+                        btn.on_click(cx.listener(|this, _, window, cx| {
+                            open_server_alerts_dialog(this.server_state.clone(), window, cx);
+                        }))
+                    })
+                    .when(saves_files(), |this| {
+                        this.child(
+                            Button::new("metrics-export-csv")
+                                .ghost()
+                                .small()
+                                .icon(CustomIconName::Download)
+                                .tooltip(i18n_metrics(cx, "export_tooltip"))
+                                .on_click(cx.listener(|this, _, _window, cx| this.export_csv(cx))),
+                        )
+                    })
+                    .child(h_flex().gap_1().children(MetricsRange::ALL.into_iter().map(|range| {
+                        let selected = self.range == range;
+                        Button::new(range.button_id())
+                            .small()
+                            .ghost()
+                            .selected(selected)
+                            .label(i18n_metrics(cx, range.label_key()))
+                            .on_click(cx.listener(move |this, _, _window, cx| this.set_range(range, cx)))
+                    }))),
+            );
+
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(
+                div().flex_1().min_h_0().w_full().overflow_y_scrollbar().child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .p_3()
+                        .grid()
+                        .gap_2()
+                        .grid_cols(columns)
+                        .items_start()
+                        .justify_start()
+                        .child(self.render_stat_cards(columns, cx))
+                        .when(has_chart_data, |this| {
+                            this.child(self.render_cpu_usage_chart(cx))
+                                .child(self.render_memory_usage_chart(cx))
+                                .child(self.render_fragmentation_chart(cx))
+                                .child(self.render_latency_chart(cx))
+                                .child(self.render_connected_clients_chart(cx))
+                                .child(self.render_net_kbps_chart(cx))
+                                .child(self.render_total_commands_processed_chart(cx))
+                                .child(self.render_key_hit_rate_chart(cx))
+                                .child(self.render_evicted_keys_chart(cx))
+                        }),
+                ),
+            )
             .into_any_element()
     }
 }

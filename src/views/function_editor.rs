@@ -39,7 +39,7 @@ use ahash::{AHashMap, AHashSet};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use gpui::{ClipboardItem, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Editor, EditorState, Input, InputState, TabSize},
@@ -50,7 +50,7 @@ use gpui_kit::component::{
 };
 use std::sync::Arc;
 use tracing::info;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, panel_header};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -768,13 +768,8 @@ impl ZedisFunctionEditor {
         } else {
             SharedString::from(format!("({count})"))
         };
-        h_flex()
-            .items_center()
+        panel_header()
             .justify_between()
-            .px_4()
-            .h(px(40.))
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 h_flex()
                     .items_center()
@@ -792,7 +787,11 @@ impl ZedisFunctionEditor {
                             }),
                     )
                     .child(Icon::new(IconName::Asterisk))
-                    .child(Label::new(i18n_functions(cx, "title")).text_color(cx.theme().foreground))
+                    .child(
+                        Label::new(i18n_functions(cx, "title"))
+                            .font_semibold()
+                            .text_color(cx.theme().foreground),
+                    )
                     .child(Label::new(count_label).text_color(muted).text_sm()),
             )
             .child(
@@ -896,7 +895,7 @@ impl ZedisFunctionEditor {
         h_flex()
             .items_center()
             .gap_3()
-            .px_4()
+            .px_3()
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -913,7 +912,7 @@ impl ZedisFunctionEditor {
         }
         h_flex()
             .items_center()
-            .px_4()
+            .px_3()
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)

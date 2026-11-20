@@ -75,7 +75,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use tracing::info;
-use zedis_ui::{ZedisDialog, hint_banner};
+use zedis_ui::{ZedisDialog, hint_banner, panel_header};
 
 // One module per mode, and per tab of the cluster mode — the three modes
 // never render together (ADR 6), so they never needed to share a file.
@@ -481,9 +481,7 @@ impl Render for ZedisTopology {
 
         // Cluster/Sentinel headers already include refresh; stand-alone still
         // gets a refresh so the mode can flip once CLUSTER INFO arrives.
-        let header = h_flex()
-            .w_full()
-            .items_center()
+        let header = panel_header()
             .justify_between()
             .child(
                 h_flex()
@@ -501,7 +499,7 @@ impl Render for ZedisTopology {
                                 });
                             }),
                     )
-                    .child(Label::new(title).text_lg().font_semibold()),
+                    .child(Label::new(title).font_semibold()),
             )
             .when(
                 matches!(self.mode, TopologyMode::Standalone | TopologyMode::Unknown),
@@ -539,14 +537,16 @@ impl Render for ZedisTopology {
                 }))
         });
 
-        v_flex()
-            .size_full()
-            .font_family(get_mono_font_family())
-            .p_4()
-            .gap_3()
-            .child(header)
-            .children(first_visit_hint)
-            .child(body)
+        v_flex().size_full().child(header).child(
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .p_4()
+                .gap_3()
+                .children(first_visit_hint)
+                .child(body),
+        )
     }
 }
 

@@ -27,7 +27,7 @@ use gpui::{AnyElement, ClipboardItem, Context, Render, SharedString, Window, div
 #[cfg(target_family = "wasm")]
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Editor, EditorState, Input, Textarea},
@@ -37,6 +37,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use std::sync::Arc;
+use zedis_ui::panel_header;
 
 /// SHA prefix length shown in the card header.
 const SHA_PREVIEW_CHARS: usize = 12;
@@ -153,13 +154,8 @@ impl ZedisLuaScriptLibrary {
         } else {
             SharedString::from(format!("({count})"))
         };
-        h_flex()
-            .items_center()
+        panel_header()
             .justify_between()
-            .px_4()
-            .h(px(40.))
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 h_flex()
                     .items_center()
@@ -182,7 +178,11 @@ impl ZedisLuaScriptLibrary {
                         self.server_state.read(cx).blocked_by(Capability::EvalScript),
                         |this, (command, status)| this.child(unavailable_chip(cx, command, status)),
                     )
-                    .child(Label::new(i18n_lua_scripts(cx, "title")).text_color(cx.theme().foreground))
+                    .child(
+                        Label::new(i18n_lua_scripts(cx, "title"))
+                            .font_semibold()
+                            .text_color(cx.theme().foreground),
+                    )
                     .child(Label::new(count_label).text_color(muted).text_sm()),
             )
             .child(
@@ -260,7 +260,7 @@ impl ZedisLuaScriptLibrary {
         }
         h_flex()
             .items_center()
-            .px_4()
+            .px_3()
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)

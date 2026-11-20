@@ -48,7 +48,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use std::collections::BTreeSet;
-use zedis_ui::ZedisDialog;
+use zedis_ui::{ZedisDialog, panel_header};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -543,13 +543,8 @@ impl LuaDebugger {
             (i18n_lua_scripts(cx, "debug_idle"), muted)
         };
         let started = live || self.end.is_some();
-        h_flex()
-            .items_center()
+        panel_header()
             .gap_2()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 Button::new("lua-dbg-close")
                     .ghost()
