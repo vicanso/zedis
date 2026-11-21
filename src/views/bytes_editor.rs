@@ -333,16 +333,23 @@ impl ListDelegate for HexViewerListDelegate {
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let address_color = hex_address_color(cx.theme().is_dark());
+        let font_size = cx.theme().mono_font_size;
         self.items.get(ix.row).map(|(address, hex_data, ascii_data)| {
             ListItem::new(ix).py_0().px_2().child(
                 h_flex()
-                    .child(Label::new(address.clone()).text_color(address_color).mr_4())
+                    .child(
+                        Label::new(address.clone())
+                            .text_size(font_size)
+                            .text_color(address_color)
+                            .mr_4(),
+                    )
                     .child(
                         Label::new(hex_data.clone())
+                            .text_size(font_size)
                             .text_color(cx.theme().muted_foreground)
                             .mr_6(),
                     )
-                    .child(Label::new(ascii_data.clone())),
+                    .child(Label::new(ascii_data.clone()).text_size(font_size)),
             )
         })
     }
@@ -1001,7 +1008,10 @@ impl ZedisBytesEditor {
                     .hex_viewer_state
                     .get_or_insert_with(|| cx.new(|cx| ListState::new(value.clone(), window, cx)))
                     .clone();
-                List::new(&state).font_family(get_mono_font_family()).into_any_element()
+                List::new(&state)
+                    .font_family(get_mono_font_family())
+                    .text_size(cx.theme().mono_font_size)
+                    .into_any_element()
             }
             _ => {
                 if self.should_update_editor {
@@ -1088,11 +1098,25 @@ impl ZedisBytesEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::apply_editor_font_size;
     use crate::states::{KeyType, RedisValue, RedisValueData};
     use crate::test_support::init_ui;
     use gpui::{TestAppContext, size};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
+
+    fn json_value(text: &'static str) -> RedisValue {
+        RedisValue {
+            key_type: KeyType::Json,
+            data: Some(RedisValueData::Bytes(Arc::new(RedisBytesValue {
+                format: DataFormat::Text,
+                bytes: bytes::Bytes::from_static(text.as_bytes()),
+                text: Some(SharedString::from(text)),
+                ..Default::default()
+            }))),
+            ..Default::default()
+        }
+    }
 
     fn hex_value(bytes: &'static [u8]) -> RedisValue {
         RedisValue {
@@ -1214,5 +1238,40 @@ mod tests {
         // Already large enough to read, or nothing to draw.
         assert_eq!(small_image_scale(129, 10), None);
         assert_eq!(small_image_scale(0, 10), None);
+    }
+
+    #[gpui::test]
+    fn editor_font_size_scales_rendered_editor(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        server_state.update(cx, |state, cx| state.select_key("doc:1".into(), cx));
+        cx.run_until_parked();
+        server_state.update(cx, |state, _| state.show_value_for_test(json_value(r#"{"a":1}"#)));
+
+        let mut view = None;
+        let handle = cx.open_window(size(px(900.), px(600.)), |window, cx| {
+            let editor = cx.new(|cx| ZedisBytesEditor::new(server_state.clone(), window, cx));
+            view = Some(editor.clone());
+            Root::new(editor, window, cx)
+        });
+        let editor = view.expect("the window built the editor");
+        let frame = |cx: &mut TestAppContext| {
+            cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+                .expect("the window is open");
+        };
+
+        cx.update(|cx| apply_editor_font_size(cx, Some(24.0)));
+        frame(cx);
+        assert_eq!(
+            editor.read_with(cx, |editor, cx| editor.editor.read(cx).line_height()),
+            Some(px(36.0))
+        );
+
+        cx.update(|cx| apply_editor_font_size(cx, None));
+        frame(cx);
+        assert_eq!(
+            editor.read_with(cx, |editor, cx| editor.editor.read(cx).line_height()),
+            Some(px(20.0))
+        );
     }
 }

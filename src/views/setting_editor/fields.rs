@@ -17,8 +17,11 @@
 
 use super::*;
 
+use gpui::SharedString;
+
 pub(super) struct AppearanceFields {
     pub(super) font_size_state: Entity<InputState>,
+    pub(super) editor_font_size_state: Entity<InputState>,
     pub(super) locale_select: Entity<ZedisSelect>,
     pub(super) ui_font_select: Entity<ZedisSelect>,
     pub(super) mono_font_select: Entity<ZedisSelect>,
@@ -26,6 +29,59 @@ pub(super) struct AppearanceFields {
     pub(super) mono_font_values: Vec<Option<String>>,
     pub(super) ui_font: Option<String>,
     pub(super) mono_font: Option<String>,
+}
+
+struct FontSizeInputSpec {
+    initial: f32,
+    min: f32,
+    max: f32,
+    placeholder: SharedString,
+    parse: fn(&str) -> Option<f32>,
+    clamp: fn(&str, f32) -> f32,
+    fallback: fn(&App) -> f32,
+    save: fn(&mut Context<ZedisSettingEditor>, f32),
+}
+
+fn font_size_input(
+    spec: FontSizeInputSpec,
+    window: &mut Window,
+    cx: &mut Context<ZedisSettingEditor>,
+    subscriptions: &mut Vec<Subscription>,
+) -> Entity<InputState> {
+    let state = cx.new(|cx| {
+        let initial = spec.initial.clamp(spec.min, spec.max).round() as i32;
+        InputState::new(window, cx)
+            .placeholder(spec.placeholder)
+            .default_value(initial.to_string())
+            .step(1.0)
+            .min(spec.min as f64)
+            .max(spec.max as f64)
+    });
+    let parse = spec.parse;
+    let clamp = spec.clamp;
+    let fallback = spec.fallback;
+    let save = spec.save;
+    subscriptions.push(cx.subscribe_in(
+        &state,
+        window,
+        move |_view, state, event: &InputEvent, window, cx| match event {
+            InputEvent::Change => {
+                if let Some(px) = parse(state.read(cx).value().as_ref()) {
+                    save(cx, px);
+                }
+            }
+            InputEvent::Blur => {
+                let px = clamp(state.read(cx).value().as_ref(), fallback(cx));
+                let shown = (px as i32).to_string();
+                if state.read(cx).value().as_ref() != shown.as_str() {
+                    state.update(cx, |input, cx| input.set_value(shown, window, cx));
+                }
+                save(cx, px);
+            }
+            _ => {}
+        },
+    ));
+    state
 }
 
 pub(super) struct DateTimeFields {
@@ -73,44 +129,51 @@ impl ZedisSettingEditor {
     ) -> AppearanceFields {
         let store = cx.global::<ZedisGlobalStore>().read(cx);
         let font_rem = store.font_rem_px().unwrap_or(DEFAULT_UI_FONT_SIZE);
+        let editor_font_size = store.editor_font_size_px().unwrap_or(DEFAULT_EDITOR_FONT_SIZE);
         let ui_font = store.ui_font_family();
         let mono_font = store.mono_font_family();
         let locale = store.locale().to_string();
 
-        let font_size_state = cx.new(|cx| {
-            let px = font_rem.clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX).round() as i32;
-            InputState::new(window, cx)
-                .placeholder(i18n_settings(cx, "font_size_placeholder"))
-                .default_value(px.to_string())
-                .step(1.0)
-                .min(UI_FONT_SIZE_MIN as f64)
-                .max(UI_FONT_SIZE_MAX as f64)
-        });
-        subscriptions.push(cx.subscribe_in(
-            &font_size_state,
-            window,
-            |_view, state, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    if let Some(px) = parse_font_rem_px(state.read(cx).value().as_ref()) {
-                        persist_font_size(cx, px);
-                    }
-                }
-                InputEvent::Blur => {
-                    let fallback = cx
-                        .global::<ZedisGlobalStore>()
+        let font_size_state = font_size_input(
+            FontSizeInputSpec {
+                initial: font_rem,
+                min: UI_FONT_SIZE_MIN,
+                max: UI_FONT_SIZE_MAX,
+                placeholder: i18n_settings(cx, "font_size_placeholder"),
+                parse: parse_font_rem_px,
+                clamp: clamp_font_rem_px,
+                fallback: |cx| {
+                    cx.global::<ZedisGlobalStore>()
                         .read(cx)
                         .font_rem_px()
-                        .unwrap_or(DEFAULT_UI_FONT_SIZE);
-                    let px = clamp_font_rem_px(state.read(cx).value().as_ref(), fallback);
-                    let shown = (px as i32).to_string();
-                    if state.read(cx).value().as_ref() != shown.as_str() {
-                        state.update(cx, |input, cx| input.set_value(shown, window, cx));
-                    }
-                    persist_font_size(cx, px);
-                }
-                _ => {}
+                        .unwrap_or(DEFAULT_UI_FONT_SIZE)
+                },
+                save: persist_font_size,
             },
-        ));
+            window,
+            cx,
+            subscriptions,
+        );
+        let editor_font_size_state = font_size_input(
+            FontSizeInputSpec {
+                initial: editor_font_size,
+                min: EDITOR_FONT_SIZE_MIN,
+                max: EDITOR_FONT_SIZE_MAX,
+                placeholder: i18n_settings(cx, "editor_font_size_placeholder"),
+                parse: parse_editor_font_size_px,
+                clamp: clamp_editor_font_size_px,
+                fallback: |cx| {
+                    cx.global::<ZedisGlobalStore>()
+                        .read(cx)
+                        .editor_font_size_px()
+                        .unwrap_or(DEFAULT_EDITOR_FONT_SIZE)
+                },
+                save: persist_editor_font_size,
+            },
+            window,
+            cx,
+            subscriptions,
+        );
         let locale_select = cx.new(|cx| {
             ZedisSelect::new(
                 LOCALES.iter().map(|(_, label)| label.to_string()).collect(),
@@ -173,6 +236,7 @@ impl ZedisSettingEditor {
         );
         AppearanceFields {
             font_size_state,
+            editor_font_size_state,
             locale_select,
             ui_font_select,
             mono_font_select,

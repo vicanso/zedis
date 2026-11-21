@@ -28,8 +28,9 @@ use crate::views::secondary_window::{active_window_display, open_secondary_windo
 use crate::{
     connection::{DEFAULT_KEY_SCAN_COUNT, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT},
     helpers::{
-        DATE_FORMATS, DEFAULT_UI_FONT_SIZE, TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_fonts,
-        date_format_sample, set_datetime_prefs,
+        DATE_FORMATS, DEFAULT_EDITOR_FONT_SIZE, DEFAULT_UI_FONT_SIZE, EDITOR_FONT_SIZE_MAX, EDITOR_FONT_SIZE_MIN,
+        TimeZonePref, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN, apply_editor_font_size, apply_fonts, date_format_sample,
+        set_datetime_prefs,
     },
     states::{JsonView, ZedisGlobalStore, i18n_editor, i18n_settings, save_ui_locale, update_app_state_and_save},
 };
@@ -141,29 +142,50 @@ const SECTION_NAV_WIDTH: f32 = 160.;
 
 /// A typed value is applied only when it is already a whole number inside
 /// the range, so a partial `"2"` (on the way to `"20"`) is ignored.
-fn parse_font_rem_px(text: &str) -> Option<f32> {
+fn parse_clamped_px(text: &str, min: f32, max: f32) -> Option<f32> {
     let n: i32 = text.trim().parse().ok()?;
-    (UI_FONT_SIZE_MIN..=UI_FONT_SIZE_MAX)
-        .contains(&(n as f32))
-        .then_some(n as f32)
+    (min..=max).contains(&(n as f32)).then_some(n as f32)
 }
 
 /// On blur: keep an in-range whole number, round a numeric out-of-range or
 /// fractional value, otherwise restore `fallback` (the last saved size).
-fn clamp_font_rem_px(text: &str, fallback: f32) -> f32 {
-    if let Some(px) = parse_font_rem_px(text) {
+fn clamp_px(text: &str, min: f32, max: f32, fallback: f32) -> f32 {
+    if let Some(px) = parse_clamped_px(text, min, max) {
         return px;
     }
     text.trim()
         .parse::<f32>()
         .ok()
-        .map(|n| n.round().clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX))
+        .map(|n| n.round().clamp(min, max))
         .unwrap_or(fallback)
+}
+
+fn parse_font_rem_px(text: &str) -> Option<f32> {
+    parse_clamped_px(text, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX)
+}
+
+fn clamp_font_rem_px(text: &str, fallback: f32) -> f32 {
+    clamp_px(text, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX, fallback)
 }
 
 fn persist_font_size(cx: &mut Context<ZedisSettingEditor>, px: f32) {
     update_app_state_and_save(cx, "save_font_size", move |app, _| {
         app.set_font_rem_px(Some(px));
+    });
+}
+
+fn parse_editor_font_size_px(text: &str) -> Option<f32> {
+    parse_clamped_px(text, EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX)
+}
+
+fn clamp_editor_font_size_px(text: &str, fallback: f32) -> f32 {
+    clamp_px(text, EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX, fallback)
+}
+
+fn persist_editor_font_size(cx: &mut Context<ZedisSettingEditor>, px: f32) {
+    apply_editor_font_size(cx, Some(px));
+    update_app_state_and_save(cx, "save_editor_font_size", move |app, _| {
+        app.set_editor_font_size_px(Some(px));
     });
 }
 
@@ -319,6 +341,7 @@ pub struct ZedisSettingEditor {
     #[cfg(not(target_family = "wasm"))]
     update_prerelease: bool,
     font_size_state: Entity<InputState>,
+    editor_font_size_state: Entity<InputState>,
     locale_select: Entity<ZedisSelect>,
     time_zone_select: Entity<ZedisSelect>,
     date_format_select: Entity<ZedisSelect>,
@@ -377,6 +400,7 @@ impl ZedisSettingEditor {
         let mut subscriptions = Vec::new();
         let AppearanceFields {
             font_size_state,
+            editor_font_size_state,
             locale_select,
             ui_font_select,
             mono_font_select,
@@ -458,6 +482,7 @@ impl ZedisSettingEditor {
             #[cfg(not(target_family = "wasm"))]
             update_prerelease,
             font_size_state,
+            editor_font_size_state,
             locale_select,
             time_zone_select,
             date_format_select,
@@ -596,6 +621,11 @@ impl Render for ZedisSettingEditor {
                 cx,
                 "font_size",
                 NumberInput::new(&self.font_size_state),
+            ))
+            .child(Self::render_setting_row(
+                cx,
+                "editor_font_size",
+                NumberInput::new(&self.editor_font_size_state),
             ))
             .child(Self::render_setting_row(cx, "ui_font", self.ui_font_select.clone()))
             .child(Self::render_setting_row(cx, "mono_font", self.mono_font_select.clone()))
@@ -1032,7 +1062,7 @@ mod tests {
     use crate::states::ZedisAppState;
     use crate::test_support::init_ui;
     use gpui::TestAppContext;
-    use gpui_kit::component::Root;
+    use gpui_kit::component::{Root, Theme};
     use gpui_kit::test::TestWindowExt;
 
     /// The desktop saves any proxy its own HTTP can use, and clearing the
@@ -1249,6 +1279,19 @@ mod tests {
         enter(cx, handle, &view, font_size, "25");
         assert_eq!(shown(cx, &view, font_size), "20");
         assert_eq!(stored(cx, |s| s.font_rem_px()), Some(20.));
+
+        let editor_font_size: Field = |v| v.editor_font_size_state.clone();
+        enter(cx, handle, &view, editor_font_size, "18");
+        assert_eq!(shown(cx, &view, editor_font_size), "18");
+        assert_eq!(stored(cx, |s| s.editor_font_size_px()), Some(18.));
+        assert_eq!(cx.read(|cx| Theme::global(cx).mono_font_size), px(18.));
+
+        enter(cx, handle, &view, editor_font_size, "40");
+        assert_eq!(shown(cx, &view, editor_font_size), "28");
+        assert_eq!(stored(cx, |s| s.editor_font_size_px()), Some(28.));
+        assert_eq!(cx.read(|cx| Theme::global(cx).mono_font_size), px(28.));
+
+        cx.update(|cx| apply_editor_font_size(cx, None));
     }
 
     /// The depth steps by one, and every list saves what is picked in it.
@@ -1320,5 +1363,27 @@ mod tests {
         assert_eq!(clamp_font_rem_px("12.6", 16.0), 13.0);
         assert_eq!(clamp_font_rem_px("", 16.0), 16.0);
         assert_eq!(clamp_font_rem_px("abc", 16.0), 16.0);
+    }
+
+    #[test]
+    fn parse_editor_font_size_px_accepts_whole_pixels_in_range() {
+        assert_eq!(parse_editor_font_size_px("13"), Some(13.0));
+        assert_eq!(parse_editor_font_size_px(" 10 "), Some(10.0));
+        assert_eq!(parse_editor_font_size_px("28"), Some(28.0));
+        assert_eq!(parse_editor_font_size_px("9"), None);
+        assert_eq!(parse_editor_font_size_px("29"), None);
+        assert_eq!(parse_editor_font_size_px("13.5"), None);
+        assert_eq!(parse_editor_font_size_px(""), None);
+        assert_eq!(parse_editor_font_size_px("abc"), None);
+    }
+
+    #[test]
+    fn clamp_editor_font_size_px_rounds_numeric_and_falls_back() {
+        assert_eq!(clamp_editor_font_size_px("16", 13.0), 16.0);
+        assert_eq!(clamp_editor_font_size_px("40", 13.0), 28.0);
+        assert_eq!(clamp_editor_font_size_px("6", 13.0), 10.0);
+        assert_eq!(clamp_editor_font_size_px("15.6", 13.0), 16.0);
+        assert_eq!(clamp_editor_font_size_px("", 13.0), 13.0);
+        assert_eq!(clamp_editor_font_size_px("abc", 13.0), 13.0);
     }
 }

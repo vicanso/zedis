@@ -40,6 +40,14 @@ pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 pub const UI_FONT_SIZE_MIN: f32 = 12.0;
 pub const UI_FONT_SIZE_MAX: f32 = 20.0;
 
+/// Default value/code editor font size in pixels (matches gpui-component's
+/// stock `Theme::mono_font_size`).
+pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 13.0;
+
+/// Inclusive value/code editor font size range, in whole pixels.
+pub const EDITOR_FONT_SIZE_MIN: f32 = 10.0;
+pub const EDITOR_FONT_SIZE_MAX: f32 = 28.0;
+
 /// Pin [`DEFAULT_UI_FONT_SIZE`] on the global theme after theme init or switch.
 pub fn apply_default_ui_font_size(cx: &mut App) {
     Theme::global_mut(cx).font_size = px(DEFAULT_UI_FONT_SIZE);
@@ -54,6 +62,10 @@ static MONO_FONT_FAMILY: LazyLock<ArcSwap<String>> =
 /// The UI family last applied, so [`reapply_fonts`] can put it back after a
 /// theme application without a handle on the app state.
 static UI_FONT_FAMILY: LazyLock<ArcSwap<String>> = LazyLock::new(|| ArcSwap::from_pointee(DEFAULT_UI_FONT.to_string()));
+
+/// The value/code editor font size last applied, so [`reapply_fonts`] preserves
+/// it across theme changes.
+static EDITOR_FONT_SIZE: LazyLock<ArcSwap<f32>> = LazyLock::new(|| ArcSwap::from_pointee(DEFAULT_EDITOR_FONT_SIZE));
 
 pub fn get_mono_font_family() -> String {
     MONO_FONT_FAMILY.load().as_ref().clone()
@@ -100,16 +112,41 @@ pub fn reapply_fonts(cx: &mut App) {
     write_families(cx, ui, mono);
 }
 
+/// Apply the user's editor font size choice (value/code editors, JSON tree,
+/// Hex viewer, and Diff) onto `Theme::mono_font_size` and its light/dark slots.
+/// `None` resets to [`DEFAULT_EDITOR_FONT_SIZE`].
+pub fn apply_editor_font_size(cx: &mut App, size_px: Option<f32>) {
+    let size = size_px
+        .map(|s| s.round().clamp(EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX))
+        .unwrap_or(DEFAULT_EDITOR_FONT_SIZE);
+    EDITOR_FONT_SIZE.store(Arc::new(size));
+    write_editor_font_size(cx, size);
+}
+
+fn write_editor_font_size(cx: &mut App, size: f32) {
+    let theme = Theme::global_mut(cx);
+    theme.mono_font_size = px(size);
+    for slot in [&mut theme.light_theme, &mut theme.dark_theme] {
+        let mut config = (**slot).clone();
+        config.mono_font_size = Some(size);
+        *slot = Rc::new(config);
+    }
+    cx.refresh_windows();
+}
+
 fn write_families(cx: &mut App, ui: String, mono: String) {
     let ui = SharedString::from(ui);
     let mono = SharedString::from(mono);
+    let editor_size = **EDITOR_FONT_SIZE.load();
     let theme = Theme::global_mut(cx);
     theme.font_family = ui.clone();
     theme.mono_font_family = mono.clone();
+    theme.mono_font_size = px(editor_size);
     for slot in [&mut theme.light_theme, &mut theme.dark_theme] {
         let mut config = (**slot).clone();
         config.font_family = Some(ui.clone());
         config.mono_font_family = Some(mono.clone());
+        config.mono_font_size = Some(editor_size);
         *slot = Rc::new(config);
     }
     cx.refresh_windows();

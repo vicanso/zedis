@@ -26,7 +26,8 @@ use crate::error::Error;
 #[cfg(not(target_family = "wasm"))]
 use crate::helpers::set_configured_proxy;
 use crate::helpers::{
-    ConfigRecovery, DEFAULT_UI_FONT_SIZE, UpdateInfo, get_key_tree_widths, load_config_with_recovery,
+    ConfigRecovery, DEFAULT_EDITOR_FONT_SIZE, DEFAULT_UI_FONT_SIZE, EDITOR_FONT_SIZE_MAX, EDITOR_FONT_SIZE_MIN,
+    UpdateInfo, get_key_tree_widths, load_config_with_recovery,
 };
 use crate::helpers::{DEFAULT_DATE_FORMAT, TimeZonePref};
 use crate::startup::is_nightly_build;
@@ -396,6 +397,10 @@ pub struct ZedisAppState {
     /// over the legacy `font_size` enum; `None` falls back to it, then to
     /// gpui's 16px default. Additive so old configs migrate silently.
     font_rem_px: Option<f32>,
+    /// Value/code editor font size in px from Settings (`10..=28`).
+    /// `None` falls back to [`DEFAULT_EDITOR_FONT_SIZE`] (13 px).
+    #[serde(default)]
+    editor_font_size_px: Option<f32>,
     /// User-chosen UI font family (all non-mono text). Empty/None ⇒ the OS
     /// system UI font. A single family name, never a comma-separated stack.
     ui_font_family: Option<String>,
@@ -795,6 +800,15 @@ impl ZedisAppState {
         // "0 ⇒ None" reset. Epsilon compare since the control steps in whole px
         // and clippy forbids `==` on f32.
         self.font_rem_px = px.filter(|v| (*v - DEFAULT_UI_FONT_SIZE).abs() >= f32::EPSILON);
+    }
+    /// Value/code editor font size in pixels, `None` when using the default (13 px).
+    pub fn editor_font_size_px(&self) -> Option<f32> {
+        self.editor_font_size_px
+    }
+    pub fn set_editor_font_size_px(&mut self, px: Option<f32>) {
+        self.editor_font_size_px = px
+            .map(|v| v.round().clamp(EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX))
+            .filter(|v| (*v - DEFAULT_EDITOR_FONT_SIZE).abs() >= f32::EPSILON);
     }
     /// UI font family, `None` when unset or blank (falls back to system).
     pub fn ui_font_family(&self) -> Option<String> {

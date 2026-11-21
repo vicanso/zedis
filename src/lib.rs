@@ -34,8 +34,9 @@ use crate::helpers::{
     take_instance_server, take_pending_crash,
 };
 use crate::helpers::{
-    MemuAction, MultiSearchAction, PaletteAction, RecentKeysAction, ShortcutsAction, apply_fonts,
-    load_keybinding_overrides, new_hot_keys, set_datetime_prefs, take_config_recoveries, with_app_identity,
+    MemuAction, MultiSearchAction, PaletteAction, RecentKeysAction, ShortcutsAction, apply_editor_font_size,
+    apply_fonts, load_keybinding_overrides, new_hot_keys, set_datetime_prefs, take_config_recoveries,
+    with_app_identity,
 };
 use crate::states::{
     GlobalEvent, HINT_WELCOME, NotificationAction, Route, ServerView, ZedisAppState, ZedisGlobalStore,
@@ -371,11 +372,16 @@ pub fn launch(cx: &mut App, app_state: ZedisAppState) {
     // the light / dark theme slots as well as the live theme, so the theme
     // application below keeps them (a named theme puts them back itself).
     {
-        let (ui_font, mono_font) = {
+        let (ui_font, mono_font, editor_font_size) = {
             let store = app_store.read(cx);
-            (store.ui_font_family(), store.mono_font_family())
+            (
+                store.ui_font_family(),
+                store.mono_font_family(),
+                store.editor_font_size_px(),
+            )
         };
         apply_fonts(cx, ui_font.as_deref(), mono_font.as_deref());
+        apply_editor_font_size(cx, editor_font_size);
     }
     // A saved named theme wins; otherwise the Light / Dark / System mode.
     let (saved_theme_name, saved_mode) = {

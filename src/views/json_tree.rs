@@ -478,12 +478,19 @@ fn render_row(ix: usize, entry: &TreeEntry, rows: &HashMap<SharedString, Row>, c
                 Some(icon) => Icon::new(icon).xsmall().text_color(muted).into_any_element(),
                 None => div().w(px(CHEVRON_WIDTH)).flex_shrink_0().into_any_element(),
             })
-            .child(Label::new(name).text_sm().text_color(name_color).whitespace_nowrap())
-            .when(scalar, |this| this.child(Label::new(":").text_sm().text_color(muted)))
+            .child(
+                Label::new(name)
+                    .text_size(theme.mono_font_size)
+                    .text_color(name_color)
+                    .whitespace_nowrap(),
+            )
+            .when(scalar, |this| {
+                this.child(Label::new(":").text_size(theme.mono_font_size).text_color(muted))
+            })
             .when(!detail.is_empty(), |this| {
                 this.child(
                     Label::new(detail)
-                        .text_sm()
+                        .text_size(theme.mono_font_size)
                         .text_color(detail_color)
                         .text_ellipsis()
                         .whitespace_nowrap()
