@@ -605,6 +605,30 @@ impl ZedisForm {
             .unwrap_or_default()
     }
 
+    /// Offer `text`, pasted into the field `name`, to that field's
+    /// [`ZedisFormField::on_paste`] handler, and set what it answers.
+    /// `false` when there is no handler or it declined: the paste then goes
+    /// into the field as usual.
+    pub fn paste_into_field(&mut self, name: &str, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(handler) = self
+            .field_states
+            .iter()
+            .find(|(field, _)| field.name.as_ref() == name)
+            .and_then(|(field, _)| field.paste_handler.clone())
+        else {
+            return false;
+        };
+        let Some(updates) = handler(text, self, cx) else {
+            return false;
+        };
+        for (field, value) in updates {
+            self.set_field_value(field.as_ref(), value, window, cx);
+            self.errors.remove(&field);
+        }
+        cx.notify();
+        true
+    }
+
     /// Queue a field value update to be applied on the next render (when `Window` is available).
     pub fn schedule_field_update(&mut self, name: SharedString, value: SharedString) {
         self.pending_field_updates.push((name, value));
@@ -704,13 +728,28 @@ impl Render for ZedisForm {
                         ));
                     } else {
                         let mut input = Input::new(state)
+                            .id(ElementId::NamedChild(
+                                parent_id.clone(),
+                                format!("field-{}", field.name).into(),
+                            ))
                             .disabled(field_disabled)
                             .when(field.mask, |this| this.mask_toggle())
                             .refine_style(&field.style);
                         if let Some(builder) = &field.suffix_builder {
                             input = input.suffix(builder(window, cx));
                         }
-                        if let Some(companion) = field.paste_pair_with.clone() {
+                        if field.paste_handler.is_some() {
+                            let field_name = field.name.clone();
+                            let form_entity = cx.entity().clone();
+                            input = input.on_paste(move |clipboard, window, cx| {
+                                let Some(text) = clipboard.text() else {
+                                    return false;
+                                };
+                                form_entity.update(cx, |this, cx| {
+                                    this.paste_into_field(field_name.as_ref(), &text, window, cx)
+                                })
+                            });
+                        } else if let Some(companion) = field.paste_pair_with.clone() {
                             let field_name = field.name.clone();
                             let form_entity = cx.entity().clone();
                             input = input.on_paste(move |clipboard, window, cx| {

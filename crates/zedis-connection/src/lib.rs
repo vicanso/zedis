@@ -159,7 +159,7 @@ pub use config::set_servers_cache;
 pub use config::{
     DEFAULT_KEY_SCAN_COUNT, ImportError, MAX_KEY_SCAN_COUNT, MIN_KEY_SCAN_COUNT, PRODUCTION_KEY_SCAN_COUNT,
     RedisServer, SERVER_TYPE_AUTO, SERVER_TYPE_CLUSTER, SERVER_TYPE_SENTINEL, SERVER_TYPE_STANDALONE, TAG_ENV_LABELS,
-    get_server_groups, is_connection_uri, tag_color_index, writes_index,
+    form_fields_from_pasted_host, get_server_groups, is_connection_uri, tag_color_index, writes_index,
 };
 pub use config::{get_server, get_servers, save_servers};
 #[cfg(not(target_family = "wasm"))]
