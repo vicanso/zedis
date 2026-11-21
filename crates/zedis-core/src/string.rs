@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::time::Duration;
 
 /// Performs fast case-insensitive substring search with ASCII optimization.
@@ -304,6 +305,53 @@ pub fn strip_ipv6_brackets(host: &str) -> &str {
     host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
 
+/// Compare two strings in natural order: contiguous ASCII digit runs are
+/// compared numerically (ignoring leading zeros), while other bytes are
+/// compared lexicographically. Leading-zero differences (e.g. `"01"` vs `"1"`)
+/// fall back to `a.cmp(b)` so `natural_cmp` defines a strict total order.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let mut i = 0;
+    let mut j = 0;
+    while i < ab.len() && j < bb.len() {
+        if ab[i].is_ascii_digit() && bb[j].is_ascii_digit() {
+            let mut a_end = i + 1;
+            while a_end < ab.len() && ab[a_end].is_ascii_digit() {
+                a_end += 1;
+            }
+            let mut b_end = j + 1;
+            while b_end < bb.len() && bb[b_end].is_ascii_digit() {
+                b_end += 1;
+            }
+            let mut a_sig = i;
+            while a_sig < a_end && ab[a_sig] == b'0' {
+                a_sig += 1;
+            }
+            let mut b_sig = j;
+            while b_sig < b_end && bb[b_sig] == b'0' {
+                b_sig += 1;
+            }
+            let ord = (a_end - a_sig)
+                .cmp(&(b_end - b_sig))
+                .then_with(|| ab[a_sig..a_end].cmp(&bb[b_sig..b_end]));
+            if ord != Ordering::Equal {
+                return ord;
+            }
+            i = a_end;
+            j = b_end;
+        } else {
+            let ord = ab[i].cmp(&bb[j]);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (ab.len() - i).cmp(&(bb.len() - j)).then_with(|| a.cmp(b))
+}
+
 #[cfg(test)]
 mod host_port_tests {
     use super::{bracket_ipv6, format_host_port, split_host_port, split_host_port_or, strip_ipv6_brackets};
@@ -342,5 +390,79 @@ mod host_port_tests {
         assert_eq!(strip_ipv6_brackets("[::1]"), "::1");
         assert_eq!(strip_ipv6_brackets("::1"), "::1");
         assert_eq!(strip_ipv6_brackets("[::1"), "[::1");
+    }
+}
+
+#[cfg(test)]
+mod natural_cmp_tests {
+    use super::natural_cmp;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn sorts_numeric_ids_and_prefixed_keys_in_natural_order() {
+        let mut ids = [
+            "4430", "11", "1099", "443", "198", "1000", "78", "19", "4429", "200", "1100",
+        ];
+        ids.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            ids,
+            [
+                "11", "19", "78", "198", "200", "443", "1000", "1099", "1100", "4429", "4430"
+            ]
+        );
+
+        let mut prefixed = [
+            "DATA-CACHE-STAFF:10:1",
+            "DATA-CACHE-STAFF:3:1000",
+            "DATA-CACHE-STAFF:3:198",
+            "DATA-CACHE-STAFF:3:11",
+        ];
+        prefixed.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            prefixed,
+            [
+                "DATA-CACHE-STAFF:3:11",
+                "DATA-CACHE-STAFF:3:198",
+                "DATA-CACHE-STAFF:3:1000",
+                "DATA-CACHE-STAFF:10:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn handles_huge_numbers_and_non_ascii_without_overflow() {
+        let big = "99999999999999999999999999999999999999999999999991";
+        let bigger = "99999999999999999999999999999999999999999999999992";
+        assert_eq!(natural_cmp(big, bigger), Ordering::Less);
+        assert_eq!(natural_cmp("用户:2", "用户:10"), Ordering::Less);
+    }
+
+    #[test]
+    fn is_a_strict_total_order() {
+        let samples = [
+            "", "/", "0", "00", "01", "1", "001", "01a", "1a", "01b", "1b", "2", "10", ":", "a", "a0", "a00", "a0/",
+            "a0:",
+        ];
+        for (pos_x, x) in samples.iter().enumerate() {
+            assert_eq!(natural_cmp(x, x), Ordering::Equal, "{x}");
+            for (pos_y, y) in samples.iter().enumerate() {
+                let xy = natural_cmp(x, y);
+                let yx = natural_cmp(y, x);
+                assert_eq!(xy, yx.reverse(), "antisymmetry failed for ({x}, {y})");
+                if pos_x != pos_y {
+                    assert_ne!(xy, Ordering::Equal, "distinct inputs compared equal: ({x}, {y})");
+                }
+                for z in &samples {
+                    let yz = natural_cmp(y, z);
+                    let xz = natural_cmp(x, z);
+                    if xy == Ordering::Less && yz == Ordering::Less {
+                        assert_eq!(xz, Ordering::Less, "transitivity failed for ({x}, {y}, {z})");
+                    }
+                    if xy == Ordering::Greater && yz == Ordering::Greater {
+                        assert_eq!(xz, Ordering::Greater, "transitivity failed for ({x}, {y}, {z})");
+                    }
+                }
+            }
+        }
     }
 }

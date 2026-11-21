@@ -18,6 +18,7 @@
 
 use super::*;
 use regex::Regex;
+use zedis_core::string::natural_cmp;
 
 /// When a tag-colour filter is active, derive the input key list
 /// **directly from local metadata** rather than from the SCAN snapshot.
@@ -230,15 +231,15 @@ impl KeySort {
     /// Ordering for one pair of sibling rows, folders first.
     fn compare(self, a: &KeyTreeItem, b: &KeyTreeItem) -> std::cmp::Ordering {
         b.is_folder.cmp(&a.is_folder).then_with(|| match self {
-            KeySort::NameAsc => a.label.cmp(&b.label),
-            KeySort::NameDesc => b.label.cmp(&a.label),
+            KeySort::NameAsc => natural_cmp(a.label.as_ref(), b.label.as_ref()),
+            KeySort::NameDesc => natural_cmp(b.label.as_ref(), a.label.as_ref()),
             KeySort::TtlAsc => {
                 let (group_a, ttl_a) = ttl_rank(a);
                 let (group_b, ttl_b) = ttl_rank(b);
                 group_a
                     .cmp(&group_b)
                     .then(ttl_a.cmp(&ttl_b))
-                    .then_with(|| a.label.cmp(&b.label))
+                    .then_with(|| natural_cmp(a.label.as_ref(), b.label.as_ref()))
             }
             KeySort::TtlDesc => {
                 let (group_a, ttl_a) = ttl_rank(a);
@@ -246,7 +247,7 @@ impl KeySort {
                 group_a
                     .cmp(&group_b)
                     .then(ttl_b.cmp(&ttl_a))
-                    .then_with(|| a.label.cmp(&b.label))
+                    .then_with(|| natural_cmp(a.label.as_ref(), b.label.as_ref()))
             }
         })
     }
@@ -769,6 +770,88 @@ mod sort_and_flat_tests {
         let items = || vec![leaf("b", None), leaf("a", None), leaf("c", None)];
         assert_eq!(ordered(KeySort::NameAsc, items()), vec!["a", "b", "c"]);
         assert_eq!(ordered(KeySort::NameDesc, items()), vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn name_sort_uses_natural_order_in_tree_and_flat_modes() {
+        let mut keys: Vec<(SharedString, KeyType)> = [
+            "DATA-CACHE-STAFF:3:1000",
+            "DATA-CACHE-STAFF:3:1099",
+            "DATA-CACHE-STAFF:3:11",
+            "DATA-CACHE-STAFF:3:19",
+            "DATA-CACHE-STAFF:3:198",
+            "DATA-CACHE-STAFF:3:78",
+            "DATA-CACHE-STAFF:10:1",
+            "DATA-CACHE-STAFF:2:1",
+        ]
+        .into_iter()
+        .map(|k| (SharedString::from(k), KeyType::Json))
+        .collect();
+        keys.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let expanded: AHashSet<SharedString> = [
+            SharedString::from("DATA-CACHE-STAFF"),
+            SharedString::from("DATA-CACHE-STAFF:3"),
+        ]
+        .into_iter()
+        .collect();
+
+        let build = |sort: KeySort, flat: bool| {
+            let (items, _) = new_key_tree_items(KeyTreeBuildInput {
+                keys: keys.clone(),
+                keyword: KeywordMatch::All,
+                sort,
+                flat,
+                expanded_items: expanded.clone(),
+                suppressed: AHashSet::new(),
+                separator: ":",
+                max_key_tree_depth: 5,
+                key_ttls: &AHashMap::new(),
+                metadata: &std::collections::HashMap::new(),
+            });
+            items
+        };
+
+        let asc = build(KeySort::NameAsc, false);
+        let folder_labels: Vec<String> = asc
+            .iter()
+            .filter(|item| item.is_folder && item.depth == 1)
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(folder_labels, vec!["2", "3", "10"]);
+
+        let leaf_labels: Vec<String> = asc
+            .iter()
+            .filter(|item| !item.is_folder && item.depth == 2)
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(leaf_labels, vec!["11", "19", "78", "198", "1000", "1099"]);
+
+        let desc = build(KeySort::NameDesc, false);
+        let desc_leaves: Vec<String> = desc
+            .iter()
+            .filter(|item| !item.is_folder && item.depth == 2)
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(desc_leaves, vec!["1099", "1000", "198", "78", "19", "11"]);
+
+        let flat_asc: Vec<String> = build(KeySort::NameAsc, true)
+            .into_iter()
+            .map(|item| item.label.to_string())
+            .collect();
+        assert_eq!(
+            flat_asc,
+            vec![
+                "DATA-CACHE-STAFF:2:1",
+                "DATA-CACHE-STAFF:3:11",
+                "DATA-CACHE-STAFF:3:19",
+                "DATA-CACHE-STAFF:3:78",
+                "DATA-CACHE-STAFF:3:198",
+                "DATA-CACHE-STAFF:3:1000",
+                "DATA-CACHE-STAFF:3:1099",
+                "DATA-CACHE-STAFF:10:1",
+            ]
+        );
     }
 
     #[test]
