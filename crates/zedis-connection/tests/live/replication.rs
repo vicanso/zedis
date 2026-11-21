@@ -32,6 +32,12 @@ async fn wait_replication(id: &str, what: &str, ok: impl Fn(&ReplicationInfo) ->
     panic!("{what}: {last:?}");
 }
 
+fn has_online_replica(info: &ReplicationInfo, endpoint: &str) -> bool {
+    info.role == ReplicationRole::Primary
+        && !info.failover_in_progress()
+        && info.replicas.iter().any(|r| r.addr == endpoint && r.state == "online")
+}
+
 /// Standalone replication on a pair of its own: both sides of the link as
 /// `INFO replication` shows them, then the changes the Topology page makes
 /// — promote the replica, link it back, and (6.2+) hand the primary role
@@ -43,6 +49,8 @@ fn replication_pair_promotes_relinks_and_fails_over() {
     smol::block_on(async {
         let primary_addr = skip_unless!("ZEDIS_IT_REPL_PRIMARY");
         let replica_addr = skip_unless!("ZEDIS_IT_REPL_REPLICA");
+        let primary_endpoint = format!("127.0.0.1:{}", primary_addr.1);
+        let replica_endpoint = format!("127.0.0.1:{}", replica_addr.1);
         let primary = register(server("it-repl-primary", primary_addr.clone())).await;
         let replica = register(server("it-repl-replica", replica_addr.clone())).await;
         let primary_client = get_connection_manager().get_client(&primary, 0).await.expect("client");
@@ -52,14 +60,14 @@ fn replication_pair_promotes_relinks_and_fails_over() {
             i.role == ReplicationRole::Replica && i.link_up()
         })
         .await;
-        assert_eq!(info.master_addr(), format!("127.0.0.1:{}", primary_addr.1));
+        assert_eq!(info.master_addr(), primary_endpoint);
         assert!(info.replica_read_only, "a replica is read-only by default: {info:?}");
         let info = wait_replication(&primary, "the primary lists its replica online", |i| {
             i.role == ReplicationRole::Primary && i.replicas.iter().any(|r| r.state == "online")
         })
         .await;
         assert_eq!(info.connected_replicas, 1);
-        assert_eq!(info.replicas[0].addr, format!("127.0.0.1:{}", replica_addr.1));
+        assert_eq!(info.replicas[0].addr, replica_endpoint);
         assert!(!info.master_replid.is_empty());
 
         // Promote: the replica keeps its data and is a primary of its own.
@@ -74,6 +82,14 @@ fn replication_pair_promotes_relinks_and_fails_over() {
             .expect("REPLICAOF");
         wait_replication(&replica, "linked back", |i| {
             i.role == ReplicationRole::Replica && i.link_up()
+        })
+        .await;
+        // Under diskless sync the replica finishes loading the RDB and reports
+        // `master_link_status:up` before the primary reaps the RDB child and
+        // transitions the replica to `state=online`; `FAILOVER` requires the
+        // primary's view to be `online` too.
+        wait_replication(&primary, "the primary lists its replica online again", |i| {
+            has_online_replica(i, &replica_endpoint)
         })
         .await;
 
@@ -101,6 +117,10 @@ fn replication_pair_promotes_relinks_and_fails_over() {
                 i.role == ReplicationRole::Replica && i.link_up()
             })
             .await;
+            wait_replication(&replica, "the promoted primary lists the old primary online", |i| {
+                has_online_replica(i, &primary_endpoint)
+            })
+            .await;
             // And back.
             replica_client
                 .failover(Some(("127.0.0.1", primary_addr.1)), false, FAILOVER_TIMEOUT_MS)
@@ -109,6 +129,10 @@ fn replication_pair_promotes_relinks_and_fails_over() {
             wait_replication(&primary, "the primary is back", |i| i.role == ReplicationRole::Primary).await;
             wait_replication(&replica, "the replica follows again", |i| {
                 i.role == ReplicationRole::Replica && i.link_up()
+            })
+            .await;
+            wait_replication(&primary, "the restored primary lists its replica online", |i| {
+                has_online_replica(i, &replica_endpoint)
             })
             .await;
         } else {
