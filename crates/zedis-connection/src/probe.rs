@@ -282,9 +282,12 @@ async fn probe_existence(conn: &mut RedisAsyncConn, commands: &[ServerCommand], 
 }
 
 /// `ACL DRYRUN <user> <command …>`: `OK` means allowed, any other *status
-/// string* is the denial message. An error reply means DRYRUN itself is
-/// unavailable (Redis < 7, proxies, or an ACL that hides it) — leave the
-/// existence verdict alone.
+/// string* is the denial message. A `Command '…' not found` error means the
+/// specific command/subcommand does not exist on this server (for example,
+/// Valkey 9.2 has the `HOTKEYS` container in `COMMAND INFO` but not
+/// `HOTKEYS START`), so only that command is marked `Missing`. Any other error
+/// (Redis < 7 without `ACL DRYRUN`, `NOPERM`, proxies, or transport failure)
+/// leaves that command's probed verdict unchanged and continues with the rest.
 async fn probe_permissions(conn: &mut RedisAsyncConn, commands: &[ServerCommand], features: &mut ServerFeatures) {
     let user: String = match cmd("ACL").arg("WHOAMI").query_async(conn).await {
         Ok(user) => user,
@@ -312,21 +315,7 @@ async fn probe_permissions(conn: &mut RedisAsyncConn, commands: &[ServerCommand]
         async move { request.query_async::<Value>(&mut conn).await }
     }))
     .await;
-    for (command, reply) in targets.iter().zip(replies) {
-        let status = match reply {
-            Ok(Value::Okay) => CommandStatus::Available,
-            Ok(Value::SimpleString(s)) | Ok(Value::VerbatimString { text: s, .. }) if s == "OK" => {
-                CommandStatus::Available
-            }
-            Ok(Value::BulkString(bytes)) if bytes == b"OK" => CommandStatus::Available,
-            Ok(_) => CommandStatus::Denied,
-            Err(e) => {
-                debug!(error = %e, "ACL DRYRUN unavailable; mutating permissions stay as probed");
-                return;
-            }
-        };
-        features.set(*command, status);
-    }
+    apply_dryrun_replies(&targets, &replies, features);
 }
 
 /// The read-only probe for a non-mutating command.
@@ -475,6 +464,55 @@ fn dryrun_args(command: ServerCommand) -> &'static [&'static str] {
     }
 }
 
+fn apply_dryrun_replies(
+    targets: &[ServerCommand],
+    replies: &[std::result::Result<Value, RedisError>],
+    features: &mut ServerFeatures,
+) {
+    let mut logged_err = false;
+    for (command, reply) in targets.iter().zip(replies) {
+        if let Some(status) = dryrun_verdict(reply) {
+            features.set(*command, status);
+        } else if !logged_err && let Err(e) = reply {
+            debug!(error = %e, "ACL DRYRUN unavailable; remaining permissions stay as probed");
+            logged_err = true;
+        }
+    }
+}
+
+fn dryrun_verdict(reply: &std::result::Result<Value, RedisError>) -> Option<CommandStatus> {
+    match reply {
+        Ok(Value::Okay) => Some(CommandStatus::Available),
+        Ok(Value::SimpleString(s)) | Ok(Value::VerbatimString { text: s, .. }) if s == "OK" => {
+            Some(CommandStatus::Available)
+        }
+        Ok(Value::BulkString(bytes)) if bytes == b"OK" => Some(CommandStatus::Available),
+        Ok(_) => Some(CommandStatus::Denied),
+        Err(e) if transport_failed(e) => None,
+        Err(e) => dryrun_error_status(e.code(), e.detail().unwrap_or_default()),
+    }
+}
+
+/// Maps an `ACL DRYRUN` error reply to a command status when the error is about
+/// the target command itself rather than `ACL DRYRUN` being unsupported/denied.
+fn dryrun_error_status(code: Option<&str>, message: &str) -> Option<CommandStatus> {
+    if code == Some("NOPERM") {
+        return None;
+    }
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("no permissions") {
+        return None;
+    }
+    // `ACL DRYRUN user <cmd ...>` replies `ERR Command '<CMD>' not found` when
+    // `lookupCommand` rejects a missing top-level or container subcommand.
+    if (lower.contains("command '") && lower.contains("' not found"))
+        || (lower.contains("command `") && lower.contains("` not found"))
+    {
+        return Some(CommandStatus::Missing);
+    }
+    None
+}
+
 fn transport_failed(e: &RedisError) -> bool {
     e.is_io_error() || e.is_connection_dropped() || e.is_timeout() || e.is_connection_refusal()
 }
@@ -546,6 +584,111 @@ mod tests {
             status_from_reply(Some("ERR"), "This instance has cluster support disabled"),
             CommandStatus::Available
         );
+    }
+
+    #[test]
+    fn dryrun_error_classification() {
+        assert_eq!(
+            dryrun_error_status(Some("ERR"), "Command 'HOTKEYS' not found"),
+            Some(CommandStatus::Missing)
+        );
+        assert_eq!(
+            dryrun_error_status(Some("ERR"), "Command 'TS.ALTER' not found"),
+            Some(CommandStatus::Missing)
+        );
+        assert_eq!(
+            dryrun_error_status(Some("ERR"), "Command `HOTKEYS` not found"),
+            Some(CommandStatus::Missing)
+        );
+        assert_eq!(
+            dryrun_error_status(
+                Some("ERR"),
+                "Unknown subcommand or wrong number of arguments for 'DRYRUN'. Try ACL HELP."
+            ),
+            None
+        );
+        assert_eq!(
+            dryrun_error_status(
+                Some("NOPERM"),
+                "User u has no permissions to run the 'acl|dryrun' command"
+            ),
+            None
+        );
+        assert_eq!(dryrun_error_status(Some("ERR"), "User 'ghost' not found"), None);
+        assert_eq!(
+            dryrun_error_status(Some("ERR"), "wrong number of arguments for 'hsetex' command"),
+            None
+        );
+    }
+
+    #[test]
+    fn dryrun_missing_subcommand_does_not_abort_remaining_commands() {
+        let targets = [
+            ServerCommand::FlushAll,
+            ServerCommand::HotkeysStart,
+            ServerCommand::HSetEx,
+            ServerCommand::JsonSet,
+        ];
+        let missing_hotkeys = RedisError::from((
+            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+            "ERR",
+            "Command 'HOTKEYS' not found".to_string(),
+        ));
+        let replies = [
+            Ok(Value::Okay),
+            Err(missing_hotkeys),
+            Ok(Value::Okay),
+            Ok(Value::BulkString(b"OK".to_vec())),
+        ];
+        let mut features = ServerFeatures::probed_empty();
+        apply_dryrun_replies(&targets, &replies, &mut features);
+
+        assert_eq!(features.status(ServerCommand::FlushAll), CommandStatus::Available);
+        assert_eq!(features.status(ServerCommand::HotkeysStart), CommandStatus::Missing);
+        assert_eq!(features.status(ServerCommand::HSetEx), CommandStatus::Available);
+        assert_eq!(features.status(ServerCommand::JsonSet), CommandStatus::Available);
+    }
+
+    #[test]
+    fn dryrun_denial_and_unavailable_errors_preserve_semantics() {
+        let targets = [
+            ServerCommand::FlushDb,
+            ServerCommand::Bgsave,
+            ServerCommand::ConfigSet,
+            ServerCommand::ClientKill,
+            ServerCommand::BitOp,
+        ];
+        let noperm = RedisError::from((
+            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+            "NOPERM",
+            "NOPERM User u has no permissions to run the 'acl|dryrun' command".to_string(),
+        ));
+        let old_redis = RedisError::from((
+            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+            "ERR",
+            "Unknown subcommand or wrong number of arguments for 'DRYRUN'. Try ACL HELP.".to_string(),
+        ));
+        let transport = RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        let replies = [
+            Ok(Value::BulkString(
+                b"User u has no permissions to run the 'flushdb' command".to_vec(),
+            )),
+            Err(noperm),
+            Err(old_redis),
+            Err(transport),
+            Ok(Value::Okay),
+        ];
+        let mut features = ServerFeatures::probed_empty();
+        apply_dryrun_replies(&targets, &replies, &mut features);
+
+        assert_eq!(features.status(ServerCommand::FlushDb), CommandStatus::Denied);
+        assert_eq!(features.status(ServerCommand::Bgsave), CommandStatus::Unknown);
+        assert_eq!(features.status(ServerCommand::ConfigSet), CommandStatus::Unknown);
+        assert_eq!(features.status(ServerCommand::ClientKill), CommandStatus::Unknown);
+        assert_eq!(features.status(ServerCommand::BitOp), CommandStatus::Available);
     }
 
     #[test]

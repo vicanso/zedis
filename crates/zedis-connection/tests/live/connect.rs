@@ -173,6 +173,9 @@ fn standalone_feature_probe_matches_the_server() {
             ServerCommand::Bgsave,
             ServerCommand::FlushDb,
             ServerCommand::FlushAll,
+            // Universal command positioned after HOTKEYS/HSETEX in `ServerCommand::ALL`,
+            // so a mid-loop abort in `ACL DRYRUN` fails standalone lanes too.
+            ServerCommand::BitOp,
         ] {
             assert!(features.is_usable(c), "{c:?} → {:?}", features.status(c));
             if has_functions {
