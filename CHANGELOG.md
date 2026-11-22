@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.18.0](https://github.com/vicanso/zedis/compare/v0.17.0..v0.18.0) - 2026-11-22
+
+### ⛰️  Features
+
+- *(core,ui,connection,deps)* Migrate chrono/humantime to jiff, improve delete confirm keyboard UX, add KiviDB smoke lane, and bump libz-sys (fixes #270, fixes #280, fixes #281, fixes #282, fixes #283) - ([40b3d25](https://github.com/vicanso/zedis/commit/40b3d25f618d556cb232eaafe1c3c27fd2024129))
+- *(key-tree)* Sort numeric keys and folders in natural order - ([f5bf29c](https://github.com/vicanso/zedis/commit/f5bf29c63f742f03d04288d10eceaaa0d381c263))
+- *(key-tree)* Support deleting selected folders via delete_key shortcut ([#285](https://github.com/orhun/git-cliff/issues/285)) - ([60d84a6](https://github.com/vicanso/zedis/commit/60d84a6185f38b316d10a392eb380de8ddc10ce8))
+- *(key-tree)* Persist flat list display preference - ([4c75be6](https://github.com/vicanso/zedis/commit/4c75be64906799f15f27d421ecccd12d82137d68))
+- *(servers)* Fill the connection form from a pasted connection string ([#279](https://github.com/orhun/git-cliff/issues/279)) - ([65bef9b](https://github.com/vicanso/zedis/commit/65bef9b36b3218e58637d7ce24a49b49c2cfcb1b))
+- *(settings,editor)* Support configurable editor font size - ([1f704c5](https://github.com/vicanso/zedis/commit/1f704c59a24be4d088e3089431a20781fdd359e7))
+- *(ui)* Add open and copy row actions to hotkeys panel - ([d7ac993](https://github.com/vicanso/zedis/commit/d7ac993a7417a31a08e3a01b15b46d74722faead))
+- *(ui)* Add JSON editor and tree preview to value search - ([be95231](https://github.com/vicanso/zedis/commit/be95231fcddf725be80b26f857c449416f2c48ec))
+
+### 🐛 Bug Fixes
+
+- *(core)* Preserve JSON key order on local tree member deletion - ([9ef00b1](https://github.com/vicanso/zedis/commit/9ef00b143a26bbe37861293d329a2da25d047b58))
+- *(ui)* Scope sibling label a11y IDs, scale hex/JSON tree views, and tighten narrow editor toolbar - ([a3d0664](https://github.com/vicanso/zedis/commit/a3d06643718a91ebfb5bf1a1efd7daadc5616852))
+- *(ui)* Unify status bar control sizing and prevent narrow-width clipping - ([d037b64](https://github.com/vicanso/zedis/commit/d037b649851024990b37ca2e159700eb56cb6170))
+
+### 🚜 Refactor
+
+- *(ui)* Restrict monospace font overrides to data regions - ([f0fd38c](https://github.com/vicanso/zedis/commit/f0fd38cf8ce955379adae4eaea5a57ddd00ab23b))
+- *(ui)* Unify remaining panel headers with panel_header - ([0f4d4cb](https://github.com/vicanso/zedis/commit/0f4d4cb97aad14ea526545080e7ddd85222be88a))
+- *(ui)* Replace hardcoded container radii with theme tokens - ([414c153](https://github.com/vicanso/zedis/commit/414c153a09e6bc46828e28b80bfb12bb8409485c))
+- *(ui)* Resolve inspection findings across tokens, widgets, views, and locales - ([30d2d57](https://github.com/vicanso/zedis/commit/30d2d579171c6b62061961b19fae49223b265161))
+
+### 🎨 Styling
+
+- *(ui)* Refine sidebar selection states, focus rings, and rail layout - ([3574cb6](https://github.com/vicanso/zedis/commit/3574cb61ae63760fa888521ac75e99578b228071))
+
+### 🧪 Testing
+
+- *(connection)* Wait for primary to mark replica online before FAILOVER - ([c078d8a](https://github.com/vicanso/zedis/commit/c078d8a16c5c73843acbccdae9cda38c857d1fc5))
+- Replace fixed sleeps and tight retry counts with deadline-based polling - ([ba7ccbd](https://github.com/vicanso/zedis/commit/ba7ccbd4694281feb635093f09581099a02e4aa8))
+
+### ⚙️ Miscellaneous Tasks
+
+- Require CLA checkbox acceptance on pull requests - ([3a68729](https://github.com/vicanso/zedis/commit/3a687290072fddf0a1a0ac8849ca9e70392b4aec))
+
+### Build
+
+- *(deps)* Bump the minor-and-patch group across 1 directory with 4 updates ([#284](https://github.com/orhun/git-cliff/issues/284)) - ([58ecc39](https://github.com/vicanso/zedis/commit/58ecc391eed44b0782e1899292721156ebf50f57))
+- *(deps)* Bump quick-xml from 0.41.0 to 0.42.0 ([#278](https://github.com/orhun/git-cliff/issues/278)) - ([8a7d7e2](https://github.com/vicanso/zedis/commit/8a7d7e26c4a769f6910ef60e031836e7e33af485))
+
 ## [0.17.0](https://github.com/vicanso/zedis/compare/v0.16.0..v0.17.0) - 2026-11-15
 
 ### ⛰️  Features
