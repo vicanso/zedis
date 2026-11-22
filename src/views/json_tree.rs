@@ -28,7 +28,8 @@ use crate::views::{
     KeyOpPrefill, key_op_title_key, open_key_op_dialog_prefilled, open_key_op_form, run_key_op_confirmed,
 };
 use gpui::{
-    App, ClipboardItem, Entity, EventEmitter, SharedString, Subscription, WeakEntity, Window, div, prelude::*, px,
+    App, ClipboardItem, Entity, EventEmitter, SharedString, Subscription, WeakEntity, Window, prelude::*, relative,
+    rems,
 };
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable, h_flex,
@@ -45,12 +46,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 use zedis_core::json::{JsonNodeKind, JsonOpError, JsonPathOp, JsonTreeNode, apply_json_op, json_tree, value_at};
 
-/// Horizontal step per nesting level.
-const INDENT: f32 = 16.0;
-/// Left inset of every row, chevron included.
-const ROW_INSET: f32 = 8.0;
-/// Width a scalar row leaves blank where a container has its chevron.
-const CHEVRON_WIDTH: f32 = 16.0;
+/// Horizontal step per nesting level, in rems so indentation scales with UI font size.
+const INDENT_REMS: f32 = 1.0;
+/// Left inset of every row, chevron included, in rems.
+const ROW_INSET_REMS: f32 = 0.5;
+/// Relative line height so tree rows scale smoothly with `mono_font_size`
+/// (from 10px up to 28px) without vertical clipping.
+const JSON_TREE_LINE_HEIGHT: f32 = 1.4;
+const JSON_TREE_NAME_ID_PREFIX: &str = "json-tree-name";
+const JSON_TREE_COLON_ID_PREFIX: &str = "json-tree-colon";
+const JSON_TREE_DETAIL_ID_PREFIX: &str = "json-tree-detail";
+const JSON_TREE_INVALID_ID: &str = "json-tree-invalid";
 
 /// Where the tree's operations go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,9 +451,23 @@ fn local_op_error(error: &JsonOpError, path: &str, cx: &App) -> SharedString {
     format!("{path}: {reason}").into()
 }
 
+/// Whether a tree row renders `:` between its name and its detail text.
+///
+/// Every scalar shows `name : value` (root scalars included). Non-root
+/// containers also show `key : N members` / `key : N items` so the key and
+/// summary stay clearly separated at every editor font size (`13px`–`28px`),
+/// while the root container `$` skips `:` and uses a rem margin instead.
+fn row_shows_colon(kind: Option<JsonNodeKind>, is_root: bool) -> bool {
+    let Some(kind) = kind else {
+        return false;
+    };
+    !is_root || !kind.is_container()
+}
+
 fn render_row(ix: usize, entry: &TreeEntry, rows: &HashMap<SharedString, Row>, cx: &App) -> ListItem {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
+    let font_size = theme.mono_font_size;
     let row = rows.get(&entry.item().id);
     let name = row.map(|row| row.name.clone()).unwrap_or_default();
     let kind = row.and_then(|row| row.kind);
@@ -459,7 +479,7 @@ fn render_row(ix: usize, entry: &TreeEntry, rows: &HashMap<SharedString, Row>, c
         _ => muted,
     };
     let name_color = if kind.is_some() { theme.foreground } else { muted };
-    let scalar = kind.is_some_and(|kind| !kind.is_container());
+    let show_colon = row_shows_colon(kind, entry.is_root());
     let chevron = entry.is_folder().then(|| {
         if entry.is_expanded() {
             IconName::ChevronDown
@@ -472,26 +492,41 @@ fn render_row(ix: usize, entry: &TreeEntry, rows: &HashMap<SharedString, Row>, c
             .w_full()
             .gap_1()
             .items_center()
-            .pl(px(INDENT * entry.depth() as f32 + ROW_INSET))
+            .pl(rems(INDENT_REMS * entry.depth() as f32 + ROW_INSET_REMS))
             .font_family(get_mono_font_family())
-            .child(match chevron {
-                Some(icon) => Icon::new(icon).xsmall().text_color(muted).into_any_element(),
-                None => div().w(px(CHEVRON_WIDTH)).flex_shrink_0().into_any_element(),
-            })
+            .child(
+                h_flex()
+                    .w_4()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .children(chevron.map(|icon| Icon::new(icon).xsmall().text_color(muted))),
+            )
             .child(
                 Label::new(name)
-                    .text_size(theme.mono_font_size)
+                    .id((JSON_TREE_NAME_ID_PREFIX, ix))
+                    .text_size(font_size)
+                    .line_height(relative(JSON_TREE_LINE_HEIGHT))
                     .text_color(name_color)
                     .whitespace_nowrap(),
             )
-            .when(scalar, |this| {
-                this.child(Label::new(":").text_size(theme.mono_font_size).text_color(muted))
+            .when(show_colon, |this| {
+                this.child(
+                    Label::new(":")
+                        .id((JSON_TREE_COLON_ID_PREFIX, ix))
+                        .text_size(font_size)
+                        .line_height(relative(JSON_TREE_LINE_HEIGHT))
+                        .text_color(muted),
+                )
             })
             .when(!detail.is_empty(), |this| {
                 this.child(
                     Label::new(detail)
-                        .text_size(theme.mono_font_size)
+                        .id((JSON_TREE_DETAIL_ID_PREFIX, ix))
+                        .text_size(font_size)
+                        .line_height(relative(JSON_TREE_LINE_HEIGHT))
                         .text_color(detail_color)
+                        .when(!show_colon, |this| this.ml_2())
                         .text_ellipsis()
                         .whitespace_nowrap()
                         .min_w_0()
@@ -511,6 +546,7 @@ impl Render for ZedisJsonTree {
                 .p_4()
                 .child(
                     Label::new(i18n_editor(cx, "json_tree_invalid"))
+                        .id(JSON_TREE_INVALID_ID)
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
                 )
@@ -531,5 +567,111 @@ impl Render for ZedisJsonTree {
         .context_menu(move |_ix, entry, menu, _window, cx| scope.menu(entry, menu, cx))
         .size_full()
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::apply_editor_font_size;
+    use crate::test_support::init_ui;
+    use gpui::{TestAppContext, px, size};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt;
+    use serde_json::json;
+
+    #[test]
+    fn row_shows_colon_for_scalars_and_non_root_containers() {
+        assert!(!row_shows_colon(Some(JsonNodeKind::Object), true));
+        assert!(!row_shows_colon(Some(JsonNodeKind::Array), true));
+        assert!(row_shows_colon(Some(JsonNodeKind::String), true));
+        assert!(row_shows_colon(Some(JsonNodeKind::Number), true));
+        assert!(row_shows_colon(Some(JsonNodeKind::Object), false));
+        assert!(row_shows_colon(Some(JsonNodeKind::Array), false));
+        assert!(row_shows_colon(Some(JsonNodeKind::String), false));
+        assert!(row_shows_colon(Some(JsonNodeKind::Bool), false));
+        assert!(row_shows_colon(Some(JsonNodeKind::Null), false));
+        assert!(!row_shows_colon(None, false));
+    }
+
+    #[gpui::test]
+    fn collapsed_containers_separate_key_and_count_and_scale_with_font_size(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let doc = json!({
+            "alpha": 2,
+            "nested": { "z": 10, "a": 20, "m": 30 },
+            "features": ["first", "second", "third"]
+        });
+
+        let mut view = None;
+        let handle = cx.open_window(size(px(900.), px(600.)), |window, cx| {
+            let tree = cx.new(|cx| {
+                let mut tree = ZedisJsonTree::new(server_state.clone(), cx);
+                tree.set_document(Some(doc), JsonTreeTarget::Local, false, cx);
+                tree
+            });
+            view = Some(tree.clone());
+            Root::new(tree, window, cx)
+        });
+        let tree = view.expect("the window built the json tree");
+
+        let mut prev_row_height = px(0.0);
+        for font_size in [13.0, 18.0, 20.0, 28.0] {
+            cx.update(|cx| apply_editor_font_size(cx, Some(font_size)));
+            let row_height = cx
+                .update_window(handle.into(), |_, window, cx| {
+                    window.render_frame(cx);
+
+                    // Row 0: root `$` has a rem gap before its member count and no colon.
+                    let root_name = window.find((JSON_TREE_NAME_ID_PREFIX, 0usize)).bounds();
+                    let root_detail = window.find((JSON_TREE_DETAIL_ID_PREFIX, 0usize)).bounds();
+                    assert!(
+                        !window.try_find((JSON_TREE_COLON_ID_PREFIX, 0usize)).is_some(),
+                        "root container should not show a colon"
+                    );
+                    assert!(
+                        root_detail.left() - root_name.right() >= px(8.0),
+                        "root `$` and summary must have clear gap at {font_size}px"
+                    );
+
+                    // Rows 1 (scalar `alpha`), 2 (collapsed object `nested`), and
+                    // 3 (collapsed array `features`) all separate name and detail with `:`.
+                    for row_ix in [1usize, 2, 3] {
+                        let name = window.find((JSON_TREE_NAME_ID_PREFIX, row_ix)).bounds();
+                        let colon = window.find((JSON_TREE_COLON_ID_PREFIX, row_ix)).bounds();
+                        let detail = window.find((JSON_TREE_DETAIL_ID_PREFIX, row_ix)).bounds();
+                        assert!(
+                            name.right() < colon.left() && colon.right() < detail.left(),
+                            "row {row_ix} must separate name, `:`, and detail at {font_size}px"
+                        );
+                    }
+
+                    window.find((JSON_TREE_NAME_ID_PREFIX, 2usize)).bounds().size.height
+                })
+                .expect("the window is open");
+
+            assert!(
+                row_height >= px(font_size),
+                "row height ({row_height:?}) must not clip {font_size}px text"
+            );
+            assert!(
+                row_height > prev_row_height,
+                "row height must grow with font size ({row_height:?} > {prev_row_height:?} at {font_size}px)"
+            );
+            prev_row_height = row_height;
+        }
+
+        // Empty / invalid JSON state renders its dedicated label cleanly.
+        tree.update(cx, |tree, cx| {
+            tree.set_document(None, JsonTreeTarget::Local, false, cx);
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(JSON_TREE_INVALID_ID).is_some());
+        })
+        .expect("the window is open");
+
+        cx.update(|cx| apply_editor_font_size(cx, None));
     }
 }

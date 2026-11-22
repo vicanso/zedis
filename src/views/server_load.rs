@@ -717,6 +717,7 @@ impl ZedisServerLoad {
 
             list = list.child(
                 h_flex()
+                    .id(("server-load-row", row_ix))
                     .w_full()
                     .px_3()
                     .py_1()

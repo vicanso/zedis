@@ -639,13 +639,15 @@ impl Render for ZedisTerminal {
                                             let text = format!("{}: {cmd}", idx + 1);
                                             let (summary, syntax) = get_command_description(cmd).unwrap_or_default();
                                             let doc_url = command_doc_url(cmd);
-                                            let make_label = |text: SharedString| {
+                                            let make_label = |kind: &'static str, text: SharedString| {
                                                 Label::new(text)
+                                                    .id(kind)
                                                     .font_family(font_family.clone())
                                                     .text_sm()
                                                     .text_color(cx.theme().muted_foreground)
                                             };
                                             h_flex()
+                                                .id(("term-cmd-suggestion", idx))
                                                 .px_2()
                                                 .py_1()
                                                 .rounded(cx.theme().radius)
@@ -661,8 +663,8 @@ impl Render for ZedisTerminal {
                                                                 .font_family(font_family.clone())
                                                                 .text_color(cx.theme().foreground),
                                                         )
-                                                        .child(make_label(syntax.into()))
-                                                        .child(make_label(summary.into())),
+                                                        .child(make_label("syntax", syntax.into()))
+                                                        .child(make_label("summary", summary.into())),
                                                 )
                                                 .child(
                                                     // Hardcoded English like the rest of this panel.

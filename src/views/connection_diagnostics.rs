@@ -162,7 +162,7 @@ impl Render for ZedisConnectionDiagnostics {
         let yellow = cx.theme().yellow;
 
         let mut list = v_flex().w_full().gap_2();
-        for (stage, state) in &self.rows {
+        for (ix, (stage, state)) in self.rows.iter().enumerate() {
             let name = i18n_servers(cx, stage_key(*stage));
             // Fixed-width status slot so the stage labels align.
             let slot = div().w(px(18.)).flex_none().flex().justify_center();
@@ -222,7 +222,7 @@ impl Render for ZedisConnectionDiagnostics {
                 },
             };
 
-            let mut row = v_flex().w_full().gap_1().child(
+            let mut row = v_flex().id(("diag-stage", ix)).w_full().gap_1().child(
                 h_flex()
                     .w_full()
                     .gap_2()

@@ -538,6 +538,7 @@ impl ZedisValueDiff {
         let muted = theme.muted_foreground;
         let title = |mark: &'static str, color: Hsla, text: SharedString| {
             h_flex()
+                .id(SharedString::from(format!("diff-side-title-{mark}")))
                 .flex_1()
                 .min_w_0()
                 .px_3()

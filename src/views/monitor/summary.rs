@@ -291,6 +291,7 @@ impl ZedisMonitor {
                 );
             }
             v_flex()
+                .id(SharedString::from(format!("{id}-col")))
                 .flex_1()
                 .min_w(px(260.))
                 .gap_1()

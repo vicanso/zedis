@@ -363,7 +363,9 @@ impl ZedisBitmapEditor {
     }
 
     fn stat(&self, label: SharedString, value: String, muted: Hsla) -> impl IntoElement {
+        let id = SharedString::from(format!("bitmap-stat-{label}"));
         h_flex()
+            .id(id)
             .gap_1()
             .items_baseline()
             .child(Label::new(label).text_xs().text_color(muted))

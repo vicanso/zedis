@@ -533,8 +533,10 @@ impl ZedisSearchManager {
     /// reusable chip component yet.
     pub(super) fn chip(&self, text: SharedString, color: gpui::Hsla, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let bg = color.opacity(0.18);
+        let id = SharedString::from(format!("search-chip-{text}"));
         let _ = cx;
         div()
+            .id(id)
             .px_2()
             .rounded_sm()
             .bg(bg)
@@ -652,6 +654,7 @@ impl ZedisSearchManager {
             }
             elements.push(
                 h_flex()
+                    .id(SharedString::from(format!("search-param-row-{name}")))
                     .gap_2()
                     .items_center()
                     .child(
@@ -1330,13 +1333,14 @@ impl ZedisSearchManager {
                 );
             }
         }
-        for hit in &r.hits {
+        for (hit_ix, hit) in r.hits.iter().enumerate() {
             let id = hit.doc_id.clone();
             let id_for_open = SharedString::from(id.clone());
             let mut field_lines: Vec<gpui::AnyElement> = Vec::new();
-            for (k, v) in &hit.fields {
+            for (field_ix, (k, v)) in hit.fields.iter().enumerate() {
                 field_lines.push(
                     h_flex()
+                        .id(("search-hit-field", field_ix))
                         .gap_2()
                         .items_start()
                         .child(Label::new(k.clone()).text_xs().text_color(muted))
@@ -1346,6 +1350,7 @@ impl ZedisSearchManager {
             }
             rows.push(
                 v_flex()
+                    .id(("search-hit", hit_ix))
                     .gap_1()
                     .px_3()
                     .py_2()
@@ -1427,22 +1432,26 @@ fn render_highlighted_value(value: &str, mark_bg: gpui::Hsla, fg: gpui::Hsla) ->
             .into_any_element();
     }
     let mut parts: Vec<gpui::AnyElement> = Vec::new();
+    let mut part_ix = 0usize;
     let mut rest = value;
     while let Some(start) = rest.find(open) {
         let before = &rest[..start];
         if !before.is_empty() {
             parts.push(
                 Label::new(before.to_string())
+                    .id(("hl-before", part_ix))
                     .text_sm()
                     .text_color(fg)
                     .into_any_element(),
             );
+            part_ix += 1;
         }
         let after_open = &rest[start + open.len()..];
         if let Some(end) = after_open.find(close) {
             let marked = &after_open[..end];
             parts.push(
                 div()
+                    .id(("hl-mark", part_ix))
                     .px_0p5()
                     .rounded_sm()
                     .bg(mark_bg)
@@ -1454,10 +1463,12 @@ fn render_highlighted_value(value: &str, mark_bg: gpui::Hsla, fg: gpui::Hsla) ->
                     )
                     .into_any_element(),
             );
+            part_ix += 1;
             rest = &after_open[end + close.len()..];
         } else {
             parts.push(
                 Label::new(after_open.to_string())
+                    .id(("hl-tail", part_ix))
                     .text_sm()
                     .text_color(fg)
                     .into_any_element(),

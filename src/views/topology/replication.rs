@@ -61,7 +61,9 @@ impl ZedisTopology {
         let force_failover_tooltip = i18n_topology(cx, "repl_force_failover_tooltip");
 
         let chip = |text: SharedString, fg: Hsla| {
+            let id = SharedString::from(format!("repl-chip-{text}"));
             div()
+                .id(id)
                 .px_1p5()
                 .py_0p5()
                 .rounded_sm()
@@ -122,7 +124,7 @@ impl ZedisTopology {
                 );
                 // The primary's own numbers: offset, replication id, backlog,
                 // and a running failover in the warning tone.
-                let mut chips = h_flex().pl_6().pr_2().pb_1().gap_1().flex_wrap();
+                let mut chips = h_flex().id("topo-repl-chips").pl_6().pr_2().pb_1().gap_1().flex_wrap();
                 chips = chips.child(chip(
                     rust_i18n::t!(
                         "topology.repl_chip_offset",
@@ -245,7 +247,7 @@ impl ZedisTopology {
                     .child(chip(i18n_topology(cx, link_key), link_color))
                     .into_any_element(),
                 );
-                let mut chips = h_flex().pl_6().pr_2().gap_1().flex_wrap();
+                let mut chips = h_flex().id("topo-repl-chips").pl_6().pr_2().gap_1().flex_wrap();
                 chips = chips.child(chip(
                     rust_i18n::t!(
                         "topology.repl_chip_offset",

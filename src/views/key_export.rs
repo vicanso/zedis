@@ -868,11 +868,12 @@ fn sample_block(sample_lines: Vec<SharedString>, cx: &App) -> AnyElement {
         .rounded(theme.radius)
         .px_2()
         .py_1()
-        .children(
-            sample_lines
-                .into_iter()
-                .map(|k| Label::new(k).text_xs().text_color(theme.danger_foreground)),
-        );
+        .children(sample_lines.into_iter().enumerate().map(|(ix, k)| {
+            Label::new(k)
+                .id(("export-sample", ix))
+                .text_xs()
+                .text_color(theme.danger_foreground)
+        }));
     if long {
         block.h(px(100.)).overflow_y_scrollbar().into_any_element()
     } else {

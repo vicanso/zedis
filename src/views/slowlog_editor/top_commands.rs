@@ -493,7 +493,8 @@ impl ZedisSlowlogEditor {
         let view_label = i18n_slowlog_editor(cx, "agg_view_rows");
         let body_rows: Vec<gpui::AnyElement> = rows
             .iter()
-            .map(|agg| {
+            .enumerate()
+            .map(|(ix, agg)| {
                 let avg = agg.total / agg.count.max(1) as u64;
                 // Severity is a latency notion; a byte count has none.
                 let max_label = Label::new(format_amount(kind, agg.max)).text_sm();
@@ -505,6 +506,7 @@ impl ZedisSlowlogEditor {
                 let command = agg.command.clone();
                 let id_hash = djb2_hash(command.as_ref());
                 h_flex()
+                    .id(("top-cmd-row", ix))
                     .px_3()
                     .py_2()
                     .gap_4()

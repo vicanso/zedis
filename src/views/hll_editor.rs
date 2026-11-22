@@ -171,7 +171,9 @@ impl ZedisHllEditor {
     }
 
     fn stat_row(&self, label: SharedString, value: String, muted: Hsla) -> impl IntoElement {
+        let id = SharedString::from(format!("hll-stat-{label}"));
         h_flex()
+            .id(id)
             .w_full()
             .gap_4()
             .items_baseline()

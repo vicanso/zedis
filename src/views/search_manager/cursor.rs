@@ -152,11 +152,12 @@ impl ZedisSearchManager {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
 
         let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(r.rows.len());
-        for row in &r.rows {
+        for (row_ix, row) in r.rows.iter().enumerate() {
             let mut cells: Vec<gpui::AnyElement> = Vec::with_capacity(row.len());
-            for (k, v) in row {
+            for (col_ix, (k, v)) in row.iter().enumerate() {
                 cells.push(
                     h_flex()
+                        .id(("search-agg-cell", col_ix))
                         .gap_1()
                         .child(Label::new(k.clone()).text_xs().text_color(muted))
                         .child(Label::new(v.clone()).text_sm())
@@ -165,6 +166,7 @@ impl ZedisSearchManager {
             }
             rows.push(
                 h_flex()
+                    .id(("search-agg-row", row_ix))
                     .gap_4()
                     .px_3()
                     .py_2()

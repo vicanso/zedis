@@ -292,7 +292,7 @@ impl ZedisAccount {
                 .rounded(cx.theme().radius)
                 .child(Label::new(i18n_account(cx, "orphans_title")).text_sm())
                 .child(note(cx, i18n_account(cx, "orphans_intro")))
-                .children(self.admin.orphans.iter().map(|orphans| {
+                .children(self.admin.orphans.iter().enumerate().map(|(ix, orphans)| {
                     let counts: SharedString = t!(
                         "account.orphans_counts",
                         servers = orphans.owned.servers.len(),
@@ -303,6 +303,7 @@ impl ZedisAccount {
                     let owner = orphans.owner.clone();
                     let owned = orphans.owned.clone();
                     h_flex()
+                        .id(("account-orphan-row", ix))
                         .gap_3()
                         .items_center()
                         .child(Label::new(orphans.owner.clone()).text_sm())

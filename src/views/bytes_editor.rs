@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::helpers::{
-    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_mono_font_family, hex_address_color, is_json_container,
-    parse_hex_text, run_jsonpath, value_write_limit,
+    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_key_tree_widths, get_mono_font_family, hex_address_color,
+    is_json_container, parse_hex_text, run_jsonpath, value_write_limit,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::states::MAX_INLINE_VALUE_SIZE;
@@ -69,11 +69,43 @@ const PLAIN_LANGUAGE: &str = "text";
 const HIGHLIGHT_MAX_BYTES: u64 = MAX_INLINE_VALUE_SIZE;
 #[cfg(target_family = "wasm")]
 const HIGHLIGHT_MAX_BYTES: u64 = 512 * 1024;
-const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for narrow viewports
-const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium viewports
-const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide viewports
-const VIEWPORT_WIDE: f32 = 1400.0; // Pixel width to switch hex display width
-const VIEWPORT_MEDIUM: f32 = 1000.0; // Pixel width to switch hex display width
+const HEX_WIDTH_TINY: usize = 4; // Bytes per line when pane is very narrow or font is very large
+const HEX_WIDTH_COMPACT: usize = 8; // Bytes per line for compact panes or enlarged fonts
+const HEX_WIDTH_NARROW: usize = 16; // Bytes per line for standard panes (the `xxd` default)
+const HEX_WIDTH_MEDIUM: usize = 24; // Bytes per line for medium panes
+const HEX_WIDTH_WIDE: usize = 32; // Bytes per line for wide panes
+/// Candidate hex dump widths tried largest-first until one fits the pane
+/// without clipping the trailing ASCII column.
+const HEX_ROW_WIDTH_STEPS: [usize; 5] = [
+    HEX_WIDTH_WIDE,
+    HEX_WIDTH_MEDIUM,
+    HEX_WIDTH_NARROW,
+    HEX_WIDTH_COMPACT,
+    HEX_WIDTH_TINY,
+];
+/// Fallback pane width when `ZedisGlobalStore::content_width()` has not been
+/// recorded yet (initial launch before resize, web, or headless tests):
+/// matches a ~1200px window minus default sidebar (180) and key tree (330).
+const DEFAULT_HEX_PANE_WIDTH: f32 = 690.0;
+/// Conservative monospace glyph advance as a fraction of `mono_font_size`
+/// (JetBrains Mono is 0.60; Menlo/Consolas/DejaVu are ~0.60–0.62; 0.64 leaves
+/// headroom across monospace faces so the ASCII column never clips).
+const HEX_CHAR_WIDTH_RATIO: f32 = 0.64;
+/// Budgeted hex address digits (covers offsets up to 16 MiB, well past the
+/// 5 MiB inline cap).
+const HEX_ADDRESS_CHARS: usize = 6;
+/// Horizontal rem overhead per row: `ListItem` `px_2()` (1.0rem) + address
+/// `mr_4()` (1.0rem) + hex `mr_6()` (1.5rem) = 3.5rem.
+const HEX_ROW_CHROME_REMS: f32 = 3.5;
+/// Trailing vertical scrollbar + right-edge margin inside `List`.
+const HEX_SCROLLBAR_ALLOWANCE: f32 = 20.0;
+/// Relative line height matching `Editor` (~1.5x) so rows scale smoothly with
+/// `mono_font_size` and never clip or overlap vertically up to 28px.
+const HEX_ROW_LINE_HEIGHT: f32 = 1.5;
+const HEX_ADDR_ID_PREFIX: &str = "hex-addr";
+const HEX_BYTES_ID_PREFIX: &str = "hex-bytes";
+const HEX_ASCII_ID_PREFIX: &str = "hex-ascii";
+const HEX_HSCROLL_ID: &str = "hex-viewer-hscroll";
 // JSONPath result box: rows to size it to before it starts scrolling.
 const JSONPATH_RESULT_MIN_ROWS: usize = 2;
 const JSONPATH_RESULT_MAX_ROWS: usize = 13;
@@ -210,21 +242,51 @@ impl ByteEditorData {
 ///
 /// # Returns
 /// String representation (either original string or hex dump)
-/// Pick a bytes-per-row that fits the current viewport. Narrow windows
-/// wrap at 16 bytes (the `xxd` default), wider ones go up to 32 so the
-/// user doesn't waste horizontal space. Shared by hex-dump rendering
-/// and history-load injection so both use the same layout decision.
+/// Minimum pane width (in logical pixels) needed to show `bytes_per_row` hex
+/// bytes plus address and ASCII columns without clipping the trailing ASCII.
+fn hex_row_width_px(bytes_per_row: usize, mono_font_size_px: f32, ui_font_size_px: f32) -> f32 {
+    // address + (3 * n - 1) hex chars + n ASCII chars
+    let chars = (HEX_ADDRESS_CHARS + bytes_per_row * 4).saturating_sub(1) as f32;
+    let glyph_width = mono_font_size_px.max(1.0) * HEX_CHAR_WIDTH_RATIO;
+    let chrome = ui_font_size_px.max(1.0) * HEX_ROW_CHROME_REMS + HEX_SCROLLBAR_ALLOWANCE;
+    chars * glyph_width + chrome
+}
+
+/// Pick the widest power/multiple-of-4 bytes-per-row step that fits inside
+/// `pane_width_px` at `mono_font_size_px` and `ui_font_size_px`, stepping down
+/// from 32 → 24 → 16 → 8 → 4 so the ASCII column never clips.
+fn hex_bytes_per_row_for(pane_width_px: f32, mono_font_size_px: f32, ui_font_size_px: f32) -> usize {
+    HEX_ROW_WIDTH_STEPS
+        .into_iter()
+        .find(|&bytes| hex_row_width_px(bytes, mono_font_size_px, ui_font_size_px) <= pane_width_px)
+        .unwrap_or(HEX_WIDTH_TINY)
+}
+
+fn hex_bytes_per_row_for_theme(pane_width_px: f32, cx: &App) -> usize {
+    let theme = cx.theme();
+    hex_bytes_per_row_for(pane_width_px, theme.mono_font_size.as_f32(), theme.font_size.as_f32())
+}
+
+/// Live width available to the editor pane inside `window`.
+fn live_hex_pane_width(window: &Window, cx: &App) -> f32 {
+    let store = cx.global::<ZedisGlobalStore>().read(cx);
+    let (key_tree_width, _, _) = get_key_tree_widths(store.key_tree_width());
+    (window.viewport_size().width - store.sidebar_px() - key_tree_width)
+        .as_f32()
+        .max(0.0)
+}
+
+/// Pick a bytes-per-row that fits the current viewport and editor font size.
+/// Shared by hex-dump rendering and history-load injection so both use the
+/// same layout decision.
 fn hex_bytes_per_row(cx: &App) -> usize {
-    let width = cx
+    let pane_width = cx
         .global::<ZedisGlobalStore>()
         .read(cx)
         .content_width()
-        .unwrap_or_default();
-    match width {
-        w if w < px(VIEWPORT_MEDIUM) => HEX_WIDTH_NARROW,
-        w if w < px(VIEWPORT_WIDE) => HEX_WIDTH_MEDIUM,
-        _ => HEX_WIDTH_WIDE,
-    }
+        .map(|w| w.as_f32())
+        .unwrap_or(DEFAULT_HEX_PANE_WIDTH);
+    hex_bytes_per_row_for_theme(pane_width, cx)
 }
 
 /// The longest side, in pixels, an image may have and still be drawn enlarged.
@@ -245,15 +307,19 @@ fn small_image_scale(width: i32, height: i32) -> Option<i32> {
 
 /// The read-only hex dump: offset, bytes and their ASCII on each row, as
 /// many bytes a row as the pane is wide enough for.
-fn hex_dump_data(bytes: &[u8], display_offset: usize, cx: &App) -> ByteEditorData {
+fn hex_dump_data_with_width(bytes: &[u8], display_offset: usize, bytes_per_row: usize) -> ByteEditorData {
     let cfg = HexConfig {
         title: false,
-        width: hex_bytes_per_row(cx),
+        width: bytes_per_row,
         group: 0,
         display_offset,
         ..Default::default()
     };
-    ByteEditorData::Hex(HexViewerListDelegate::new(&config_hex(&bytes, cfg)))
+    ByteEditorData::Hex(HexViewerListDelegate::new(&config_hex(&bytes, cfg), bytes_per_row))
+}
+
+fn hex_dump_data(bytes: &[u8], display_offset: usize, cx: &App) -> ByteEditorData {
+    hex_dump_data_with_width(bytes, display_offset, hex_bytes_per_row(cx))
 }
 
 fn format_byte_editor_data(value: &Arc<RedisBytesValue>, display_offset: usize, cx: &App) -> ByteEditorData {
@@ -295,11 +361,12 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, display_offset: usize, 
 #[derive(Clone)]
 struct HexViewerListDelegate {
     items: Vec<(SharedString, SharedString, SharedString)>,
+    bytes_per_row: usize,
     selected_index: Option<IndexPath>,
 }
 
 impl HexViewerListDelegate {
-    fn new(data: &str) -> Self {
+    fn new(data: &str, bytes_per_row: usize) -> Self {
         let items = data
             .split("\n")
             .flat_map(|item| {
@@ -314,6 +381,7 @@ impl HexViewerListDelegate {
             .collect::<Vec<_>>();
         Self {
             items,
+            bytes_per_row,
             selected_index: None,
         }
     }
@@ -339,17 +407,32 @@ impl ListDelegate for HexViewerListDelegate {
                 h_flex()
                     .child(
                         Label::new(address.clone())
+                            .id((HEX_ADDR_ID_PREFIX, ix.row))
                             .text_size(font_size)
+                            .line_height(relative(HEX_ROW_LINE_HEIGHT))
                             .text_color(address_color)
+                            .whitespace_nowrap()
+                            .flex_shrink_0()
                             .mr_4(),
                     )
                     .child(
                         Label::new(hex_data.clone())
+                            .id((HEX_BYTES_ID_PREFIX, ix.row))
                             .text_size(font_size)
+                            .line_height(relative(HEX_ROW_LINE_HEIGHT))
                             .text_color(cx.theme().muted_foreground)
+                            .whitespace_nowrap()
+                            .flex_shrink_0()
                             .mr_6(),
                     )
-                    .child(Label::new(ascii_data.clone()).text_size(font_size)),
+                    .child(
+                        Label::new(ascii_data.clone())
+                            .id((HEX_ASCII_ID_PREFIX, ix.row))
+                            .text_size(font_size)
+                            .line_height(relative(HEX_ROW_LINE_HEIGHT))
+                            .whitespace_nowrap()
+                            .flex_shrink_0(),
+                    ),
             )
         })
     }
@@ -1003,15 +1086,46 @@ impl ZedisBytesEditor {
                     .child(img(value.clone()).size_full().object_fit(ObjectFit::ScaleDown))
                     .into_any_element()
             }
-            ByteEditorData::Hex(value) => {
+            ByteEditorData::Hex(delegate) => {
+                let pane_width = live_hex_pane_width(window, cx);
+                let bytes_per_row = hex_bytes_per_row_for_theme(pane_width, cx);
+                if delegate.bytes_per_row != bytes_per_row
+                    && let Some(value) = self.server_state.read(cx).value()
+                    && let Some(bytes_value) = value.bytes_value()
+                {
+                    let display_offset = value.preview_offset() as usize;
+                    self.data = hex_dump_data_with_width(&bytes_value.bytes, display_offset, bytes_per_row);
+                    self.hex_viewer_state = None;
+                }
+                let ByteEditorData::Hex(value) = &self.data else {
+                    return div().into_any_element();
+                };
+                let theme = cx.theme();
+                let min_row_width = hex_row_width_px(
+                    value.bytes_per_row,
+                    theme.mono_font_size.as_f32(),
+                    theme.font_size.as_f32(),
+                );
                 let state = self
                     .hex_viewer_state
                     .get_or_insert_with(|| cx.new(|cx| ListState::new(value.clone(), window, cx)))
                     .clone();
-                List::new(&state)
+                let list = List::new(&state)
                     .font_family(get_mono_font_family())
-                    .text_size(cx.theme().mono_font_size)
-                    .into_any_element()
+                    .text_size(cx.theme().mono_font_size);
+                // When even the narrowest step (`HEX_WIDTH_TINY`) exceeds the pane
+                // (e.g. key tree dragged very wide at 28px editor + 20px UI font),
+                // allow horizontal scrolling instead of clipping the ASCII column.
+                if min_row_width > pane_width && pane_width > 0.0 {
+                    v_flex()
+                        .id(HEX_HSCROLL_ID)
+                        .size_full()
+                        .overflow_x_scroll()
+                        .child(v_flex().h_full().flex_shrink_0().w(px(min_row_width)).child(list))
+                        .into_any_element()
+                } else {
+                    list.into_any_element()
+                }
             }
             _ => {
                 if self.should_update_editor {
@@ -1273,5 +1387,139 @@ mod tests {
             editor.read_with(cx, |editor, cx| editor.editor.read(cx).line_height()),
             Some(px(20.0))
         );
+    }
+
+    #[test]
+    fn hex_bytes_per_row_scales_with_viewport_and_font_size() {
+        let ui_default = 14.0;
+        let ui_large = 20.0;
+
+        // Typical pane widths after default sidebar (180px) + key tree (330px):
+        // 960px window -> 450px, 1200px -> 690px, 1440px -> 930px, 1920px -> 1410px.
+        assert_eq!(hex_bytes_per_row_for(450.0, 13.0, ui_default), 8);
+        assert_eq!(hex_bytes_per_row_for(450.0, 18.0, ui_default), 4);
+        assert_eq!(hex_bytes_per_row_for(450.0, 20.0, ui_default), 4);
+        assert_eq!(hex_bytes_per_row_for(450.0, 28.0, ui_default), 4);
+
+        assert_eq!(hex_bytes_per_row_for(690.0, 13.0, ui_default), 16);
+        assert_eq!(hex_bytes_per_row_for(690.0, 18.0, ui_default), 8);
+        assert_eq!(hex_bytes_per_row_for(690.0, 20.0, ui_default), 8);
+        assert_eq!(hex_bytes_per_row_for(690.0, 28.0, ui_default), 4);
+
+        assert_eq!(hex_bytes_per_row_for(930.0, 13.0, ui_default), 24);
+        assert_eq!(hex_bytes_per_row_for(930.0, 18.0, ui_default), 16);
+        assert_eq!(hex_bytes_per_row_for(930.0, 20.0, ui_default), 8);
+        assert_eq!(hex_bytes_per_row_for(930.0, 28.0, ui_default), 8);
+
+        assert_eq!(hex_bytes_per_row_for(1410.0, 13.0, ui_default), 32);
+        assert_eq!(hex_bytes_per_row_for(1410.0, 18.0, ui_default), 24);
+        assert_eq!(hex_bytes_per_row_for(1410.0, 20.0, ui_default), 24);
+        assert_eq!(hex_bytes_per_row_for(1410.0, 28.0, ui_default), 16);
+
+        // Invariant: for every font/pane combination wide enough for the smallest
+        // step, the chosen row width must fit inside the pane, and steps must be
+        // monotonic in both font size and pane width.
+        let panes = [450.0, 690.0, 930.0, 1410.0];
+        let mono_sizes = [13.0, 18.0, 20.0, 28.0];
+        for ui in [ui_default, ui_large] {
+            for &pane in &panes {
+                let mut prev = usize::MAX;
+                for &mono in &mono_sizes {
+                    let chosen = hex_bytes_per_row_for(pane, mono, ui);
+                    assert!(chosen <= prev, "bytes/row must not grow as font grows ({mono}px)");
+                    prev = chosen;
+                    if pane >= hex_row_width_px(HEX_WIDTH_TINY, mono, ui) {
+                        assert!(
+                            hex_row_width_px(chosen, mono, ui) <= pane,
+                            "row width for {chosen} bytes at {mono}px/{ui}px must fit in {pane}px"
+                        );
+                    }
+                }
+            }
+            for &mono in &mono_sizes {
+                let mut prev = 0;
+                for &pane in &panes {
+                    let chosen = hex_bytes_per_row_for(pane, mono, ui);
+                    assert!(chosen >= prev, "bytes/row must not shrink as pane widens ({pane}px)");
+                    prev = chosen;
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn hex_dump_reflows_and_scales_row_height_with_editor_font_size(cx: &mut TestAppContext) {
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        server_state.update(cx, |state, cx| state.select_key("hex:clip".into(), cx));
+        cx.run_until_parked();
+        server_state.update(cx, |state, _| {
+            state.show_value_for_test(hex_value(b"Updated Zedis Value 0.18! 012345"))
+        });
+
+        let mut view = None;
+        let handle = cx.open_window(size(px(1200.), px(640.)), |window, cx| {
+            let editor = cx.new(|cx| ZedisBytesEditor::new(server_state.clone(), window, cx));
+            view = Some(editor.clone());
+            Root::new(editor, window, cx)
+        });
+        let editor = view.expect("the window built the editor");
+
+        let mut prev_height = px(0.0);
+        for (font_size, expected_width, expected_rows) in [(13.0, 16, 2), (18.0, 8, 4), (20.0, 8, 4), (28.0, 4, 8)] {
+            cx.update(|cx| apply_editor_font_size(cx, Some(font_size)));
+            let ascii_bounds = cx
+                .update_window(handle.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    window.find((HEX_ASCII_ID_PREFIX, 0usize)).bounds()
+                })
+                .expect("the window is open");
+
+            editor.read_with(cx, |editor, _| match &editor.data {
+                ByteEditorData::Hex(delegate) => {
+                    assert_eq!(delegate.bytes_per_row, expected_width, "at {font_size}px");
+                    assert_eq!(delegate.items.len(), expected_rows, "at {font_size}px");
+                }
+                _ => panic!("expected hex dump mode at {font_size}px"),
+            });
+            assert!(
+                ascii_bounds.right() <= px(1200.),
+                "ASCII column right edge ({:?}) must stay inside viewport at {font_size}px",
+                ascii_bounds.right()
+            );
+            assert!(
+                ascii_bounds.size.height >= px(font_size),
+                "row height ({:?}) must not clip {font_size}px text",
+                ascii_bounds.size.height
+            );
+            assert!(
+                ascii_bounds.size.height > prev_height,
+                "row height must grow with font size ({:?} > {:?} at {font_size}px)",
+                ascii_bounds.size.height,
+                prev_height
+            );
+            prev_height = ascii_bounds.size.height;
+        }
+
+        // Extreme narrow pane (e.g. 960px window with enlarged 20px UI font or wide key tree):
+        // when even 4 bytes/row exceeds pane width, horizontal scroll container wraps the list
+        // so the ASCII column still never clips.
+        cx.update(|cx| {
+            let store = cx.global::<ZedisGlobalStore>().clone();
+            store.update(cx, |state, _| state.set_key_tree_width(px(620.0)));
+            apply_editor_font_size(cx, Some(28.0));
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let ascii = window.find((HEX_ASCII_ID_PREFIX, 0usize));
+            assert!(
+                ascii.path().contains(&HEX_HSCROLL_ID.into()),
+                "horizontal scroll wrapper should activate when 4 bytes/row exceeds pane width: {:?}",
+                ascii.path()
+            );
+        })
+        .expect("the window is open");
+
+        cx.update(|cx| apply_editor_font_size(cx, None));
     }
 }

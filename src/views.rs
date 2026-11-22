@@ -214,7 +214,7 @@ pub(crate) use zset_editor::open_zmpop_dialog;
 
 use crate::connection::{CommandStatus, ServerCommand};
 use crate::states::{ServerView, ZedisGlobalStore, ZedisServerState, i18n_features};
-use gpui::{App, Entity, IntoElement, ParentElement, SharedString, Styled};
+use gpui::{App, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, h_flex, label::Label};
 use rust_i18n::t;
 
@@ -234,6 +234,7 @@ pub fn unavailable_chip(cx: &App, command: ServerCommand, status: CommandStatus)
     .into();
     let warning = cx.theme().warning;
     h_flex()
+        .id(SharedString::from(format!("unavailable-chip-{}", command.label())))
         .items_center()
         .gap_1()
         .px_2()

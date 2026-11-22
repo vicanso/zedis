@@ -373,6 +373,7 @@ impl ZedisTimeSeriesExplorer {
         for (index, series) in self.series.iter().take(MAX_PLOTTED).enumerate() {
             legend = legend.child(
                 h_flex()
+                    .id(("ts-legend", index))
                     .items_center()
                     .gap_1()
                     .child(

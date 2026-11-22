@@ -432,7 +432,9 @@ impl ZedisVectorSetEditor {
     fn render_meta(&self, data: &VectorSetData, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let chip = |label: SharedString, value: String| {
+            let id = SharedString::from(format!("vset-meta-{label}"));
             h_flex()
+                .id(id)
                 .gap_1()
                 .items_baseline()
                 .child(Label::new(label).text_xs().text_color(muted))

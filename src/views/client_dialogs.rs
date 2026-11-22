@@ -327,8 +327,10 @@ fn gated_field(
     enabled: bool,
     muted: gpui::Hsla,
 ) -> impl IntoElement {
+    let id = SharedString::from(format!("client-field-{label}"));
     let input = Input::new(state).small().disabled(!enabled);
     v_flex()
+        .id(id)
         .gap_1()
         .child(Label::new(label).text_xs().text_color(muted))
         .child(match width {

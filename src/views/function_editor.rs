@@ -1006,6 +1006,7 @@ impl ZedisFunctionEditor {
         let name_for_copy = name.clone();
 
         v_flex()
+            .id(("fn-lib-card", id_hash))
             .border_1()
             .border_color(cx.theme().border)
             .rounded_md()
@@ -1219,6 +1220,7 @@ impl ZedisFunctionEditor {
         let fn_for_copy = fn_name.clone();
 
         v_flex()
+            .id(("fn-row", id_hash))
             .child(
                 h_flex()
                     .items_center()

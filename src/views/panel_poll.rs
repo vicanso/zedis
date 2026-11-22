@@ -100,7 +100,9 @@ pub(crate) fn summary_chip(
     value_color: Hsla,
     muted: Hsla,
 ) -> impl IntoElement {
+    let id = SharedString::from(format!("summary-chip-{label}"));
     v_flex()
+        .id(id)
         .gap_0p5()
         .child(Label::new(label).text_xs().text_color(muted))
         .child(

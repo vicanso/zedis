@@ -175,7 +175,9 @@ impl ZedisBenchmark {
         };
 
         let knob = |label: SharedString, input: &Entity<InputState>, width: f32, disabled: bool| {
+            let id = SharedString::from(format!("bench-knob-{label}"));
             h_flex()
+                .id(id)
                 .gap_1p5()
                 .items_center()
                 .child(Label::new(label).text_xs().text_color(theme.muted_foreground))
@@ -380,7 +382,9 @@ impl ZedisBenchmark {
         let s = &entry.summary;
 
         let card = |title: SharedString, value: String, sub: Option<(String, Hsla)>| {
+            let id = SharedString::from(format!("bench-card-{title}"));
             v_flex()
+                .id(id)
                 .min_w(px(145.))
                 .flex_1()
                 .p_3()
@@ -557,10 +561,11 @@ impl ZedisBenchmark {
         let hist_chart = make_bar_chart(hist_params, Arc::new(hist_values), theme.chart_1);
 
         let mut bucket_chips = h_flex().gap_2().flex_wrap();
-        for b in &s.buckets {
+        for (ix, b) in s.buckets.iter().enumerate() {
             if b.count > 0 {
                 bucket_chips = bucket_chips.child(
                     h_flex()
+                        .id(("bench-bucket", ix))
                         .gap_1()
                         .px_2()
                         .py_0p5()
@@ -648,7 +653,9 @@ impl ZedisBenchmark {
         let baseline = self.baseline_id.and_then(|id| self.runs.iter().find(|r| r.id == id));
 
         let header_cell = |label: SharedString, width: f32| {
+            let id = SharedString::from(format!("bench-col-{label}"));
             div()
+                .id(id)
                 .w(px(width))
                 .flex_none()
                 .child(Label::new(label).text_xs().text_color(muted_fg))

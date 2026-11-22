@@ -384,6 +384,7 @@ impl ZedisTopology {
             let dot = color_of(&row.node);
             list = list.child(
                 h_flex()
+                    .id(("slot-stat-row", ix))
                     .w_full()
                     .px_2()
                     .py_1()
@@ -786,7 +787,8 @@ impl ZedisTopology {
 
         let rows: Vec<gpui::AnyElement> = active
             .iter()
-            .map(|(addr, migration)| {
+            .enumerate()
+            .map(|(ix, (addr, migration))| {
                 let mut line = format!(
                     "{} · {} → {} · {}",
                     migration.slot_ranges, addr, migration.target_node, migration.state
@@ -801,7 +803,10 @@ impl ZedisTopology {
                         )
                     ));
                 }
-                Label::new(SharedString::from(line)).text_xs().into_any_element()
+                Label::new(SharedString::from(line))
+                    .id(("slot-migration", ix))
+                    .text_xs()
+                    .into_any_element()
             })
             .collect();
 

@@ -152,6 +152,7 @@ impl Render for HashSampleDialog {
                         .children(rows.into_iter().enumerate().map(|(ix, (field, value))| {
                             let copy_val = value.clone();
                             h_flex()
+                                .id(("hash-sample-row", ix))
                                 .w_full()
                                 .items_center()
                                 .gap_2()

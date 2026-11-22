@@ -28,6 +28,7 @@ impl ZedisMemoryAnalysis {
         let is_idle = self.status == AnalysisStatus::Idle;
         let stat_item = |cx: &mut gpui::Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
+                .id(SharedString::from(format!("memory-stat-{key}")))
                 .gap_1()
                 .child(
                     Label::new(i18n_memory_analysis(cx, key))
@@ -509,6 +510,7 @@ impl ZedisMemoryAnalysis {
                 let color = sev_color(reco.severity);
                 list = list.child(
                     h_flex()
+                        .id(("memory-reco", ix))
                         .w_full()
                         .gap_2()
                         .items_start()
@@ -803,10 +805,10 @@ impl ZedisMemoryAnalysis {
                 .on_click(cx.listener(|this, _, _w, cx| this.set_prefix_root(SharedString::default(), cx))),
         );
         for (ix, (segment, path)) in steps.into_iter().enumerate() {
-            bar = bar.child(Label::new("›").text_xs().text_color(muted));
+            bar = bar.child(Label::new("›").id(("memory-crumb-sep", ix)).text_xs().text_color(muted));
             if ix == last {
                 // Where we are: a label, not a button back to here.
-                bar = bar.child(Label::new(segment).text_sm());
+                bar = bar.child(Label::new(segment).id(("memory-crumb-last", ix)).text_sm());
             } else {
                 bar = bar.child(
                     Button::new(SharedString::from(format!("memory-prefix-step-{ix}")))
@@ -911,8 +913,10 @@ impl ZedisMemoryAnalysis {
         let rows: Vec<gpui::AnyElement> =
             self.type_rows
                 .iter()
-                .map(|row| {
+                .enumerate()
+                .map(|(ix, row)| {
                     h_flex()
+                        .id(("memory-type-row", ix))
                         .px_3()
                         .py_1()
                         .gap_4()
@@ -1122,6 +1126,7 @@ impl ZedisMemoryAnalysis {
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
         v_flex()
+            .id(SharedString::from(format!("memory-table-sec-{title_key}")))
             .w_full()
             .child(
                 h_flex()

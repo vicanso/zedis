@@ -38,7 +38,7 @@ use crate::{
 use gpui::PathPromptOptions;
 #[cfg(target_family = "wasm")]
 use gpui::div;
-use gpui::{AnyElement, App, Entity, FocusHandle, Subscription, Window, prelude::*, px};
+use gpui::{AnyElement, App, Entity, FocusHandle, SharedString, Subscription, Window, prelude::*, px};
 #[cfg(not(target_family = "wasm"))]
 use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, size};
 use gpui_kit::component::{
@@ -520,6 +520,7 @@ impl ZedisSettingEditor {
         let muted = cx.theme().muted_foreground;
         let desc_key = format!("{label_key}_desc");
         h_flex()
+            .id(SharedString::from(format!("setting-row-{label_key}")))
             .w_full()
             .justify_between()
             .items_center()

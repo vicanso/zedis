@@ -468,6 +468,7 @@ impl ZedisServerInfo {
 
         let stat_item = |cx: &mut Context<Self>, key: &'static str, value: SharedString| {
             h_flex()
+                .id(SharedString::from(format!("server-info-stat-{key}")))
                 .gap_1()
                 .child(
                     Label::new(i18n_server_info(cx, key))

@@ -225,9 +225,10 @@ impl ZedisProbabilisticEditor {
     fn render_info(&self, data: &ProbInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let mut rows = v_flex().w_full().gap_1();
-        for (k, v) in data.info.iter() {
+        for (ix, (k, v)) in data.info.iter().enumerate() {
             rows = rows.child(
                 h_flex()
+                    .id(("prob-info", ix))
                     .w_full()
                     .gap_4()
                     .items_baseline()
@@ -252,6 +253,7 @@ impl ZedisProbabilisticEditor {
         for (rank, (item, count)) in data.top_items.iter().enumerate() {
             rows = rows.child(
                 h_flex()
+                    .id(("prob-top", rank))
                     .w_full()
                     .gap_3()
                     .items_baseline()
@@ -279,9 +281,10 @@ impl ZedisProbabilisticEditor {
                 .text_sm()
                 .font_semibold(),
         );
-        for (label, value) in data.quantiles.iter() {
+        for (ix, (label, value)) in data.quantiles.iter().enumerate() {
             row = row.child(
                 h_flex()
+                    .id(("prob-quantile", ix))
                     .gap_1()
                     .items_baseline()
                     .child(Label::new(*label).text_xs().text_color(muted))

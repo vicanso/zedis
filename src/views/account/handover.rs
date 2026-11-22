@@ -120,8 +120,10 @@ impl HandoverDialog {
             );
             names = format!("{names} {more}");
         }
+        let id = SharedString::from(format!("handover-items-{heading}"));
         Some(
             v_flex()
+                .id(id)
                 .gap_0p5()
                 .child(Label::new(heading).text_sm())
                 .child(note(cx, names.into()))

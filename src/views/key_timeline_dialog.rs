@@ -862,8 +862,9 @@ impl ZedisKeyTimelineDialog {
                             .text_xs()
                             .text_color(yellow),
                     )
-                    .children(curr.snapshot_text.lines().take(40).map(|line| {
+                    .children(curr.snapshot_text.lines().take(40).enumerate().map(|(ix, line)| {
                         Label::new(format!("  {line}"))
+                            .id(("timeline-raw-line", ix))
                             .font_family(mono.clone())
                             .text_xs()
                             .text_color(muted)
@@ -874,7 +875,7 @@ impl ZedisKeyTimelineDialog {
                 v_flex()
                     .p_3()
                     .gap_0p5()
-                    .children(diff_lines.into_iter().map(|line| {
+                    .children(diff_lines.into_iter().enumerate().map(|(ix, line)| {
                         let color = match line.kind {
                             DiffLineKind::Added => green,
                             DiffLineKind::Removed => red,
@@ -882,6 +883,7 @@ impl ZedisKeyTimelineDialog {
                             DiffLineKind::Context => foreground,
                         };
                         Label::new(line.text)
+                            .id(("timeline-diff-line", ix))
                             .font_family(mono.clone())
                             .text_xs()
                             .text_color(color)

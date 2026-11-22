@@ -122,8 +122,10 @@ impl Render for ZedisAboutPage {
             );
 
         // Info lines
-        for line in &self.config.lines {
-            let label = Label::new(line.text.clone()).text_color(cx.theme().muted_foreground);
+        for (ix, line) in self.config.lines.iter().enumerate() {
+            let label = Label::new(line.text.clone())
+                .id(("about-line", ix))
+                .text_color(cx.theme().muted_foreground);
             let label = match line.size {
                 AboutTextSize::Sm => label.text_sm(),
                 AboutTextSize::Xs => label.text_xs(),
@@ -192,8 +194,9 @@ impl Render for ZedisAboutPage {
                                     .text_color(cx.theme().success),
                             ),
                     )
-                    .children(info.lines().map(|line| {
+                    .children(info.lines().enumerate().map(|(ix, line)| {
                         Label::new(line.to_string())
+                            .id(("about-sysinfo-line", ix))
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                     })),
@@ -201,5 +204,67 @@ impl Render for ZedisAboutPage {
         }
 
         page.overflow_y_scrollbar()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, ImageFormat, Role, TestAppContext, size};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+
+    #[gpui::test]
+    fn about_page_exposes_distinct_label_nodes_for_info_and_sysinfo_lines(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::component::init);
+        let config = AboutConfig {
+            name: "Zedis".into(),
+            logo: Arc::new(Image::from_bytes(ImageFormat::Png, Vec::new())),
+            lines: vec![
+                AboutLine::sm("Version 0.18.0"),
+                AboutLine::xs("Native Redis GUI"),
+                AboutLine::xs("Apache-2.0 License"),
+            ],
+            links: vec![],
+            copy_system_info_label: "Copy system info".into(),
+            copied_label: "Copied".into(),
+            system_info_collector: Some(Box::new(|_, _| "OS: macOS\nArch: aarch64\nVersion: 0.18.0".to_string())),
+        };
+        let handle = cx.open_window(size(px(640.), px(480.)), |window, cx| {
+            let view = cx.new(|_| ZedisAboutPage::new(config));
+            Root::new(view, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("sysinfo", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let labels = window.find_all_by_role(Role::Label);
+            let values: Vec<&str> = labels.iter().filter_map(|node| node.value()).collect();
+            for expected in [
+                "Zedis",
+                "Version 0.18.0",
+                "Native Redis GUI",
+                "Apache-2.0 License",
+                "Copied",
+                "OS: macOS",
+                "Arch: aarch64",
+                "Version: 0.18.0",
+            ] {
+                assert!(
+                    values.contains(&expected),
+                    "missing label {expected:?} in observed Role::Label nodes: {values:?}"
+                );
+            }
+            assert_eq!(
+                labels.len(),
+                8,
+                "every About line and system-info line must register a distinct node: {values:?}"
+            );
+        })
+        .expect("the window is open");
     }
 }

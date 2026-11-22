@@ -460,6 +460,7 @@ impl ZedisWorkbench {
                 let input = tab.param_inputs.get(name)?;
                 Some(
                     h_flex()
+                        .id(SharedString::from(format!("workbench-param-{name}")))
                         .gap_1()
                         .items_center()
                         .child(

@@ -392,7 +392,8 @@ impl ZedisTopology {
             let rows: Vec<gpui::AnyElement> = self
                 .rebalance_plan
                 .iter()
-                .map(|step| {
+                .enumerate()
+                .map(|(ix, step)| {
                     let line = rust_i18n::t!(
                         "topology.rebalance_row",
                         source = short_node_id(&step.source_id),
@@ -402,6 +403,7 @@ impl ZedisTopology {
                     )
                     .to_string();
                     Label::new(SharedString::from(line))
+                        .id(("rebalance-step", ix))
                         .text_xs()
                         .font_family(get_mono_font_family())
                         .into_any_element()

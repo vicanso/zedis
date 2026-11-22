@@ -1130,6 +1130,58 @@ mod tests {
         assert!(!offers_new_key(cx, true), "a read-only one is not");
     }
 
+    /// Every shortcut chip, shortcut description, and tree tip on the no-key
+    /// screen must register a distinct `Role::Label` node — duplicate global
+    /// element IDs panic GPUI debug builds when OS Accessibility is active and
+    /// drop the duplicate labels in release builds.
+    #[gpui::test]
+    fn the_no_key_screen_exposes_unique_label_nodes_for_all_hints_and_tips(cx: &mut TestAppContext) {
+        use crate::helpers::hot_key_label;
+        use crate::states::i18n_shortcuts;
+        use gpui::Role;
+        use gpui_kit::test::TestQueryExt;
+
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        let handle = cx.open_window(size(px(900.), px(640.)), |window, cx| {
+            let view = cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx));
+            Root::new(view, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let labels = window.find_all_by_role(Role::Label);
+            let values: Vec<&str> = labels.iter().filter_map(|node| node.value()).collect();
+            let expected_hints: Vec<String> = FIND_HINTS
+                .iter()
+                .chain(&ACT_HINTS)
+                .filter_map(|id| hot_key_label(id))
+                .collect();
+            for chord in &expected_hints {
+                assert!(
+                    values.contains(&chord.as_str()),
+                    "missing shortcut chip {chord:?} in Role::Label nodes: {values:?}"
+                );
+            }
+            for id in FIND_HINTS.iter().chain(&ACT_HINTS) {
+                if hot_key_label(id).is_some() {
+                    let desc = i18n_shortcuts(cx, id);
+                    assert!(
+                        values.contains(&desc.as_ref()),
+                        "missing shortcut description {desc:?} in Role::Label nodes: {values:?}"
+                    );
+                }
+            }
+            // Title + hint + Shortcuts heading + 2 * expected_hints + Tips heading + 4 tips
+            let min_expected = 4 + expected_hints.len() * 2 + 4;
+            assert!(
+                labels.len() >= min_expected,
+                "expected at least {min_expected} distinct Role::Label nodes, got {}: {values:?}",
+                labels.len()
+            );
+        })
+        .expect("the window is open");
+    }
+
     /// A viewer chosen on the status bar decides between the bitmap grid
     /// and the bytes: Plain and Hex leave the grid, Auto gives the choice
     /// back to the heuristic (#224).

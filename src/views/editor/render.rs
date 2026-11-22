@@ -864,6 +864,7 @@ impl ZedisEditor {
                 };
                 column = column.child(
                     h_flex()
+                        .id(SharedString::from(format!("empty-guide-hint-{id}")))
                         .items_center()
                         .gap_2()
                         .child(kbd_chip(shortcut))
@@ -873,8 +874,9 @@ impl ZedisEditor {
             column
         };
 
-        let tip_row = |icon: Icon, text: SharedString| {
+        let tip_row = |id: &'static str, icon: Icon, text: SharedString| {
             h_flex()
+                .id(SharedString::from(format!("empty-guide-tip-{id}")))
                 .items_start()
                 .gap_2()
                 .child(
@@ -979,12 +981,14 @@ impl ZedisEditor {
                             .text_color(muted),
                     )
                     .child(tip_row(
+                        "select",
                         Icon::new(IconName::FolderOpen),
                         i18n_editor(cx, "tree_tip_select"),
                     ))
                     // The two tips that mention export have a wording without
                     // it for the build that has none (`has_file_dialogs`).
                     .child(tip_row(
+                        "context",
                         Icon::new(IconName::Menu),
                         i18n_editor(
                             cx,
@@ -996,10 +1000,12 @@ impl ZedisEditor {
                         ),
                     ))
                     .child(tip_row(
+                        "filters",
                         Icon::new(IconName::Settings2),
                         i18n_editor(cx, "tree_tip_filters"),
                     ))
                     .child(tip_row(
+                        "multi",
                         Icon::new(CustomIconName::SquareCheck),
                         i18n_editor(
                             cx,

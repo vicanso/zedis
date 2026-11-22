@@ -192,7 +192,9 @@ impl ZedisStreamEditor {
     }
 
     fn render_metric(&self, label: SharedString, value: SharedString, muted: gpui::Hsla) -> impl gpui::IntoElement {
+        let id = SharedString::from(format!("stream-metric-{label}"));
         v_flex()
+            .id(id)
             .gap_0p5()
             .child(Label::new(label).text_xs().text_color(muted))
             .child(Label::new(value).text_sm())
@@ -399,6 +401,7 @@ impl ZedisStreamEditor {
             let ack_group = g.name.clone();
             result = result.child(
                 h_flex()
+                    .id(("stream-group-row", idx))
                     .w_full()
                     .items_center()
                     .gap_2()
@@ -728,6 +731,7 @@ impl ZedisStreamEditor {
                 let claim_consumers = group_consumers.clone();
                 list = list.child(
                     h_flex()
+                        .id(("stream-pending-row", row_ix))
                         .w_full()
                         .items_center()
                         .gap_2()

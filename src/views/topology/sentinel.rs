@@ -77,7 +77,9 @@ impl ZedisTopology {
         // A small rounded tag in the secondary tone; the down flags in the
         // danger tone so a failing master reads at a glance.
         let chip = |text: SharedString, fg: Hsla| {
+            let id = SharedString::from(format!("sentinel-chip-{text}"));
             div()
+                .id(id)
                 .px_1p5()
                 .py_0p5()
                 .rounded_sm()
@@ -171,7 +173,13 @@ impl ZedisTopology {
             // What the sentinels say about this master: its flags when not a
             // plain `master`, then quorum, sentinel count and the timings.
             if let Some(info) = info {
-                let mut chips = h_flex().pl_6().pr_2().pb_1().gap_1().flex_wrap();
+                let mut chips = h_flex()
+                    .id(SharedString::from(format!("topo-snt-chips-{m_name}")))
+                    .pl_6()
+                    .pr_2()
+                    .pb_1()
+                    .gap_1()
+                    .flex_wrap();
                 if info.flags != "master" {
                     let fg = if info.is_down() { danger } else { chip_fg };
                     chips = chips.child(chip(info.flags.clone().into(), fg));

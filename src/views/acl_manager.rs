@@ -1012,8 +1012,13 @@ impl ZedisAclManager {
             // what you read here is what you can paste into the editor.
             .when(!user.selectors.is_empty(), |this| {
                 let mut groups = v_flex().gap_0p5().flex_1().min_w_0();
-                for selector in &user.selectors {
-                    groups = groups.child(Label::new(selector.to_rule_token()).text_xs().whitespace_normal());
+                for (sel_ix, selector) in user.selectors.iter().enumerate() {
+                    groups = groups.child(
+                        Label::new(selector.to_rule_token())
+                            .id(("acl-selector", sel_ix))
+                            .text_xs()
+                            .whitespace_normal(),
+                    );
                 }
                 this.child(
                     h_flex()

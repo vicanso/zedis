@@ -150,7 +150,7 @@ impl Render for SetIsmemberDialog {
                             .border_1()
                             .border_color(border)
                             .overflow_y_scrollbar()
-                            .children(rows.into_iter().map(|(member, present)| {
+                            .children(rows.into_iter().enumerate().map(|(ix, (member, present))| {
                                 let fg = if present { success } else { muted };
                                 let status = if present {
                                     present_label.clone()
@@ -159,6 +159,7 @@ impl Render for SetIsmemberDialog {
                                 };
                                 let icon = if present { IconName::Check } else { IconName::Close };
                                 h_flex()
+                                    .id(("set-ismember-row", ix))
                                     .w_full()
                                     .items_center()
                                     .justify_between()

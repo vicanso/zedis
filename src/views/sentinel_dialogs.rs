@@ -248,8 +248,10 @@ impl Render for ZedisSentinelSetDialog {
 
 /// A labelled input: the label above the box, in the muted tone.
 fn field(label: SharedString, state: &Entity<InputState>, width: Option<f32>, muted: gpui::Hsla) -> impl IntoElement {
+    let id = SharedString::from(format!("sentinel-field-{label}"));
     let input = Input::new(state).small();
     v_flex()
+        .id(id)
         .gap_1()
         .child(Label::new(label).text_xs().text_color(muted))
         .child(match width {

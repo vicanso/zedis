@@ -207,6 +207,7 @@ impl ZedisWorkbench {
                     let row_height = state_ref.line_height().unwrap_or(px(18.));
 
                     v_flex()
+                        .id(("workbench-result", ix))
                         .w_full()
                         .p_2()
                         .gap_1()

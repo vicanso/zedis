@@ -100,8 +100,10 @@ pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut
                 .child(
                     // A definite height, not `max_h`: `Scrollable` + `max_h`
                     // clips instead of scrolling (see CLAUDE.md).
-                    v_flex().h(px(320.)).overflow_y_scrollbar().children(rows.iter().map(
-                        |(command, reason, status)| {
+                    v_flex()
+                        .h(px(320.))
+                        .overflow_y_scrollbar()
+                        .children(rows.iter().enumerate().map(|(ix, (command, reason, status))| {
                             let slot = div().w(px(18.)).flex_none().flex().justify_center();
                             let slot = match status {
                                 CommandStatus::Available => {
@@ -116,6 +118,7 @@ pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut
                                 CommandStatus::Unknown => slot.text_color(muted).child("○"),
                             };
                             h_flex()
+                                .id(("feature-row", ix))
                                 .items_center()
                                 .gap_2()
                                 .py_0p5()
@@ -127,8 +130,7 @@ pub fn open_features_dialog(server_state: Entity<ZedisServerState>, window: &mut
                                         .w(px(170.)),
                                 )
                                 .child(Label::new(reason.clone()).text_xs().text_color(muted))
-                        },
-                    )),
+                        })),
                 )
         })
         .footer_child(move || {

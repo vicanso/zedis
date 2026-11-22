@@ -328,6 +328,7 @@ impl Render for ZedisTrashDialog {
             let remove_id = entry.id.clone();
             list = list.child(
                 h_flex()
+                    .id(("trash-row", index))
                     .w_full()
                     .gap_2()
                     .items_center()

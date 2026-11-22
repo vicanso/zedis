@@ -288,7 +288,7 @@ impl ZedisAccount {
         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
         v_flex()
             .gap_1()
-            .children(tokens.iter().map(|token| {
+            .children(tokens.iter().enumerate().map(|(ix, token)| {
                 let expires: SharedString = match token.expires_at {
                     Some(at) => t!("account.expires_on", date = when(at), locale = &locale).into(),
                     None => never.clone(),
@@ -301,6 +301,7 @@ impl ZedisAccount {
                     token.name
                 ));
                 h_flex()
+                    .id(("account-token-row", ix))
                     .gap_3()
                     .items_center()
                     .child(Label::new(token.name.clone()).text_sm())
@@ -448,7 +449,9 @@ fn refusal(cx: &App, error: &BridgeAccountError, known: &[(BridgeAccountErrorKin
 
 /// A form field: its label above it.
 fn field(cx: &App, label: SharedString, control: impl IntoElement) -> impl IntoElement {
+    let id = SharedString::from(format!("account-field-{label}"));
     v_flex()
+        .id(id)
         .gap_1()
         .child(Label::new(label).text_xs().text_color(cx.theme().muted_foreground))
         .child(control)
@@ -456,12 +459,17 @@ fn field(cx: &App, label: SharedString, control: impl IntoElement) -> impl IntoE
 
 /// A section's heading.
 fn heading(cx: &App, key: &str) -> impl IntoElement {
-    Label::new(i18n_account(cx, key)).text_sm().font_semibold()
+    Label::new(i18n_account(cx, key))
+        .id(SharedString::from(format!("account-heading-{key}")))
+        .text_sm()
+        .font_semibold()
 }
 
 /// A note in the muted colour, wrapped.
 fn note(cx: &App, text: SharedString) -> impl IntoElement {
+    let id = SharedString::from(format!("account-note-{text}"));
     Label::new(text)
+        .id(id)
         .text_xs()
         .text_color(cx.theme().muted_foreground)
         .whitespace_normal()

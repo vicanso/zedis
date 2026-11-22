@@ -411,6 +411,7 @@ impl ZedisHotkeys {
         let copy_tooltip = i18n_common(cx, "copy");
 
         let mut list = v_flex()
+            .id(SharedString::from(format!("hotkeys-list-{title_key}")))
             .flex_1()
             .min_w_0()
             .border_1()

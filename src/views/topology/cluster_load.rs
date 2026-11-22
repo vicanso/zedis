@@ -172,7 +172,9 @@ impl ZedisTopology {
             let id_for_fill = n.node_id.clone();
             let row = |label: SharedString, value: String, part: f32, flagged: bool| {
                 let tone = if flagged { warning } else { muted };
+                let id = SharedString::from(format!("load-metric-{label}"));
                 h_flex()
+                    .id(id)
                     .w_full()
                     .gap_2()
                     .items_center()

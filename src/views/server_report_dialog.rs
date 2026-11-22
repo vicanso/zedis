@@ -137,16 +137,18 @@ impl Render for ZedisServerReportDialog {
                     .text_color(muted),
             )
             .child(Label::new(heading).text_xs().text_color(muted));
-        for node in nodes {
+        for (ix, node) in nodes.iter().enumerate() {
             if per_node {
                 body = body.child(
                     Label::new(node.node.clone())
+                        .id(("report-node-name", ix))
                         .text_xs()
                         .font_family(get_mono_font_family()),
                 );
             }
             body = body.child(
                 div()
+                    .id(("report-node-body", ix))
                     .w_full()
                     .p_3()
                     .rounded(cx.theme().radius)

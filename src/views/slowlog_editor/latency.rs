@@ -554,7 +554,10 @@ impl ZedisSlowlogEditor {
             None
         };
 
-        v_flex().child(row).when_some(detail, |this, d| this.child(d))
+        v_flex()
+            .id(("latency-row", id_hash))
+            .child(row)
+            .when_some(detail, |this, d| this.child(d))
     }
 
     pub(super) fn render_latency_detail(
@@ -631,8 +634,10 @@ impl ZedisSlowlogEditor {
                 h.iter()
                     .rev()
                     .take(HISTORY_PREVIEW)
-                    .map(|s| {
+                    .enumerate()
+                    .map(|(ix, s)| {
                         h_flex()
+                            .id(("latency-sample", ix))
                             .gap_2()
                             .child(Label::new(format_unix_seconds(s.timestamp)).text_xs().text_color(muted))
                             .child(

@@ -78,6 +78,7 @@ impl RenderOnce for ZedisHintBanner {
             .child(Icon::new(IconName::Info).small().text_color(cx.theme().info))
             .child(
                 Label::new(self.text)
+                    .id(SharedString::from(format!("{}-text", self.id)))
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .flex_1(),

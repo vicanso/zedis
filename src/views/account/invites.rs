@@ -136,10 +136,11 @@ impl ZedisAccount {
         } else {
             v_flex()
                 .gap_1()
-                .children(form.invites.iter().map(|invite| {
+                .children(form.invites.iter().enumerate().map(|(ix, invite)| {
                     let id = invite.id.clone();
                     let expires = when(invite.expires_at);
                     h_flex()
+                        .id(("account-invite-row", ix))
                         .gap_3()
                         .items_center()
                         .child(Label::new(invite_kind(cx, &invite.kind)).text_sm().flex_1().min_w_0())

@@ -884,8 +884,9 @@ impl Render for ZedisMultiSearch {
                                     ),
                             )
                         })
-                        .children(self.errors.iter().map(|e| {
+                        .children(self.errors.iter().enumerate().map(|(ix, e)| {
                             div()
+                                .id(("multi-search-error", ix))
                                 .w_full()
                                 .px_2()
                                 .py_1()

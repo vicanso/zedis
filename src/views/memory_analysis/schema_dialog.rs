@@ -146,9 +146,11 @@ impl ZedisDataDictionaryDialog {
                 let chips: Vec<_> = schema
                     .fields
                     .iter()
-                    .map(|f| {
+                    .enumerate()
+                    .map(|(ix, f)| {
                         let text = format!("{}: {}", f.name, f.value_types.join("|"));
                         div()
+                            .id(("schema-field-chip", ix))
                             .px_1p5()
                             .py_0p5()
                             .rounded(cx.theme().radius)

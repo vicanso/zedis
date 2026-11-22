@@ -47,7 +47,9 @@ impl ZedisConfigEditor {
             cards.push(self.render_card(k.clone(), v.clone(), font_family, docs, cx));
         }
 
+        let group_id = SharedString::from(format!("config-group-{label}"));
         v_flex()
+            .id(group_id)
             .w_full()
             .gap_1()
             .child(

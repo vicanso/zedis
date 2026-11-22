@@ -129,6 +129,7 @@ fn scope_hint(
     radius: gpui::Pixels,
 ) -> impl IntoElement {
     gpui_kit::component::h_flex()
+        .id(gpui::SharedString::from(format!("palette-scope-{sigil}")))
         .gap_1p5()
         .items_center()
         .child(

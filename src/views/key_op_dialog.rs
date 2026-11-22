@@ -246,9 +246,10 @@ impl Render for ZedisKeyOpDialog {
                 .text_xs()
                 .text_color(muted),
         );
-        for (label, state) in &self.inputs {
+        for (ix, (label, state)) in self.inputs.iter().enumerate() {
             body = body.child(
                 v_flex()
+                    .id(("key-op-field", ix))
                     .gap_1()
                     .child(Label::new(i18n_key_ops(cx, label)).text_xs().text_color(muted))
                     // Inputs paint `size_full` and their state carries

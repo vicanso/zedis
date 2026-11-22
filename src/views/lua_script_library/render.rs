@@ -497,6 +497,7 @@ impl ZedisLuaScriptLibrary {
         });
 
         v_flex()
+            .id(("lua-script-card", card_hash))
             .border_1()
             .border_color(cx.theme().border)
             .rounded_md()

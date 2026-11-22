@@ -143,15 +143,16 @@ impl Render for ZedisShortcutsOverlay {
             .h(px(420.))
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle);
-        for group in shortcut_reference() {
-            let mut section = v_flex().w_full().gap_1().child(
+        for (g_ix, group) in shortcut_reference().into_iter().enumerate() {
+            let mut section = v_flex().id(("shortcuts-group", g_ix)).w_full().gap_1().child(
                 Label::new(i18n_shortcuts(cx, group.title_key))
                     .text_xs()
                     .text_color(muted),
             );
-            for (keystroke, desc_key) in group.items {
+            for (i_ix, (keystroke, desc_key)) in group.items.into_iter().enumerate() {
                 section = section.child(
                     h_flex()
+                        .id(("shortcuts-item", i_ix))
                         .w_full()
                         .items_center()
                         .justify_between()

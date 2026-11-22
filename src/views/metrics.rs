@@ -539,7 +539,9 @@ impl ZedisMetrics {
 
     fn render_stat_card(&self, cx: &mut Context<Self>, label: SharedString, value: String) -> impl IntoElement {
         let theme = cx.theme();
+        let id = SharedString::from(format!("metrics-stat-card-{label}"));
         v_flex()
+            .id(id)
             .flex_1()
             .border_1()
             .border_color(theme.border)

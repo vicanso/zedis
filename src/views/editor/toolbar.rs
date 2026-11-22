@@ -132,33 +132,43 @@ impl ZedisEditor {
         if !ttl.is_empty() {
             btns.push(self.ttl_control(ttl, expires_at, actions_locked, cx));
         }
-        btns.push(self.reload_button(actions_locked, cx));
-        btns.push(
-            Button::new("zedis-editor-key-timeline")
-                .ghost()
-                .disabled(actions_locked)
-                .tooltip(i18n_editor(cx, "key_timeline_tooltip"))
-                .icon(CustomIconName::Activity)
-                .on_click(cx.listener(|this, _event, window, cx| {
-                    open_key_timeline_dialog(this.server_state.clone(), window, cx);
-                }))
-                .into_any_element(),
-        );
+
+        // Trailing ghost icon cluster mirrors `copy_and_favorite`'s tight
+        // `gap_0p5` grouping so narrow windows (960px with sidebar expanded)
+        // leave room for the key name instead of spending full section gaps
+        // between adjacent icon controls.
+        let mut trailing_icons = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_0p5()
+            .child(self.reload_button(actions_locked, cx))
+            .child(
+                Button::new("zedis-editor-key-timeline")
+                    .ghost()
+                    .small()
+                    .disabled(actions_locked)
+                    .tooltip(i18n_editor(cx, "key_timeline_tooltip"))
+                    .icon(CustomIconName::Activity)
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        open_key_timeline_dialog(this.server_state.clone(), window, cx);
+                    })),
+            );
 
         // Lower-frequency actions live behind one "…" menu so the bar
         // stays compact: bitmap view, value file export / import, diff,
         // delete.
         if more.offers_anything() {
-            btns.push(
+            trailing_icons = trailing_icons.child(
                 Button::new("zedis-editor-more")
                     .ghost()
+                    .small()
                     .disabled(actions_locked)
                     .tooltip(i18n_editor(cx, "more_actions"))
                     .icon(IconName::Ellipsis)
-                    .dropdown_menu(move |menu, window, cx| more.build(menu, window, cx))
-                    .into_any_element(),
+                    .dropdown_menu(move |menu, window, cx| more.build(menu, window, cx)),
             );
         }
+        btns.push(trailing_icons.into_any_element());
 
         let server_id = server_state.server_id().to_string();
         h_flex()
@@ -167,7 +177,7 @@ impl ZedisEditor {
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
-            .gap_2()
+            .gap_1p5()
             .w_full()
             .child(self.copy_and_favorite(&key, server_id, should_show_loading, cx))
             .child(KeyTypeBadge::new(key_type).into_any_element())
@@ -284,6 +294,8 @@ impl ZedisEditor {
 
             return Some(
                 Button::new("zedis-editor-save-key")
+                    .small()
+                    .compact()
                     .disabled(self.readonly || !value_modified || actions_locked)
                     .when(value_modified, |this| this.primary())
                     .when(!value_modified, |this| this.outline())
@@ -320,7 +332,7 @@ impl ZedisEditor {
                 .w(px(TTL_INPUT_MAX_WIDTH))
                 .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
                 .child(
-                    Input::new(&self.ttl_input_state).id(TTL_INPUT_ID).suffix(
+                    Input::new(&self.ttl_input_state).small().id(TTL_INPUT_ID).suffix(
                         Button::new("zedis-editor-ttl-update-btn")
                             .ghost()
                             .xsmall()
@@ -348,6 +360,8 @@ impl ZedisEditor {
             };
             let button = Button::new("zedis-editor-ttl-btn")
                 .outline()
+                .small()
+                .compact()
                 .font_family(get_mono_font_family())
                 .disabled(self.readonly || actions_locked)
                 .tooltip(ttl_tooltip)
@@ -401,6 +415,7 @@ impl ZedisEditor {
             .button(
                 Button::new("zedis-editor-reload-now")
                     .ghost()
+                    .small()
                     .disabled(actions_locked)
                     .when(auto_refresh_interval_sec > 0, |this| {
                         this.label(format!("{}s", auto_refresh_interval_sec))
@@ -573,6 +588,7 @@ impl ZedisEditor {
                 // Copy key button
                 Button::new("zedis-editor-copy-key")
                     .ghost()
+                    .small()
                     .tooltip(i18n_editor(cx, "copy_key_tooltip"))
                     .loading(should_show_loading)
                     .icon(IconName::Copy)
@@ -584,6 +600,7 @@ impl ZedisEditor {
             .child(
                 Button::new("zedis-editor-favorite-key")
                     .ghost()
+                    .small()
                     .tooltip(favorite_tooltip)
                     .icon(favorite_icon)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -1111,6 +1128,53 @@ mod tests {
             assert!(window.try_find("zedis-editor-save-key").is_none());
             assert_eq!(window.find("zedis-editor-reload-now").disabled(), Some(true));
             assert_eq!(window.find("zedis-editor-more").disabled(), Some(true));
+        })
+        .expect("the window is open");
+    }
+
+    /// At minimum window width (960px with 180px sidebar + 330px key tree,
+    /// leaving ~450px for the editor pane), the key bar must leave visible
+    /// width for the key name rather than crushing it down to a bare ellipsis.
+    #[gpui::test]
+    fn narrow_editor_key_bar_preserves_room_for_key_name(cx: &mut gpui::TestAppContext) {
+        use crate::states::ZedisServerState;
+        use crate::test_support::init_ui;
+        use gpui::{AppContext, Role, size};
+        use gpui_kit::component::Root;
+
+        init_ui(cx);
+        let server_state = cx.new(|_| ZedisServerState::default());
+        server_state.update(cx, |state, cx| state.select_key("json:order_test".into(), cx));
+        cx.run_until_parked();
+        server_state.update(cx, |state, _| state.show_value_for_test(string_value()));
+
+        let handle = cx.open_window(size(px(450.), px(600.)), |window, cx| {
+            let view = cx.new(|cx| ZedisEditor::new(server_state.clone(), window, cx));
+            Root::new(view, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let key_labels = window.within("zedis-editor-key-name").find_all_by_role(Role::Label);
+            assert_eq!(key_labels.len(), 1);
+            assert_eq!(key_labels[0].value(), Some("json:order_test"));
+            let key_bounds = key_labels[0].bounds();
+            let fav_bounds = window.find("zedis-editor-favorite-key").bounds();
+            let save_bounds = window.find("zedis-editor-save-key").bounds();
+            let ttl_bounds = window.find("zedis-editor-ttl-btn").bounds();
+            let more_bounds = window.find("zedis-editor-more").bounds();
+            assert!(
+                key_bounds.size.width >= px(50.),
+                "expected key name width >= 50px at 450px editor pane, got {:?} (fav={:?}, save={:?}, ttl={:?}, more={:?})",
+                key_bounds.size.width,
+                fav_bounds,
+                save_bounds,
+                ttl_bounds,
+                more_bounds,
+            );
+            assert!(window.find("zedis-editor-save-key").visible());
+            assert!(window.find("zedis-editor-ttl-btn").visible());
+            assert!(window.find("zedis-editor-more").visible());
         })
         .expect("the window is open");
     }

@@ -189,6 +189,7 @@ impl ZedisServerAlertsDialog {
         let row_disabled = !self.enabled || !row.enabled;
 
         h_flex()
+            .id(("alert-rule-row", ix))
             .w_full()
             .items_center()
             .justify_between()
@@ -331,32 +332,28 @@ impl ZedisServerAlertsDialog {
                     .border_color(border)
                     .p_2()
                     .gap_1()
-                    .children(
-                        recent
-                            .iter()
-                            .rev()
-                            .take(20)
-                            .zip(metric_labels)
-                            .map(|(alert, (_, label))| {
-                                let time_str = format_unix_millis_with(alert.triggered_at_ms, "%H:%M:%S")
-                                    .unwrap_or_else(|| "--:--:--".to_string());
-                                let line = if alert.metric == AlertMetric::LinkOffline {
-                                    format!("[{time_str}] {label}")
-                                } else {
-                                    let unit = alert.metric.unit();
-                                    format!(
-                                        "[{time_str}] {label}: {:.1}{unit} ({} {:.1}{unit})",
-                                        alert.observed,
-                                        alert.comparator.symbol(),
-                                        alert.threshold
-                                    )
-                                };
-                                Label::new(SharedString::from(line))
-                                    .text_xs()
-                                    .text_color(warning)
-                                    .font_family(get_mono_font_family())
-                            }),
-                    )
+                    .children(recent.iter().rev().take(20).zip(metric_labels).enumerate().map(
+                        |(ix, (alert, (_, label)))| {
+                            let time_str = format_unix_millis_with(alert.triggered_at_ms, "%H:%M:%S")
+                                .unwrap_or_else(|| "--:--:--".to_string());
+                            let line = if alert.metric == AlertMetric::LinkOffline {
+                                format!("[{time_str}] {label}")
+                            } else {
+                                let unit = alert.metric.unit();
+                                format!(
+                                    "[{time_str}] {label}: {:.1}{unit} ({} {:.1}{unit})",
+                                    alert.observed,
+                                    alert.comparator.symbol(),
+                                    alert.threshold
+                                )
+                            };
+                            Label::new(SharedString::from(line))
+                                .id(("alert-recent", ix))
+                                .text_xs()
+                                .text_color(warning)
+                                .font_family(get_mono_font_family())
+                        },
+                    ))
                     .into_any_element()
             })
     }

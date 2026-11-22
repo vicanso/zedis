@@ -327,7 +327,9 @@ impl ZedisPersistence {
 
     fn render_failure_banner(&self, message: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let id = SharedString::from(format!("persistence-failure-{message}"));
         div()
+            .id(id)
             .mx_4()
             .my_2()
             .p_3()
@@ -388,7 +390,9 @@ impl ZedisPersistence {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let value_color = accent.unwrap_or(theme.foreground);
+        let id = SharedString::from(format!("persistence-stat-{label}"));
         v_flex()
+            .id(id)
             .flex_1()
             .min_w(px(180.))
             .border_1()
@@ -726,7 +730,7 @@ impl ZedisPersistence {
                 )
                 .into_any_element(),
         );
-        for n in nodes {
+        for (ix, n) in nodes.iter().enumerate() {
             let last = if n.rdb_last_save_time <= 0 {
                 i18n_persistence(cx, "state_never").to_string()
             } else {
@@ -759,6 +763,7 @@ impl ZedisPersistence {
             };
             rows.push(
                 h_flex()
+                    .id(("persistence-node", ix))
                     .px_2()
                     .py_1()
                     .gap_2()
@@ -851,6 +856,7 @@ impl ZedisPersistence {
         };
 
         v_flex()
+            .id(SharedString::from(format!("persistence-action-{id}")))
             .flex_1()
             .min_w(px(280.))
             .border_1()
