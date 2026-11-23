@@ -313,7 +313,7 @@ pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.10.0"
 rand = "0.10.3"
-redb = "4.6.0"
+redb = "5.0.0"
 # Both runtime adapters are on. redis picks per connection: it takes tokio
 # when `Handle::try_current()` finds an ambient runtime and smol otherwise
 # (`aio/runtime.rs`), so the GUI — whose Redis calls run on gpui's own thread
