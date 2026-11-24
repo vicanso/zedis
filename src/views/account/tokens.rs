@@ -67,11 +67,9 @@ pub(super) fn expiry_picker(
     let first = first_expiry_day();
     cx.new(|cx| {
         let mut state = DatePickerState::new(window, cx).disabled_matcher(picker_before_matcher(first));
-        if let Some(days) = days
-            && let Some(date) =
-                to_picker_date(Timestamp::now().to_zoned_datetime(TimeZone::UTC).date() + Span::new().days(days))
-        {
-            state.set_date(date, window, cx);
+        if let Some(days) = days {
+            let date = Timestamp::now().to_zoned_datetime(TimeZone::UTC).date() + Span::new().days(days);
+            state.set_date(to_picker_date(date), window, cx);
         }
         state
     })

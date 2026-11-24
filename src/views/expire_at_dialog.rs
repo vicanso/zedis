@@ -110,9 +110,7 @@ impl ZedisExpireAtDialog {
             if let Some(today) = today {
                 state = state.disabled_matcher(picker_before_matcher(today));
             }
-            if let Some(picker_date) = to_picker_date(date) {
-                state.set_date(picker_date, window, cx);
-            }
+            state.set_date(to_picker_date(date), window, cx);
             state
         });
         let time_state = cx.new(|cx| {
@@ -153,10 +151,8 @@ impl ZedisExpireAtDialog {
         if preset.midnight {
             time = Time::MIN;
         }
-        if let Some(picker_date) = to_picker_date(date) {
-            self.date_state
-                .update(cx, |state, cx| state.set_date(picker_date, window, cx));
-        }
+        self.date_state
+            .update(cx, |state, cx| state.set_date(to_picker_date(date), window, cx));
         self.time_state.update(cx, |state, cx| {
             state.set_value(time.strftime("%H:%M:%S").to_string(), window, cx);
         });

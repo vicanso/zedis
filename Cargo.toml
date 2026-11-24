@@ -374,24 +374,24 @@ web-time = "1.1.0"
 webpki-roots = "1.0.12"
 # GPUI comes from crates.io as the `gpui-pre-*` family: zed publishes `gpui`
 # too slowly for gpui-kit, so gpui-kit ships a matching snapshot under those
-# names (0.3.12) and depends on it itself. The `package =`
+# names (0.3.14) and depends on it itself. The `package =`
 # renames keep the crate names the source uses (`gpui::`, `gpui_platform::`)
 # and must stay on the exact family gpui-kit's own manifest pins, or two
 # GPUIs end up in the tree — `cargo tree -i gpui-pre` must show one.
-gpui = { package = "gpui-pre", version = "0.3.12" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = [
+gpui = { package = "gpui-pre", version = "0.3.14" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.14", features = [
     "font-kit",
     "x11",
     "wayland",
     "runtime_shaders",
 ] }
-gpui_macros = { package = "gpui-pre-macros", version = "0.3.12" }
+gpui_macros = { package = "gpui-pre-macros", version = "0.3.14" }
 # The browser backend by name, for `zedis-web` alone: `gpui_platform`'s
 # `single_threaded_web()` builds a `WebPlatform` with the default font
 # fallback, and enabling the CJK one (`CanvasFontFallback::EmojiAndCjk`,
 # new in 0.3.4) means constructing the platform directly. Same family, same
 # version, or two GPUIs end up in the tree.
-gpui_web = { package = "gpui-pre-web", version = "0.3.12" }
+gpui_web = { package = "gpui-pre-web", version = "0.3.14" }
 # gpui-kit bundles gpui-base + gpui-component (`gpui_kit::component::*`) and
 # the component icon assets (`gpui_kit::assets::Assets`). `tree-sitter` turns
 # on the component crate's native highlighter — LanguageConfig /
@@ -404,7 +404,7 @@ gpui_web = { package = "gpui-pre-web", version = "0.3.12" }
 # (`gpui-fast-*`: not enabled here, never compiled). The lockfile covers
 # those too. `unicode-properties` 0.1.3 is what gpui-pre-web and rustybuzz
 # ask for; gpui-pre-macos no longer pins `cocoa` (`zed-scap` brings 0.25).
-gpui-kit = { version = "0.10.0" }
+gpui-kit = { version = "0.11.0" }
 
 [build-dependencies]
 winres = "0.1.12"
@@ -605,7 +605,9 @@ license-file = ["LICENSE", "0"]
 section = "database"
 priority = "optional"
 # Runtime deps resolved from the built binary via dpkg-shlibdeps.
-depends = "$auto"
+# `libxkbcommon-x11-0` backs `gpui-kit/x11`'s `libxkbcommon-x11.so.0` link so
+# minimal or Wayland-only Debian/Ubuntu installs still satisfy `ld.so` at startup.
+depends = "$auto, libxkbcommon-x11-0"
 extended-description = """A native, GPU-accelerated Redis GUI client built in Rust with GPUI \
 (the Zed editor's UI framework). Browse millions of keys at 60+ FPS, with \
 typed value viewers, live observability panels, cluster tooling, TLS/SSH \

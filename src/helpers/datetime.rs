@@ -233,18 +233,18 @@ pub fn unix_secs_from_parts(date: Date, time: Time) -> Option<i64> {
 }
 
 /// Convert a [`Date`] to `gpui_kit`'s `DatePicker` date value.
-pub fn to_picker_date(date: Date) -> Option<PickerDate> {
-    date.to_string().parse().ok().map(|d| PickerDate::Single(Some(d)))
+pub fn to_picker_date(date: Date) -> PickerDate {
+    PickerDate::Single(Some(date))
 }
 
 /// Convert `gpui_kit`'s `DatePicker` date value back to [`Date`].
 pub fn from_picker_date(date: PickerDate) -> Option<Date> {
-    date.format("%Y-%m-%d")?.parse().ok()
+    date.start()
 }
 
 /// A `DatePicker` matcher that disables every day strictly before `before`.
 pub fn picker_before_matcher(before: Date) -> Matcher {
-    Matcher::interval(before.to_string().parse().ok(), None)
+    Matcher::interval(Some(before), None)
 }
 
 /// A typed time of day: `HH:MM` or `HH:MM:SS`, 24-hour. Deliberately not
@@ -395,12 +395,12 @@ mod tests {
     #[test]
     fn picker_dates_round_trip_and_disable_earlier_days() {
         let day = jiff::civil::date(2026, 3, 4);
-        let picker = to_picker_date(day).expect("valid picker date");
+        let picker = to_picker_date(day);
         assert_eq!(from_picker_date(picker), Some(day));
 
         let matcher = picker_before_matcher(day);
-        let yesterday = to_picker_date(jiff::civil::date(2026, 3, 3)).expect("valid yesterday");
-        let tomorrow = to_picker_date(jiff::civil::date(2026, 3, 5)).expect("valid tomorrow");
+        let yesterday = to_picker_date(jiff::civil::date(2026, 3, 3));
+        let tomorrow = to_picker_date(jiff::civil::date(2026, 3, 5));
         assert!(matcher.is_match(&yesterday));
         assert!(!matcher.is_match(&picker));
         assert!(!matcher.is_match(&tomorrow));
