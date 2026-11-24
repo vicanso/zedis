@@ -73,7 +73,7 @@ rust-version = "1.98.0"
 
 [dependencies]
 ahash = { workspace = true }
-anyhow = "1.0.104"
+anyhow = "1.0.105"
 arc-swap = { workspace = true }
 # What `smol::channel` re-exports, named directly. smol itself reaches
 # `async-io` → `rustix` → `errno` and has no wasm port; the channel does
@@ -81,7 +81,7 @@ arc-swap = { workspace = true }
 async-channel = "2.5.0"
 base64 = { workspace = true }
 bitflags = "2.13.2"
-bytes = "1.12.1"
+bytes = "1.12.2"
 dashmap = {workspace = true}
 flate2 = "1.1.11"
 futures = { workspace = true }
@@ -106,13 +106,13 @@ infer = "0.22.0"
 #   checked-decode — upstream's default set still lists it; it gates nothing
 #                    in 0.14 (the bounds checks became unconditional in
 #                    0.11), kept so intent survives if it is ever rewired.
-lz4_flex = { version = "0.14.0", default-features = false, features = [
+lz4_flex = { version = "0.14.2", default-features = false, features = [
     "alloc",
     "safe-decode",
     "checked-decode",
 ] }
 parking_lot = "0.13.0"
-pretty-hex = "0.4.2"
+pretty-hex = "0.4.3"
 regex = { workspace = true }
 rmp-serde = "1.3.1"
 rust-i18n = "4.2.4"
@@ -268,7 +268,7 @@ gpui-kit = { workspace = true, features = ["test-support"] }
 gpui-fast = ["gpui-kit/gpui-fast", "zedis-ui/gpui-fast"]
 
 [workspace.dependencies]
-ahash = "0.8.12"
+ahash = "0.8.13"
 # The in-tree crates. `version` is what a published manifest keeps once
 # cargo strips `path` — it must equal [workspace.package].version, and
 # scripts/bump-version.sh moves the two together.
@@ -299,7 +299,7 @@ base64 = "0.23.1"
 directories = "6.0.0"
 futures = "0.3.34"
 home = "0.5.12"
-jiff = "1.0.1"
+jiff = "1.0.3"
 # Native OS keychain for the config-encryption master key, with the v4 default
 # feature set (apple-native / windows-native / zbus-secret-service stores). On
 # Linux keyring isn't pulled in at all (see zedis-connection's target-gated
@@ -312,8 +312,8 @@ percent-encoding = "2.3.2"
 pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 protox = "0.10.0"
-rand = "0.10.3"
-redb = "4.6.0"
+rand = "0.10.4"
+redb = "5.0.0"
 # Both runtime adapters are on. redis picks per connection: it takes tokio
 # when `Handle::try_current()` finds an ambient runtime and smol otherwise
 # (`aio/runtime.rs`), so the GUI — whose Redis calls run on gpui's own thread
@@ -335,8 +335,8 @@ redis = { version = "1.8.2", features = [
     "tls-rustls-insecure",
     "aio",
 ] }
-regex = "1.13.1"
-russh = { version = "0.65.1", default-features = false, features = [
+regex = "1.13.2"
+russh = { version = "0.65.4", default-features = false, features = [
     "ring",
     "flate2",
     "rsa",
@@ -356,14 +356,14 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = [
     "ring",
     "tls12",
 ] }
-toml = "1.2.1"
+toml = "1.2.2"
 tracing = "0.1.44"
-url = "2.5.8"
+url = "2.5.9"
 # `v7` must be declared here: both the app and zedis-connection call
 # `Uuid::now_v7`, and it only ever compiled because accesskit (via gpui)
 # happens to turn the feature on — so `cargo test -p zedis-connection`,
 # which drags in no GUI stack, failed to build on its own.
-uuid = { version = "1.29.2", features = ["v7"] }
+uuid = { version = "1.29.3", features = ["v7"] }
 # `std::time` for the browser too. `Instant::now()` and `SystemTime::now()`
 # panic on `wasm32-unknown-unknown` ("time not implemented on this platform"),
 # and on every other target this crate *is* std's own types, so a file that

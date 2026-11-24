@@ -23,7 +23,7 @@ use super::{ALERT_RULES_TABLE, Result, get_database};
 use crate::mem_store::{ReadableDatabase, ReadableTable};
 use dashmap::DashMap;
 #[cfg(not(target_family = "wasm"))]
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use zedis_core::alerts::{AlertRule, default_alert_rules, normalize_alert_rules};

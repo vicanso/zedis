@@ -28,7 +28,7 @@ use super::{KEY_TIMELINE_TABLE, Result, get_database};
 use crate::mem_store::{ReadableDatabase, ReadableTable};
 use dashmap::DashMap;
 #[cfg(not(target_family = "wasm"))]
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use tracing::warn;
