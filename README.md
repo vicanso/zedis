@@ -156,6 +156,7 @@ Valkey is first-class, not a compatibility mode. Whether a version-dependent fea
 ## 📚 Documentation
 
 - **[Full feature tour](./docs/FEATURES.md)** — every panel, viewer and shortcut.
+- **[Custom decoders](./docs/CUSTOM_DECODER.md)** — external decode/encode scripts, placeholders, examples and JSON sharing.
 - **[Web version: self-hosting guide](./docs/WEB.md)** — deployment, accounts, SSO, the audit log and MCP.
 - **[Web version: PostgreSQL, MySQL and Redis storage](./docs/SQL_STORE.md)** — Docker commands, the database user, TLS, backups, upgrades and the schema.
 - **[Redis and Valkey](./docs/REDIS_VALKEY.md)** — what differs between the two, and how a copy between them works.

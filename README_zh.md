@@ -156,6 +156,7 @@ Valkey 在这里是一等公民，不是兼容模式。依赖版本的功能能�
 ## 📚 文档
 
 - **[完整功能介绍](./docs/FEATURES_zh.md)** —— 每个面板、查看器和快捷键。
+- **[自定义解码器](./docs/CUSTOM_DECODER_zh.md)** —— 外部解码/回写脚本、占位符、实用示例与 JSON 规则共享。
 - **[Web 版：自托管指南](./docs/WEB_zh.md)** —— 部署、账号、SSO、审计日志与 MCP。
 - **[Web 版：PostgreSQL、MySQL 与 Redis 存储](./docs/SQL_STORE_zh.md)** —— Docker 启动命令、数据库用户、TLS、备份、升级与建表语句。
 - **[Redis 与 Valkey](./docs/REDIS_VALKEY_zh.md)** —— 两者的差异，以及它们之间的复制如何工作。
