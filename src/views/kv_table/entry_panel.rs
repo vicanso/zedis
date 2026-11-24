@@ -20,8 +20,10 @@ use super::*;
 /// The entry panel's decoded preview: what a MessagePack / gzip / JSON
 /// element decodes to, above the form that edits its bytes.
 const PREVIEW_HEIGHT: f32 = 220.0;
-/// Bytes per row in the preview's hex view.
-const PREVIEW_HEX_BYTES_PER_ROW: usize = 16;
+/// Cap on binary bytes formatted into the side panel's Hex dump or Text preview.
+const PREVIEW_BINARY_MAX_BYTES: usize = 64 * 1024;
+/// Conservative monospace glyph advance factor (matches `bytes_editor.rs`).
+const PREVIEW_HEX_CHAR_WIDTH_RATIO: f32 = 0.64;
 
 /// Which rendering of the open row's element the preview shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,7 +34,10 @@ pub(super) enum PreviewMode {
     Decoded,
     /// The document as a JSON tree, the string editor's *Tree*.
     Tree,
-    /// The stored bytes as a hex dump.
+    /// Mixed readable plaintext (`\xNN` escapes + printable UTF-8) for
+    /// undecoded binary elements.
+    Text,
+    /// The stored bytes as a hex + ASCII dump.
     Hex,
 }
 
@@ -41,26 +46,37 @@ impl PreviewMode {
         match self {
             Self::Decoded => "kv-preview-decoded",
             Self::Tree => "kv-preview-tree",
+            Self::Text => "kv-preview-text",
             Self::Hex => "kv-preview-hex",
         }
     }
 }
 
-/// The renderings the preview offers: the decoded text, a tree when the
-/// element is JSON-shaped, and always the bytes as hex.
-pub(super) fn preview_modes(json_shaped: bool) -> Vec<PreviewMode> {
-    if json_shaped {
-        vec![PreviewMode::Decoded, PreviewMode::Tree, PreviewMode::Hex]
+/// The renderings the preview offers:
+/// - Decoded / JSON elements: Decoded (or Text), optional Tree, Hex
+/// - Undecoded binary elements: Hex (+ ASCII dump), Text (mixed plaintext)
+/// - Anything else: Hex
+pub(super) fn preview_modes(decodable: bool, json_shaped: bool, binary: bool) -> Vec<PreviewMode> {
+    if decodable {
+        if json_shaped {
+            vec![PreviewMode::Decoded, PreviewMode::Tree, PreviewMode::Hex]
+        } else {
+            vec![PreviewMode::Decoded, PreviewMode::Hex]
+        }
+    } else if binary {
+        vec![PreviewMode::Hex, PreviewMode::Text]
     } else {
-        vec![PreviewMode::Decoded, PreviewMode::Hex]
+        vec![PreviewMode::Hex]
     }
 }
 
 /// The rendering a row's element opens in: a tree where it is JSON-shaped
 /// and Settings opens JSON as one (`json_view`), as the string editor does;
-/// else its text.
-pub(super) fn opening_preview(json_shaped: bool, view: JsonView) -> PreviewMode {
-    if json_shaped && view == JsonView::Tree {
+/// decoded text for other decodable elements; hex dump for undecoded bytes.
+pub(super) fn opening_preview(decodable: bool, json_shaped: bool, view: JsonView) -> PreviewMode {
+    if !decodable {
+        PreviewMode::Hex
+    } else if json_shaped && view == JsonView::Tree {
         PreviewMode::Tree
     } else {
         PreviewMode::Decoded
@@ -184,7 +200,11 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             .edit_element
             .as_ref()
             .is_some_and(|element| element_json_document(element, max_truncate_length).is_some());
-        self.preview = opening_preview(self.edit_element_json, json_view);
+        let decodable = self
+            .edit_element
+            .as_ref()
+            .is_some_and(|element| element.is_decoded() || element.format() == DataFormat::Json);
+        self.preview = opening_preview(decodable, self.edit_element_json, json_view);
         self.json_tree_stale = true;
         self.editor_form = None;
         self.values_modified = false;
@@ -202,7 +222,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
     /// Switch the preview's rendering. Entering the tree marks it stale, so
     /// it is rebuilt from the form's current text rather than from whatever
     /// it showed last.
-    fn set_preview(&mut self, mode: PreviewMode, cx: &mut Context<Self>) {
+    pub(super) fn set_preview(&mut self, mode: PreviewMode, cx: &mut Context<Self>) {
         if self.preview == mode {
             return;
         }
@@ -263,28 +283,52 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         cx.notify();
     }
 
-    /// Lazily create (and sync when text changes) the read-only `EditorState`
-    /// used by Decoded / Hex preview so users can select and copy text freely.
+    fn preview_hex_bytes_per_row(&self, window: &Window, cx: &App) -> usize {
+        let pane_width = self
+            .pane_width
+            .get()
+            .or_else(|| cx.global::<ZedisGlobalStore>().read(cx).content_width())
+            .unwrap_or_else(|| window.viewport_size().width * 0.5)
+            .as_f32();
+        let panel_width = entry_panel_split(pane_width, self.panel_width.map(|w| w.as_f32()))
+            .map(|split| split.panel)
+            .unwrap_or(pane_width);
+        let mono_px = cx.theme().mono_font_size.as_f32().max(1.0);
+        if panel_width >= 76.0 * mono_px * PREVIEW_HEX_CHAR_WIDTH_RATIO + 40.0 {
+            16
+        } else {
+            8
+        }
+    }
+
+    /// Lazily create (and sync when text/wrap/highlight changes) the read-only
+    /// `EditorState` used by Decoded / Text / Hex preview so users can select
+    /// and copy text freely.
     fn ensure_preview_editor(
         &mut self,
         text: SharedString,
+        soft_wrap: bool,
+        json_highlight: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<EditorState> {
+        let language = if json_highlight { "json" } else { "text" };
         let editor = if let Some(editor) = &self.preview_editor {
             editor.clone()
         } else {
             let editor = cx.new(|cx| {
-                EditorState::new(window, cx)
-                    .language("json")
+                let mut state = EditorState::new(window, cx)
+                    .language(language)
                     .line_number(false)
                     .folding(false)
-                    .soft_wrap(true)
+                    .soft_wrap(soft_wrap)
                     .show_whitespaces(false)
                     .tab_size(TabSize {
                         tab_size: 2,
                         hard_tabs: false,
-                    })
+                    });
+                state.set_readonly(true, cx);
+                state
             });
             let sub = cx.subscribe_in(&editor, window, |this, state, event: &InputEvent, window, cx| {
                 if !matches!(event, InputEvent::Change) || this.preview_editor_reverting {
@@ -302,15 +346,36 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             });
             self._subscriptions.push(sub);
             self.preview_editor = Some(editor.clone());
+            self.preview_editor_soft_wrap = soft_wrap;
+            self.preview_editor_json_highlight = json_highlight;
             editor
         };
-        if self.preview_editor_text != text {
-            self.preview_editor_text = text.clone();
-            self.preview_editor_reverting = true;
+
+        let wrap_changed = self.preview_editor_soft_wrap != soft_wrap;
+        let highlight_changed = self.preview_editor_json_highlight != json_highlight;
+        let text_changed = self.preview_editor_text != text;
+        if wrap_changed || highlight_changed || text_changed {
+            if text_changed {
+                self.preview_editor_text = text.clone();
+                self.preview_editor_reverting = true;
+            }
             editor.update(cx, |state, cx| {
-                state.set_value(text, window, cx);
+                if highlight_changed {
+                    state.set_highlighter(language, cx);
+                }
+                if wrap_changed && !soft_wrap {
+                    state.set_soft_wrap(false, window, cx);
+                }
+                if text_changed {
+                    state.set_value(text, window, cx);
+                }
+                if wrap_changed && soft_wrap {
+                    state.set_soft_wrap(true, window, cx);
+                }
             });
             self.preview_editor_reverting = false;
+            self.preview_editor_soft_wrap = soft_wrap;
+            self.preview_editor_json_highlight = json_highlight;
         }
         editor
     }
@@ -329,8 +394,12 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let radius = theme.radius;
         let yellow = theme.yellow;
         let decodable = element.is_decoded() || element.format() == DataFormat::Json;
-        let mode = if decodable { self.preview } else { PreviewMode::Hex };
-        let modes = preview_modes(self.edit_element_json);
+        let modes = preview_modes(decodable, self.edit_element_json, element.is_binary());
+        let mode = if modes.contains(&self.preview) {
+            self.preview
+        } else {
+            modes[0]
+        };
         // A JSON element's decoded rendering is its text as stored, so the
         // switch reads Text / Tree / Hex exactly like the string editor's;
         // any other decoding keeps the Decoded label.
@@ -340,6 +409,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 PreviewMode::Decoded if stored_json => i18n_editor(cx, "json_view_text"),
                 PreviewMode::Decoded => i18n_kv_table(cx, "preview_decoded"),
                 PreviewMode::Tree => i18n_editor(cx, "json_view_tree"),
+                PreviewMode::Text => i18n_editor(cx, "json_view_text"),
                 PreviewMode::Hex => i18n_kv_table(cx, "preview_hex"),
             }
         };
@@ -364,13 +434,30 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .child(self.json_tree.clone())
                 .into_any_element()
         } else {
-            let text: SharedString = if mode == PreviewMode::Hex {
-                bytes_to_hex_text(element.raw(), PREVIEW_HEX_BYTES_PER_ROW).into()
-            } else {
-                let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
-                detect_and_decode(element.raw(), max_len).1
+            let (text, soft_wrap, json_highlight): (SharedString, bool, bool) = match mode {
+                PreviewMode::Hex => {
+                    let raw = element.raw();
+                    let shown = &raw[..raw.len().min(PREVIEW_BINARY_MAX_BYTES)];
+                    let mut dump = bytes_to_hex_dump(shown, self.preview_hex_bytes_per_row(window, cx));
+                    if shown.len() < raw.len() {
+                        dump.push_str("\n…");
+                    }
+                    (dump.into(), false, false)
+                }
+                PreviewMode::Text => {
+                    let text: SharedString = bytes_to_readable_preview(element.raw(), PREVIEW_BINARY_MAX_BYTES).into();
+                    let wrap = soft_wrap_fits(text.len());
+                    (text, wrap, false)
+                }
+                PreviewMode::Decoded => {
+                    let max_len = cx.global::<ZedisGlobalStore>().read(cx).max_truncate_length();
+                    let text = detect_and_decode(element.raw(), max_len).1;
+                    let wrap = soft_wrap_fits(text.len());
+                    (text, wrap, self.edit_element_json)
+                }
+                PreviewMode::Tree => (SharedString::default(), false, false),
             };
-            let editor = self.ensure_preview_editor(text, window, cx);
+            let editor = self.ensure_preview_editor(text, soft_wrap, json_highlight, window, cx);
             v_flex()
                 .flex_1()
                 .min_h_0()
@@ -416,7 +503,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         )
                     })
                     .child(div().flex_1())
-                    .when(decodable, |this| {
+                    .when(modes.len() > 1, |this| {
                         this.child(
                             switch.on_click(cx.listener(move |this, clicks: &Vec<usize>, _window, cx| {
                                 if let Some(mode) = clicks.first().and_then(|ix| modes.get(*ix)) {

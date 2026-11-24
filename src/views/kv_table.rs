@@ -14,7 +14,7 @@
 
 use crate::connection::Capability;
 use crate::helpers::saves_files;
-use crate::helpers::{bytes_to_hex_text, clearing_an_applied_filter, get_mono_font_family};
+use crate::helpers::{bytes_to_hex_dump, bytes_to_readable_preview, clearing_an_applied_filter, get_mono_font_family};
 use crate::{
     assets::CustomIconName,
     components::{
@@ -24,7 +24,7 @@ use crate::{
     helpers::{EditorAction, KeyOpAction, build_csv, hot_key_label},
     states::{
         DataFormat, JsonView, KeyType, KvElement, ServerEvent, ZedisGlobalStore, ZedisServerState, detect_and_decode,
-        i18n_common, i18n_editor, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor,
+        i18n_common, i18n_editor, i18n_key_ops, i18n_kv_table, i18n_list_editor, i18n_zset_editor, soft_wrap_fits,
         update_app_state_and_save_quiet_debounced,
     },
     views::{
@@ -148,6 +148,10 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     preview_editor_text: SharedString,
     /// Guards against re-entrant `InputEvent::Change` snap-back in `preview_editor`.
     preview_editor_reverting: bool,
+    /// Current soft-wrap state configured on `preview_editor`.
+    preview_editor_soft_wrap: bool,
+    /// Whether `preview_editor` currently highlights JSON.
+    preview_editor_json_highlight: bool,
     /// Whether the values have been modified
     values_modified: bool,
     /// Whether the values should be filled
@@ -424,6 +428,8 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             preview_editor: None,
             preview_editor_text: SharedString::default(),
             preview_editor_reverting: false,
+            preview_editor_soft_wrap: true,
+            preview_editor_json_highlight: true,
             values_modified: false,
             value_states,
             readonly,
@@ -707,8 +713,8 @@ pub(crate) use define_kv_editor;
 mod tests {
     use super::{
         DATA_COLUMN_MIN_WIDTH, ENTRY_PANEL_MIN_WIDTH, JsonView, KeyType, PanelSplit, PreviewMode, TABLE_MIN_WIDTH,
-        build_kv_add_batches, element_json_document, entry_panel_split, fit_columns, opening_preview, preview_modes,
-        row_holds, tree_editable,
+        ZedisKvFetcher, ZedisKvTable, build_kv_add_batches, element_json_document, entry_panel_split, fit_columns,
+        opening_preview, preview_modes, row_holds, tree_editable,
     };
 
     /// The table and the entry panel share the pane the table is in, not the
@@ -871,20 +877,31 @@ mod tests {
     #[test]
     fn json_shaped_elements_offer_a_tree_and_the_rest_do_not() {
         assert_eq!(
-            preview_modes(true),
+            preview_modes(true, true, false),
             vec![PreviewMode::Decoded, PreviewMode::Tree, PreviewMode::Hex]
         );
-        assert_eq!(preview_modes(false), vec![PreviewMode::Decoded, PreviewMode::Hex]);
+        assert_eq!(
+            preview_modes(true, false, true),
+            vec![PreviewMode::Decoded, PreviewMode::Hex]
+        );
+        assert_eq!(
+            preview_modes(false, false, true),
+            vec![PreviewMode::Hex, PreviewMode::Text]
+        );
+        assert_eq!(preview_modes(false, false, false), vec![PreviewMode::Hex]);
     }
 
     /// A row's element opens as the string editor's value does: a tree where
-    /// it is JSON-shaped and Settings says tree, its text otherwise.
+    /// it is JSON-shaped and Settings says tree, its text otherwise, and binary
+    /// undecoded values open on Hex (with ASCII dump).
     #[test]
     fn a_json_element_opens_in_the_view_settings_names() {
-        assert_eq!(opening_preview(true, JsonView::Tree), PreviewMode::Tree);
-        assert_eq!(opening_preview(true, JsonView::Text), PreviewMode::Decoded);
+        assert_eq!(opening_preview(true, true, JsonView::Tree), PreviewMode::Tree);
+        assert_eq!(opening_preview(true, true, JsonView::Text), PreviewMode::Decoded);
         // No tree to open into.
-        assert_eq!(opening_preview(false, JsonView::Tree), PreviewMode::Decoded);
+        assert_eq!(opening_preview(true, false, JsonView::Tree), PreviewMode::Decoded);
+        // Undecoded binary opens in Hex.
+        assert_eq!(opening_preview(false, false, JsonView::Tree), PreviewMode::Hex);
     }
 
     #[test]
@@ -995,5 +1012,103 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    struct BinarySampleFetcher {
+        rows: Vec<(KvElement, KvElement)>,
+    }
+
+    impl ZedisKvFetcher for BinarySampleFetcher {
+        fn key_type(&self) -> KeyType {
+            KeyType::Hash
+        }
+        fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
+            self.element(row_ix, col_ix).map(|el| el.text().clone())
+        }
+        fn get_edit(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
+            self.element(row_ix, col_ix).map(|el| el.edit_text())
+        }
+        fn element(&self, row_ix: usize, col_ix: usize) -> Option<KvElement> {
+            let (field, value) = self.rows.get(row_ix)?;
+            match col_ix {
+                1 => Some(field.clone()),
+                2 => Some(value.clone()),
+                _ => None,
+            }
+        }
+        fn count(&self) -> usize {
+            self.rows.len()
+        }
+        fn rows_count(&self) -> usize {
+            self.rows.len()
+        }
+        fn is_done(&self) -> bool {
+            true
+        }
+        fn load_more(&self, _window: &mut gpui::Window, _cx: &mut gpui::App) {}
+        fn remove(&self, _index: usize, _cx: &mut gpui::App) {}
+        fn filter(&self, _keyword: SharedString, _cx: &mut gpui::App) {}
+        fn handle_add_value(&self, _values: Vec<SharedString>, _window: &mut gpui::Window, _cx: &mut gpui::App) {}
+        fn new(
+            _server_state: gpui::Entity<crate::states::ZedisServerState>,
+            _value: crate::states::RedisValue,
+        ) -> Self {
+            let mut raw = vec![0x00, 0x0f, 0xfc, 0x07];
+            raw.extend_from_slice(b"EV-H606");
+            raw.extend_from_slice(&[0xf7, 0x28]);
+            raw.extend_from_slice("温度".as_bytes());
+            Self {
+                rows: vec![(KvElement::from_text("device:1"), KvElement::from_raw(raw))],
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn binary_element_preview_shows_hex_ascii_dump_and_readable_text_tab(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext, px, size};
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt;
+
+        crate::test_support::init_ui(cx);
+        let server_state = cx.new(|_| crate::states::ZedisServerState::default());
+        let mut table_view = None;
+        let handle = cx.open_window(size(px(1200.), px(700.)), |window, cx| {
+            let columns = vec![
+                KvTableColumn::new("Field", Some(160.)),
+                KvTableColumn::new_flex("Value"),
+            ];
+            let table =
+                cx.new(|cx| ZedisKvTable::<BinarySampleFetcher>::new(columns, server_state.clone(), window, cx));
+            table_view = Some(table.clone());
+            Root::new(table, window, cx)
+        });
+        let table = table_view.expect("table view should open");
+
+        table.update(cx, |table, cx| table.handle_select_row(0, cx));
+        cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .expect("window is open");
+
+        table.read_with(cx, |table, _| {
+            assert_eq!(table.preview, PreviewMode::Hex);
+            assert!(!table.preview_editor_soft_wrap);
+            assert!(
+                table.preview_editor_text.contains("|....EV-H"),
+                "hex preview should include ASCII column: {}",
+                table.preview_editor_text
+            );
+        });
+
+        table.update(cx, |table, cx| table.set_preview(PreviewMode::Text, cx));
+        cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .expect("window is open");
+
+        table.read_with(cx, |table, _| {
+            assert_eq!(table.preview, PreviewMode::Text);
+            assert!(table.preview_editor_soft_wrap);
+            assert_eq!(
+                table.preview_editor_text.as_ref(),
+                "\\x00\\x0f\\xfc\\x07EV-H606\\xf7(温度"
+            );
+        });
     }
 }

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::helpers::{
-    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, get_key_tree_widths, get_mono_font_family, hex_address_color,
-    is_json_container, parse_hex_text, run_jsonpath, value_write_limit,
+    JsonPathAction, JsonPathOutcome, bytes_to_hex_text, bytes_to_readable_text, get_key_tree_widths,
+    get_mono_font_family, hex_address_color, is_json_container, parse_hex_text, run_jsonpath, value_write_limit,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::states::MAX_INLINE_VALUE_SIZE;
@@ -333,7 +333,11 @@ fn format_byte_editor_data(value: &Arc<RedisBytesValue>, display_offset: usize, 
         ViewMode::Hex => ByteEditorData::Text(bytes_to_hex_text(&value.bytes, hex_bytes_per_row(cx)).into()),
 
         ViewMode::Plain => {
-            let text = SharedString::new(String::from_utf8_lossy(&value.bytes));
+            let text = if value.bytes.contains(&0) || std::str::from_utf8(&value.bytes).is_err() {
+                bytes_to_readable_text(&value.bytes).into()
+            } else {
+                SharedString::new(String::from_utf8_lossy(&value.bytes))
+            };
             ByteEditorData::Text(text)
         }
 
@@ -1521,5 +1525,42 @@ mod tests {
         .expect("the window is open");
 
         cx.update(|cx| apply_editor_font_size(cx, None));
+    }
+
+    #[gpui::test]
+    fn plain_view_renders_binary_bytes_with_escaped_control_and_readable_text(cx: &mut TestAppContext) {
+        init_ui(cx);
+
+        let mut binary_raw = vec![0x00, 0x0f, 0xfc, 0x07];
+        binary_raw.extend_from_slice(b"EV-H606");
+        binary_raw.extend_from_slice(&[0xff]);
+        binary_raw.extend_from_slice("温度".as_bytes());
+        let binary_value = Arc::new(RedisBytesValue {
+            format: DataFormat::Bytes,
+            bytes: Bytes::from(binary_raw),
+            view_mode: ViewMode::Plain,
+            ..Default::default()
+        });
+
+        let utf8_value = Arc::new(RedisBytesValue {
+            format: DataFormat::Text,
+            bytes: Bytes::from_static(b"line one\nline two"),
+            view_mode: ViewMode::Plain,
+            ..Default::default()
+        });
+
+        cx.read(|cx| {
+            let binary_text = match format_byte_editor_data(&binary_value, 0, cx) {
+                ByteEditorData::Text(t) => t,
+                _ => panic!("expected text output in ViewMode::Plain"),
+            };
+            assert_eq!(binary_text.as_ref(), "\\x00\\x0f\\xfc\\x07EV-H606\\xff温度");
+
+            let utf8_text = match format_byte_editor_data(&utf8_value, 0, cx) {
+                ByteEditorData::Text(t) => t,
+                _ => panic!("expected text output in ViewMode::Plain"),
+            };
+            assert_eq!(utf8_text.as_ref(), "line one\nline two");
+        });
     }
 }

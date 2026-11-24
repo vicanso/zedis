@@ -26,7 +26,7 @@ use super::string::detect_and_decode;
 use super::value::{DataFormat, detect_format};
 use bytes::Bytes;
 use gpui::SharedString;
-use zedis_core::hex::{bytes_to_hex_text, parse_hex_text};
+use zedis_core::hex::{bytes_to_hex_text, bytes_to_readable_preview, has_readable_text, parse_hex_text};
 
 /// Characters a decoded rendering keeps for the table; the entry panel
 /// decodes again, in full, from the bytes.
@@ -147,9 +147,16 @@ pub(super) fn decode_element(raw: &[u8]) -> (DataFormat, SharedString) {
             };
             (label, SharedString::new(String::from_utf8_lossy(raw)))
         }
-        // Nothing decoded and not text: hex.
+        // Nothing decoded and not text: readable mixed text when the bytes carry
+        // printable strings (e.g. FST / Kryo / Protobuf), else hex.
         DataFormat::Text | DataFormat::Json | DataFormat::Timestamp | DataFormat::Bytes => {
-            (DataFormat::Bytes, hex_line(raw))
+            let sample = &raw[..raw.len().min(ELEMENT_HEX_CAP)];
+            let text = if has_readable_text(sample) {
+                bytes_to_readable_preview(raw, ELEMENT_HEX_CAP).into()
+            } else {
+                hex_line(raw)
+            };
+            (DataFormat::Bytes, text)
         }
         // A rendering the pipeline calls a preview is named by what the
         // bytes were sniffed as — MessagePack, gzip, … — where it knows.
@@ -258,6 +265,26 @@ mod tests {
 
         let text = KvElement::from_text("abc");
         assert_eq!(text.bytes_from_edit("xyz").expect("text").as_ref(), b"xyz");
+    }
+
+    #[test]
+    fn binary_with_readable_strings_shows_mixed_plaintext_and_edits_as_hex() {
+        let mut raw = vec![0x00, 0x0f, 0xfc, 0x07];
+        raw.extend_from_slice(b"EV-H606");
+        raw.extend_from_slice(&[0xf7, 0x28]);
+        raw.extend_from_slice("温度".as_bytes());
+        let element = KvElement::from_raw(raw.clone());
+
+        assert_eq!(element.format(), DataFormat::Bytes);
+        assert!(element.is_binary());
+        assert!(!element.is_decoded());
+        assert_eq!(element.text().as_ref(), "\\x00\\x0f\\xfc\\x07EV-H606\\xf7(温度");
+
+        let edit_hex = element.edit_text();
+        assert_eq!(
+            element.bytes_from_edit(edit_hex.as_ref()).expect("round-trip").as_ref(),
+            raw.as_slice()
+        );
     }
 
     #[test]
