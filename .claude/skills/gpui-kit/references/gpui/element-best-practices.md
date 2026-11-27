@@ -133,7 +133,7 @@ impl Element for CachedElement {
         }
 
         // Use cached layout
-        let layout = self.cached_layout.as_ref().unwrap();
+        let layout = self.cached_layout.as_ref().expect("cached layout initialized");
         (layout_id, layout.clone())
     }
 }
@@ -390,7 +390,7 @@ mod tests {
     #[gpui_kit::test]
     fn test_element_layout(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            let mut window = cx.open_window(Default::default(), |_, _| ()).unwrap();
+            let mut window = cx.open_window(Default::default(), |_, _| ()).expect("open window");
 
             window.update(cx, |window, cx| {
                 let mut element = MyElement::new();
@@ -421,10 +421,10 @@ fn test_element_click(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let mut window = cx.open_window(Default::default(), |_, cx| {
             cx.new(|_| MyElement::new())
-        }).unwrap();
+        }).expect("open window");
 
         window.update(cx, |window, cx| {
-            let view = window.root_view().unwrap();
+            let view = window.root_view().expect("root view");
 
             // Simulate click
             let position = point(px(10.), px(10.));

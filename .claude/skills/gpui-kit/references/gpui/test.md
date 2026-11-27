@@ -1,6 +1,6 @@
 # Testing
 
-**Contents:** [Choose the test level](#choose-the-test-level) · [UI integration workflow](#ui-integration-workflow) · [Complete example](#complete-example) · [Queries and interactions](#queries-and-interactions) · [Frames and async work](#frames-and-async-work) · [Assertion boundaries](#assertion-boundaries) · [Additional resources](#additional-resources)
+**Contents:** [Choose the test level](#choose-the-test-level) · [UI integration workflow](#ui-integration-workflow) · [Core semantics](#core-semantics) · [Complete example](#complete-example) · [Queries and interactions](#queries-and-interactions) · [Inspect accessibility targets and individual events](#inspect-accessibility-targets-and-individual-events) · [Exercise text composition through an input handler](#exercise-text-composition-through-an-input-handler) · [Resize, display scale and clipboard](#resize-display-scale-and-clipboard) · [Adding test support to controls](#adding-test-support-to-controls) · [Frames and async work](#frames-and-async-work) · [Assertion boundaries](#assertion-boundaries) · [Additional resources](#additional-resources)
 
 ## UI integration testing
 
@@ -9,22 +9,26 @@ clicks, keyboard input and scrolling, then checks state, focus, layout and owner
 callbacks. For example: add a Checkbox UI integration test that proves clicking
 toggles the owner's value and disabled controls reject the interaction.
 Use this term when describing component interaction coverage.
-`#[gpui_kit::test]` runs the test; `gpui_kit::test` operates and inspects its UI.
+`#[gpui_kit::test]` runs the test (`#[gpui::test]` in Zedis); `gpui_kit::test` operates and inspects its UI.
 
 ## Choose the test level
 
-Use ordinary Rust `#[test]` for pure logic. Use `#[gpui_kit::test]` and
-`TestAppContext` for entities, subscriptions, actions and async tasks; it can
-create headless windows too. `VisualTestContext` is available for existing GPUI
-window helpers. For an application UI flow, use `gpui_kit::test::TestWindowExt`
+Use ordinary Rust `#[test]` for pure logic. Use `#[gpui_kit::test]` (`#[gpui::test]`
+in Zedis) and `TestAppContext` for entities, subscriptions, actions and async tasks;
+it can create headless windows too. `VisualTestContext` is available for existing
+GPUI window helpers. For an application UI flow, use `gpui_kit::test::TestWindowExt`
 on the real `Window` and assert the behavior produced by native events.
 
-Import the Kit types you use explicitly and write `#[gpui_kit::test]`. Avoid `use gpui_kit::*;` in test modules: it imports GPUI’s `test` macro and can shadow Rust’s built-in `#[test]`. Add
-`test-support` to the application's `gpui-kit` development dependency, using
-exactly the same source and version as its normal dependency. The helpers
-require a Kit revision that includes them; check the installed API before
-assuming an older published release supports them. No extra testing crate or
-GPUI patch is required.
+> **Zedis workspace convention:** In Zedis (`src/`), use `#[gpui::test]` and start every UI test with `crate::test_support::init_ui(cx)` (which isolates `ZEDIS_CONFIG_DIR`, calls `gpui_kit::component::init`, sets `cx.set_reduce_motion(true)`, and installs `ZedisGlobalStore`), share control ID constants between view and test, and run `cx.update_window` → `cx.run_until_parked()` → `cx.update_window` (`window.render_frame(cx)` + assert) for deferred dialog/focus updates.
+
+Import the Kit types you use explicitly and write `#[gpui_kit::test]` (or `#[gpui::test]`
+in Zedis). Avoid `use gpui_kit::*;` in test modules: it imports GPUI’s `test` macro
+and can shadow Rust’s built-in `#[test]`. Add `test-support` to the application's
+`gpui-kit` development dependency, using exactly the same source and version as
+its normal dependency (Zedis enables `test-support` on both `gpui` and `gpui-kit`
+in `[dev-dependencies]`). The helpers require a Kit revision that includes them;
+check the installed API before assuming an older published release supports them.
+No extra testing crate or GPUI patch is required.
 
 For a standalone test package beside a Kit checkout:
 
@@ -41,18 +45,24 @@ gpui-kit = { path = "../gpui-kit/crates/kit", features = ["test-support"] }
 
 Headless tests still need the platform's native build dependencies. Run
 `cargo generate-lockfile` once for the new package, then
-`cargo test --test ui --locked`. In the Kit repository the equivalent command
-is `cargo test -p gpui-kit --features test-support --test ui --locked`.
+`cargo test --test ui --locked`. In the Kit repository, use:
+
+```sh
+cargo test -p gpui-kit --features test-support --test ui --locked
+cargo test -p gpui-kit --features test-support --test integration --locked -- input:: input_focus::
+```
+
+For a focused investigation in Kit, select a module such as `--test integration --locked -- input::history::` (append `-- --list` to inspect discovery without running). For changes to Input, Textarea or Editor in the Kit repository, `script/test-input` combines Kit UI workflows with Base editing/IME/token regressions and Component `InputGroup` tests.
 
 ## UI integration workflow
 
 1. Import the production view and constructor from the application library.
    Keep state entities and subscriptions owned by that view. Define a view
    inside a test only for a self-contained example or a deliberate fixture.
-2. Initialize with `cx.update(gpui_kit::init)`, open a headless window of an
-   explicit size through `gpui_kit::open_window`. Its Base `Root` renders
-   the dialog, sheet and notification layers above the view automatically.
-   Do not mount overlay layers in the application view.
+2. Initialize with `cx.update(gpui_kit::init)` (or `test_support::init_ui(cx)` in Zedis),
+   open a headless window of an explicit size through `gpui_kit::open_window`.
+   Its Base `Root` renders the dialog, sheet and notification layers above the
+   view automatically. Do not mount overlay layers in the application view.
 3. Render a frame and locate existing control IDs. Custom native elements opt
    in with `.id("status").test_support()` through `TestSupportExt`. Place it
    before `.track_focus(&handle)`; custom wrappers must forward that method
@@ -65,6 +75,36 @@ is `cargo test -p gpui-kit --features test-support --test ui --locked`.
    disabled control rejecting the interaction or invalid input preventing save.
 6. Run the affected test target and report its result. An uncompiled example or
    a test which never checks the action's outcome is not completion evidence.
+
+## Core semantics
+
+- `find` requires a target and explains missing/ambiguous paths; `try_find` permits absence.
+- `within` follows existing GPUI ID scopes, including unobserved parents. Pointer
+  operations and `drag_to` resolve scoped IDs; scoped keyboard operations require
+  an observed focus binding inside the scope.
+- `ElementSnapshot` is immutable. Re-query after interactions; optional state means
+  unreported when `None`, not false.
+- `.test_support()` registers identity; native accessibility properties supply state.
+  There are no test-only setters. `label` and `value` are accessibility properties,
+  not rendered text. Missing state (including disabled) remains `None`. Focus queries
+  diagnose native focus support without an observed binding; place `.test_support()`
+  before `.track_focus(&handle)`.
+- `render_frame` refreshes external changes. Synchronous interactions refresh their
+  frames; deferred/async effects use `wait_for` outside a window update.
+- `press` sends native key-down/key-up events for commands; Enter must not be
+  emulated by injecting IME newline text. `input` supplies text and does not model
+  a full OS input method.
+- Clicks use real hit testing. `click_at` provides a local offset for clipped targets.
+- Instrumentation adds no layout container, but evaluates computed style an extra time.
+  Snapshots cannot infer an unobserved ancestor's opacity or inspect pixels.
+- `Input`, `Textarea`, and `Editor` keep their component IDs on the outer frame for hit
+  testing, layout, and addon scopes. `window.find(component_id)` reads role, label,
+  value, and focus from the explicitly associated native editor while retaining the
+  frame's path, bounds, and visibility. Existing ID queries do not require an
+  accessible label or knowledge of an internal editor ID. An independent addon can
+  have focus inside the frame while the component's text owner reports no focus.
+  The relationship does not add a native text node or register another focus handle;
+  `find_by_label` and role queries still enumerate the actual native owners once.
 
 ## Complete example
 
@@ -168,7 +208,7 @@ fn saves_a_profile_through_the_ui(cx: &mut TestAppContext) {
         assert_eq!(status.label(), Some("Saved: Ada 中"));
         assert!(status.bounds().top() >= window.find("save").bounds().bottom());
     })
-    .unwrap();
+    .expect("update window");
 
     // Verify the application result as well as the native properties.
     cx.update(|cx| {
@@ -297,6 +337,25 @@ This does not establish that a browser opened the destination. The test
 platform exposes no cursor-style reader; URL and callback assertions do not
 verify the pointer cursor.
 
+## Adding test support to controls
+
+Register the actual identified element before `.track_focus(&handle)`, using the same
+handle as production keyboard behavior. An observed outer container without a tracked
+handle does not make an unobserved custom input available to scoped `input` or `press`.
+These helpers require observed focus inside the scope and recheck it for every character.
+
+Missed-binding diagnostics are best effort: they depend on native accessibility
+`Action::Focus`. A custom element that omits that action can silently return `None`
+even when focus tracking was placed before `.test_support()`. Review the builder order
+and assert both unfocused and focused snapshots when adding a control; do not treat
+absence of a panic as proof of correct registration. Debug prints detected omissions
+as `focused: <binding missed>` rather than `None`.
+
+When a component stores an observed native base, forward its public `track_focus`
+method to that base as well as forwarding `interactivity()`. The trait's default
+setter alone bypasses observation (`native_parts_forward_their_public_focus_binding`
+protects this builder path in Kit).
+
 ## Frames and async work
 
 Snapshots are owned facts from the last completed frame, not live elements.
@@ -347,8 +406,12 @@ appropriate to that production animation before asserting final geometry.
   explicit macOS (Metal) and Linux (WGPU) rendering target is
   `cargo test -p gpui-kit --features test-support --test rendering --locked`.
   Linux requires a working WGPU adapter and can use Mesa lavapipe. Windows
-  explicitly skips this target because GPUI 0.3.8 has no Windows headless renderer.
-  Missing renderer support on macOS or Linux fails instead of producing fake images.
+  explicitly skips this target because the pinned GPUI (`gpui-pre 0.3.14`) has
+  no Windows headless renderer. Missing renderer support on macOS or Linux
+  fails instead of producing fake images. The rendering suite detects visual
+  regressions such as missing checkbox marks, invisible input text, wrapped CJK
+  text with inline code, button focus-line placement/contrast, menu/list
+  selection transitions, and table keyboard-only focus.
 
 ## Additional resources
 

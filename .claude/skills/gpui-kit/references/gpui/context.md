@@ -45,6 +45,8 @@ fn main() {
         let entity = cx.new(|cx| MyState::default());
 
         // Open windows (wraps the view in a `Root`)
+        // In gpui-pre 0.3.14, WindowBounds::centered takes Option<DisplayId> first:
+        // WindowBounds::centered(None, size(px(960.), px(640.)), cx)
         gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| MyView))
             .expect("failed to open window");
     });

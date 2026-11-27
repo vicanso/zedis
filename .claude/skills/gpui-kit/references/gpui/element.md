@@ -53,7 +53,7 @@ impl Element for MyElement {
     fn paint(&mut self, .., bounds: Bounds<Pixels>, layout: &mut Self::RequestLayoutState,
              paint_state: &mut Self::PrepaintState, window: &mut Window, cx: &mut App)
     {
-        window.paint_quad(paint_quad(bounds, Anchor::all(px(4.)), cx.theme().background));
+        window.paint_quad(fill(bounds, cx.theme().background));
 
         window.on_mouse_event({
             let hitbox = paint_state.hitbox.clone();
@@ -67,11 +67,9 @@ impl Element for MyElement {
     }
 }
 
-// Enable element to be used as child
-impl IntoElement for MyElement {
-    type Element = Self;
-    fn into_element(self) -> Self::Element { self }
-}
+// gpui-pre 0.3.14 provides `impl<T: Element> IntoElement for T`:
+// never write a manual `impl IntoElement for MyElement` (causes E0119).
+// Use `#[derive(IntoElement)]` only on `RenderOnce` components.
 ```
 
 ## Core Concepts

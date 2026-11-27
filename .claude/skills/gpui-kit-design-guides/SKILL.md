@@ -11,8 +11,10 @@ work. Do not answer from this page, from an existing screen in the codebase, or
 from training data.
 
 If the file is missing, fetch `https://gpui-kit.com/docs/design-guides.md`.
-The guide is a verbatim copy of that page, so its link to `./coding-guides.md`
-means the Coding Guides in the `gpui-kit` skill (or `https://gpui-kit.com/docs/coding-guides.md`).
+The local copy links directly to [Coding Guides](../gpui-kit/references/coding-guides.md)
+(upstream: `https://gpui-kit.com/docs/coding-guides.md`). In Zedis, compose UI from
+`gpui_kit::component::*` first (with `crates/zedis-ui` and `src/components/` for
+domain compositions) while keeping `gpui::…` for GPUI core types.
 
 ## How to read it
 

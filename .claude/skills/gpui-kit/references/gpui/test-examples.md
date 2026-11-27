@@ -130,11 +130,14 @@ cargo test -- --nocapture
 
 ### Test Configuration
 
-Enable test-support feature for GPUI tests:
+Enable `test-support` for GPUI Kit tests (in Zedis, `[dev-dependencies]` enables
+`test-support` on both `gpui` and `gpui-kit`, and tests use `#[gpui::test]` with
+`test_support::init_ui(cx)`):
 
 ```toml
-[features]
-test-support = ["gpui/test-support"]
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 ```
 
 ```bash

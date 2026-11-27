@@ -75,7 +75,7 @@ div()
 ```rust
 div()
     .w(px(300.))
-    .bg(cx.theme().surface)
+    .bg(cx.theme().secondary)
     .rounded(px(8.))
     .shadow_md()
     .p(px(16.))
@@ -247,11 +247,11 @@ If you see a `z_index(...)` method in this repository, make sure it belongs to t
 
 ```rust
 div()
-    .bg(cx.theme().surface)
+    .bg(cx.theme().secondary)
     .text_color(cx.theme().foreground)
     .border_color(cx.theme().border)
     .when(is_hovered, |el| {
-        el.bg(cx.theme().hover)
+        el.bg(cx.theme().list_hover)
     })
 ```
 

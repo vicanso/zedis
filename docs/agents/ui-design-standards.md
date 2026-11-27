@@ -1,23 +1,59 @@
 # Zedis UI Design Standards (gpui-kit)
 
-Normative for `src/views/`, `src/components/` and `crates/zedis-ui/`. Distilled from the vendored gpui-kit Design Guides (`.claude/skills/gpui-kit-design-guides/`) and the Native Shell Design Guides (<https://nsh.dev/docs/design-guides.md>), adapted to Zedis: one desktop idiom shared by the desktop app and the web build (pointer + keyboard, compact controls, persistent navigation). Mobile, TUI, sound, springs and shaders from NSH do not apply.
+Normative for `src/views/`, `src/components/` and `crates/zedis-ui/`, aligned with `gpui-kit 0.11.0` (`gpui-component 0.11.0` / `gpui-base 0.11.0` / `gpui-pre 0.3.14`). Distilled from the vendored gpui-kit Design Guides (`.claude/skills/gpui-kit-design-guides/`) and the Native Shell Design Guides (<https://nsh.dev/docs/design-guides.md>), adapted to Zedis: one desktop idiom shared by the desktop app and the web build (pointer + keyboard, compact controls, persistent navigation). Mobile, TUI, sound, springs and shaders from NSH do not apply.
 
-`AGENTS.md` holds the must-follow summary; this file holds the tables, recipes and the finishing checklist. When they disagree, fix this file and `AGENTS.md` together.
+`AGENTS.md` holds the must-follow summary; this file holds the component selection matrix, `gpui-kit 0.11.0` technical rules, design tables, finishing checklist, and the dated audit baseline. When they disagree, fix this file and `AGENTS.md` together.
 
 ## 1. Foundations: the UI layer
 
-Zedis has three layers, and features only compose the top two:
+Zedis has three layers, and features compose from the top down—always reach for `gpui_kit::component` (and `gpui_kit::base` when not re-exported) first:
 
 | Layer | Owns | Examples |
 | --- | --- | --- |
-| `gpui_kit::component` | Behavior, focus, keyboard, base look | `Button`, `ButtonGroup`, `Input`, `Editor`, `Select`, `PopupMenu`, `DropdownMenu`, `Popover`, `Tooltip`, `Tab`, `Badge`, `Tag`, `Kbd`, `Skeleton`, `Spinner`, `Empty`, `Alert`, `Sheet` |
-| `crates/zedis-ui` | Target-agnostic styled widgets | `ZedisCard`, `ZedisDialog`, `ZedisForm`, `ZedisTextTable`, `ZedisDivider`, `ZedisSelect`, `ZedisLoading` |
-| `src/components/` | Redis-domain widgets | `KeyTypeBadge`, `kv_delegate`, `ZedisKvTable` |
+| `gpui_kit::component` (+ `gpui_kit::base`) | Behavior, focus, keyboard, base look | `Button`, `ButtonGroup`, `DropdownButton`, `Input` (+ `.list()`), `Textarea`, `Editor` (+ `GutterStyle`), `NumberInput`, `Select`, `Combobox`, `Switch`, `Checkbox`, `Radio`/`RadioGroup`, `Calendar`/`DatePicker`/`TimeField`, `DataTable`, `List`, `Tree`, `VirtualList`, `DescriptionList`, `Diff`, `Dialog`, `Sheet`, `Popover`/`PopupMenu`/`DropdownMenu`/`Tooltip`/`HoverCard`, `Command`, `Tab`/`TabBar`, `Badge`, `Tag`, `Kbd`, `Empty`, `Skeleton`, `Spinner`, `Progress`, `Alert`, `Separator`, `Clipboard`, `Resizable`, `Scrollbar`/`ScrollbarPlacement`, `Toolbar`, `Chart`, `TextView`, `gpui_kit::base::SelectableText` |
+| `crates/zedis-ui` | Target-agnostic styled widgets | `ZedisCard`, `ZedisDialog`, `ZedisForm`, `ZedisTextTable` (`fitted_table`), `ZedisDivider`, `ZedisSelect`, `ZedisSkeletonLoading`, `ZedisPanelHeader` (`panel_header`), `ZedisStatChip` (`stat_chip`), `ZedisHintBanner` (`hint_banner`), `help_popover`, `ZedisAboutPage` |
+| `src/components/` | Redis-domain widgets | `KeyTypeBadge`, `ZedisKvDelegate` (`ZedisKvTable` / `kv_delegate`) |
 
 - **Limited API.** A widget exposes what varies by meaning: `variant`, `Sizable` size, states (`selected`, `disabled`, `loading`), slots (label, icon, children) and events. Its colors, radii, paddings, hover and focus live inside it. Callers pass layout only (`w`, `flex_1`, alignment, margins).
 - **A missing look becomes a variant first.** When a feature needs a look the layer lacks, add a variant, size or helper there, then use it. A missing color role becomes a theme-derived function in `src/helpers/color.rs` (like `card_background`), never a literal at the call site.
 - **Extract on the second use.** Panel header (back button, title, trailing actions, one hairline), filter bar, stat chip, `Text | Tree` switch, status line and empty state are shared patterns: the second view that needs one extracts it.
 - **No hand-built controls.** Never build a button, toggle, tab or menu from `div().on_click(...)`. The one exception is a virtualized row container inside `uniform_list` / `List`, which still owes hover, selected, keyboard and a domain `ElementId`.
+
+### Component selection rules (use `gpui-kit` first)
+
+Check `gpui_kit::component::*` (and `gpui_kit::base::*`) before using `crates/zedis-ui`, and only use `crates/zedis-ui` or `src/components/` when the domain/layout wrapper adds real app semantics (documented below). Hand-rolling `div` UI when a kit component fits is forbidden.
+
+| UI need | Prefer `gpui_kit` first | Justified `crates/zedis-ui` or `src/components/` wrapper | Do not hand-roll |
+| --- | --- | --- | --- |
+| Actions, segmented switches, toolbars | `Button`, `ButtonGroup`, `DropdownButton`, `Toolbar` / `ToolbarGroup` | `ZedisPanelHeader` (`panel_header`) for wrapping panel headers (`px_3`, `border_b_1`) | `div().on_click(...)` buttons/tabs/sort headers; icon buttons missing `.tooltip(...)` + domain `ElementId` |
+| Single-line text & autocomplete | `Input`, `Input::list(&Entity<ListState<D>>)` for completions | — | `EditorState` for non-LSP single-line suggestions (reserve `Editor` + `CompletionProvider` for semantic LSP completions) |
+| Code, structured text & copyable prose | `Editor` (`GutterStyle`, folding, `active_line_only_when_focused`), `Textarea`, `gpui_kit::base::SelectableText` | — | Unselectable `Label` dumps for multi-line/copyable text; `.disabled(true)` for read-only values (use `InputEvent::Change` snap-back) |
+| Pickers & boolean/choice inputs | `Select`, `Combobox`, `Switch`, `Checkbox`, `Radio`, `RadioGroup` | `ZedisSelect` (lightweight `usize`-indexed string lists) | Custom clickable `div` toggles or picker rows |
+| Date & time inputs | `Calendar`, `DatePicker`, `TimeField` (all `jiff::civil`) | — | Raw `InputState` clock strings with custom parsers; `chrono` types |
+| Tables, lists & key-value summaries | `DataTable`, `List` / `ListItem`, `Tree`, `VirtualList`, `DescriptionList` | `ZedisTextTable` (`fitted_table`: ring buffer, 3-mode sort, proportional `.fills()`, hover copy); `ZedisKvDelegate` (Redis collection editing) | Fixed-`px` `h_flex` key-value rows (`DescriptionList` fits) or unvirtualized scrolling tables |
+| Dialogs, drawers, menus & popups | `Dialog`, `Sheet`, `Popover`, `PopupMenu`, `DropdownMenu`, `Tooltip`, `HoverCard`, `Command` | `ZedisDialog` (alerts with `.show_cancel(true)`, Cancel-first `.danger()` focus, bodyless focus wiring); `help_popover` | Hand-positioned `div` popups; inline `Input`s in `ZedisDialog` (use a view entity) |
+| Forms | `Form` (`v_form` / `h_form` / `field`) | `ZedisForm` (conditional visibility, `fill_height()`, dialog footer hoisting, TSV paste) | Hardcoded window-minus-chrome height math when `fill_height()` + `fill()` works |
+| Status pills, badges & metric chips | `Tag` (inline pills/chips), `Badge` (`.dot()` / `.count()` corner overlay on icons/avatars) | `KeyTypeBadge` (`.plain(true)` in tree, mono pill in header); `ZedisStatChip` (`stat_chip`, candidate to delegate styling to `Tag`) | Custom `rounded_full` / `border_1` status `div` pills or dots |
+| Keyboard shortcut keycaps | `Kbd` on native desktop | `humanize_keystroke` (`uses_command_key()`) while `wasm32` needs runtime Apple-keyboard detection | Hand-styled keycap `div`s on desktop; remember `Kbd::format` uses compile-time `#[cfg(target_os = "macos")]` (wrong on `wasm32`) |
+| Empty states, loading & progress | `Empty` (`EmptyHeader`, `EmptyMedia`, `EmptyTitle`, `EmptyDescription`, `EmptyContent`), `Skeleton`, `Spinner`, `Progress` | `ZedisSkeletonLoading` | Custom centered empty `v_flex` panels or `div().rounded_full()` progress bars |
+| Inline notices & warnings | `Alert` (`Alert::info` / `warning` / `error`, `.on_close`) | Legacy `ZedisHintBanner` (prefer `Alert::info` going forward) | Custom `theme.warning` / `danger` / `muted` `h_flex` banners |
+| Diffs | `Diff` (`DiffState`, `DiffFile::excerpts`, `DiffSpanHighlight`, `on_text_*`) | — | Custom `Label`-per-line diff lists |
+| Splits, cards, dividers & scrollbars | `h_resizable` / `v_resizable`, `Separator`, `Scrollbar` (`ScrollbarPlacement`), `DockSkin` | `ZedisCard` (connection/action cards), `ZedisDivider` (auto-interleaved cluster dividers) | Manual `w(px(1.))` / `h_px()` hairline `div`s |
+
+### `gpui-kit 0.11.0` & `gpui-pre 0.3.14` technical rules
+
+- **Blanket `IntoElement` on `Element` (`gpui-pre 0.3.14`):** `pub trait Element: 'static + Sized` drops `IntoElement` as a supertrait and provides `impl<T: Element> IntoElement for T`. Never write a manual `impl IntoElement for MyElement` (`E0119`); `#[derive(IntoElement)]` for `RenderOnce` stays valid.
+- **`jiff::civil` replaces `chrono` (`gpui-component 0.11.0`):** `calendar::Date` wraps `jiff::civil::Date` (`first_day_of_week` defaults to `jiff::civil::Weekday::Sunday`), `date_picker::DateTime` wraps `jiff::civil::DateTime`, and `TimeFieldState` / `TimeFieldEvent::Change` use `jiff::civil::Time` (formatted with `.strftime(...)`).
+- **Non-generic `Path`, `FillOptions`, & `WindowBounds::centered` (`gpui-pre 0.3.14`):** `gpui::Path` is non-generic (`PathBuilder::build(self) -> Result<Path, Error>`); `FillOptions` has only `pub fill_rule: FillRule` (`tolerance` removed — call `PathBuilder::fill()` directly); `WindowBounds::centered` takes `(display_id: Option<DisplayId>, size: Size<Pixels>, cx: &App)`.
+- **`Input` suggestions & `Editor` `GutterStyle` / folding (`0.11.0`):**
+  - `Input::list(&Entity<ListState<D>>)` shows a native suggestion popup under single-line `Input` while focused and editable (`Enter` emits `InputEvent::PressEnter` until `Down` highlights an item).
+  - `Editor::gutter_style(GutterStyle)` customizes `with_gap`, `with_line_number_color`, `with_active_line_number_color`, `with_line_number_font_family`, and `with_line_number_font_size` while keeping `Editor`'s built-in line-number reserve (`MAX_LINE_NUMBER_DIGITS = 9` in `gpui-base 0.11.0`).
+  - `EditorState::active_line_only_when_focused(bool)` / `set_active_line_only_when_focused` suppresses inactive-pane line highlights.
+  - Public folding on `EditorState` (and `InputState`/`TextareaState` via the underlying `gpui_kit::base::input::InputBaseState`, active in code-editor mode): `set_folded(start_line, folded, cx)`, `fold_all(cx)`, `unfold_all(cx)`, `fold_at_level(level, cx)`, and `fold_candidates()`.
+- **Left/top `Scrollbar` (`ScrollbarPlacement`):** `Scrollbar::placement(ScrollbarPlacement::{BottomRight, BottomLeft, TopRight, TopLeft})` and `InputState`/`TextareaState`/`EditorState::scrollbar_placement(...)` / `set_scrollbar_placement(...)` allow left/top scrollbars when layout calls for them (default trailing edge stays `BottomRight`).
+- **New `0.11.0` capabilities (`Diff`, `SelectableText`, `Button`, `Resizable`, `DockSkin`, `Presence`):** `Diff::span_highlights`, `DiffFile::excerpts(path, parts)` (partial file excerpts preserving 1-based line numbers), and `Diff::{on_text_hover, on_text_click, text_cursor}`; `gpui_kit::base::SelectableText::{reveal_range, on_reveal}`; `Button::aria_expanded(bool)` for disclosures; `ResizableState::is_resizing()`; `DockSkin::set_split_divider_line_visible(bool, cx)`; and `Presence` returning `PresencePhase::Absent` immediately when closed on first sample.
+- **Linux `gpui-kit/x11` & `gpui-fast 0.1.19`:** `gpui-kit 0.11.0` enables `x11` by default alongside `wayland` (omit default features for Wayland-only Linux builds); `--features gpui-fast` compiles against `gpui-fast 0.1.19` via `extern crate gpui_kit as gpui;` in `src/lib.rs` and `crates/zedis-ui/src/lib.rs`.
+- **UI integration testing (`TESTING.md` / `gpui_kit::test`):** Place `.test_support()` before `.track_focus(&handle)` on custom controls and forward public `track_focus` on wrappers (`native_parts_forward_their_public_focus_binding`). `Input`/`Textarea`/`Editor` project component IDs to their native editor (`window.find(id)` reads role/label/value/focus while `find_by_label`/role queries enumerate native owners once). Use `find` / `try_find` / `within`, immutable `ElementSnapshot` (re-query after actions), `press` (commands) vs `input` (text), `click_at` for clipped targets, `render_frame` + `wait_for` for deferred effects, and reduced motion (set by `test_support::init_ui(cx)`).
 
 ## 2. Hierarchy and emphasis
 
@@ -93,9 +129,11 @@ GPUI Component makes the theme's base font size the window's `rem`, so `gap_*`, 
 
 ### Component standards
 
+- **Follow the §1 component selection rules.** Prefer `gpui_kit::component::*` (and `gpui_kit::base::*`) over custom `div` chrome: `Tag` for inline pills/chips, `Badge` (`.dot()` / `.count()`) for icon/avatar corner overlays, `Alert` for inline/closable banners, `Separator` (or `ZedisDivider` for interleaved clusters) for hairlines, `Toolbar` / `ToolbarGroup` inside `ZedisPanelHeader` when arrow-key navigation across button groups is helpful, `Input::list(&ListState<D>)` for single-line autocomplete, and `Kbd` for desktop shortcut keycaps (noting `Kbd::format` uses compile-time `#[cfg(target_os = "macos")]`, so browser builds on macOS still fall back to `humanize_keystroke` via `uses_command_key()`).
 - **One size per band.** Every `Button`, `ButtonGroup`, `Input`, `Select` and `DropdownMenu` trigger in one toolbar, header or filter row shares one `Sizable` step (usually `.small()`), so heights, text, icons and center lines agree.
 - **Icon buttons** are square at the band's size, one size per group, each with `.tooltip(...)` and a domain `ElementId`.
-- **One popup surface.** Use gpui-kit's `Popover`, `PopupMenu`, `DropdownMenu`, `Select` and `Tooltip`; never approximate one with an absolutely positioned `div` and hand-picked border/shadow.
+- **Disclosures & triggers.** Set `.aria_expanded(open)` (alongside `.selected(open)` where appropriate) on `Button` triggers that control popovers, menus, or collapsible sections.
+- **One popup surface.** Use gpui-kit's `Popover`, `PopupMenu`, `DropdownMenu`, `Select`, `HoverCard`, and `Tooltip`; never approximate one with an absolutely positioned `div` and hand-picked border/shadow.
 - **Inputs and their lists share padding**, so text in a field and in its dropdown starts on one line.
 
 ### Action hierarchy
@@ -135,7 +173,7 @@ GPUI Component makes the theme's base font size the window's `rem`, so `gap_*`, 
 
 Motion explains change; it is never ambient decoration and never required to understand state.
 
-- **Prefer built-in motion** from gpui-kit (`Tab` indicator, `Sheet`, `Progress`, `Skeleton`) before hand-rolled animation.
+- **Prefer built-in motion** from gpui-kit (`Tab` indicator, `Sheet`, `Progress`, `Skeleton`, `Presence` — which in 0.11.0 returns `PresencePhase::Absent` immediately when closed on first sample) before hand-rolled animation.
 - **API:** `gpui::AnimationExt::with_animation(id, Animation::new(duration).with_easing(...), |el, delta| ...)` with easings such as `ease_in_out` and `ease_out_quint()`; check `cx.reduce_motion()` and render the end state at once when it is true.
 - **Tokens, not literals.** When the first hand-rolled animation is needed, define the tokens once in `src/helpers/motion.rs` and use only them:
 
@@ -154,13 +192,15 @@ Motion explains change; it is never ambient decoration and never required to und
 
 ## 8. Data-heavy views
 
-- Virtualize every collection that can grow (`uniform_list`, `List`, `ZedisKvTable`, `ZedisTextTable`); keep per-row state in data keyed by domain id, never in per-row entities.
+- Virtualize every collection that can grow (`uniform_list`, `List`, `DataTable`, `ZedisKvTable`, `ZedisTextTable`); keep per-row state in data keyed by domain id, never in per-row entities.
+- Use `DescriptionList` for multi-field key-value summary grids instead of fixed-`px` `h_flex` rows.
 - Keep headers and the identity column (the key) stable; truncate long keys with a recovery path.
 - Distinguish focus, hover, active row and multi-selection; preserve selection by key across filtering and reordering.
 - Keep sorting and filtering visible and reversible; use progressive disclosure for secondary columns and inspectors.
 - A table compares consistent fields, a list scans heterogeneous items, a tree shows real hierarchy; never use a complex layout as decoration.
-- Structured values (multi-line text, code, JSON) render in a read-only `Editor` (highlighting, line numbers, folding, search; edits snapped back on `InputEvent::Change` instead of dimmed `.disabled(true)`), paired with `ZedisJsonTree` behind a `Text | Tree` `ButtonGroup` when JSON-shaped. Never a raw `Label` dump.
-- Design all content states: Empty (with the next action), Loading (only while actually waiting; a skeleton only when the shape is known), Error (cause + recovery), Truncated / Long.
+- Structured values (multi-line text, code, JSON) render in a read-only `Editor` (highlighting, line numbers, `GutterStyle`, folding via `fold_all`/`unfold_all`/`fold_at_level`/`set_folded`, `active_line_only_when_focused`, search; edits snapped back on `InputEvent::Change` instead of dimmed `.disabled(true)`), paired with `ZedisJsonTree` behind a `Text | Tree` `ButtonGroup` when JSON-shaped. Copyable plain-text output (such as diagnostics or `DOCTOR` prose) uses `gpui_kit::base::SelectableText` (`reveal_range`) or a read-only `Editor` — never an unselectable `Label` dump.
+- Render diffs through `gpui_kit::component::diff::Diff` (`DiffState`, `DiffFile::excerpts`, `DiffSpanHighlight`, `on_text_hover`/`on_text_click`/`text_cursor`) and progress/share bars through `Progress`; render date/time inputs through `Calendar`, `DatePicker`, and `TimeField` (`jiff::civil`).
+- Design all content states using `Empty` (`EmptyHeader`, `EmptyMedia`, `EmptyTitle`, `EmptyDescription`, `EmptyContent`) for empty/disconnected states (with the next action), `Skeleton` / `ZedisSkeletonLoading` / `Spinner` for Loading (only while actually waiting; a skeleton only when the shape is known), `Alert` / inline recovery for Error (cause + recovery), and Truncated / Long states.
 
 ## 9. Interface language (all 8 locales)
 
@@ -187,15 +227,39 @@ Run on every screen the change added or touched, in **light and dark**, at the *
 - **Motion:** inventory written; tokens only; `reduce_motion` honored.
 - **Tests:** `#[gpui::test]` covers the controls by shared ID constants.
 
-## 11. Known debt (audit 2026-11-16, updated after cleanup)
+## 11. Known debt (audit 2026-11-27 baseline)
 
-Resolved in the 2026-11-16 UI cleanup pass:
-- Centralized `src/helpers/motion.rs` (`MOTION_INSTANT`, `MOTION_FAST`, `MOTION_BASE`, `MOTION_SLOW`, `should_animate`, `motion_duration`).
-- Eliminated raw `rgb(...)` / `hsla(...)` color literals from `src/views/` into `src/helpers/color.rs` (with WCAG 4.5:1 contrast tests).
-- Removed non-link `.cursor_pointer()` across `src/views/`, `crates/zedis-ui/`, and `src/root/tabs.rs`, and added `Role::Button` to interactive chrome strips.
-- Converted toggle/filter `.primary()` buttons to `.selected(active)` (keeping `.primary()` for true decision commits).
-- Extracted shared `panel_header` and `stat_chip` widgets into `crates/zedis-ui`, aligned `KeyTypeBadge` to `text_xs` + theme radius, fixed `account.rs` spinner `.icon(...)`, replaced bare `SystemUIFont` bold headings with `.font_semibold()`, fixed `ZedisDivider` hairline color, and standardized 8-locale copy.
+**Rule:** fix debt in files and widgets you touch; never add new debt.
 
-Remaining audited baseline:
-- Intentional `px(...)` exceptions remain for 1px hairlines, fixed `uniform_list` / table row heights, persisted/minimum pane and dialog widths, canvas/bitmap/geo geometry, and window chrome insets.
-- Adaptive scroll containers in popovers, command/recent-key palettes, `export_servers_dialog.rs`, and `geo_map.rs` intentionally pair `.max_h(...)` with GPUI native `.overflow_y_scroll().track_scroll(...)` + sibling `Scrollbar` (distinct from gpui-kit's `ScrollableElement::overflow_y_scrollbar`).
+Historical cleanup (`2026-11-16`): centralized `src/helpers/motion.rs`, eliminated raw `rgb(...)`/`hsla(...)` literals from `src/views/`, removed non-link `.cursor_pointer()`, converted filter `.primary()` buttons to `.selected(active)`, extracted `panel_header` and `stat_chip` into `crates/zedis-ui`, fixed `account.rs` spinner `.icon(...)`, fixed `ZedisDivider` hairline color, and standardized 8-locale copy.
+
+### Compliant invariants (verified 2026-11-27)
+- **Zero raw color literals** (`rgb`/`rgba`/`hsla`/hex) in `src/views/**`, `src/components/**`, `crates/zedis-ui/src/**`, `src/root*`, `src/dialogs*` (only 2 `gpui::black()`/`white()`/`transparent_black()` fallbacks remain at `src/views/status_bar/server_status.rs:199` and `src/views/key_tree/delegate.rs:232`).
+- **Zero violations** for: `.cursor_pointer()` (`0`), `Button::loading(true)` missing `.icon(...)` (`0`), layout-shifting hover rules (`0`), manual `impl IntoElement` on `Element` (`0`), `window.blur` (`0`), `InputState` `\n` placeholders (`0`), inline `Input` in `ZedisDialog` (`0`), `overflow_y_scrollbar()` + `max_h` on the same element (`0`), `.font_bold()` (`0`, and 5/5 `FontWeight::BOLD` pair with `get_mono_font_family()`), `Label` inheriting parent `.text_color()` (`0`), bare `div()` wrapping `uniform_list` directly (`0`), and hand-rolled `with_animation` (`0`, all tokens centralized in `src/helpers/motion.rs`).
+
+### Audited baseline exceptions (keep intentional)
+- **Audited `px(...)` exceptions (147/572 total)**: 1px hairlines/dividers/`px(0.)` (44), persisted/min pane, dialog, sidebar, & overlay bounds (62), canvas/chart/bitmap/geo geometry (37), and fixed `uniform_list`/table row heights (4).
+- **Adaptive `max_h` scroll containers**: `crates/zedis-ui/src/help.rs`, `src/views/command_palette.rs`, `src/views/recent_keys_palette.rs`, `src/views/export_servers_dialog.rs`, `src/views/geo_map.rs`, and `src/views/shortcuts_overlay.rs:209` intentionally pair `.max_h(...)` with GPUI native `.overflow_y_scroll().track_scroll(...)` + sibling `Scrollbar` (whereas `shortcuts_overlay.rs:233-241` uses a fixed `.h(px(420.))` and can migrate to `.overflow_y_scrollbar()`).
+
+### Open debt baseline (2026-11-27)
+1. **Component adoption gaps (`gpui-kit 0.11.0`)**:
+   - *Inline pills & overlay dots (`Tag` / `Badge`)*: `crates/zedis-ui/src/card.rs:314-324` (`CardVariant::Action` at `L223-264` also hand-builds clickable `div`s), `crates/zedis-ui/src/stat_chip.rs` (structural overlap with `Tag`), `src/components/kv_delegate.rs:582-592` (`format_chip`; `L615-625` manual copy button vs `Clipboard`), `src/components/key_type_badge.rs` (non-plain mode overlaps `Tag::custom`), `src/views.rs:224-247` (`unavailable_chip`), `status_bar/server_status.rs:198-227`, `title_bar.rs:506-515`, `servers/grid.rs:71-77,236-242`, `config_editor/render.rs:71-78`, `sidebar.rs:602-614,663-682`, `hll_editor.rs:271-277`, `vector_set_editor.rs:732-738`, `probabilistic_editor.rs:307-313`, `timeseries_editor.rs:224-233`, `topology/replication.rs:63-72`, `root/tabs.rs:468-470`.
+   - *Inline notices & warnings (`Alert`)*: `crates/zedis-ui/src/hint.rs` (`ZedisHintBanner`), `src/views/persistence.rs:363-379`, `src/views/server_info.rs:626-636`, `src/views/pubsub_editor.rs:710-717`.
+   - *Hand-built progress bars (`Progress`)*: `src/views/memory_analysis/render.rs:938-945`, `src/views/slowlog_editor/top_commands.rs:538-545`, `src/views/hotkeys.rs:468-480`.
+   - *Hand-built empty/disconnected states (`Empty`)*: rich states (`unsupported_panel.rs`, `editor/render.rs`, `value_search.rs`, `keyspace_notifications.rs`, `value_diff.rs`, `key_tree/render.rs`, `sidebar.rs`, `config_editor/render.rs`) and centered text empty states (`search_manager/render.rs`, `workbench/results.rs`, `server_info.rs`, `pubsub_editor.rs`, `memory_analysis/render.rs`, `monitor.rs`, `hotkeys.rs`, `json_tree.rs`, `probabilistic_editor.rs`).
+   - *Manual 1px hairlines (`Separator` / `ZedisDivider`)*: `src/views/pubsub_editor.rs:613`, `src/views/value_diff.rs:564`, `src/views/servers/grid.rs:245`, `src/views/sidebar.rs:275`.
+   - *Unadopted `0.11.0` & kit widgets*: `Input::list` (`src/views/bytes_editor.rs:562-607` JSONPath bar still cites pre-0.11 single-line suggestion gap; `src/views/terminal.rs:628-680` suggestion popup), `EditorState` folding (`bytes_editor.rs`, `editor/more_menu.rs`), `TimeField` (`src/views/expire_at_dialog.rs:116-120,219` hand-parses `InputState` clock), `Diff` (`src/views/key_timeline_dialog.rs:117-192,849-893` bespoke diff; `src/views/config_editor/render.rs:242-325` `ConfigDiff` non-virtualized rows), `Kbd` (`editor/render.rs:840-858`, `shortcuts_overlay.rs:163-171`, `command_palette.rs:124-143`, `terminal.rs:615` — deferred/caveated on wasm due to `Kbd::format` compile-time `target_os = "macos"`), `gpui_kit::base::SelectableText` (`server_report_dialog.rs:150-157`, `crates/zedis-ui/src/about.rs:168-204`), `DescriptionList` (`persistence.rs:632-688`, `features_dialog.rs:106-134`; `persistence.rs:692-785` also hand-builds a fixed-width cluster table).
+2. **Unaudited `px(...)` spacing & sizing (425/572 total: 424/569 core UI + 1/3 in `src/root/tabs.rs`)**:
+   - Spacer divs/gaps/margins (`persistence.rs:1034-1066`, `crates/zedis-ui/src/form.rs:916,981`, `command_palette.rs:928`, `key_tree/delegate.rs:275,279,432`, `connection_diagnostics.rs:168`, `features_dialog.rs:107`).
+   - Fixed column/control widths & heights not scaling with UI font size — top files: `persistence.rs` (19), `geo_map.rs` (18), `metrics/alerts_dialog.rs` (17), `slowlog_editor/top_commands.rs` (14), `benchmark/render.rs` (13), `search_manager/render.rs` (11), `timeseries_editor.rs` (11), `memory_analysis/render.rs` (10), `stream_editor/info_pending.rs` (10), `server_load.rs` (9), `slowlog_editor/latency.rs` (9), `clients_manager.rs` (8), plus `crates/zedis-ui/src/text_table.rs:251-252` and `src/components/kv_delegate.rs:270-271`.
+   - Markdown heading `px(...)` ignoring `_base` (`crates/zedis-ui/src/help.rs:42-44`, `src/views/memory_analysis/rules.rs:42-45`) and fixed spinner/swatch/dot `px(...)` sizes (`key_tag_dialog.rs`, `root/tabs.rs:35`, `Spinner::with_size(px(14.))` in 4 views).
+3. **Interactive controls, `.primary()` budget, IDs, & states**:
+   - *19 custom clickable `div`/`h_flex`/`v_flex().on_click` controls*: 16 lacking `Role::Button` & `tab_stop` (`server_load.rs:638-704`, `workbench.rs:397-412`, `key_tag_dialog.rs:163-172,375-385`, `key_timeline_dialog.rs:665-677`, `keyspace_notifications/table.rs:169-176`, `monitor/summary.rs:266-280`, `lua_script_library/debugger.rs:647-657`, `search_manager/render.rs:420-429`, `benchmark/render.rs:693-704`, `workbench/snippets.rs:228-238`, `vector_set_editor.rs:612-645,691-700`, `topology/{cluster_load,cluster_nodes,cluster_slots}.rs`, `servers/grid.rs:246`, `key_tree/render.rs:242-274`) + 3 with `Role::Button` lacking `tab_stop` / keyboard trigger (`root/tabs.rs:416-438`, `title_bar.rs:403-433,570-585`).
+   - *`.primary()` overuse (44 total)*: 2 toggle/picker controls (`key_export.rs:698`, `slowlog_editor/commandlog.rs:163`), 7 multi-`.primary()` decision surfaces (`key_export.rs`, `compare_window.rs`, `keyspace_notifications.rs`, `search_manager/{render,cursor}.rs`, `migration_window/sections.rs`, `function_editor.rs`, `lua_script_library/render.rs`), and 4 non-commit toolbar/navigation buttons (`servers/grid.rs:120`, `proto_editor.rs:811`, `script_editor.rs:836`, `unsupported_panel.rs:132`).
+   - *States & IDs*: 1 icon-only `Button` missing `.tooltip(...)` (`multi_search.rs:714`), `list_active` used on `.hover(...)` (`vector_set_editor.rs:612,697`, `geo_map.rs:1046`), `.underline()` on non-link cell (`monitor/summary.rs:273`), and 47 index-based `ElementId`s on `Button::new` (e.g. `form/add_fields.rs`, `root/tabs.rs`, `acl_manager.rs`, `migration_window/sections.rs`, `servers/grid.rs`, `workbench.rs`).
+4. **Layout wrappers, color contrast tests, & accessibility**:
+   - *5 block `div().flex_1().min_h_0()` wrappers* around entities/`AnyView`/`AnyElement` (`acl_manager.rs:799`, `editor/render.rs:151,1148`, `secondary_window.rs:170`, `search_manager.rs:1125` — use `v_flex()`).
+   - *Color contrast test gaps (`src/helpers/color.rs`)*: `hex_address_color`, `canvas_surface_background`, `geo_node_colors`, `TOPOLOGY_MASTER_PALETTE`, and `topology_heat_color` lack automated WCAG AA 4.5:1 tests.
+   - *Status by color alone (3 sites)*: `lua_script_library/debugger.rs:658` (breakpoint dot without icon/label/tooltip), `key_tag_dialog.rs:153,168,378` (selected swatch border color only), `topology/cluster_slots.rs:480,489-495` (slot bar segments drop `_label`).
+   - *Focus traps & key contexts*: custom overlays (`command_palette.rs`, `recent_keys_palette.rs`, `shortcuts_overlay.rs`) lack `.focus_trap(...)`; only 4 `key_context` declarations exist across `src/views/`.
+   - *Font-weight advisory*: `FontWeight::SEMIBOLD` / `.font_semibold()` / `.font_medium()` sites mostly omit an explicit concrete font family (safe on bold since `5/5` `FontWeight::BOLD` use `get_mono_font_family()`).

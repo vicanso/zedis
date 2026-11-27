@@ -2,6 +2,8 @@
 
 Complete examples of implementing custom elements for various scenarios.
 
+> **Note (`gpui-pre 0.3.14`):** `Element` automatically implements `IntoElement` via a blanket `impl<T: Element> IntoElement for T`. Do not add a manual `impl IntoElement` block (`E0119`). Use `gpui_kit::base::SelectableText` in production instead of rebuilding a custom selectable text element.
+
 ## Table of Contents
 
 1. [Simple Text Element](#simple-text-element)
@@ -17,14 +19,6 @@ pub struct SimpleText {
     id: ElementId,
     text: SharedString,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
-}
-
-impl IntoElement for SimpleText {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 impl Element for SimpleText {
@@ -148,14 +142,6 @@ pub struct SelectableText {
     text: SharedString,
     selectable: bool,
     selection: Option<Selection>,
-}
-
-impl IntoElement for SelectableText {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 impl Element for SelectableText {
@@ -296,13 +282,12 @@ impl SelectableText {
 
         // Paint selection background
         for rect in selection_rects {
-            window.paint_quad(paint_quad(
+            window.paint_quad(fill(
                 Bounds::new(
                     point(bounds.left() + rect.origin.x, bounds.top() + rect.origin.y),
                     rect.size
                 ),
-                Anchor::default(),
-                cx.theme().selection_background,
+                cx.theme().selection,
             ));
         }
     }
@@ -342,14 +327,6 @@ struct ComplexLayoutState {
 struct ComplexPaintState {
     child_bounds: Vec<Bounds<Pixels>>,
     hitbox: Hitbox,
-}
-
-impl IntoElement for ComplexElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 impl Element for ComplexElement {
@@ -473,9 +450,8 @@ impl Element for ComplexElement {
         cx: &mut App
     ) {
         // Paint background
-        window.paint_quad(paint_quad(
+        window.paint_quad(fill(
             bounds,
-            Anchor::all(px(4.)),
             cx.theme().background,
         ));
 
@@ -560,10 +536,9 @@ impl ComplexElement {
             point(bounds.right() - scrollbar_width, bounds.top()),
             size(scrollbar_width, visible_height)
         );
-        window.paint_quad(paint_quad(
+        window.paint_quad(fill(
             track_bounds,
-            Anchor::default(),
-            cx.theme().scrollbar_track,
+            cx.theme().scrollbar,
         ));
 
         // Paint scrollbar thumb
@@ -571,9 +546,8 @@ impl ComplexElement {
             point(bounds.right() - scrollbar_width, bounds.top() + thumb_y),
             size(scrollbar_width, thumb_height)
         );
-        window.paint_quad(paint_quad(
+        window.paint_quad(fill(
             thumb_bounds,
-            Anchor::all(px(4.)),
             cx.theme().scrollbar_thumb,
         ));
     }

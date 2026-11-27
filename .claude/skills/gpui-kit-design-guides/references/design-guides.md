@@ -70,7 +70,7 @@ Do not copy these web assumptions blindly:
 | Browser focus and scrolling as a fallback | Explicit focus ownership and region-owned scrolling |
 | Mobile-first single column | Resizable desktop shell with a defined minimum window size |
 | Hover-revealed critical actions | Keyboard- and pointer-reachable actions that do not depend on hover |
-| A row of hover-only icon buttons | A visible primary action plus `DropdownMenu` or `ContextMenu` for secondary commands |
+| A row of hover-only icon buttons | A visible primary action plus `DropdownMenu` or `PopupMenu` (via `.context_menu(...)`) for secondary commands |
 | Link-styled text for application commands | `Button`, `outline`, or `ghost`; Link only for URLs, web resources, or email addresses |
 | Large touch density everywhere | Medium density by default; compact only where information work benefits |
 | CSS overrides across descendants | Typed builders, semantic parts, and application composition |
@@ -522,6 +522,17 @@ application owns composition and product semantics.
 - Use the standard component for its semantic role. A menu, dropdown menu,
   popover, select, and command palette are not interchangeable boxes; each owns
   different selection, focus, keyboard, dismissal, and layout contracts.
+  Use `Empty` (`EmptyHeader`, `EmptyMedia`, `EmptyTitle`, `EmptyDescription`,
+  `EmptyContent`) for empty states; `Kbd` for shortcuts; `Badge` / `Tag` for
+  compact counts and status chips; `Diff` (with `DiffFile::excerpts`,
+  `span_highlights`, and optional `on_text_hover`/`on_text_click`) for patches
+  and line-numbered excerpts; `gpui_kit::base::SelectableText` (with
+  `reveal_range`) when read-only text must be selectable; `TimeField` (with
+  `jiff::civil::Time`) for clock inputs; `Input::list(&list_state)` when a
+  single-line field offers autocomplete without restricting free-form typing;
+  `Button::aria_expanded(...)` on disclosure triggers; and `Editor` with
+  `GutterStyle`, `active_line_only_when_focused`, and folding controls for
+  structured/code text.
 - Preserve the component family's geometry. Menu rows share vertical and
   horizontal padding, height, icon and checkmark slots, separators, radius, and
   state treatment. Do not imitate one menu with a custom popup whose spacing
@@ -604,11 +615,11 @@ remain available through selection, keyboard, or a context menu.
 
 Use command frequency and scope to choose where an action lives:
 
-- keep the primary or frequent action visible as a labeled Button or familiar
+  - keep the primary or frequent action visible as a labeled Button or familiar
   toolbar control;
 - put secondary actions for the current region behind a visible
   `DropdownMenu` trigger;
-- put commands that act on the object under the pointer in a `ContextMenu`;
+- put commands that act on the object under the pointer in a `PopupMenu` (attached via `.context_menu(...)`);
 - expose the same important command through an Action/key binding when it has a
   natural keyboard form;
 - use a hover-revealed icon only as a shortcut to a command that remains
@@ -623,7 +634,7 @@ technology workflows.
 
 Choose `DropdownMenu` when users need a visible indication that more commands
 exist—for example a toolbar overflow, document actions, or account menu. Choose
-`ContextMenu` for selection- or object-scoped commands such as rename,
+a context `PopupMenu` (via `.context_menu(...)`) for selection- or object-scoped commands such as rename,
 duplicate, reveal, or remove. The context menu must not be the only way to
 perform an essential command; provide a menu-bar, toolbar, keyboard, or detail
 view path as appropriate.
@@ -727,7 +738,13 @@ sampled value rather than restarting from an old endpoint.
 Motion follows the continuity of the interaction. While a pointer or scroll
 position moves among related targets, keep the preview surface stable and
 update its content or position in place. Dismiss it only after the interaction
-ends; repeated fade-out and re-entry on each update reads as flicker.
+ends; repeated fade-out and re-entry on each update reads as flicker. When
+using `gpui_kit::base::motion::Presence`, closed initial renders settle to
+`PresencePhase::Absent` immediately without scheduling an extra frame.
+
+For new screens or major changes, note the screen's **motion inventory**
+(each state change paired with its built-in component motion or app motion token,
+or `none` with a reason).
 
 ## Designing data-heavy interfaces
 
@@ -942,9 +959,9 @@ the right decisions. Ask, in order:
    supplied by theme and scale tokens?
 7. **Does it remain usable in every state and constraint?** Verify keyboard and
    focus behavior, empty/loading/failure/permission states, longer translations,
-   zoom, minimum window size, and reduced motion.
+   light and dark themes, zoom, minimum window size, and reduced motion.
 8. **Has it been tested in a real window?** Complete the task with real
    components, copy, and representative content—not only an ideal screenshot.
 
-Continue with [Coding Guides](./coding-guides.md) to translate these design
+Continue with [Coding Guides](../../gpui-kit/references/coding-guides.md) to translate these design
 decisions into GPUI architecture and code.

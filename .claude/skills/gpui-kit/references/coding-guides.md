@@ -8,7 +8,7 @@ order: -13
 
 This guide describes the application architecture and code patterns that have
 proved durable in GPUI Kit. It is written for both engineers and coding
-agents. Read [Design Guides](./design-guides.md) first: code structure should
+agents. Read [Design Guides](../../gpui-kit-design-guides/references/design-guides.md) first: code structure should
 preserve product intent, not replace it.
 
 This is a normative guide. **Must** marks lifecycle, correctness, or ecosystem
@@ -141,10 +141,12 @@ which it is provided. Retain typed handles—`Entity`, `WeakEntity`,
 
 ### Use `RenderOnce` for value-like elements
 
-Use a `RenderOnce`/`IntoElement` component when all inputs can be supplied by
+Use a `RenderOnce` component when all inputs can be supplied by
 the caller and the element does not need to retain application state between
 frames. This is the normal choice for presentational wrappers and small
-controls.
+controls (`#[derive(IntoElement)]` generates `IntoElement`). Low-level `Element`
+implementations receive a blanket `impl<T: Element> IntoElement for T` in
+`gpui-pre 0.3.14` and must not implement `IntoElement` manually.
 
 ```rust
 #[derive(IntoElement)]
@@ -588,7 +590,9 @@ Attach `Scrollable` to the element that owns the full panel, editor, or window
 viewport so its scrollbar resolves against the region edge. Put content inset
 inside that scroll owner rather than wrapping the scroll owner in a padded
 container. A scrollbar floating between content and the panel boundary usually
-reveals the wrong scroll owner or padding on the wrong layer.
+reveals the wrong scroll owner or padding on the wrong layer. When a layout
+genuinely needs a leading or top-edge scrollbar, use `Scrollbar::placement(...)`
+or `.scrollbar_placement(...)` / `.set_scrollbar_placement(...)` on `InputState` / `EditorState` / `TextareaState` (backed by `gpui_kit::base::input::InputBaseState`) with `ScrollbarPlacement::{BottomRight, BottomLeft, TopRight, TopLeft}`.
 
 ## Lists, tables, and large data
 
@@ -802,7 +806,7 @@ must use current, compilable APIs and show stable IDs. Document defaults,
 platform limitations, focus behavior, callback ordering, and any requirement
 to call `notify`, `emit`, or a theme synchronization method.
 
-Follow the [interface-language rules](./design-guides.md#interface-language) for
+Follow the [interface-language rules](../../gpui-kit-design-guides/references/design-guides.md#interface-language) for
 labels, commands, confirmation dialogs, capitalization, and ellipses. Keep one
 canonical term for each domain object, command, and state.
 
@@ -907,5 +911,5 @@ Before opening a change for review, confirm that:
 - tests prove behavior at the appropriate layer;
 - formatting, Clippy, targeted tests, and relevant examples pass.
 
-See [Getting Started](./getting-started.md) for application setup and the
+See the [Usage Guide](./usage.md) (or `https://gpui-kit.com/docs/getting-started.md`) for application setup and the
 component pages for current API details.

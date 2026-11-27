@@ -63,8 +63,8 @@ impl Element for MasonryLayout {
             let min_column_idx = column_heights
                 .iter()
                 .enumerate()
-                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .unwrap()
+                .min_by(|a, b| a.1.total_cmp(b.1))
+                .expect("columns non-empty")
                 .0;
 
             // Add child to shortest column
@@ -77,7 +77,7 @@ impl Element for MasonryLayout {
         let total_width = column_width * self.columns as f32
             + self.gap * (self.columns - 1) as f32;
         let total_height = column_heights.iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .max_by(|a, b| a.total_cmp(b))
             .copied()
             .unwrap_or(px(0.));
 
@@ -506,7 +506,7 @@ impl<T: PartialEq + Clone + 'static> Element for MemoizedElement<T> {
         // Request layout for cached element
         let (layout_id, _) = self.cached_element
             .as_mut()
-            .unwrap()
+            .expect("cached_element populated above")
             .request_layout(global_id, inspector_id, window, cx);
 
         (layout_id, layout_id)
@@ -523,7 +523,7 @@ impl<T: PartialEq + Clone + 'static> Element for MemoizedElement<T> {
     ) -> () {
         self.cached_element
             .as_mut()
-            .unwrap()
+            .expect("cached_element populated in request_layout")
             .prepaint(global_id, inspector_id, bounds, window, cx);
     }
 
@@ -539,7 +539,7 @@ impl<T: PartialEq + Clone + 'static> Element for MemoizedElement<T> {
     ) {
         self.cached_element
             .as_mut()
-            .unwrap()
+            .expect("cached_element populated in request_layout")
             .paint(global_id, inspector_id, bounds, window, cx);
     }
 }

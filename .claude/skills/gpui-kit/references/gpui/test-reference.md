@@ -77,11 +77,11 @@ fn test_action_dispatch(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), |_, cx| {
             cx.new(|cx| MyComponent::new(cx))
-        }).unwrap()
+        }).expect("open test window")
     });
 
     let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let counter = window.root(&mut cx).unwrap();
+    let counter = window.root(&mut cx).expect("window root");
 
     // Dispatch action via focus handle
     let focus_handle = counter.read_with(&cx, |counter, _| counter.focus_handle.clone());
@@ -197,7 +197,7 @@ async fn test_external_io(cx: &mut TestAppContext) {
         tx.send(42).ok();
     });
 
-    let result = rx.await.unwrap();
+    let result = rx.await.expect("receive test value");
     assert_eq!(result, 42);
 }
 ```
@@ -273,7 +273,7 @@ async fn confirming_from_the_keyboard_commits_the_value(cx: &mut TestAppContext)
         )
         .expect("open test window")
     });
-    let language = language.unwrap();
+    let language = language.expect("language state initialized");
 
     // Open the menu, move to "Go" and confirm — the same path a user takes.
     cx.update_window(handle.into(), |_, window, cx| {
@@ -282,7 +282,7 @@ async fn confirming_from_the_keyboard_commits_the_value(cx: &mut TestAppContext)
         window.press("down", cx);
         window.press("enter", cx);
     })
-    .unwrap();
+    .expect("update window");
 
     // Select commits through `defer_in` after the key dispatch returns, so
     // wait for the closed menu instead of asserting straight away.
@@ -409,7 +409,7 @@ fn open_picker(
         )
         .expect("open test window")
     });
-    (handle.into(), language.unwrap(), log)
+    (handle.into(), language.expect("language state initialized"), log)
 }
 
 fn confirm_next(cx: &mut TestAppContext, handle: AnyWindowHandle) {
@@ -419,7 +419,7 @@ fn confirm_next(cx: &mut TestAppContext, handle: AnyWindowHandle) {
         window.press("down", cx);
         window.press("enter", cx);
     })
-    .unwrap();
+    .expect("update window");
 }
 
 #[gpui_kit::test]
@@ -459,7 +459,7 @@ async fn a_vetoing_delegate_keeps_the_selection(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, _| {
         assert_eq!(window.find("language").value(), Some("Rust"));
     })
-    .unwrap();
+    .expect("update window");
 }
 ```
 
@@ -593,11 +593,11 @@ impl MockNetwork {
     }
 
     fn send(&self, message: NetworkMessage) {
-        self.messages.lock().unwrap().push(message);
+        self.messages.lock().expect("messages lock").push(message);
     }
 
     fn receive_all(&self) -> Vec<NetworkMessage> {
-        self.messages.lock().unwrap().drain(..).collect()
+        self.messages.lock().expect("messages lock").drain(..).collect()
     }
 }
 

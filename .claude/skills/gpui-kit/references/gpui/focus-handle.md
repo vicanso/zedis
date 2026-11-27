@@ -84,7 +84,7 @@ impl Render for MyInput {
                 this.on_blur(cx);
             }))
             .when(is_focused, |el| {
-                el.bg(cx.theme().focused_background)
+                el.bg(cx.theme().accent)
             })
             .child(self.render_content())
     }

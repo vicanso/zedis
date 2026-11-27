@@ -5,10 +5,12 @@ description: 'How to build desktop applications with GPUI Kit, the Rust framewor
 
 # GPUI Kit
 
-Applications depend on one crate, `gpui-kit`. GPUI is `use gpui_kit::*;`, and
-each layer is reachable by name: `gpui_kit::component` (styled components),
-`gpui_kit::base` (unstyled behavior), `gpui_kit::assets` (default icons),
-`gpui_kit::platform`.
+Applications depend on `gpui-kit` (`0.11.0`, pinned to `gpui-pre 0.3.14` or optional `gpui-fast 0.1.19`). Upstream GPUI is `use gpui_kit::*;`, and each layer is reachable by name: `gpui_kit::component` (styled components), `gpui_kit::base` (unstyled behavior), `gpui_kit::assets` (default icons), and `gpui_kit::platform`.
+
+- **Linux / FreeBSD `x11` default feature**: `gpui-kit` enables `default = ["component", "assets", "x11"]`. `x11` turns on `gpui_platform/x11` (and `gpui-fast-platform?/x11`), while `wayland` remains enabled unconditionally on non-mobile targets — set `default-features = false` (keeping `"component"`, `"assets"`) for a Wayland-only Linux/FreeBSD build.
+- **Zedis workspace wiring**: Zedis pins `gpui-kit = "0.11.0"` alongside `[workspace.dependencies]` renames of `gpui-pre-* = "0.3.14"` (`gpui`, `gpui_platform`, `gpui_macros`, `gpui_web`), and under `--features gpui-fast` aliases `extern crate gpui_kit as gpui;` in `src/lib.rs` and `crates/zedis-ui/src/lib.rs`. Therefore, inside Zedis:
+  - GPUI types and macros keep `gpui::…` and `#[gpui::test]` (use `test_support::init_ui(cx)` in `src/` UI tests).
+  - Components, overlays, and initialization use `gpui_kit::component::…` (`gpui_kit::component::init(cx)`), icons use `gpui_kit::assets::{Assets, IconName}`, and low-level base primitives (`SelectableText`, `Presence`, `NavStack`) use `gpui_kit::base::…`.
 
 Start with [component-family conventions](references/conventions.md) to choose the constructor, state owner, event, and layout contract for the task. Learn the family once, then verify the specific component supports the capability.
 
@@ -21,17 +23,18 @@ Two guides hold the rules this skill assumes. They are requirements, not
 inspiration. Read the guide file itself; do not answer from this page, from a
 similar file in the codebase, or from training data.
 
-| Guide                                                  | Read before                                                                                                                   |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| Design Guides, skill `gpui-kit-design-guides`          | Choosing components, layout, spacing, hierarchy, color, density, interaction states, overlays, motion, interface copy          |
-| [Coding Guides](references/coding-guides.md)           | Crate layering, `RenderOnce` vs `Entity<T>`, state ownership, `ElementId`, events, focus, async, public API, naming, testing |
+| Guide                                                                        | Read before                                                                                                                   |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| [Design Guides](../gpui-kit-design-guides/references/design-guides.md)       | Choosing components, layout, spacing, hierarchy, color, density, interaction states, overlays, motion, interface copy          |
+| [Coding Guides](references/coding-guides.md)                                 | Crate layering, `RenderOnce` vs `Entity<T>`, state ownership, `ElementId`, events, focus, async, public API, naming, testing |
 
 Read the Design Guides first when the change has a visible surface: code
 structure preserves product intent, it does not replace it. If the design
 skill is not installed, fetch `https://gpui-kit.com/docs/design-guides.md`.
-The coding guide is a verbatim copy of `https://gpui-kit.com/docs/coding-guides.md`,
-so its links to `./design-guides.md` and `./getting-started.md` mean the design
-skill and `https://gpui-kit.com/docs/getting-started.md`.
+The local copies link directly across skills (`references/coding-guides.md` and
+`../gpui-kit-design-guides/references/design-guides.md`), with
+`https://gpui-kit.com/docs/coding-guides.md` and
+`https://gpui-kit.com/docs/getting-started.md` as upstream references.
 
 ### Coding Guides section map
 
@@ -70,9 +73,10 @@ A floor, not a substitute for the guides.
 - **Never invent an API.** Search the current source for the real signature.
   Do not translate a React, CSS, or older-GPUI example by analogy; a
   plausible-looking method that does not exist is the most common failure.
-- **One dependency.** Applications depend on `gpui-kit` alone. GPUI is
-  `use gpui_kit::*;`; the layers are `gpui_kit::component`, `gpui_kit::base`,
-  `gpui_kit::assets`, `gpui_kit::platform`.
+- **One dependency (or Zedis's aliased workspace setup).** Standalone apps depend
+  on `gpui-kit` alone (`use gpui_kit::*;`); Zedis aliases `gpui-pre 0.3.14`
+  as `gpui::` alongside `gpui-kit 0.11.0` (`gpui_kit::component`,
+  `gpui_kit::base`, `gpui_kit::assets`).
 - **Framework owns behavior, application owns presentation.** Do not put
   colors, sizing, or layout in `gpui-base`; do not put interaction behavior in
   application styling code.
@@ -82,6 +86,11 @@ A floor, not a substitute for the guides.
   reader methods.
 - **Spell `Context` out.** `cx` is GPUI's; name anything else after what it
   holds.
+- **`gpui-pre 0.3.14` breaking APIs:**
+  - `Element` has a blanket `impl<T: Element> IntoElement for T` (`pub trait Element: 'static + Sized`) — **never** write a manual `impl IntoElement for MyElement` (`E0119`); `#[derive(IntoElement)]` remains valid for `RenderOnce`.
+  - `Path` is non-generic (`pub struct Path`); `FillOptions` has only `fill_rule` (`tolerance` removed — use `PathBuilder::fill()`).
+  - `WindowBounds::centered(display_id: Option<DisplayId>, size, cx)` takes `Option<DisplayId>` as its first argument.
+- **`jiff` replaces `chrono`:** `Calendar`, `DatePicker`, and `TimeField` use `jiff::civil::{Date, DateTime, Time, Weekday}` and `.strftime(...)` — never `chrono`.
 
 ## Documentation
 
@@ -121,100 +130,115 @@ gpui_kit::application()
 ## Component Catalog
 
 Import paths are relative to `gpui_kit::component::`, so `input::{Input, InputState}`
-means `use gpui_kit::component::input::{Input, InputState};`. For the full API
-fetch the component's `.md` doc.
+means `use gpui_kit::component::input::{Input, InputState};`. Base-only primitives
+(not re-exported by `component`) live under `gpui_kit::base::`. For the full API
+fetch the component's `.md` doc or inspect `gpui-component` / `gpui-base` source.
 
 ### Input & Form
 
-| Component     | Import                                          | Notes                                        |
-| ------------- | ----------------------------------------------- | -------------------------------------------- |
-| `Input`       | `input::{Input, InputState}`                    | Stateful. Text, password, mask, validation   |
-| `Textarea`    | `input::{Textarea, TextareaState}`              | Stateful. Multi-line text                    |
-| `Editor`      | `input::{Editor, EditorState}`                  | Stateful. Code editor, `tree-sitter` feature |
-| `NumberInput` | `input::{NumberInput, NumberInputEvent}`        | Stateful. Numeric with step                  |
-| `OtpInput`    | `input::OtpInput`                               | Stateful. One-time password                  |
-| `SpeechButton` | `speech::{SpeechButton, SpeechState}`          | Stateful. Dictation, `speech` feature        |
-| `Select`      | `select::{Select, SelectState}`                 | Stateful. Dropdown picker                    |
-| `Combobox`    | `combobox::{Combobox, ComboboxState}`           | Stateful. Searchable select                  |
-| `Checkbox`    | `checkbox::Checkbox`                            | Stateless. `on_click` receives `&bool`       |
-| `Switch`      | `switch::Switch`                                | Stateless. Toggle                            |
-| `Radio`       | `radio::{Radio, RadioGroup}`                    | Stateless.                                   |
-| `Slider`      | `slider::{Slider, SliderState}`                 | Stateful.                                    |
-| `Toggle`      | `button::Toggle`                                | Stateless.                                   |
-| `Rating`      | `rating::Rating`                                | Stateless.                                   |
-| `Stepper`     | `stepper::Stepper`                              | Stateless. Multi-step progress               |
-| `ColorPicker` | `color_picker::{ColorPicker, ColorPickerState}` | Stateful.                                    |
-| `DatePicker`  | `date_picker::{DatePicker, DatePickerState}`    | Stateful.                                    |
-| `TimeField`   | `time_field::{TimeField, TimeFieldState}`       | Stateful. Time of day, 24/12-hour            |
-| `Calendar`    | `calendar::{Calendar, CalendarState}`           | Stateful. Inline month view                  |
-| `Form`        | `form::{v_form, h_form, field}`                 | Layout container for form fields             |
+| Component       | Import                                                              | Notes                                                                                                       |
+| --------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `Input`         | `input::{Input, InputState, InputGroup, AnyInputState}`             | Stateful. Single-line; `.list(&list_state)` suggestion popup, `InputContentType::DateTime`, mask, validate |
+| `Textarea`      | `input::{Textarea, TextareaState}`                                  | Stateful. Multi-line text (`auto_grow`, `rows`)                                                             |
+| `Editor`        | `input::{Editor, EditorState, GutterStyle}`                         | Stateful. Code editor (`tree-sitter`/`syntect`), `Editor::gutter_style`, `active_line_only_when_focused`, public `fold_all`/`unfold_all`/`fold_at_level`/`set_folded` |
+| `Highlighter`   | `highlighter::{SyntaxHighlighter, HighlightTheme, LanguageRegistry}` | Syntax highlighting & language grammar registry                                                             |
+| `History`       | `history::{History, UndoHistory}`                                   | Undo/redo history utilities                                                                                 |
+| `NumberInput`   | `input::{NumberInput, NumberInputEvent, NumberStep}`                | Stateful. Numeric with step                                                                                 |
+| `OtpInput`      | `input::{OtpInput, OtpState, OtpEvent}`                             | Stateful. One-time password                                                                                 |
+| `SpeechButton`  | `speech::{SpeechButton, SpeechState}`                               | Stateful. Dictation, `speech` feature                                                                       |
+| `Select`        | `select::{Select, SelectState, SelectEvent}`                        | Stateful. Dropdown picker (`selected_value()`)                                                              |
+| `Combobox`      | `combobox::{Combobox, ComboboxState}`                               | Stateful. Searchable select                                                                                 |
+| `Checkbox`      | `checkbox::Checkbox`                                                | Stateless. `on_change` / `on_click` receives `&bool`                                                        |
+| `Switch`        | `switch::Switch`                                                    | Stateless. Toggle (`on_change`)                                                                             |
+| `Radio`         | `radio::{Radio, RadioGroup}`                                        | Stateless. (`on_change`)                                                                                    |
+| `Slider`        | `slider::{Slider, SliderState}`                                     | Stateful.                                                                                                   |
+| `Toggle`        | `button::{Toggle, ToggleGroup}`                                     | Stateless. Single toggle or toggle group                                                                    |
+| `Rating`        | `rating::Rating`                                                    | Stateless.                                                                                                  |
+| `Stepper`       | `stepper::{Stepper, StepperItem}`                                   | Stateless. Multi-step progress                                                                              |
+| `ColorPicker`   | `color_picker::{ColorPicker, ColorSelect, ColorPickerState}`        | Stateful. Full picker or swatch selector                                                                    |
+| `DatePicker`    | `date_picker::{DatePicker, DatePickerState, DateTime, DateRangePreset}` | Stateful. Uses `jiff::civil::{Date, DateTime, Time, Weekday}`                                            |
+| `TimeField`     | `time_field::{TimeField, TimeFieldState, TimeFieldEvent, TimePrecision, HourCycle}` | Stateful. Segmented time editor (`jiff::civil::Time`), 24/12-hour                                           |
+| `Calendar`      | `calendar::{Calendar, CalendarState, Date, Matcher}`                | Stateful. Inline month view (`jiff::civil::{Date, Weekday}`)                                                |
+| `Form`          | `form::{Form, Field, v_form, h_form, field}`                        | Layout container (`columns`, `label_layout`, `footer`)                                                      |
+| `Questionnaire` | `questionnaire::*`                                                  | Guided multi-question flow                                                                                  |
 
 ### Display & Feedback
 
-| Component   | Import                                    | Notes                                 |
-| ----------- | ----------------------------------------- | ------------------------------------- |
-| `Button`    | `button::{Button, ButtonGroup}`           | Stateless. Primary UI action          |
-| `Icon`      | `{Icon, IconName}`                        | Stateless. Lucide icons               |
-| `Badge`     | `badge::Badge`                            | Stateless.                            |
-| `Tag`       | `tag::Tag`                                | Stateless. Closable tags              |
-| `Avatar`    | `avatar::Avatar`                          | Stateless.                            |
-| `Label`     | `label::Label`                            | Stateless. Form label                 |
-| `Kbd`       | `kbd::Kbd`                                | Stateless. Keyboard key display       |
-| `Alert`     | `alert::Alert`                            | Stateless. Info/success/warning/error |
-| `Spinner`   | `spinner::Spinner`                        | Stateless. Loading indicator          |
-| `Skeleton`  | `skeleton::Skeleton`                      | Stateless. Loading placeholder        |
-| `Shimmer`   | `shimmer::{ShimmerText, ShimmerStyle}`    | Stateless. Streaming-text shimmer     |
-| `Marker`    | `marker::{Marker, MarkerVariant}`         | Stateless. Inline status marker       |
-| `Progress`  | `progress::{Progress, ProgressCircle}`    | Stateless.                            |
-| `Tooltip`   | `tooltip::Tooltip`                        | Via `.tooltip()` on elements          |
-| `HoverCard` | `hover_card::{HoverCard, HoverCardState}` | Stateful.                             |
-| `Clipboard` | `clipboard::Clipboard`                    | Stateless. Copy button                |
-| `TextView`  | `text::TextView`                          | `TextView::markdown(id, text)`, HTML too |
-| Image       | `gpui_kit::{img, ImageSource, ObjectFit}` | GPUI's `img()` element                |
+| Component        | Import                                                                                  | Notes                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `Button`         | `button::{Button, ButtonGroup}`                                                         | Stateless. `.aria_expanded(bool)` disclosure state; `.loading(true)` requires `.icon(...)` |
+| `Icon`           | `{Icon, IconName}`                                                                      | Stateless. Full Lucide catalog also at `gpui_kit::assets::IconName`                    |
+| `Badge`          | `badge::Badge`                                                                          | Stateless. Count, dot, or icon overlay badge                                           |
+| `Tag`            | `tag::{Tag, TagVariant}`                                                                | Stateless. Status chip / closable tag                                                  |
+| `Avatar`         | `avatar::{Avatar, AvatarGroup}`                                                         | Stateless.                                                                             |
+| `Label`          | `label::Label`                                                                          | Stateless. Form label (sets own `.text_color`)                                         |
+| `Kbd`            | `kbd::Kbd`                                                                              | Stateless. Keyboard shortcut badge (uses compile-time `target_os = "macos"` formatting) |
+| `Link`           | `link::Link`                                                                            | Stateless. External URLs / `mailto:` only                                              |
+| `Separator`      | `separator::{Separator, SeparatorStyle}`                                                | Stateless. Horizontal/vertical solid or dashed hairline                                |
+| `Empty`          | `empty::{Empty, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle, EmptyDescription, EmptyContent}` | Stateless. Structured empty state with media, title, description, and action slots     |
+| `Alert`          | `alert::Alert`                                                                          | Stateless. Info/success/warning/error                                                  |
+| `Spinner`        | `spinner::Spinner`                                                                      | Stateless. Loading indicator                                                           |
+| `Skeleton`       | `skeleton::Skeleton`                                                                    | Stateless. Loading placeholder                                                         |
+| `Shimmer`        | `shimmer::{ShimmerText, ShimmerStyle}`                                                  | Stateless. Streaming-text shimmer                                                      |
+| `Marker`         | `marker::{Marker, MarkerVariant}`                                                       | Stateless. Inline status marker                                                        |
+| `Progress`       | `progress::{Progress, ProgressCircle}`                                                  | Stateless.                                                                             |
+| `Tooltip`        | `tooltip::Tooltip`                                                                      | Via `.tooltip()` on elements                                                           |
+| `HoverCard`      | `hover_card::{HoverCard, HoverCardState}`                                               | Stateful.                                                                              |
+| `Clipboard`      | `clipboard::Clipboard`                                                                  | Stateless. Copy button                                                                 |
+| `TextView`       | `text::{Text, TextView, TextViewState, markdown, html}`                                 | Rich text / Markdown / HTML (`TextView::markdown(id, text)`)                           |
+| `SelectableText` | `gpui_kit::base::SelectableText`                                                        | Base-only (`gpui_kit::base`). Selectable text with `.reveal_range(...)` / `.on_reveal(...)` |
+| Image            | `gpui_kit::{img, ImageSource, ObjectFit}` (Zedis: `gpui::`)                             | GPUI's `img()` element                                                                 |
 
 ### Overlay & Popups
 
-| Component        | Import                                            | Notes                                    |
-| ---------------- | ------------------------------------------------- | ---------------------------------------- |
-| `Dialog`         | `dialog::Dialog` + `WindowExt`                    | Via `window.open_dialog(...)`            |
-| `AlertDialog`    | `WindowExt`                                       | Via `window.open_alert_dialog(...)`      |
-| `Sheet`          | `sheet::Sheet` + `WindowExt`                      | Side panel, via `window.open_sheet(...)` |
-| `Notification`   | `notification::Notification` + `WindowExt`        | Via `window.push_notification(...)`      |
-| `Popover`        | `popover::Popover`                                | Floating overlay                         |
-| `Menu`           | `menu::{PopupMenu, DropdownMenu}`                 | Context menus                            |
-| `DropdownButton` | `button::DropdownButton`                          | Button with dropdown menu                |
-| `Command`        | `command::{Command, CommandState, CommandGroup}`  | Stateful. Command palette                |
-| Focus trap       | `FocusTrapElement`                                | `.focus_trap(id, &handle)` on a container; `Dialog` and `Sheet` have it built in |
+| Component        | Import                                                                                          | Notes                                                                                  |
+| ---------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `Dialog`         | `dialog::{Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose, DialogAction, DialogButtonProps, DialogEntrance}` + `WindowExt` | Via `window.open_dialog(...)`                                                          |
+| `AlertDialog`    | `dialog::AlertDialog` + `WindowExt`                                                             | Via `window.open_alert_dialog(...)`                                                    |
+| `Sheet`          | `sheet::Sheet` + `WindowExt`                                                                    | Side panel, via `window.open_sheet(...)`                                               |
+| `Notification`   | `notification::Notification` + `WindowExt`                                                      | Via `window.push_notification(...)`                                                    |
+| `Popover`        | `popover::{Popover, PopoverState}`                                                              | Floating overlay (deferred prepaint focus move)                                        |
+| `Menu`           | `menu::{AppMenuBar, ContextMenu, ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem}`       | Context (`.context_menu(...)` + `PopupMenu`), dropdown, and app menus                  |
+| `NativeMenu`     | `native_menu::NativeMenu`                                                                       | Native/context menu builder (used by `Editor`)                                         |
+| `DropdownButton` | `button::DropdownButton`                                                                        | Button with dropdown menu                                                              |
+| `Command`        | `command::{Command, CommandState, CommandGroup}`                                                | Stateful. Command palette                                                              |
+| Focus trap       | `FocusTrapElement`                                                                              | `.focus_trap(id, &handle)` on a container; `Dialog` and `Sheet` have it built in       |
+| `Presence`       | `gpui_kit::base::motion::{Presence, PresencePhase, PresenceSample}`                             | Mount/exit presence; initially closed returns `PresencePhase::Absent` with no frame    |
 
 ### Navigation & Layout
 
-| Component         | Import                                                                   | Notes                     |
-| ----------------- | ------------------------------------------------------------------------ | ------------------------- |
-| `Tabs` / `TabBar` | `tab::{Tab, TabBar}`                                                     | Tabbed interface          |
-| `Sidebar`         | `sidebar::{Sidebar, SidebarMenu, ...}`                                   | App navigation panel      |
-| `TitleBar`        | `TitleBar`                                                               | Window title bar          |
-| `StatusBar`       | `status_bar::StatusBar`                                                  | Window status bar         |
-| `Breadcrumb`      | `breadcrumb::Breadcrumb`                                                 | Navigation breadcrumb     |
-| `Pagination`      | `pagination::Pagination`                                                 | Page navigation           |
-| `Accordion`       | `accordion::Accordion`                                                   | Collapsible sections      |
-| `Collapsible`     | `collapsible::Collapsible`                                               | Single collapsible        |
-| `GroupBox`        | `group_box::GroupBox`                                                    | Labeled container         |
-| `Resizable`       | `resizable::{h_resizable, v_resizable, resizable_panel, ResizableState}` | Draggable split panes     |
-| `ResizeHandle`    | `resizable::{resize_handle, HandleEdge}`                                 | Standalone resize edge    |
-| `Scrollbar`       | `scroll::Scrollbar`                                                      | Custom scrollbar          |
+| Component         | Import                                                                   | Notes                                                                                  |
+| ----------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `Tabs` / `TabBar` | `tab::{Tab, TabBar, TabVariant}`                                         | Tabbed interface (`Tab::new().label(...)`)                                             |
+| `Sidebar`         | `sidebar::{Sidebar, SidebarMenu, ...}`                                   | App navigation panel                                                                   |
+| `TitleBar`        | `TitleBar`                                                               | Window title bar                                                                       |
+| `StatusBar`       | `status_bar::StatusBar`                                                  | Window status bar                                                                      |
+| `Toolbar`         | `toolbar::{Toolbar, ToolbarGroup}`                                       | Grouped action toolbar                                                                 |
+| `Breadcrumb`      | `breadcrumb::Breadcrumb`                                                 | Navigation breadcrumb                                                                  |
+| `Pagination`      | `pagination::Pagination`                                                 | Page navigation                                                                        |
+| `Accordion`       | `accordion::Accordion`                                                   | Collapsible sections                                                                   |
+| `Collapsible`     | `collapsible::Collapsible`                                               | Single collapsible                                                                     |
+| `GroupBox`        | `group_box::GroupBox`                                                    | Labeled container                                                                      |
+| `Dock`            | `dock::{DockArea, DockLayout, DockPlacement, DockSkin, DockState, Panel, TitleStyle, TabGroup, DragPanelPreview}` | Dockable layout (`DockSkin::set_split_divider_line_visible(bool, cx)`)                 |
+| `GridLayout`      | `grid_layout::{grid_layout, GridLayout, GridLayoutState, GridItem, GridArea}` | Draggable/resizable dashboard grid                                                     |
+| `Resizable`       | `resizable::{h_resizable, v_resizable, resizable_panel, ResizablePanelGroup, ResizableState}` | Draggable split panes (`ResizableState::is_resizing()`)                                |
+| `ResizeHandle`    | `resizable::{resize_handle, HandleEdge}`                                 | Standalone resize edge                                                                 |
+| `Scrollbar`       | `scroll::{Scrollbar, ScrollbarAxis, ScrollbarPlacement, ScrollableElement}` | Custom scrollbar (`BottomRight`, `BottomLeft`, `TopRight`, `TopLeft`)                  |
+| `WindowBorder`    | `{WindowBorder, window_border}`                                          | Client-side window border / padding helpers                                            |
 
 ### Data Display
 
-| Component         | Import                                          | Notes                         |
-| ----------------- | ----------------------------------------------- | ----------------------------- |
-| `DataTable`       | `table::{DataTable, TableState, TableDelegate}` | Stateful. Full-featured table |
-| `Diff`            | `diff::{Diff, DiffState, DiffFile}`           | Retained state, `RenderOnce` element. Readonly unified/Git diff display of one or more files, merge conflicts and source files; application supplies the patch |
-| `Table`           | `table::{Table, ...}`                           | Simpler table                 |
-| `VirtualList`     | `{v_virtual_list, h_virtual_list}`              | High-perf large lists         |
-| `List`            | `list::{List, ListState, ListDelegate}`         | Stateful. Searchable list     |
-| `Tree`            | `tree::{Tree, TreeState, TreeItem, TreeEntry}`  | Stateful. Hierarchy           |
-| `DescriptionList` | `description_list::DescriptionList`             | Key-value pairs               |
-| `Settings`        | `setting::Settings`                             | Settings panel                |
+| Component         | Import                                                                                       | Notes                                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `DataTable`       | `table::{DataTable, TableState, TableDelegate, Column}`                                      | Stateful. Full-featured virtualized table                                                                   |
+| `Diff`            | `diff::{Diff, DiffState, DiffFile, DiffSpanHighlight, DiffDecoration, DiffGutterMarker, DiffTextPosition}` | Readonly patch/conflict/excerpt display; `.span_highlights(...)`, `DiffFile::excerpts(...)`, `DiffState::has_line(...)`, `.on_text_hover(...)` / `.on_text_click(...)` / `.text_cursor(...)` |
+| `Table`           | `table::{Table, ...}`                                                                        | Simpler table                                                                                               |
+| `VirtualList`     | `{v_virtual_list, h_virtual_list}`                                                           | High-perf large lists                                                                                       |
+| `List`            | `list::{List, ListState, ListDelegate, ListItem, ListEvent}`                                 | Stateful. Searchable list                                                                                   |
+| `SearchableList`  | `searchable_list::{SearchableListState, SearchableListDelegate, SearchableVec, SearchableListChange}` | Shared searchable/selectable list engine behind `Select` & `Combobox`                                       |
+| `Tree`            | `tree::{tree, Tree, TreeState, TreeItem, TreeEntry}`                                         | Stateful. Hierarchy                                                                                         |
+| `DescriptionList` | `description_list::{DescriptionList, DescriptionItem}`                                       | Key-value pairs                                                                                             |
+| `Settings`        | `setting::Settings`                                                                          | Settings panel                                                                                              |
 
 ### Chat & Messaging
 
@@ -227,16 +251,17 @@ fetch the component's `.md` doc.
 
 ### Charts
 
-| Component | Import                                                          | Notes                          |
-| --------- | --------------------------------------------------------------- | ------------------------------ |
-| `Chart`   | `chart::{AreaChart, BarChart, LineChart, PieChart, RadarChart}` | Bar, line, area, pie charts    |
-| `Plot`    | `plot::Plot`                                                    | `#[derive(IntoPlot)]` for data |
+| Component | Import                                                                                 | Notes                          |
+| --------- | -------------------------------------------------------------------------------------- | ------------------------------ |
+| `Chart`   | `chart::{AreaChart, BarChart, CandlestickChart, LineChart, PieChart, RadarChart, SankeyChart}` | Charts                         |
+| `Plot`    | `plot::Plot`                                                                           | `#[derive(IntoPlot)]` for data |
 
 ## Testing
 
 **UI integration testing** means rendering real components in headless windows,
 simulating input, and checking state, focus, layout and owner callbacks. Use
-`#[gpui_kit::test]` to run tests and `gpui_kit::test` to operate and inspect the UI.
+`#[gpui_kit::test]` (or `#[gpui::test]` with `test_support::init_ui(cx)` in Zedis)
+to run tests and `gpui_kit::test` to operate and inspect the UI.
 When asked to add component interaction coverage, describe it as UI integration testing.
 
 For unit tests, GPUI context tests or UI integration tests, read

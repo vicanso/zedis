@@ -6,11 +6,15 @@ Use this page to predict a component's shape before reading its detailed API. Th
 
 | Task | Family and constructor | State owner | Event or composition |
 | --- | --- | --- | --- |
-| Execute a command | `Button::new("save")` | Application owns the operation | `on_click` receives a click event |
+| Execute a command | `Button::new("save")` | Application owns the operation | `on_click` receives a click event; `aria_expanded(bool)` for disclosures |
 | Change a boolean | `Checkbox::new("remember")`, `Switch::new("enabled")`, `Radio::new("choice")` | Application supplies `checked(bool)` | `on_change` receives the requested `&bool` |
 | Choose one radio option | `RadioGroup::new("delivery")` | Application supplies `selected_index(Option<usize>)` | `on_change` receives the requested `&usize` |
-| Edit retained text | `Input::new(&self.input)` | View retains `Entity<InputState>` | Retain the subscription; handle `InputEvent` |
-| Display a supplied patch | `Diff::new(&self.diff)` | View retains `Entity<DiffState>`; application parses supplied unified/Git diff with `DiffFile::parse`; one state shows all files | Readonly `RenderOnce` element; retain subscriptions to `DiffEvent` when needed |
+| Edit retained text | `Input::new(&self.input)` | View retains `Entity<InputState>` | Retain the subscription; handle `InputEvent`; `.list(&list_state)` for suggestions |
+| Edit code or structured text | `Editor::new(&self.editor)` | View retains `Entity<EditorState>` | `GutterStyle`, `active_line_only_when_focused`, `fold_all`/`unfold_all`/`fold_at_level`/`set_folded` |
+| Pick a date or time | `Calendar::new(&self.cal)`, `DatePicker::new(&self.dp)`, `TimeField::new(&self.tf)` | View retains state entity | Uses `jiff::civil::{Date, DateTime, Time, Weekday}` (`CalendarEvent`, `DatePickerEvent`, `TimeFieldEvent`) |
+| Display a supplied patch or excerpts | `Diff::new(&self.diff)` | View retains `Entity<DiffState>`; application parses patch with `DiffFile::parse` or supplies `DiffFile::excerpts` | Readonly `RenderOnce` element; `.span_highlights(...)`, `.on_text_hover(...)` / `.on_text_click(...)`, retain `DiffEvent` sub |
+| Display an empty state | `Empty::new()` | Stateless (`RenderOnce`) | Named slots: `.header(EmptyHeader)` and `.content(EmptyContent)` |
+| Selectable read-only text | `gpui_kit::base::SelectableText::new(id, text)` | Base-only (`gpui_kit::base`) | `.reveal_range(range)` and `.on_reveal(...)` for scroll containers |
 | Lay out fields | `Form::new()` | Children retain their own state | `child(Field)`, `columns`, `label_layout`, `footer` |
 | Supply a compound part | `Field::new()`, `Tab::new()` | Containing component owns placement/selection | Read the parent's accepted child type |
 

@@ -4,10 +4,10 @@
 
 ## Element Trait Structure
 
-The `Element` trait requires implementing three associated types and five methods:
+The `Element` trait requires implementing two associated types and five core methods (`IntoElement` is supplied automatically by `gpui-pre 0.3.14`'s blanket impl):
 
 ```rust
-pub trait Element: 'static + IntoElement {
+pub trait Element: 'static + Sized {
     type RequestLayoutState: 'static;
     type PrepaintState: 'static;
 
@@ -274,11 +274,7 @@ fn paint(
     );
 
     // 2. Paint own content
-    window.paint_quad(paint_quad(
-        bounds,
-        Anchor::all(px(4.)),
-        cx.theme().background,
-    ));
+    window.paint_quad(fill(bounds, cx.theme().background));
 
     // 3. Set up interactions
     window.on_mouse_event({
@@ -297,10 +293,10 @@ fn paint(
 
 ## IntoElement Integration
 
-Elements must also implement `IntoElement` to be used as children:
+In `gpui-pre 0.3.14`, `gpui` provides a blanket implementation for every `Element`:
 
 ```rust
-impl IntoElement for MyElement {
+impl<T: Element> IntoElement for T {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -309,12 +305,17 @@ impl IntoElement for MyElement {
 }
 ```
 
-This allows your custom element to be used directly in the element tree:
+**Never** write a manual `impl IntoElement for MyElement` on a type that implements `Element` — it fails to compile with `E0119` (conflicting implementations). Reserve `#[derive(IntoElement)]` for `RenderOnce` components. Once `Element` is implemented, the type works directly in the element tree:
 
 ```rust
 div()
-    .child(MyElement::new()) // Works because of IntoElement
+    .child(MyElement::new()) // Works automatically via blanket IntoElement impl
 ```
+
+### Vector Paths (`Path` and `FillOptions` in `gpui-pre 0.3.14`)
+
+- `Path` is non-generic (`pub struct Path`); `PathBuilder::build(self) -> Result<Path, Error>`.
+- `FillOptions` has only `pub fill_rule: FillRule` (`FillOptions::tolerance` was removed). Build fill paths with `PathBuilder::fill()` and stroke paths with `PathBuilder::stroke(width)`.
 
 ## Common Parameters
 

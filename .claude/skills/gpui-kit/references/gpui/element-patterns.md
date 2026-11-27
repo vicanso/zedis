@@ -186,10 +186,9 @@ impl Element for InteractiveElement {
         // Paint hover background if hovered
         if *is_hovered {
             if let Some(hover_style) = &self.hover_style {
-                window.paint_quad(paint_quad(
+                window.paint_quad(fill(
                     bounds,
-                    Anchor::all(px(4.)),
-                    hover_style.background_color.unwrap_or(cx.theme().hover),
+                    hover_style.background_color.unwrap_or(cx.theme().list_hover),
                 ));
             }
         }
@@ -467,22 +466,20 @@ impl ScrollableElement {
         let thumb_y = scroll_ratio * (visible_height - thumb_height);
 
         // Paint track
-        window.paint_quad(paint_quad(
+        window.paint_quad(fill(
             Bounds::new(
                 point(bounds.right() - scrollbar_width, bounds.top()),
                 size(scrollbar_width, visible_height)
             ),
-            Anchor::default(),
-            cx.theme().scrollbar_track,
+            cx.theme().scrollbar,
         ));
 
         // Paint thumb
-        window.paint_quad(paint_quad(
+        window.paint_quad(fill(
             Bounds::new(
                 point(bounds.right() - scrollbar_width, bounds.top() + thumb_y),
                 size(scrollbar_width, thumb_height)
             ),
-            Anchor::all(px(4.)),
             cx.theme().scrollbar_thumb,
         ));
     }
