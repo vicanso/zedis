@@ -4,7 +4,7 @@ How the Windows release binaries get their Authenticode signature, what lives
 where, and what to do on release day. The user-facing side is the *Code
 signing policy* section of the README; this file is the maintainer's side.
 
-## Where onboarding stands (2026-10-17)
+## Where onboarding stands (2026-11-27)
 
 Delete this section once release signing is live. Nothing in it blocks an
 ordinary release: until step 5 below a tag ships an unsigned Windows build
@@ -35,24 +35,29 @@ with a warning, as it always has.
   failed only on the untrusted test root, as expected. Signing requests:
   [x86_64](https://app.signpath.io/Web/13ddfa06-ef0d-452c-8cf0-431207116a25/SigningRequests/5d906c29-cef1-4403-88ea-71f571305513),
   [aarch64](https://app.signpath.io/Web/13ddfa06-ef0d-452c-8cf0-431207116a25/SigningRequests/f0621a8a-47f6-4135-9fe0-a900ffb0ca61).
+- Signing request links were sent to SignPath; on 2026-11-27 Phillip Deng
+  confirmed SignPath is reviewing the origin verification, workflow setup,
+  and policy usage before releasing the production certificate to `Zedis [OSS]`.
+- Both READMEs' *Code signing policy* sections carry the SignPath
+  Foundation credit line and Windows signing details.
 
-**Waiting on SignPath** (support e-mailed on 2026-10-09)
+**Waiting on SignPath**
 
-- `release-signing` is shown as INVALID. Asked whether that is only the
-  production certificate that is not there yet.
+- SignPath is completing their setup review and releasing the production
+  certificate to the organization (until then, `release-signing` shows as
+  INVALID and `SIGNPATH_RELEASE_SIGNING` stays unset).
 
 **Then, in this order**
 
-1. Send SignPath the two signing request links. They review the setup, then
-   order and import the production certificate.
-2. Check `release-signing`: valid, the production certificate assigned,
+1. Once SignPath confirms the production certificate is released, check
+   `release-signing`: valid, the production certificate assigned,
    `CI builds` as Submitter, the maintainer as Approver, origin restricted
    to this repository's `v*` tags.
-3. Set the repository variable `SIGNPATH_RELEASE_SIGNING` to `true`
+2. Set the repository variable `SIGNPATH_RELEASE_SIGNING` to `true`
    (*5. Switch release signing on*).
-4. First signed release: approve both requests within 30 minutes
-   (*Release day*), then file the winget manifest that was waiting for a
-   signed installer.
+3. First signed release: approve the 4 requests (x86_64/aarch64 standard +
+   fast) within 30 minutes (*Release day*), then file the winget manifest
+   that was waiting for a signed installer.
 
 ## What is signed
 

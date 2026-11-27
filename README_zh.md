@@ -166,7 +166,9 @@ Valkey 在这里是一等公民，不是兼容模式。依赖版本的功能能�
 
 ## 🔏 代码签名策略（Code signing policy）
 
-macOS 版本使用维护者的 Apple Developer ID 签名并公证。
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+正式版附带的 Windows 二进制（`zedis-windows-*.msi`，以及 `zedis-windows-*.zip` 中的 `zedis.exe`）通过 SignPath 使用 SignPath Foundation 证书进行 Authenticode 签名：SignPath 仅对 GitHub Actions 从本仓库对应 tag 构建出的产物（[`publish.yml`](./.github/workflows/publish.yml)）签名，且每次发版均经人工审批后方可执行签名。macOS 版本使用维护者的 Apple Developer ID 签名并公证。
 
 **团队**
 

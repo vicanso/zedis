@@ -166,7 +166,9 @@ Valkey is first-class, not a compatibility mode. Whether a version-dependent fea
 
 ## 🔏 Code signing policy
 
-macOS builds are signed and notarized with the maintainer's Apple Developer ID.
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Windows release binaries (`zedis-windows-*.msi` and the `zedis.exe` inside `zedis-windows-*.zip`) are signed through SignPath using the SignPath Foundation certificate: SignPath signs only the artifacts built by GitHub Actions from the tagged commit of this repository ([`publish.yml`](./.github/workflows/publish.yml)), and every release is manually approved before signing. macOS builds are signed and notarized with the maintainer's Apple Developer ID.
 
 **Team**
 
